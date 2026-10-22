@@ -80,6 +80,6 @@ def act(request: Request, layout: Layout, kind: str, payload: dict, redirect_to:
     else:
         level, message = "error", outcome.get("error", "failed")
     if request.headers.get("HX-Request"):
-        return templates.TemplateResponse("partials/action_result.html",
-                                          {"request": request, "level": level, "message": message, "outcome": outcome})
+        return templates.TemplateResponse(request, "partials/action_result.html",
+                                          {"level": level, "message": message, "outcome": outcome})
     return RedirectResponse(url=f"{redirect_to}?flash={encode_flash(level, message)}", status_code=303)

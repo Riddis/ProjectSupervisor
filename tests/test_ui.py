@@ -279,6 +279,11 @@ def test_agents_list_and_terminate(layout, auth_client):
 
 
 def test_agent_stream_delivers_appended_lines(layout, auth_client):
+    """The route serves an open-ended SSE stream, which the Starlette TestClient (1.x) buffers to completion, so the
+    route is checked for wiring only and the tail itself is driven directly: a line appended after the stream started
+    must arrive, and a disconnect must end the generator."""
+    import asyncio
+
     run_dir = layout.runs / "T0-06" / "T0-06.a1"
     run_dir.mkdir(parents=True, exist_ok=True)
     stdout = run_dir / "stdout.jsonl"
@@ -286,17 +291,40 @@ def test_agent_stream_delivers_appended_lines(layout, auth_client):
     jobs_mod.prepare(layout, "T0-06", "T0-06.a1", "process", {"run_dir": str(run_dir)})
     jobs_mod.set_phase(layout, "T0-06.a1", "DONE", result="COMPLETE", finished="now")
 
-    with auth_client.stream("GET", "/agents/T0-06.a1/stream") as resp:
-        assert resp.status_code == 200
-        stdout.write_text('{"type": "assistant", "text": "hello"}\n')
-        lines = []
-        for chunk in resp.iter_lines():
-            lines.append(chunk)
-            if any("hello" in l for l in lines):
+    from supervisor.ui.sse import tail_file
+
+    class FakeRequest:
+        def __init__(self):
+            self.polls = 0
+
+        async def is_disconnected(self):
+            self.polls += 1
+            return self.polls > 20
+
+    async def drive():
+        frames = []
+        req = FakeRequest()
+        async for frame in tail_file(req, stdout, poll_s=0.01, from_end=True):
+            frames.append(frame)
+            if frame.startswith("event: ready"):
+                stdout.write_text('{"type": "assistant", "text": "hello"}\n')
+            if "hello" in frame:
                 break
-            if len(lines) > 50:
-                break
-        assert any("hello" in l for l in lines)
+        return frames
+
+    frames = asyncio.run(drive())
+    assert frames[0].startswith("event: ready")
+    assert any("hello" in f for f in frames)
+
+    async def disconnects():
+        req = FakeRequest()
+        req.polls = 100                                      # already gone: the tail must return, not spin
+        return [f async for f in tail_file(req, stdout, poll_s=0.01, from_end=True)]
+
+    assert [f for f in asyncio.run(disconnects()) if not f.startswith("event: ready")] == []
+
+    r = auth_client.get("/agents/T0-06.a1", headers={"HX-Request": "true"})
+    assert r.status_code == 200 and "/agents/T0-06.a1/stream" in r.text
 
 
 # --------------------------------------------------------------------- owner tasks

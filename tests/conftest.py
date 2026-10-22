@@ -1,6 +1,7 @@
 import pathlib, shutil, sys
 sys.dont_write_bytecode = True   # bytecode from the Linux dev VM must never be reused on Windows (and vice versa)
 import os, tempfile
+os.environ.setdefault("SUPERVISOR_UPDATE_CHECK", "0")   # no origin fetches (network, git subprocesses) from the suite
 _TMP = pathlib.Path(__file__).resolve().parents[1] / "runs" / "tmp"
 _TMP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("TMP", str(_TMP)); os.environ.setdefault("TEMP", str(_TMP)); os.environ.setdefault("TMPDIR", str(_TMP))

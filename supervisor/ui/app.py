@@ -2,6 +2,7 @@
 mutating route funnels through supervisor.commands, the same library the CLI uses."""
 from __future__ import annotations
 
+import os
 import secrets
 import time
 
@@ -36,7 +37,11 @@ def _start_update_checker(layout: Layout) -> None:
     threading.Thread(target=loop, name="update-check", daemon=True).start()
 
 
-def create_app(layout: Layout | None = None) -> FastAPI:
+def create_app(layout: Layout | None = None, update_check: bool | None = None) -> FastAPI:
+    """`update_check`: run the background origin fetch (default: yes, unless SUPERVISOR_UPDATE_CHECK=0 — tests and
+    offline machines must never have a page render depend on, or a test suite spawn, a network fetch)."""
+    if update_check is None:
+        update_check = os.environ.get("SUPERVISOR_UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "no", "off")
     app = FastAPI(title="Control Center", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.layout_override = layout
 
@@ -65,7 +70,8 @@ def create_app(layout: Layout | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(routes_router)
     if layout is not None:
-        _start_update_checker(layout)
+        if update_check:
+            _start_update_checker(layout)
         for ext_router, _label, _path in extensions_mod.load(layout).ui_routers:
             app.include_router(ext_router)
     return app

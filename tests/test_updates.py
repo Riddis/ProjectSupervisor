@@ -54,12 +54,13 @@ def test_up_to_date(world):
 
 
 def test_lists_commits_version_and_migration_hint(world):
-    push_update(world["author"], migration=True, n=2)
+    push_update(world["author"], version="99.0.0", migration=True, n=2)
     st = updates.check(world["layout"], fetch=True, max_age_s=0)
     assert st.available and st.behind == 2 and [c.subject for c in st.commits] == ["feature 1", "feature 0"]
-    assert st.remote_version == "1.1.0" and st.migration_hint
+    assert st.remote_version == "99.0.0" and st.migration_hint
     lines = updates.describe(st)
-    assert "2 commit(s)" in lines[0] and "1.0.0 → 1.1.0" in lines[0] and any("migration" in ln for ln in lines)
+    installed = updates.__version__                          # whatever this checkout is: the arrow shows the real pair
+    assert "2 commit(s)" in lines[0] and f"{installed} → 99.0.0" in lines[0] and any("migration" in ln for ln in lines)
 
 
 def test_check_is_cached_per_project(world):
