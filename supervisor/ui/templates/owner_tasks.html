@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Owner tasks — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Owner tasks</h2>
+  {% for t in rows %}
+  <article class="owner-task owner-task-{{ t.status }}">
+    <h3>{{ t.id }} — {{ t.title }} <span class="badge">{{ t.status }}</span></h3>
+    <pre class="guidance">{{ t.guidance }}</pre>
+    {% if t.blocks %}<p>Blocks: {{ t.blocks | join(', ') }}</p>{% endif %}
+    {% if t.status != 'done' %}
+    <form method="post" action="/owner-tasks/{{ t.id }}/done" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Mark done</button>
+    </form>
+    {% endif %}
+    {% if t.status == 'open' %}
+    <form method="post" action="/owner-tasks/{{ t.id }}/snooze" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Snooze</button>
+    </form>
+    {% endif %}
+    {% if t.status in ('snoozed', 'done') %}
+    <form method="post" action="/owner-tasks/{{ t.id }}/reopen" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Reopen</button>
+    </form>
+    {% endif %}
+  </article>
+  {% else %}<p>none</p>{% endfor %}
+</section>
+{% endblock %}

@@ -1,0 +1,4 @@
+# Task seed: `supervisor task import` creates every task listed here that does not exist yet (idempotent).
+# The setup skill writes the first phase's tasks from the approved plan. One task = one owner role, named artifacts,
+# a test and an acceptance sentence a reviewer can check. See the framework's docs/TASK_CONTRACT.md.
+tasks: []

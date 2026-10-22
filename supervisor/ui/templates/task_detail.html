@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ t.id }} — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>{{ t.id }} — {{ t.title }}</h2>
+  <p>Status: <strong>{{ t.status.value }}</strong>{{ ' (forced)' if t.forced else '' }}
+     &middot; phase {{ t.phase }} &middot; owner {{ t.owner_role }} &middot; priority {{ t.priority }}</p>
+  <p><strong>Objective.</strong> {{ t.objective }}</p>
+  <p><strong>Actions.</strong> {{ t.actions | join('; ') }}</p>
+  <p><strong>Artifacts.</strong> {{ t.artifacts | join(', ') }}</p>
+  <p><strong>Tests.</strong> {{ t.tests | join('; ') or '—' }}</p>
+  <p><strong>Acceptance.</strong> {{ t.acceptance }}</p>
+  <p><strong>Reviewer(s).</strong> {{ t.reviewer | join(', ') or '—' }}
+     &middot; <strong>Human approval.</strong> {{ t.human_approval.value }}</p>
+</section>
+
+<section class="panel">
+  <h2>Actions</h2>
+  <form method="post" action="/tasks/{{ t.id }}/priority" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="number" name="priority" value="{{ t.priority }}">
+    <button type="submit">Set priority</button>
+  </form>
+  <form method="post" action="/tasks/{{ t.id }}/note" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="note" placeholder="note" required>
+    <button type="submit">Add note</button>
+  </form>
+  <form method="post" action="/tasks/{{ t.id }}/requeue" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <button type="submit">Re-queue</button>
+  </form>
+  <form method="post" action="/tasks/{{ t.id }}/hold" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="note" placeholder="reason">
+    <button type="submit">Hold</button>
+  </form>
+  <form method="post" action="/tasks/{{ t.id }}/cancel" class="inline-form" onsubmit="return confirm('Cancel {{ t.id }}?')">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="note" placeholder="reason">
+    <button type="submit">Cancel</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Delivery &amp; verification</h2>
+  {% if t.delivery.digest %}
+  <p>Digest: <code>{{ t.delivery.digest[:16] }}…</code></p>
+  {% if t.delivery.verification %}
+  <p>Verification: {{ 'OK' if t.delivery.verification.ok else 'FAILED' }} — {{ t.delivery.verification.detail }}</p>
+  {% else %}<p>Verification: pending</p>{% endif %}
+  {% if t.delivery.reviews %}
+  <ul>{% for r in t.delivery.reviews %}<li>{{ r.role }}: {{ r.verdict.value }}{{ ' (superseded)' if r.superseded else '' }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if t.delivery.approvals %}
+  <ul>{% for a in t.delivery.approvals %}<li>Owner: {{ a.response.value }} ({{ a.by }}, {{ a.at[:16] }}){{ ' (superseded)' if a.superseded else '' }}{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if t.status.value == 'WAITING_FOR_HUMAN' and t.human_approval.value != 'none' %}
+  <p><strong>Needs your approval</strong> for digest <code>{{ t.delivery.digest[:16] }}…</code>{% if t.approval_note %} — {{ t.approval_note }}{% endif %}</p>
+  <form method="post" action="/tasks/{{ t.id }}/approve" class="inline-form" id="approve-form">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="note" placeholder="note (optional)">
+    <button type="submit" name="response" value="ACCEPT">Approve</button>
+    <button type="submit" name="response" value="MODIFY">Request changes</button>
+    <button type="submit" name="response" value="REJECT" onclick="return confirm('Reject the delivery of {{ t.id }}?')">Reject</button>
+  </form>
+  {% endif %}
+  {% else %}<p>No delivery yet.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Artifacts</h2>
+  <ul>
+  {% for p in t.paths %}
+    <li>{{ p }}{% if p in thumb_keys %}<br><img class="thumb" src="/thumb/{{ thumb_keys[p] }}" alt="{{ p }}">{% endif %}</li>
+  {% else %}<li>none recorded yet</li>{% endfor %}
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Attempts</h2>
+  <table class="tasks-table">
+    <thead><tr><th>Attempt</th><th>Resource</th><th>Model</th><th>At</th><th>Outcome</th><th></th></tr></thead>
+    <tbody>
+    {% for row in attempts %}
+      {% set a = row.attempt %}{% set j = row.job %}
+      <tr>
+        <td>{{ a.id }}</td><td>{{ a.resource }}</td><td>{{ a.model or '—' }}</td><td>{{ a.at }}</td>
+        <td>{{ (j.result if j else None) or a.outcome or (j.phase if j else '') }}</td>
+        <td>
+          <form method="post" action="/tasks/{{ t.id }}/attempts/{{ a.id }}/open-run-dir" class="inline-form">
+            {% include "partials/csrf.html" %}
+            <button type="submit">Open run dir</button>
+          </form>
+          {% if j and j.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}<a href="/agents/{{ a.id }}">live</a>{% endif %}
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="6">no attempts yet</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>History</h2>
+  <ul>
+  {% for h in t.history %}
+    <li>{{ h.at }} {{ h.by }}: {{ h['from'] }} → {{ h.to }}{{ ' (FORCED: ' + h.note + ')' if h.forced else (' — ' + h.note if h.note else '') }}</li>
+  {% endfor %}
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Notes</h2>
+  <ul>
+  {% for n in (t.model_extra or {}).get('notes', []) %}
+    <li>{{ n.at }} {{ n.by }}: {{ n.note }}</li>
+  {% else %}<li>none</li>{% endfor %}
+  </ul>
+</section>
+{% endblock %}

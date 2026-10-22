@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ rec.attempt_id }} — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>{{ rec.attempt_id }}</h2>
+  <p>Task: {% if task %}<a href="/tasks/{{ task.id }}">{{ task.id }} — {{ task.title }}</a>{% else %}{{ rec.task_id }}{% endif %}</p>
+  <p>Adapter: {{ rec.adapter }} &middot; phase: {{ rec.phase }}
+     &middot; elapsed: {{ (rec.elapsed_s | round | int) ~ 's' if rec.elapsed_s is not none else '?' }}</p>
+  {% if rec.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}
+  <form method="post" action="/agents/{{ rec.attempt_id }}/terminate" onsubmit="return confirm('Terminate {{ rec.attempt_id }}?')">
+    {% include "partials/csrf.html" %}
+    <button type="submit">Terminate</button>
+  </form>
+  {% if rec.is_agent %}
+  <form method="post" action="/agents/{{ rec.attempt_id }}/note" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="text" placeholder="Message this agent (checked between steps)" required>
+    <button type="submit">Send</button>
+  </form>
+  <p>Note status: <span class="badge">{{ rec.owner_note_status }}</span></p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Transcript</h2>
+  <pre id="transcript" class="transcript"
+       hx-ext="sse" sse-connect="/agents/{{ rec.attempt_id }}/stream" sse-swap="message" hx-swap="beforeend"></pre>
+</section>
+{% endblock %}

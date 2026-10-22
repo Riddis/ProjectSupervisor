@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supervisor.local/agents/schemas/assessment.json",
+  "title": "assessment",
+  "description": "One assessor's independent scoring of a set of candidates (designs, options, proposals, vendors, strategies) against a fixed rubric. Each assessor produces one of these in a separate session without seeing any other assessor's scores, which is why 'independent' is const true: a document written with another assessment in context is a reconciliation, which is the manager role's job. Every criterion is scored 1 (worst) to 5 (best) in the same direction of travel, so a 'risk' criterion scored 5 means the lowest risk. The rubric (criterion names) is fixed by the task that asks for the assessment, not by this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "id", "created", "assessor_role", "independent", "scores", "ranking"],
+  "properties": {
+    "kind": {"const": "assessment"},
+    "schema_version": {"const": 1},
+    "id": {"type": "string", "minLength": 1},
+    "created": {"$ref": "#/$defs/timestamp"},
+    "updated": {"$ref": "#/$defs/timestamp"},
+    "assessor_role": {"type": "string", "minLength": 1, "description": "The role id (config/routing.yaml) that wrote this."},
+    "independent": {"const": true, "description": "The assessor did not see any other assessor's scores or reasoning."},
+    "subject": {"type": "string", "maxLength": 200, "description": "What was assessed, e.g. 'storage backend options A-C'."},
+    "rubric": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/criterion_name"},
+               "description": "The criteria every candidate is scored on, as the task fixed them."},
+    "scores": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/score"}},
+    "ranking": {"type": "array", "minItems": 1, "uniqueItems": true, "description": "Candidate ids best first. Must list exactly the candidates scored above.",
+                "items": {"$ref": "#/$defs/candidate_id"}},
+    "notes": {"type": "string", "maxLength": 4000},
+    "abstentions": {"type": "array", "description": "Criteria this assessor considers outside its competence, with the reason. Honest abstention beats an invented score.",
+                    "items": {"type": "object", "additionalProperties": false, "required": ["criterion", "reason"],
+                              "properties": {"criterion": {"$ref": "#/$defs/criterion_name"}, "reason": {"type": "string", "minLength": 1, "maxLength": 600}}}}
+  },
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time",
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "candidate_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$"},
+    "criterion_name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,40}$"},
+    "rubric_score": {"type": "integer", "minimum": 1, "maximum": 5},
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "criteria", "reasoning"],
+      "properties": {
+        "candidate_id": {"$ref": "#/$defs/candidate_id"},
+        "criteria": {"type": "object", "minProperties": 1, "propertyNames": {"$ref": "#/$defs/criterion_name"},
+                     "additionalProperties": {"$ref": "#/$defs/rubric_score"},
+                     "description": "criterion name -> score 1..5; every rubric criterion unless listed under abstentions."},
+        "reasoning": {"type": "string", "minLength": 20, "maxLength": 3000, "description": "Why these scores, referring to specific properties of the candidate."},
+        "concerns": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 600}},
+        "evidence": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Finding ids, file paths or measurements the scores lean on."}
+      }
+    }
+  }
+}

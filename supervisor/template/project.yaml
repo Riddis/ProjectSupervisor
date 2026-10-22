@@ -1,0 +1,24 @@
+# project.yaml - what makes this folder a supervisor project. The framework reads it; the setup skill writes it.
+name: "{{ name }}"
+description: ""                      # one paragraph: what the project is and what "done" means
+framework_version: "{{ framework_version }}"   # checked by `supervisor doctor`; `supervisor migrate` updates it
+
+repo:
+  path: .                            # the git working tree the agents work in (this folder, normally)
+  remote: null                       # e.g. git@github.com:you/project.git - informational; pushes stay manual
+  default_branch: main
+
+# Phase labels only. Which gates open a phase lives in state/gates.yaml; the tasks of a phase live in state/tasks/.
+phases:
+  0: "Foundations"
+
+# Project-specific Python under extensions/ (a module name per entry); see the framework's
+# docs/FRAMEWORK_VS_EXTENSION.md. `supervisor extension new <name>` scaffolds one and lists it here.
+extensions: []
+
+ui:
+  port: 8790
+  title: null                        # defaults to `name`
+
+owner:
+  name: owner                        # the inbox role every human gate addresses

@@ -1,0 +1,20 @@
+{
+  "kind": "assessment",
+  "schema_version": 1,
+  "id": "A-001",
+  "created": "2026-01-10T09:00:00+00:00",
+  "assessor_role": "chief_architect",
+  "independent": true,
+  "subject": "storage backend options A-C",
+  "rubric": ["simplicity", "operability", "cost", "risk"],
+  "scores": [
+    {"candidate_id": "A", "criteria": {"simplicity": 5, "operability": 4, "cost": 5, "risk": 4},
+     "reasoning": "SQLite in one file: no service to run, backups are a copy, and the write volume is far below its limits.",
+     "evidence": ["docs/research/R01.md#findings"]},
+    {"candidate_id": "B", "criteria": {"simplicity": 3, "operability": 3, "cost": 3, "risk": 3},
+     "reasoning": "A hosted database adds a credential, a bill and a network dependency for no measured gain at this scale.",
+     "concerns": ["needs a secrets/ entry and a spend proposal"]}
+  ],
+  "ranking": ["A", "B"],
+  "notes": "C was withdrawn by its proposer before scoring."
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supervisor.local/agents/schemas/review.json",
+  "title": "review",
+  "description": "The structured result a reviewing role ends its answer with. The enums mirror supervisor/_vendor/contract.py REVIEW_VERDICTS and FINDING_CATEGORIES, and the two conditional blocks below encode the cross-field rules enforced by contract.review_result(): an ACCEPT may carry no blocking finding, and an advisory finding may only block when the verdict is BLOCKED. A review judges the frozen inputs it was given, never the producer's self-assessment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "verdict", "findings"],
+  "properties": {
+    "kind": {"const": "review"},
+    "schema_version": {"const": 1},
+    "verdict": {
+      "enum": ["ACCEPT", "REVISE", "REJECT", "BLOCKED"],
+      "description": "ACCEPT = meets the requirements as delivered. REVISE = fixable within the same approach. REJECT = the approach itself is wrong. BLOCKED = the review could not be completed (missing inputs, no tools, interrupted); an interruption is not a finding."
+    },
+    "findings": {
+      "type": "array",
+      "description": "One entry per concrete problem. Empty on a clean ACCEPT and on BLOCKED.",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "summary": {"type": "string", "maxLength": 4000, "description": "What was reviewed and the reasoning behind the verdict."},
+    "reviewed": {
+      "type": "array",
+      "description": "The frozen inputs this verdict applies to. If they change the review is INVALIDATED and re-queued.",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Artifact digest the verdict is bound to, when the packet supplied one."},
+    "permission_denials": {"type": "array", "items": {"type": "string"}, "description": "Added by the adapter, not by the reviewer."}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["verdict"], "properties": {"verdict": {"const": "ACCEPT"}}},
+      "then": {"properties": {"findings": {"items": {"properties": {"blocking": {"const": false}}}}}},
+      "$comment": "contract.review_result: 'Accepted review contains blocking findings'"
+    },
+    {
+      "if": {"required": ["verdict"], "properties": {"verdict": {"not": {"const": "BLOCKED"}}}},
+      "then": {
+        "properties": {
+          "findings": {
+            "items": {
+              "not": {"required": ["category", "blocking"],
+                      "properties": {"category": {"const": "advisory"}, "blocking": {"const": true}}}
+            }
+          }
+        }
+      },
+      "$comment": "contract.review_result: 'Advisory findings cannot block'"
+    }
+  ],
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "blocking", "message", "evidence"],
+      "properties": {
+        "category": {
+          "enum": ["correctness", "requirement", "regression", "architecture", "quality", "advisory"],
+          "description": "correctness = wrong behaviour. requirement = an acceptance criterion is unmet. regression = previously working behaviour broke. architecture = violates an agreed interface or boundary. quality = readable/maintainable concern. advisory = optional improvement, never blocking."
+        },
+        "blocking": {"type": "boolean", "description": "true means the delivery cannot be accepted until this is addressed."},
+        "message": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "The problem and what would resolve it."},
+        "evidence": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "Where it is: file:line, a test name and its output, or a quoted requirement. A finding without evidence is not a finding."},
+        "severity": {"enum": ["low", "medium", "high"]},
+        "path": {"type": "string", "minLength": 1},
+        "suggestion": {"type": "string", "maxLength": 2000}
+      }
+    }
+  }
+}

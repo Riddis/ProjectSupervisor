@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% macro duration(seconds) -%}{% if seconds is none %}Unknown{% elif seconds < 60 %}{{ seconds | int }}s{% elif seconds < 3600 %}{{ (seconds / 60) | int }}m{% elif seconds < 86400 %}{{ (seconds / 3600) | int }}h {{ ((seconds % 3600) / 60) | int }}m{% else %}{{ (seconds / 86400) | int }}d {{ ((seconds % 86400) / 3600) | int }}h{% endif %}{%- endmacro %}
+{% block title %}Overview &mdash; Control Center{% endblock %}
+{% block content %}
+<div class="metric-grid">
+  <a class="metric-card" href="/tasks"><span class="metric-icon">{{ icon('check') }}</span><div class="metric-body"><span class="metric-label">Tasks completed</span><strong>{{ done_count }}<small> / {{ task_count }}</small></strong><progress value="{{ done_count }}" max="{{ task_count or 1 }}" aria-label="Tasks completed"></progress><span class="metric-caption">{{ ((done_count / task_count * 100) if task_count else 0) | round | int }}% complete</span></div></a>
+  <a class="metric-card" href="/agents"><span class="metric-icon">{{ icon('jobs') }}</span><div class="metric-body"><span class="metric-label">Open jobs</span><strong>{{ open_jobs | length }}</strong><span class="metric-caption">Agent workload</span></div></a>
+  <a class="metric-card" href="/inbox"><span class="metric-icon">{{ icon('bell') }}</span><div class="metric-body"><span class="metric-label">Needs your attention</span><strong>{{ needs_you }}</strong><span class="metric-caption">{{ open_inbox_count }} inbox &middot; {{ waiting_count }} waiting task{{ "" if waiting_count == 1 else "s" }}</span></div></a>
+  <a class="metric-card" href="/roadmap"><span class="metric-icon">{{ icon('flag') }}</span><div class="metric-body"><span class="metric-label">Current phase</span><strong>{{ phase }}<small> / {{ phases_total - 1 }}</small></strong><progress value="{{ phase }}" max="{{ [1, phases_total - 1] | max }}" aria-label="Current phase"></progress><span class="metric-caption">{{ phases_passed | length }} gates passed</span></div></a>
+</div>
+<div class="dashboard-grid">
+<section class="panel supervisor-panel">
+  <div class="section-heading supervisor-heading"><h2>Supervisor</h2><div class="supervisor-signals"><span class="status-pill status-{{ runtime.get('status','STOPPED')|lower }}"><i></i>{{ runtime.get('status','STOPPED') }}</span><span class="heartbeat" title="{{ runtime.get('heartbeat','No heartbeat') }}">Heartbeat: {{ duration(heartbeat_age) }}{% if heartbeat_age is not none %} ago{% endif %}</span><span>Decision: <strong>{{ runtime.get('decision','RUN') }}</strong></span></div></div>
+  <div class="supervisor-details">
+    <div><span>Workspace</span><strong>Local workspace</strong><small>On this device</small></div>
+    <div><span>Open jobs</span><strong>{{ open_jobs | length }}</strong><small><a href="/agents">View agents</a></small></div>
+    <div><span>Current task</span>{% if draining %}<strong>Draining &mdash; {{ active_jobs | length }} job{{ "" if active_jobs | length == 1 else "s" }} running</strong><small>{{ 'PC shuts down when they finish' if shutdown_armed else 'Supervisor stops when they finish' }}</small>{% elif shutdown_pending_s %}<strong>PC shutting down</strong><small>In {{ duration(shutdown_pending_s) }} &mdash; cancel below to stay on</small>{% elif busy_task %}<strong><a href="/tasks/{{ busy_task.id }}">{{ busy_task.title }}</a></strong><small>{{ busy_task.id }}</small>{% else %}<strong>{{ 'Waiting for next dispatch' if live else 'Supervisor is offline' }}</strong><small>{{ 'Process ' ~ runtime.pid if runtime.get('pid') else 'Start to begin processing' }}</small>{% endif %}</div>
+    <div><span>Uptime</span><strong>{{ duration(uptime_seconds) if live else 'Offline' }}</strong><small>{{ 'Since last start' if live else 'No live heartbeat' }}</small></div>
+  </div>
+  <div class="supervisor-actions">
+  {% set shutdown_control = ('shutdown-cancel','Cancel shutdown','power') if (draining and shutdown_armed) or shutdown_pending_s else ('shutdown','Shut down PC when idle','power') %}
+  {% set shutdown_confirm = ('Shut the PC down once the ' ~ (active_jobs | length) ~ ' running job(s) finish? Nothing new will start.') if live else 'Nothing is running. Shut the PC down in 60 seconds?' %}
+  {% for action, label, symbol in [('start','Start','play'),('pause','Pause','pause'),('resume','Resume','play'),('stop','Stop','stop'),('reload','Reload','reload'),('doctor','Run doctor','doctor'), shutdown_control] %}
+    <form method="post" action="/overview/{{ action }}" hx-post="/overview/{{ action }}" hx-target="#ctrl-result" hx-swap="innerHTML"{% if action == 'stop' %} onsubmit="return confirm('Stop the supervisor?')"{% elif action == 'shutdown' %} onsubmit="return confirm('{{ shutdown_confirm }}')"{% endif %}>
+      {% include "partials/csrf.html" %}<button type="submit"{% if action == ('pause' if live and runtime.get('status') == 'RUNNING' else 'resume' if runtime.get('status') == 'PAUSED' else 'start') %} class="primary"{% elif action == 'shutdown-cancel' %} class="warn"{% endif %}{% if action == 'shutdown' %} title="Let running work finish, then power the workstation off"{% endif %}>{{ icon(symbol) }}{{ label }}</button>
+    </form>
+  {% endfor %}
+  </div><div id="ctrl-result" role="status" aria-live="polite"></div>
+</section>
+<section class="panel resources-panel">
+  <h2>Resources</h2>
+  {% for panel in panels %}<div class="resource-block"><div class="resource-heading"><span>{{ icon('cpu') }} {{ panel.title }}</span>{% if panel.rows %}<strong>{{ panel.rows[0][1] }}<small> {{ panel.rows[0][0] }}</small></strong>{% endif %}</div>
+    {% if panel.progress %}<progress value="{{ panel.progress[0] }}" max="{{ panel.progress[1] }}" aria-label="{{ panel.title }}"></progress>{% endif %}{% for label, value in panel.rows[1:] %}<small>{{ label }}: {{ value }}</small>{% endfor %}
+  </div>{% endfor %}
+  <div class="resource-block"><div class="resource-heading"><span>{{ icon('disk') }} Disk</span><strong>{% if disk.total_gb is defined and disk.total_gb %}{{ '{:,.0f}'.format(disk.free_gb) }}<small> / {{ '{:,.0f}'.format(disk.total_gb) }} GB free</small>{% else %}<small>Unavailable</small>{% endif %}</strong></div>
+    {% if disk.total_gb is defined and disk.total_gb %}<progress value="{{ disk.free_gb }}" max="{{ disk.total_gb }}" aria-label="Disk space free"></progress><small>{{ (disk.used_gb / disk.total_gb * 100) | round | int }}% used &middot; Local storage</small>{% else %}<small>Storage readings are unavailable</small>{% endif %}
+  </div>
+</section>
+<section class="panel capacity-panel">
+  <div class="section-heading"><h2>Capacity</h2><span class="section-note">Available agent usage</span></div>
+  <div class="capacity-grid">
+  {% for engine, data in capacity.items() %}
+    <div class="capacity-engine"><div class="engine-heading"><span class="engine-symbol engine-{{ engine }}">{{ icon(engine if engine in ['claude','codex'] else 'cpu') }}</span><h3>{{ engine | title }}</h3>{% if data.windows and data.windows | selectattr('stale') | list %}<span class="subtle-tag">Stale</span>{% endif %}</div>
+    {% for w in data.windows %}
+      <div class="usage-window"><div class="usage-label"><span>{{ w.label }}</span><strong>{{ '%.0f' | format(w.remaining_percent) }}% <small>remaining</small></strong></div><progress value="{{ w.remaining_percent }}" max="100" aria-label="{{ engine }} {{ w.label }} remaining"></progress><div class="usage-meta"><span>{{ icon('clock') }}{% if w.reset_epoch <= now %}Reset time passed{% else %}Resets in {{ duration(w.reset_epoch - now) }}{% endif %}</span>{% if w.gating %}<span class="gating-tag">Dispatch held</span>{% endif %}</div></div>
+    {% else %}<p class="empty-copy">Usage data is unavailable.</p>{% endfor %}
+    <form method="post" action="/overview/capacity-reset" hx-post="/overview/capacity-reset" hx-target="#ctrl-result" hx-swap="innerHTML">{% include "partials/csrf.html" %}<input type="hidden" name="engine" value="{{ engine }}"><button class="reset-button" type="submit" title="Confirm that you reset {{ engine }} usage">{{ icon('reload') }}Reset usage</button></form>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+<section class="panel phase-panel">
+  <div class="section-heading"><h2>Phase &amp; gates</h2><a href="/roadmap" class="section-note">View roadmap {{ icon('arrow') }}</a></div>
+  <div class="phase-heading"><strong>Phase {{ phase }}</strong><span>{{ phase_label }}</span></div>
+  <div class="phase-columns"><ul class="gate-list">
+    {% for gate in nearby_gates %}<li class="gate-{{ gate.status | lower }}"><span class="gate-marker">{% if gate.status == 'PASSED' %}{{ icon('check') }}{% endif %}</span><strong>{{ gate.id }}</strong><span>{{ gate.label }}</span><small>{{ gate.status | title }}</small></li>{% else %}<li>No gates configured.</li>{% endfor %}
+  </ul><div class="eligible-list"><h3>Eligible tasks</h3>{% for t in eligible[:4] %}<a href="/tasks/{{ t.id }}"><span>{{ t.id }}<small>{{ t.title }}</small></span>{{ icon('arrow') }}</a>{% else %}<div class="empty-state">{{ icon('clock') }}<p>No tasks ready to dispatch</p><small>Check the roadmap for dependencies and gates.</small></div>{% endfor %}</div></div>
+</section>
+<section class="panel events-panel">
+  <div class="section-heading"><h2>Recent activity</h2><a href="/log">View full log {{ icon('arrow') }}</a></div>
+  <table class="tasks-table activity-table"><thead><tr><th>Time (UTC)</th><th>Agent</th><th>Event</th><th>Task</th></tr></thead><tbody>
+    {% for e in last_events[:5] %}<tr><td><time title="{{ e.ts }}">{{ e.ts[11:19] if e.ts and e.ts | length > 18 else e.ts }}</time></td><td><span class="agent-dot agent-{{ 'claude' if 'claude' in (e.actor or '') else 'codex' if 'codex' in (e.actor or '') else 'system' }}"></span>{{ (e.actor or 'System') | replace('_',' ') | title }}</td><td>{{ e.event | replace('_',' ') | capitalize }}{% if e.to %}<span class="event-state">{{ e.to }}</span>{% endif %}</td><td>{% if e.task %}<a href="/tasks/{{ e.task }}">{{ e.task }}</a>{% else %}<span class="muted">&mdash;</span>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No activity yet.</td></tr>{% endfor %}
+  </tbody></table>
+  {% if last_events | length > 5 %}<a class="activity-more" href="/log">View all recent events {{ icon('arrow') }}</a>{% endif %}
+</section>
+<section class="panel ledger-panel"><div class="section-heading"><h2>Today's activity</h2><span class="section-note">Job event ledger</span></div><div class="ledger-grid">{% for adapter, n in job_counts.items() %}<div><span>{{ adapter if adapter != '?' else 'Other adapters' }}</span><strong>{{ n }}<small> events</small></strong></div>{% else %}<p>No job activity today.</p>{% endfor %}</div></section>
+<section class="panel attention-panel"><div class="attention-symbol">{{ icon('bell') }}</div><div><h2>{{ needs_you }} item{{ '' if needs_you == 1 else 's' }} need{{ 's' if needs_you == 1 else '' }} your attention</h2><p>{{ open_inbox_count }} inbox item{{ '' if open_inbox_count == 1 else 's' }} &middot; {{ waiting_count }} task{{ '' if waiting_count == 1 else 's' }} waiting for you</p><div class="attention-links"><a href="/inbox">Open inbox {{ icon('arrow') }}</a>{% if waiting_count %}<a href="/tasks?status=WAITING_FOR_HUMAN">Waiting tasks {{ icon('arrow') }}</a>{% endif %}</div></div></section>
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+{
+  "kind": "review",
+  "schema_version": 1,
+  "verdict": "REVISE",
+  "summary": "The routing table covers every role id and the schemas validate their samples, but one acceptance criterion is unmet and the review schema's own conditional rules are untested.",
+  "reviewed": [
+    "config/routing.yaml",
+    "agents/schemas/review.json",
+    "agents/code_review.md"
+  ],
+  "findings": [
+    {
+      "category": "requirement",
+      "blocking": true,
+      "message": "The acceptance criterion 'no model names appear in cards' is not enforced anywhere, so a later edit can reintroduce one. Add the forbidden-token assertion to the card test.",
+      "evidence": "state/tasks/T1-04.yaml acceptance; tests/test_agent_cards_and_schemas.py has no token check",
+      "severity": "medium"
+    },
+    {
+      "category": "advisory",
+      "blocking": false,
+      "message": "The review schema's ACCEPT-has-no-blocking-finding rule duplicates contract.review_result(); worth a comment pointing at the single source of truth.",
+      "evidence": "agents/schemas/review.json allOf[0] vs supervisor/_vendor/contract.py:212",
+      "severity": "low"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "kind": "delivery",
+  "schema_version": 1,
+  "status": "DONE",
+  "artifacts": [
+    "D:\\Projects\\demo\\config\\routing.yaml"
+  ],
+  "notes": "Three violations on purpose: 'DONE' is not a status the Result enum knows, the artifact is an absolute Windows path instead of a repository-relative one (verification resolves artifacts against the root, so an absolute path silently escapes the owned-path manifest), and 'decisions' is missing although the result contract requires it.",
+  "tests": []
+}

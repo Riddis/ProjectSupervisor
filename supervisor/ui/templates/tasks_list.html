@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Tasks</h2>
+  <form method="get" action="/tasks">
+    <select name="status" onchange="this.form.submit()">
+      <option value="">all statuses</option>
+      {% for s in statuses %}<option value="{{ s }}" {{ "selected" if s == filter_status }}>{{ s }}</option>{% endfor %}
+    </select>
+  </form>
+  <table class="tasks-table">
+    <thead><tr><th>ID</th><th>Phase</th><th>Title</th><th>Owner</th><th>Status</th><th>Priority</th></tr></thead>
+    <tbody>
+    {% for t in tasks %}
+      <tr>
+        <td>{{ '⚑' if t.id in elig_ids else '' }} <a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+        <td>{{ t.phase }}</td>
+        <td>{{ t.title }}</td>
+        <td>{{ t.owner_role }}</td>
+        <td>{{ t.status.value }}{{ ' (forced)' if t.forced else '' }}</td>
+        <td>{{ t.priority }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

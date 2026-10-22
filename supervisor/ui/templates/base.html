@@ -1,0 +1,38 @@
+{% from "partials/icons.html" import icon %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101117">
+<title>{% block title %}Control Center{% endblock %}</title>
+<link rel="stylesheet" href="{{ stylesheet_url() }}">
+<script src="/static/htmx.min.js"></script>
+<script src="/static/htmx-sse.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="topbar">
+  <a class="brand" href="/overview"><span class="brand-mark">{{ project_name[:1] | upper }}</span><span>{{ project_name }}<small>CONTROL CENTER</small></span></a>
+  <div class="nav-label">WORKSPACE</div>
+  <nav aria-label="Main navigation">
+    {% set n = inbox_badge(request) %}
+    {% for path, label, icon_id in [('/overview','Overview','01'),('/inbox','Inbox','02'),('/roadmap','Roadmap','03'),('/tasks','Tasks','04'),('/agents','Agents','05'),('/chat','Chat','06'),('/log','Log','07'),('/owner-tasks','Owner tasks','08'),('/settings','Settings','09')] %}
+    <a href="{{ path }}"{% if request.url.path == path or request.url.path.startswith(path + '/') %} class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon(path[1:]) }}</span>{{ label }}{% if path == '/inbox' and n %}<span class="badge">{{ n }}</span>{% endif %}</a>
+    {% endfor %}
+    {% for path, label in extension_nav(request) %}
+    <a href="{{ path }}"{% if request.url.path == path or request.url.path.startswith(path + '/') %} class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon('settings') }}</span>{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <div class="sidebar-footer"><span class="local-dot"></span> Local workspace<small>{{ project_name }}, on this device.</small></div>
+</header>
+<div class="workspace">
+  <div class="workspace-bar"><span>Workspace <span class="breadcrumb-divider">/</span> <strong>{{ (self.title() | striptags).split('\u2014')[0] | trim }}</strong></span><span class="local-label"><span class="local-dot"></span> Local access</span></div>
+  <main id="main" tabindex="-1">
+    <div class="page-heading"><div><h1>{{ (self.title() | striptags).split('\u2014')[0] | trim }}</h1><p class="page-description">{% if request.url.path == '/overview' %}Everything you need to keep work moving.{% else %}Manage your project from one place.{% endif %}</p></div><a class="quiet-link" href="/inbox">Review inbox {{ icon("arrow") }}</a></div>
+    {% if flash %}<div role="status" class="flash flash-{{ flash.level }}">{{ flash.message }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

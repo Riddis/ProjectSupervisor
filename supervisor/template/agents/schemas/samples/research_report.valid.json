@@ -1,0 +1,93 @@
+{
+  "kind": "research_report",
+  "schema_version": 1,
+  "id": "RR-T1-02",
+  "created": "2026-10-20T09:15:00+00:00",
+  "task_ref": "T1-02",
+  "topic": "Local-first sync tools: what exists, what works, common weaknesses",
+  "question": "What distinguishes sync tools that keep users from the ones that stall, and what do app stores require of them?",
+  "findings": [
+    {
+      "id": "F1",
+      "observation": {
+        "statement": "Store guidance requires apps that process user data off-device to disclose it, and shows the disclosure automatically when the privacy manifest declares it.",
+        "source_ids": [
+          "S1",
+          "S2"
+        ]
+      },
+      "hypothesis": "A disclosed sync feature loses little adoption relative to an undisclosed one, because the disclosure is shown either way once the manifest declares it.",
+      "recommendation": {
+        "statement": "Treat the disclosure as a product feature rather than a cost, and declare it explicitly in the manifest instead of waiting for it to be inferred.",
+        "confidence": "high",
+        "source_ids": [
+          "S1",
+          "S2",
+          "S3"
+        ]
+      },
+      "tags": [
+        "policy",
+        "disclosure"
+      ]
+    },
+    {
+      "id": "F2",
+      "observation": {
+        "statement": "Issue trackers of several large sync tools are dominated by conflict-resolution bugs rather than by feature requests.",
+        "source_ids": [
+          "S3"
+        ]
+      },
+      "hypothesis": "Conflict handling, not sync speed, is the dominant reason users abandon sync tools.",
+      "recommendation": {
+        "statement": "Spend the first phases on deterministic conflict resolution before any performance work.",
+        "confidence": "medium",
+        "source_ids": [
+          "S3"
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "S1",
+      "url": "https://example-store.test/developers/data-disclosure",
+      "title": "How data processing is disclosed",
+      "publisher": "example-store.test",
+      "type": "platform_docs",
+      "retrieved": "2026-10-20",
+      "published": "2026-08-14"
+    },
+    {
+      "id": "S2",
+      "url": "https://example-policy.test/developer-policy",
+      "title": "Developer policy: data use and disclosure",
+      "publisher": "example-policy.test",
+      "type": "policy",
+      "retrieved": "2026-10-20",
+      "published": "2026-09-01"
+    },
+    {
+      "id": "S3",
+      "url": "https://example-forum.test/r/selfhosted/thread/sync-tools-2026",
+      "title": "Why do sync tools plateau?",
+      "publisher": "example-forum.test",
+      "type": "community",
+      "retrieved": "2026-10-20",
+      "note": "Anecdotal; supports an observation, not a high-confidence recommendation on its own."
+    }
+  ],
+  "gaps": [
+    "No reliable public figures for retention by tool category; the adoption claims above are directional only."
+  ],
+  "second_opinion": {
+    "lane": "cross-vendor review lane",
+    "agreements": [
+      "Identity stability dominates perceived quality."
+    ],
+    "disagreements": [
+      "Rates the disclosure reach penalty as unknown rather than small."
+    ]
+  }
+}

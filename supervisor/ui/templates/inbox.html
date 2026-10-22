@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Inbox — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Needs you</h2>
+  <nav class="tabs">
+    <a href="/inbox?tab=open"{% if tab == 'open' %} class="active"{% endif %}>Open ({{ open_count }})</a>
+    <a href="/inbox?tab=archive"{% if tab == 'archive' %} class="active"{% endif %}>Archive ({{ archive_count }})</a>
+  </nav>
+</section>
+
+{% for kind in kind_order %}
+{% set items = groups[kind] %}
+{% if items %}
+<section class="panel">
+  <h3>{{ kind_labels[kind] }} <span class="badge">{{ items | length }}</span></h3>
+  {% for item in items %}
+  <article class="inbox-item inbox-item-{{ item.status }}">
+    <h4>{{ item.id }} — {{ item.subject }} <span class="badge">{{ item.status }}</span>
+        <span class="age">{{ item.age_display }} old</span></h4>
+    <p>For: {{ item.get('for', 'owner') }} &middot; from: {{ item.get('from', '?') }}
+       {% if item.task_id %}&middot; task: <a href="/tasks/{{ item.task_id }}">{{ item.task_id }}</a>{% endif %}</p>
+    <div class="evidence-text">{{ item.summary_html | safe }}</div>
+
+    {% if item.evidence_views %}
+    <div class="evidence">
+      {% for ev in item.evidence_views %}
+        {% if ev.kind == 'image' %}<img class="thumb" src="/thumb/{{ ev.thumb_key }}" alt="{{ ev.ref }}">
+        {% elif ev.kind == 'text' %}<div class="evidence-doc"><p class="evidence-ref">{{ ev.ref }}</p>{{ ev.html | safe }}</div>
+        {% elif ev.kind == 'link' %}<p class="evidence-ref">{{ ev.ref }}</p>
+        {% else %}<p class="evidence-ref evidence-missing">{{ ev.ref }} (not found)</p>{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if item.score_items %}
+    <table class="tasks-table score-block">
+      <thead><tr>{% for k in item.score_items[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for row in item.score_items %}
+        <tr>{% for k in row.keys() %}<td>{{ row[k] }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if item.plain_items %}
+    <ul class="plain-items">
+      {% for row in item.plain_items %}
+      <li>{% for k, v in row.items() %}<strong>{{ k }}:</strong> {{ v }} {% endfor %}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if item.status == 'open' %}
+    <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form">
+      {% include "partials/csrf.html" %}
+      {% for r in item.allowed_responses %}
+      <button type="submit" name="response" value="{{ r }}">{{ r }}</button>
+      {% endfor %}
+      <input type="text" name="text" placeholder="MODIFY text / free-text answer">
+      <button type="submit">Send</button>
+    </form>
+
+    {% if item.gate_id %}
+    <form method="post" action="/inbox/{{ item.id }}/gate-ack" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Acknowledge gate {{ item.gate_id }}</button>
+    </form>
+    {% endif %}
+
+    <form method="post" action="/inbox/{{ item.id }}/snooze" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Snooze</button>
+    </form>
+
+    <form method="post" action="/inbox/{{ item.id }}/upload" enctype="multipart/form-data" class="inline-form drop-zone">
+      {% include "partials/csrf.html" %}
+      <input type="file" name="file" required>
+      <button type="submit">Upload a file for this item</button>
+    </form>
+    {% elif item.status == 'snoozed' %}
+    <form method="post" action="/inbox/{{ item.id }}/reopen" class="inline-form">
+      {% include "partials/csrf.html" %}
+      <button type="submit">Reopen</button>
+    </form>
+    {% elif item.answer %}
+    <p class="answer">Answered {{ item.answered_at }} by {{ item.answer.by }}: <strong>{{ item.answer.response }}</strong>
+       {% if item.answer.note %}— {{ item.answer.note }}{% endif %}</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+{% endfor %}
+
+{% if not shown_count %}
+<section class="panel"><p>Nothing {{ 'open' if tab == 'open' else 'archived' }}.</p></section>
+{% endif %}
+{% endblock %}

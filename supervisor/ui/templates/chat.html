@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Chat — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Chat</h2>
+  <form method="post" action="/chat" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <select name="role">
+      {% for r in roles %}<option value="{{ r }}"{% if r == 'senior_pm' %} selected{% endif %}>{{ r }}</option>{% endfor %}
+    </select>
+    <button type="submit">New thread</button>
+  </form>
+  <ul class="thread-list">
+    {% for t in threads %}
+    <li><a href="/chat/{{ t.id }}"{% if thread_id == t.id %} class="active"{% endif %}>{{ t.role }}</a>
+        <span class="badge">{{ t.turn_count }}</span>
+        {% if t.pending %}<span class="badge badge-pending">pending</span>{% endif %}
+        — {{ t.last_preview }}</li>
+    {% else %}<li>No conversations yet.</li>{% endfor %}
+  </ul>
+</section>
+
+{% if thread %}
+<section class="panel">
+  <h3>Conversation with {{ thread.meta.role }} ({{ thread_id }})</h3>
+  {% for turn in thread.turns %}
+    {% if turn.kind == 'owner' %}
+    <article class="chat-turn chat-turn-owner">
+      <p><strong>Owner:</strong> {{ turn.text }}</p>
+      {% if turn.task_ref %}<p class="age">referenced task: {{ turn.task_ref }}</p>{% endif %}
+      {% if turn.decision_ref %}<p class="age">referenced decision: {{ turn.decision_ref }}</p>{% endif %}
+    </article>
+    {% else %}
+    <article class="chat-turn chat-turn-assistant">
+      <p><strong>{{ thread.meta.role }}</strong> <span class="badge">{{ turn.status }}</span></p>
+      {% if turn.status == 'pending' %}<p><em>Thinking…</em></p>
+      {% else %}<p>{{ turn.text }}</p>{% endif %}
+      {% if turn.status == 'done' %}
+      <form method="post" action="/chat/{{ thread_id }}/convert" class="inline-form">
+        {% include "partials/csrf.html" %}
+        <input type="hidden" name="turn" value="{{ loop.index0 + 1 }}">
+        <select name="into">
+          {% for target in convert_targets %}<option value="{{ target }}">{{ target }}</option>{% endfor %}
+        </select>
+        <input type="text" name="title" placeholder="title (optional)">
+        <input type="text" name="owner_role" placeholder="owner_role (task only)" value="engineer">
+        <button type="submit">Convert</button>
+      </form>
+      {% endif %}
+    </article>
+    {% endif %}
+  {% endfor %}
+
+  <form method="post" action="/chat/{{ thread_id }}/ask" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="text" name="text" placeholder="Ask {{ thread.meta.role }}…" required>
+    <input type="text" name="task_ref" placeholder="referenced task (optional)">
+    <input type="text" name="decision_ref" placeholder="referenced decision (optional)">
+    <button type="submit">Send</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

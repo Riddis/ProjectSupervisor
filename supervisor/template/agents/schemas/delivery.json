@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://supervisor.local/agents/schemas/delivery.json",
+  "title": "delivery",
+  "description": "The structured result an implementing role ends its answer with. Parsed by supervisor/_vendor/contract.py result_object(text, 'delivery'); the claude_cli adapter may add 'permission_denials' before writing runs/<task>/<attempt>/result.json, so that key is part of the schema. 'status' is advisory: deterministic verification (supervisor/verify.py) and the required reviews decide the task status, never this field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "schema_version", "status", "artifacts", "notes", "decisions"],
+  "properties": {
+    "kind": {"const": "delivery"},
+    "schema_version": {"const": 1},
+    "status": {
+      "enum": ["COMPLETE", "PARTIAL", "BLOCKED", "FAILED"],
+      "description": "COMPLETE = every acceptance criterion met and the declared tests pass. PARTIAL = usable work, something named in 'notes' is missing. BLOCKED = an external dependency, permission or decision is required. FAILED = the approach did not work."
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Repository-relative paths that were created or changed, forward slashes. Verification checks that each one exists and lies inside the task's owned paths.",
+      "items": {"$ref": "#/$defs/repo_path"}
+    },
+    "notes": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 6000,
+      "description": "One paragraph: what was done, what was left out and why, what the next attempt should know."
+    },
+    "decisions": {
+      "type": "array",
+      "description": "Decision records proposed by this delivery (plan 9 Decision). Empty for ordinary implementation work.",
+      "items": {"$ref": "#/$defs/decision"}
+    },
+    "tests": {
+      "type": "array",
+      "description": "Declared tests actually run in this attempt, with their exit codes, so verification can confirm the success marker.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code"],
+        "properties": {
+          "command": {"type": "string", "minLength": 1},
+          "exit_code": {"type": "integer"},
+          "summary": {"type": "string", "maxLength": 1000}
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "description": "Problems worth an issue record that are outside this task's scope.",
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "permission_denials": {
+      "type": "array",
+      "description": "Added by the adapter, not by the agent: tool calls the permission layer denied during the attempt (visible, never fatal).",
+      "items": {"type": "string"}
+    },
+    "handoff": {
+      "$ref": "#/$defs/repo_path",
+      "description": "Path to the HANDOFF.md written when the attempt stopped early."
+    }
+  },
+  "$defs": {
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?!/)[^\\\\]+$",
+      "description": "Repository-relative POSIX path: no drive letter, no leading slash, no backslashes."
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "decision", "context", "consequences"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^D-[0-9]{3,}"},
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "context": {"type": "string", "minLength": 1},
+        "options": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "decision": {"type": "string", "minLength": 1},
+        "consequences": {"type": "string", "minLength": 1},
+        "decided_by": {"type": "string", "minLength": 1},
+        "supersedes": {"type": "string", "pattern": "^D-[0-9]{3,}"}
+      }
+    }
+  }
+}

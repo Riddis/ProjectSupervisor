@@ -1,0 +1,139 @@
+# Routing policy. Roles never choose models; this file does. The setup skill fills in roles, models and limits for
+# the project; everything here can change without a release.
+version: 1
+
+capacity:                             # subscription usage windows (measured from the CLIs' own reports)
+  claude: {reserve_percent: 20, weekly_gate_percent: 20}   # stop automation when this much of a window remains
+  codex: {reserve_percent: 10, weekly_gate_percent: 20}
+  unattended_prefers_api_credits: false                    # `supervisor run --unattended` may route claude_cli -> claude_api
+
+claude_api:                           # Messages API lane (optional; needs a key in secrets/ and an owner-approved budget)
+  monthly_budget_usd: 0               # 0 disables the lane
+  pricing_usd_per_mtok: {}            # model -> {input, output}
+  max_tokens: 8192
+  timeout_s: 600
+
+# Default adapter per task cost_category when the task's own `job.adapter` is absent. An extension lane that holds
+# the project's single heavy resource (a GPU, a device, a build farm) is usually mapped to `local`.
+cost_lanes:
+  deterministic: python
+  local: python
+  claude: claude_cli
+  codex: codex_cli
+  human: human
+  mixed: claude_cli
+  paid: claude_api
+
+# ---------------------------------------------------------------------------- roles
+# One entry per role id that appears as owner_role or reviewer in state/tasks/, plus the Control Center chat lane.
+#   adapter          registered adapter name
+#   model / effort   provider-specific; these names live here and nowhere else - never in a role card
+#   tools            writer | reader | web | none (claude_cli.DEFAULT_TOOLS) or an explicit tool list
+#   card             agents/<file>, or null while the role is dormant
+#   active           true once the role has work; a dormant role costs nothing
+#   active_from      the first phase the role has work in
+#   result_kinds     schemas in agents/schemas/ this role may produce
+#   senior_model     model for the second automatic revision
+#   review           confinement for a REVIEW job of this role (tools reviewer, write_scope run_dir by default)
+roles:
+  senior_pm:
+    adapter: claude_cli
+    model: opus
+    effort: high
+    tools: web
+    card: senior_pm.md
+    active: true
+    active_from: 0
+    result_kinds: [delivery, review, assessment]
+    review: {tools: reviewer, write_scope: run_dir}
+  chief_architect:
+    adapter: claude_cli
+    model: opus
+    effort: high
+    tools: writer
+    card: chief_architect.md
+    active: true
+    active_from: 0
+    result_kinds: [delivery, review]
+    review: {tools: reviewer, write_scope: run_dir}
+  engineer:
+    adapter: claude_cli
+    model: sonnet
+    effort: high
+    senior_model: opus
+    tools: writer
+    card: engineer.md
+    active: true
+    active_from: 0
+    result_kinds: [delivery]
+  code_review:
+    adapter: codex_cli              # cross-vendor by construction: the implementer's lane never reviews itself
+    model: gpt-5-codex              # replace with a model the account can use (`codex` app-server model/list)
+    effort: high
+    sandbox: read-only
+    tools: reader
+    card: code_review.md
+    active: true
+    active_from: 0
+    result_kinds: [review]
+    review: {sandbox: read-only}
+    fallback: {adapter: claude_cli, model: opus, flag: same_vendor}   # only when codex capacity is out; recorded as same-vendor
+  research_strategist:
+    adapter: claude_cli
+    model: sonnet
+    effort: high
+    tools: web
+    card: research_strategist.md
+    active: true
+    active_from: 0
+    result_kinds: [delivery, research_report, assessment]
+    second_opinion: codex_cli
+  owner:
+    adapter: human                  # inbox role: no model, no card, no tools
+    tools: none
+    card:
+    active: true
+    active_from: 0
+    result_kinds: []
+    note: approvals, spend, logins, installs - final authority
+  conversation:
+    adapter: claude_cli             # Control Center chat lane, not an org-chart role
+    model: opus
+    effort: medium
+    tools: reader
+    card:
+    active: false
+    active_from: 0
+    result_kinds: []
+    note: a chat turn that dispatches work does so under the target role's own entry
+
+claude:
+  # executable: C:\Users\you\.local\bin\claude.exe   (auto-discovered when omitted)
+  supports_effort: true             # pass --effort; set false if this CLI version lacks it
+  bash_allow: []                    # extra Bash permission rules for agent runs, e.g. ["Bash(npm *)", "Bash(docker compose *)"]
+codex:                              # executable auto-discovered (PATH, %LOCALAPPDATA%\Programs\OpenAI\Codex)
+  model: gpt-5-codex                # verify with the app-server model/list; the setup skill records what the account accepts
+  sandbox: workspace-write          # default for builder roles; review roles get read-only
+
+verification:                       # supervisor/verify.py re-runs declared tests here; only these command prefixes
+  allowed_test_commands:
+  - pytest
+  - python -m pytest
+  - python3 -m pytest
+  - py -m pytest
+  - python -m unittest
+  - ruff check
+  # add the project's own test runner (`npm test`, `go test ./...`, `cargo test`) once the setup skill knows it
+
+escalation:                         # supervisor/diagnosis.py: when automatic retries stop, one bounded diagnosis job
+  diagnosis: true                   # decides requeue (with guidance) / defer / architect / owner - only `owner` reaches the inbox
+  manager_role: senior_pm
+  architect_role: chief_architect
+checkpoint:                         # supervisor/checkpoint.py: commit exactly the accepted contents of a COMPLETE task
+  enabled: true
+  since: null                       # tasks completed before this timestamp are left alone (null = all)
+verification_job:                   # verification that must run commands becomes a tracked process job
+  as_job: true                      # so PAUSE/DRAIN/STOP apply while tests run
+limits:
+  max_agent_jobs: 2                 # concurrent model-lane jobs (deliveries + reviews + chat turns share this)
+  max_resource_jobs: 1              # concurrent holders of the single heavy local resource (extension lanes with gpu=True)

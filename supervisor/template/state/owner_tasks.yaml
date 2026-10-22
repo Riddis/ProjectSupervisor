@@ -1,0 +1,3 @@
+# Things only the owner can do (logins, installs, purchases, approvals outside the inbox). Rendered to OWNER_TASKS.md
+# and shown in the Control Center; marking one `done` re-queues the tasks in its `blocks` list.
+owner_tasks: []

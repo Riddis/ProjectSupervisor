@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Roadmap — Control Center{% endblock %}
+{% block content %}
+{% for p in phases %}
+<section class="panel">
+  <h2>Phase {{ p.phase }} {% if p.open %}<span class="badge badge-open">open</span>{% else %}<span class="badge badge-closed">closed</span>{% endif %}</h2>
+  {% if p.gates %}
+  <h3>Gates</h3>
+  <ul>
+  {% for g in p.gates %}
+    <li>{{ g.id }}: {{ g.status }}
+      {% if g.status == 'PASSED' and not g.owner_ack %}
+      <form method="post" action="/roadmap/gate/{{ g.id }}/ack" style="display:inline">
+        {% include "partials/csrf.html" %}
+        <button type="submit">Acknowledge</button>
+      </form>
+      {% elif g.owner_ack %}(acked by {{ g.owner_ack.by }}){% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+  <table class="tasks-table">
+    <thead><tr><th>ID</th><th>Title</th><th>Owner</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for t in p.tasks %}
+      <tr>
+        <td>{{ '⚑' if t.id in elig_ids else '' }} <a href="/tasks/{{ t.id }}">{{ t.id }}</a></td>
+        <td>{{ t.title }}</td>
+        <td>{{ t.owner_role }}</td>
+        <td>{{ t.status.value }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+{% endblock %}

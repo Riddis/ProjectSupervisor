@@ -1,0 +1,15 @@
+{
+  "kind": "delivery",
+  "schema_version": 1,
+  "status": "COMPLETE",
+  "artifacts": [
+    "agents/chief_architect.md",
+    "agents/schemas/delivery.json",
+    "config/routing.yaml"
+  ],
+  "notes": "Wrote the eight Phase-0..2 role cards, the five result schemas with valid/invalid samples, and routing.yaml v1 covering every role id in the task store. No model or vendor name appears in any card; the cards point at routing.yaml instead.",
+  "decisions": [],
+  "tests": [
+    {"command": ".venv/Scripts/python.exe -m pytest tests/test_agent_cards_and_schemas.py", "exit_code": 0, "summary": "14 passed"}
+  ]
+}

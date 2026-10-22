@@ -1,0 +1,35 @@
+{
+  "kind": "research_report",
+  "schema_version": 1,
+  "id": "RR-T1-03",
+  "created": "20 October 2026",
+  "task_ref": "T1-03",
+  "topic": "Market map",
+  "findings": [
+    {
+      "id": "F1",
+      "observation": {
+        "statement": "Note-taking-adjacent niches look crowded.",
+        "source_ids": []
+      },
+      "hypothesis": "An underexplored niche would convert better.",
+      "recommendation": {
+        "statement": "Pick an underexplored niche.",
+        "confidence": "very high",
+        "source_ids": [
+          "S1"
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "S1",
+      "url": "example-report.test/developer-economy",
+      "title": "Developer economy report",
+      "publisher": "example-report.test",
+      "type": "marketing_research",
+      "retrieved": "Oct 2026"
+    }
+  ]
+}

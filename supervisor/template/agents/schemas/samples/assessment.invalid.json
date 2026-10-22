@@ -1,0 +1,14 @@
+{
+  "kind": "assessment",
+  "schema_version": 1,
+  "id": "A-002",
+  "created": "2026-01-10T09:00:00+00:00",
+  "assessor_role": "chief_architect",
+  "independent": false,
+  "subject": "storage backend options A-C",
+  "scores": [
+    {"candidate_id": "A", "criteria": {"simplicity": 7}, "reasoning": "Too short"},
+    {"candidate_id": "A", "criteria": {"simplicity": 7}, "reasoning": "Too short"}
+  ],
+  "ranking": ["A", "A"]
+}

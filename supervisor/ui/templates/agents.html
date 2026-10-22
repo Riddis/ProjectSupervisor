@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Agents — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Running</h2>
+  <table class="tasks-table">
+    <thead><tr><th>Attempt</th><th>Task</th><th>Adapter</th><th>Phase</th><th>Elapsed</th><th></th></tr></thead>
+    <tbody>
+    {% for r in running %}
+      <tr>
+        <td><a href="/agents/{{ r.attempt_id }}">{{ r.attempt_id }}</a></td>
+        <td><a href="/tasks/{{ r.task_id }}">{{ r.task_id }}</a></td>
+        <td>{{ r.adapter }}</td>
+        <td>{{ r.phase }}</td>
+        <td>{{ (r.elapsed_s | round | int) ~ 's' if r.elapsed_s is not none else '?' }}</td>
+        <td>
+          <form method="post" action="/agents/{{ r.attempt_id }}/terminate" onsubmit="return confirm('Terminate {{ r.attempt_id }}?')">
+            {% include "partials/csrf.html" %}
+            <button type="submit">Terminate</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}<tr><td colspan="6">no running jobs</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>Recent</h2>
+  <table class="tasks-table">
+    <thead><tr><th>Attempt</th><th>Task</th><th>Adapter</th><th>Result</th></tr></thead>
+    <tbody>
+    {% for r in recent %}
+      <tr>
+        <td><a href="/agents/{{ r.attempt_id }}">{{ r.attempt_id }}</a></td>
+        <td><a href="/tasks/{{ r.task_id }}">{{ r.task_id }}</a></td>
+        <td>{{ r.adapter }}</td>
+        <td>{{ r.result or r.phase }}</td>
+      </tr>
+    {% else %}<tr><td colspan="4">none yet</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

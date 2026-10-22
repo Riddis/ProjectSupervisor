@@ -1,0 +1,6 @@
+<div class="flash flash-{{ flash.level }}">{{ flash.message }}</div>
+<ul>
+{% for c in doctor_checks %}
+  <li class="{{ 'ok' if c.ok else 'fail' }}">{{ 'OK' if c.ok else 'FAIL' }} {{ c.name }}: {{ c.detail }}</li>
+{% endfor %}
+</ul>

@@ -1,0 +1,20 @@
+{
+  "kind": "review",
+  "schema_version": 1,
+  "verdict": "ACCEPT",
+  "summary": "Two cross-field violations on purpose: an ACCEPT carries a blocking finding, and an advisory finding is marked blocking on a verdict other than BLOCKED. Both are rejected by contract.review_result(), and the allOf blocks in review.json reject them here too, so a reviewer cannot wave work through while also recording that it is broken.",
+  "findings": [
+    {
+      "category": "correctness",
+      "blocking": true,
+      "message": "Verification would pass an artifact that was never written.",
+      "evidence": "supervisor/verify.py:41"
+    },
+    {
+      "category": "advisory",
+      "blocking": true,
+      "message": "Could be tidier.",
+      "evidence": "agents/README.md:3"
+    }
+  ]
+}

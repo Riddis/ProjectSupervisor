@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Settings — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Routing — editable fields</h2>
+  {% if editable %}
+  <table class="tasks-table">
+    <thead><tr><th>Field</th><th>Current</th><th>New value</th></tr></thead>
+    <tbody>
+    {% for field, value in editable.items() %}
+      <tr>
+        <td>{{ field }}</td>
+        <td>{{ value }}</td>
+        <td>
+          <form method="post" action="/settings/routing" class="inline-form">
+            {% include "partials/csrf.html" %}
+            <input type="hidden" name="field" value="{{ field }}">
+            <input type="number" name="value" value="{{ value }}">
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>config/routing.yaml not found.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Roles</h2>
+  <table class="tasks-table">
+    <thead><tr><th>Role</th><th>Adapter</th><th>Model</th><th>Active</th></tr></thead>
+    <tbody>
+    {% for name, r in roles.items() %}
+      <tr><td>{{ name }}</td><td>{{ r.adapter }}</td><td>{{ r.model or '—' }}</td><td>{{ r.active }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>Raw routing.yaml (read-only)</h2>
+  <pre class="raw-config">{{ routing_raw }}</pre>
+</section>
+{% endblock %}

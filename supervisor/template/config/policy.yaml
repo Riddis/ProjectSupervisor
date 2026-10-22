@@ -1,0 +1,27 @@
+# Credential policy. This file is DATA; the mechanism is supervisor/policy.py, which fails closed: a missing,
+# unreadable or wrongly-typed entry keeps the built-in floor. Lists here are unioned with the floor (a config edit
+# can only tighten); the three loosenable scalars are clamped.
+version: 1
+
+secrets:
+  dir: secrets                      # git-ignored; the only place a credential may live. Never referenced from a packet,
+                                    # never read by an agent, redacted from logs.
+  ignore_files: [README.md]         # not a credential store. Clamped: a dotenv name is never accepted here.
+  min_value_length: 8               # shorter values are not treated as literal secrets. May only be lowered.
+  env_key_suffixes: [_API_KEY, _AUTH_TOKEN, _ACCESS_TOKEN, _SECRET, _TOKEN, _PASSWORD]
+  secret_key_words: [API_KEY, SECRET, TOKEN, PASSWORD, PASSPHRASE, CREDENTIAL, PRIVATE_KEY, SESSION_KEY,
+                     SIGNING_KEY, REFRESH]
+  redaction_placeholder: "[REDACTED]"
+  patterns:                         # shapes refused in a packet and redacted from a log even when not in secrets/ yet
+    - {name: anthropic_api_key,  regex: 'sk-ant-[A-Za-z0-9_\-]{16,}'}
+    - {name: openai_api_key,     regex: 'sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}'}
+    - {name: github_token,       regex: 'gh[pousr]_[A-Za-z0-9]{20,}'}
+    - {name: slack_token,        regex: 'xox[abpsr]-[A-Za-z0-9\-]{12,}'}
+    - {name: aws_access_key_id,  regex: 'AKIA[0-9A-Z]{16}'}
+    - {name: google_api_key,     regex: 'AIza[0-9A-Za-z_\-]{35}'}
+    - {name: jwt,                regex: 'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'}
+    - {name: private_key_block,  regex: '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)'}
+    - {name: bearer_header,      regex: '(?i)authorization\s*[:=]\s*bearer\s+[A-Za-z0-9._\-]{16,}'}
+    - {name: assigned_secret,    regex: '(?i)\b[A-Za-z0-9_]*(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD)\b\s*[:=]\s*["'']?[A-Za-z0-9/+_.\-]{16,}'}
+
+# A project may add its own sections here (an extension reads them with supervisor.policy.section(name)).

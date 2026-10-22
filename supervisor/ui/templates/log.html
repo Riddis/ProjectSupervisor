@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Log — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Event log</h2>
+  <pre id="log-tail" class="transcript" hx-ext="sse" sse-connect="/log/stream" sse-swap="message" hx-swap="beforeend"
+  >{% for e in events %}{{ e.ts }} {{ e.actor }} {{ e.event }} {{ e.task or '' }} {{ e.to or '' }} {{ e.note or '' }}
+{% endfor %}</pre>
+</section>
+{% endblock %}

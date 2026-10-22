@@ -1,0 +1,555 @@
+"""The supervisor loop: token-free; holds state/.lock; one iteration =
+apply commands → honour decision (pause/stop/reload) → reconcile job records → settle finished jobs → dispatch →
+render → sleep (wake file shortens the sleep). Resumable after a kill at any point (jobs.py)."""
+from __future__ import annotations
+
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+
+from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, conversations as conversations_mod
+from . import diagnosis as diagnosis_mod
+from . import escalation as escalation_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, render, review as review_mod
+from . import runtime, scheduler, shutdown as shutdown_mod, tasks as tasks_mod, verify as verify_mod
+from ._vendor.contract import CapacityDeferred, atomic_json, digest as digest_of, manifest, read_json
+from .locks import LockHeld as _LockHeld  # noqa: F401
+from ._vendor import handoff
+from .adapters import REGISTRY, Result
+from .locks import FileLock, LockHeld
+from .models.task import HumanApproval, Task, TaskStatus
+from .paths import Layout
+from .store import now_iso
+
+EXIT_RELOAD = 3
+
+
+def _attempt_no(attempt_id: str) -> int:
+    try:
+        return int(str(attempt_id).rsplit(".a", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
+
+
+class Supervisor:
+    def __init__(self, layout: Layout, sleep_s: float = 5.0, render_every: int = 1, unattended: bool = False):
+        from . import extensions
+        self.layout = layout.ensure()
+        extensions.load(self.layout)                           # project lanes/checks register before any dispatch
+        self.sleep_s = sleep_s
+        self.render_every = render_every
+        self.unattended = unattended
+        self.iteration = 0
+        self.errors: list[float] = []
+
+    # ------------------------------------------------------------ dispatch and ingestion
+
+    def dispatch(self, task: Task, adapter_name: str, deferred_until: float | None = None, note: str = "dispatch",
+                kind: str = "delivery", extra: dict | None = None) -> dict:
+        ad = REGISTRY[adapter_name]
+        n = len(jobs_mod.for_task(self.layout, task.id)) + 1
+        attempt_id = f"{task.id}.a{n}"
+        spec = ad.prepare(self.layout, task, attempt_id)
+        spec["kind"] = kind
+        if gate.owned_for(task, adapter_name, kind):          # every writing job: declared roots or exclusive
+            atomic_json(Path(spec["run_dir"]) / "before_manifest.json", verify_mod.snapshot(self.layout, task))
+        if extra and extra.get("review_frozen") is not None and spec.get("run_dir"):
+            atomic_json(Path(spec["run_dir"]) / "frozen_inputs.json", extra["review_frozen"])   # audit trail
+        # One durable write carries everything a continuation or ingestion needs: a crash between prepare() and a
+        # second record write used to leave a review job without its role and discard the finished verdict.
+        rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec, gpu=ad.gpu,
+                               **(extra or {}))                                   # durable BEFORE launch
+        if kind != "conversation":            # no Task backs a conversation thread (supervisor.conversations)
+            tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}", run_dir=spec.get("run_dir"))
+        if deferred_until:
+            return jobs_mod.set_phase(self.layout, attempt_id, "PREPARED", deferred_until=deferred_until, deferred_reason=note)
+        return self.launch(rec)
+
+    MAX_CONTINUATIONS = 3
+
+    def requeue(self, rec: dict, result: Result, reason: str) -> None:
+        """Capacity limit or handoff-incomplete: queue a continuation attempt FIRST (crash-safe), then close this attempt
+        without a delivery; the adapter's prepare() points the fresh session at the prior HANDOFF.md. Capped per task:
+        after MAX_CONTINUATIONS the task is BLOCKED for the owner."""
+        task_id = rec["task_id"]
+        all_recs = jobs_mod.for_task(self.layout, task_id)
+        if any(_attempt_no(r["attempt_id"]) > _attempt_no(rec["attempt_id"]) for r in all_recs):
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                               error=result.error, continued=True)       # continuation already queued before a crash
+            return
+        prior = [r for r in all_recs if str(r.get("deferred_reason", "")).startswith("continuation")]
+        n = len(prior)
+        until = result.reset_epoch or time.time()
+        if result.status == "DEFERRED" and not result.raw.get("measured_window"):
+            until = max(until, time.time() + 3600 * (2 ** n))              # synthetic window grows per repeat
+        tasks_mod.log(self.layout, "job_requeued", "loop", task=task_id, attempt=rec["attempt_id"], reason=reason,
+                      result=result.status, error=result.error, until=until, continuation=n + 1)
+        if n >= self.MAX_CONTINUATIONS:
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+            tasks_mod.set_status(self.layout, task_id, TaskStatus.BLOCKED, actor="loop",
+                                 note=f"{rec['attempt_id']}: {reason} after {n} continuations — owner decision needed")
+            return
+        kind = (rec.get("spec") or {}).get("kind", "delivery")
+        if kind == "review":
+            task = review_mod.rebuild(self.layout, rec)
+            if task is None:                                  # inputs moved on; pending() queues a fresh review instead
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                return
+            extra = {k: rec[k] for k in ("review_role", "review_digest", "same_vendor", "review_frozen") if k in rec}
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind="review", extra=extra)
+        elif kind == diagnosis_mod.KIND:
+            task = diagnosis_mod.rebuild(self.layout, rec)
+            if task is None:
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                return
+            extra = {k: rec[k] for k in rec if k.startswith("diag_")}
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind=diagnosis_mod.KIND, extra=extra)
+        else:
+            task = tasks_mod.load(self.layout, task_id)
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}")
+        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
+                           continued=True)
+        tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued", actor="loop")
+
+    def _ensure_in_progress(self, task_id: str, note: str) -> None:
+        t = tasks_mod.load(self.layout, task_id)
+        if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY, TaskStatus.FAILED, TaskStatus.BLOCKED):
+            tasks_mod.set_status(self.layout, task_id, TaskStatus.IN_PROGRESS, actor="loop", note=note)
+
+    def launch(self, rec: dict) -> dict:
+        ad = REGISTRY[rec["adapter"]]
+        conversation = (rec.get("spec") or {}).get("kind") == "conversation"
+        if not conversation and (rec.get("spec") or {}).get("kind") != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
+            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}")
+        handle = ad.recover(rec["spec"])                      # a previous loop may have launched it already
+        if handle is not None:
+            rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "SUBMITTED", handle=handle, submitted=now_iso(), recovered=True)
+            tasks_mod.log(self.layout, "job_recovered", "loop", task=rec["task_id"], attempt=rec["attempt_id"])
+            return rec
+        if rec.get("deferred_until") and float(rec["deferred_until"]) > time.time():
+            engine = getattr(ad, "engine", None)
+            try:
+                if engine:
+                    capacity.require(self.layout, engine)     # measured/owner state is authoritative over the hint
+                else:
+                    return rec
+            except CapacityDeferred:
+                return rec                                    # still gated: wait, costs nothing
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", deferred_until=0)
+        # The one gate: decision, capacity, limits and ownership — for every launch path alike. A refused
+        # record stays PREPARED and is retried by reconcile() each iteration; the reason is recorded once per change.
+        kind = (rec.get("spec") or {}).get("kind", "delivery")
+        try:
+            task = None if conversation else tasks_mod.load(self.layout, rec["task_id"])
+        except tasks_mod.TaskError:                           # record without a readable task: owns nothing, still gated
+            task = None
+        running = [r for r in jobs_mod.open_records(self.layout)
+                   if r["phase"] in gate.ACTIVE_PHASES and r["attempt_id"] != rec["attempt_id"]]
+        reason = gate.check(self.layout, task, rec["adapter"], kind, running)
+        if reason:
+            if rec.get("held") != reason:
+                tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+            return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
+        if rec.get("held"):
+            rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
+        attempts = int(rec.get("launch_attempts", 0)) + 1
+        jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts)
+        if attempts > 2:
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "FAILED", error="launch attempted twice without obtaining a handle")
+            if conversation:
+                conversations_mod.fail(self.layout, rec, "launch attempted twice without obtaining a handle")
+            else:
+                tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.FAILED, actor="loop",
+                                     note=f"{rec['attempt_id']}: launch attempted twice without a handle (submit error or repeated crash)")
+            return rec
+        runtime.heartbeat(self.layout, "RUNNING", busy=rec["attempt_id"])   # synchronous adapters may take a while
+        try:
+            handle = ad.submit(rec["spec"])
+        except CapacityDeferred as exc:                       # no model was launched; not an attempt
+            rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts - 1,
+                                     deferred_until=exc.reset_epoch, deferred_reason=str(exc))
+            tasks_mod.log(self.layout, "capacity_deferred", "loop", task=rec["task_id"], attempt=rec["attempt_id"], until=exc.reset_epoch)
+            return rec
+        rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "SUBMITTED", handle=handle, submitted=now_iso())
+        tasks_mod.log(self.layout, "job_submitted", "loop", task=rec["task_id"], attempt=rec["attempt_id"], adapter=rec["adapter"])
+        return rec
+
+    def _expand_artifacts(self, patterns: list[str]) -> tuple[list[str], list[str]]:
+        """Glob-expand artifact patterns relative to the root; returns (files, patterns_without_match)."""
+        files, missing = [], []
+        for pat in patterns:
+            matches = sorted(p for p in self.layout.root.glob(pat) if p.is_file()) if any(ch in pat for ch in "*?[") else \
+                      ([self.layout.root / pat] if (self.layout.root / pat).is_file() else [])
+            if matches:
+                files += [str(m.relative_to(self.layout.root).as_posix()) for m in matches]
+            else:
+                missing.append(pat)
+        return sorted(set(files)), missing
+
+    def _before_manifest(self, rec: dict) -> dict | None:
+        run_dir = (rec.get("spec") or {}).get("run_dir")
+        if not run_dir:
+            return None
+        p = Path(run_dir) / "before_manifest.json"
+        return read_json(p) if p.exists() else None
+
+    def _concurrent_owned(self, rec: dict) -> tuple[str, ...]:
+        """Ownership of OTHER tasks' delivery jobs that overlapped this attempt: their writes are not this delivery's
+        undeclared changes (supervisor.verify `ignore`). Reviews and chat turns own nothing. An exclusive job that ran
+        alongside (only possible next to a deterministic job) yields "." — the scan then proves nothing and says so."""
+        started = str(rec.get("created") or "")
+        out: list[str] = []
+        for other in jobs_mod.all_records(self.layout):
+            if other["task_id"] == rec["task_id"] or (other.get("spec") or {}).get("kind", "delivery") != "delivery":
+                continue
+            if other["phase"] == "DONE" and str(other.get("finished") or "") < started:
+                continue
+            try:
+                task = tasks_mod.load(self.layout, other["task_id"])
+            except Exception:                            # noqa: BLE001 - a task we cannot read narrows nothing
+                continue
+            out += gate.owned_for(task, other.get("adapter", ""), "delivery")
+        return tuple(sorted(set(out)))
+
+    def ingest(self, rec: dict, result: Result) -> None:
+        """Turn an adapter Result into task records, then advance(). A delivery job gets a delivery (digest over
+        artifacts) and a verification record (supervisor.verify); a review job gets a review record (supervisor.review).
+        Either kind of substantive failure hands off to supervisor.escalation for the retry/issue decision."""
+        task_id = rec["task_id"]
+        kind = (rec.get("spec") or {}).get("kind", "delivery")
+        if kind == "conversation":
+            # No Task backs a thread and no retry chain applies (supervisor.conversations.ingest handles COMPLETE/
+            # DEFERRED/FAILED itself, straight into the thread file) — bypass the delivery/review machinery below.
+            conversations_mod.ingest(self.layout, rec, result)
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
+            tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
+            return
+        if kind != diagnosis_mod.KIND:
+            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}")
+        run_dir = (rec.get("spec") or {}).get("run_dir")
+        if result.status == "DEFERRED":
+            return self.requeue(rec, result, "capacity limit")
+        if result.status in ("PARTIAL", "BLOCKED") and run_dir and handoff.incomplete(Path(run_dir)):
+            return self.requeue(rec, result, "capacity handoff")
+        if kind == "review":
+            review_mod.ingest(self, rec, result)
+        elif kind == diagnosis_mod.KIND:
+            diagnosis_mod.ingest(self, rec, result)
+        elif kind == self.VERIFY_KIND:
+            self.ingest_verify(rec, result)
+        else:
+            task = tasks_mod.load(self.layout, task_id)
+            # The contract is the floor: every declared artifact is expected whatever the worker reports;
+            # a worker may add deliverables, never narrow the list.
+            patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
+            files, missing = self._expand_artifacts(patterns)
+            volatile = [f for f in files if f.startswith("state/") or f in RENDERED_PROJECTIONS]
+            if volatile:                                           # the store/projections change on every tick: never an
+                files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
+                tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=volatile,
+                              reason="state/ and rendered projections are not deliverables")
+            try:
+                dg = digest_of(manifest([self.layout.root / a for a in files], root=self.layout.root)) if files else digest_of({"attempt": rec["attempt_id"]})
+            except ValueError as exc:
+                dg, result = digest_of({"attempt": rec["attempt_id"]}), Result(status="FAILED", error=f"manifest: {exc}")
+            tasks_mod.record_delivery(self.layout, task_id, dg, actor="loop", result=result.notes or None, paths=files)
+            if result.status == "COMPLETE" and not missing:
+                # a model lane must show its work: the brief asks for the commands it ran (packets.RESULT_CONTRACT_
+                # DELIVERY), and a task that declares tests is not verified without them. Deterministic adapters
+                # (python/process/...) declare no tests and are judged on their artifacts.
+                model_lane = rec["adapter"] in gate.MODEL_LANES
+                tracked = verify_mod.as_job(self.layout) and "process" in REGISTRY
+                outcome = verify_mod.verify(self.layout, task, files, (result.raw or {}).get("tests") or [],
+                                            self._before_manifest(rec),
+                                            require_tests=bool(model_lane and task.tests),
+                                            ignore=self._concurrent_owned(rec),
+                                            checks=[c.model_dump() for c in task.checks], run_commands=not tracked)
+                if outcome.ok and outcome.report.get("pending_commands"):
+                    # the file checks passed now; the commands run in a tracked process job so the loop stays
+                    # responsive and PAUSE/DRAIN/STOP apply while tests run. Verification is recorded when it returns.
+                    self.dispatch_verify(task, rec, dg, outcome.report["pending_commands"], outcome.report.get("fixed") or [])
+                    jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
+                    tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
+                                  error=result.error, verification="pending")
+                    return
+            else:
+                outcome = verify_mod.Outcome(False, result.error or f"status {result.status}; missing: " + ", ".join(missing))
+            self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE")
+        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
+        tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
+
+    def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None) -> None:
+        """Write a verification Outcome for digest `dg` into the task store, advance, and hand a substantive failure to
+        escalation (keyed by the delivery attempt, `event`, so a replay never spends a second revision)."""
+        report_path = None
+        if getattr(outcome, "report", None) and (rec.get("spec") or {}).get("run_dir"):
+            rp = Path(rec["spec"]["run_dir"]) / "verification.json"
+            atomic_json(rp, {"ok": outcome.ok, "detail": outcome.detail, **outcome.report})
+            report_path = rp.relative_to(self.layout.root).as_posix() if rp.is_relative_to(self.layout.root) else str(rp)
+        tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail, actor="loop")
+        tasks_mod.advance(self.layout, task_id, actor="advance")
+        if not outcome.ok and substantive:
+            # a substantive failure: the agent believed it was done and deterministic verification disagreed.
+            # An infra failure (crash/timeout/lost/capacity) is not the agent's fault and is not auto-retried here.
+            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=event or rec["attempt_id"])
+
+    VERIFY_KIND = "verify"
+
+    def dispatch_verify(self, task: Task, delivery_rec: dict, dg: str, commands: list[dict], fixed: list[str]) -> dict:
+        """Queue the tracked verify job for one delivery digest: a `process` job running supervisor.verify_job
+        on an input file written next to the delivery's run. It owns nothing and passes the gate under DRAIN too, so a
+        drain finishes verifying what was delivered before stopping."""
+        run_dir = Path((delivery_rec.get("spec") or {}).get("run_dir") or (self.layout.runs / task.id / delivery_rec["attempt_id"]))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        input_path = run_dir / "verify_input.json"
+        atomic_json(input_path, {"root": str(self.layout.root), "task_id": task.id, "digest": dg, "commands": commands,
+                                 "fixed": fixed, "delivery_attempt": delivery_rec["attempt_id"]})
+        # The child runs with the task root as cwd, which need not contain the supervisor package: import it by path.
+        pkg_parent = str(Path(verify_mod.__file__).resolve().parents[1])
+        code = (f"import sys; sys.path.insert(0, {pkg_parent!r}); from supervisor.verify_job import main; "
+                f"sys.exit(main(['verify_job', {str(input_path)!r}]))")
+        doc = task.model_dump(mode="json")
+        doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code], "timeout_s": verify_mod.TEST_BUDGET_S + 120}
+        view = Task.model_validate(doc)
+        rec = self.dispatch(view, "process", note=f"verify delivery {delivery_rec['attempt_id']}", kind=self.VERIFY_KIND,
+                            extra={"verify_digest": dg, "verify_delivery": delivery_rec["attempt_id"], "verify_commands": len(commands)})
+        tasks_mod.log(self.layout, "verify_dispatched", "loop", task=task.id, attempt=rec.get("attempt_id"), digest=dg, commands=len(commands))
+        return rec
+
+    def ingest_verify(self, rec: dict, result: Result) -> None:
+        """A finished verify job: record the verification for its digest (unless a newer delivery superseded it)."""
+        task_id, dg = rec["task_id"], rec.get("verify_digest")
+        task = tasks_mod.load(self.layout, task_id)
+        if task.delivery.digest != dg:
+            tasks_mod.log(self.layout, "verify_stale", "loop", task=task_id, attempt=rec["attempt_id"], digest=dg)
+            return
+        payload = (result.raw or {}).get("verification") if result.status == "COMPLETE" and isinstance(result.raw, dict) else None
+        if payload is None:
+            outcome = verify_mod.Outcome(False, f"verify job {result.status}: {result.error or 'no verification payload'}")
+        else:
+            outcome = verify_mod.Outcome(bool(payload.get("ok")), str(payload.get("detail") or ""), dict(payload.get("report") or {}))
+        self.record_outcome(task_id, dg, outcome, rec, substantive=True, event=rec.get("verify_delivery"))
+
+    def reconcile(self) -> None:
+        """Before any dispatch: settle every non-DONE job record (crash-safe)."""
+        for rec in jobs_mod.open_records(self.layout):
+            if rec["phase"] == "PREPARED" and rec["adapter"] in REGISTRY:
+                self.launch(rec)                                      # same attempt id: never a duplicate
+        self.settle()
+        self.repair_continuations()
+
+    def dispatch_reviews(self) -> None:
+        """Review dispatch: one review job per (WAITING_FOR_REVIEW task, missing reviewer role) under
+        the same agent-job concurrency limit as primary dispatch — reviews and deliveries share one budget."""
+        lim = scheduler.limits(self.layout)
+        agent_busy = sum(1 for r in jobs_mod.open_records(self.layout) if r.get("adapter") in gate.MODEL_LANES)
+        for task, role in review_mod.pending(self.layout):
+            if agent_busy >= lim["max_agent_jobs"]:
+                break
+            if review_mod.dispatch(self, task, role) is not None:
+                agent_busy += 1
+
+    def dispatch_conversations(self) -> None:
+        """Conversation turns: dispatched like any other claude_cli job, sharing the same
+        agent-job budget and the same measured capacity reserve (`capacity.require()` inside the adapter's
+        `submit()`) — a chat turn never bypasses the 10 % handoff reserve other dispatch goes through."""
+        lim = scheduler.limits(self.layout)
+        agent_busy = sum(1 for r in jobs_mod.open_records(self.layout) if r.get("adapter") in gate.MODEL_LANES)
+        for thread_id, idx in conversations_mod.pending_turns(self.layout):
+            if agent_busy >= lim["max_agent_jobs"]:
+                break
+            if conversations_mod.dispatch(self, thread_id, idx) is not None:
+                agent_busy += 1
+
+    def repair_continuations(self) -> None:
+        """A requeue that crashed after queuing nothing (pre-fix records or a torn write): the last record of a task is
+        DONE with result DEFERRED but no continuation exists and the task is still IN_PROGRESS → queue it now."""
+        seen = set()
+        for rec in sorted(jobs_mod.all_records(self.layout), key=lambda r: r["attempt_id"]):
+            seen.add(rec["task_id"])
+        for task_id in seen:
+            recs = jobs_mod.for_task(self.layout, task_id)
+            last = recs[-1]
+            run_dir = (last.get("spec") or {}).get("run_dir")
+            needs = last.get("result") == "DEFERRED" or (last.get("result") in ("PARTIAL", "BLOCKED") and run_dir
+                                                           and handoff.incomplete(Path(run_dir)))
+            if last["phase"] == "DONE" and needs and not last.get("continued") and last["adapter"] in REGISTRY:
+                try:
+                    task = tasks_mod.load(self.layout, task_id)
+                except Exception:
+                    continue
+                if task.status == TaskStatus.IN_PROGRESS:
+                    self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
+                    jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
+
+    def request_approvals(self) -> None:
+        """Owner approval dispatch: a task that advance() parked in
+        WAITING_FOR_HUMAN because its current digest is verified and reviewed but unapproved gets exactly one `approval`
+        inbox item per digest. Answering that item (inbox.apply_approval) writes the digest-bound ApprovalRecord and
+        re-advances the task. Also self-heals: an already-answered approval item whose record never landed (crash
+        between the two writes) is re-applied here. Human-adapter tasks are not touched — their open attempt's
+        collect() resumes them. Respects the per-role inbox cap: a full inbox means try again next iteration."""
+        for task in tasks_mod.load_all(self.layout).values():
+            if task.status != TaskStatus.WAITING_FOR_HUMAN or task.human_approval == HumanApproval.none:
+                continue
+            digest = task.delivery.digest
+            if not digest or any(a.digest == digest and not a.superseded for a in task.delivery.approvals):
+                continue
+            if any(r["task_id"] == task.id and r.get("adapter") == "human" for r in jobs_mod.open_records(self.layout)):
+                continue
+            items = [i for i in inbox_mod.all_items(self.layout)
+                     if i.get("task_id") == task.id and i.get("approval_digest") == digest]
+            if any(i.get("status") == "open" for i in items):
+                continue
+            answered = [i for i in items if i.get("status") == "answered"]
+            if answered:
+                inbox_mod.apply_approval(self.layout, answered[-1], by="loop")
+                continue
+            reviews = ", ".join(f"{r.role} {r.verdict.value}" for r in task.delivery.reviews
+                                if r.digest == digest and not r.superseded) or "none required"
+            summary = (f"{task.id} is verified and reviewed ({reviews}) on digest {digest[:12]} and needs your approval "
+                       f"to complete. {task.approval_note or ''} Acceptance: {task.acceptance} Artifacts: "
+                       + ", ".join(task.artifacts[:6]))
+            if len(summary) > inbox_mod.MAX_SUMMARY_CHARS:
+                summary = summary[:inbox_mod.MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+            try:
+                inbox_mod.create(self.layout, for_role="owner", subject=f"Approve delivery: {task.id} — {task.title}",
+                                 summary=summary, kind=inbox_mod.APPROVAL_KIND,
+                                 allowed_responses=inbox_mod.APPROVAL_RESPONSES, free_text=True, from_="loop",
+                                 task_id=task.id, approval_digest=digest)
+            except inbox_mod.InboxFull:
+                continue                                      # owner attention is the scarce resource: wait
+
+    def settle(self) -> None:
+        """Collect finished jobs; adopt running ones."""
+        for rec in jobs_mod.open_records(self.layout):
+            ad = REGISTRY.get(rec["adapter"])
+            if ad is None:
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "FAILED", error="adapter unavailable")
+                if (rec.get("spec") or {}).get("kind") == "conversation":
+                    conversations_mod.fail(self.layout, rec, f"adapter {rec['adapter']} unavailable")
+                else:
+                    tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.FAILED, actor="loop", note=f"{rec['attempt_id']}: adapter {rec['adapter']} unavailable")
+                continue
+            if rec["phase"] == "PREPARED":
+                continue
+            handle = rec.get("handle") or {}
+            result = ad.collect(rec["spec"], handle)
+            if result is None:
+                if rec["phase"] == "SUBMITTED":
+                    jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
+                continue
+            if result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
+                result.error = f"lost: {result.error}"
+            self.ingest(rec, result)
+
+    # ------------------------------------------------------------ one iteration
+
+    def once(self) -> str:
+        """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD)."""
+        self.iteration += 1
+        commands_mod.apply_all(self.layout)
+        decision = runtime.read(self.layout).get("decision", "RUN")
+        if decision in ("STOP", "RELOAD"):
+            runtime.heartbeat(self.layout, "STOPPED" if decision == "STOP" else "RUNNING", iteration=self.iteration)
+            return decision
+        self.reconcile()                 # collects finished work under every decision; launches only when the gate allows
+        self.poll_capacity()
+        if decision == "PAUSE":
+            runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
+        elif decision == "DRAIN":
+            decision = self.drain()
+        else:
+            for task, name in scheduler.plan(self.layout, unattended=self.unattended):
+                self.dispatch(task, name)
+            self.dispatch_reviews()
+            self.dispatch_conversations()
+            self.settle()                                             # synchronous adapters finish at once
+            self.request_approvals()
+            checkpoint_mod.run(self.layout)                           # accepted work → git, exactly as accepted
+            runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
+                              open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)])
+        if getattr(self, "_lock", None):
+            self._lock.touch()                                    # cross-host liveness of the lock (locks.foreign_holder)
+        if self.iteration % self.render_every == 0:
+            render.render_all(self.layout, runtime=runtime.read(self.layout))
+        return decision
+
+    def drain(self) -> str:
+        """DRAIN: nothing launches (the gate refuses every path), running jobs are collected and ingested by
+        reconcile(); once no job is SUBMITTED/RUNNING the decision becomes STOP — and the workstation powers off when
+        the owner asked for that (`shutdown_on_drain`). Held PREPARED records simply wait for the next start."""
+        # A `human` adapter record waits for the owner, not for a machine: it must never keep the PC on.
+        active = [r["attempt_id"] for r in jobs_mod.open_records(self.layout)
+                  if r["phase"] in gate.ACTIVE_PHASES and r.get("adapter") != "human"]
+        doc = runtime.read(self.layout)
+        if active:
+            runtime.heartbeat(self.layout, "DRAINING", iteration=self.iteration, open_jobs=active,
+                              shutdown_on_drain=bool(doc.get("shutdown_on_drain")))
+            return "DRAIN"
+        tasks_mod.log(self.layout, "drain_complete", "loop", shutdown=bool(doc.get("shutdown_on_drain")))
+        if doc.get("shutdown_on_drain"):
+            shutdown_mod.schedule(self.layout, actor="loop")
+        runtime.set_decision(self.layout, "STOP", "loop-drain")
+        runtime.heartbeat(self.layout, "STOPPED", iteration=self.iteration, reason="drain complete", open_jobs=[])
+        return "STOP"
+
+    def poll_capacity(self) -> None:
+        """Token-free codex window refresh (app-server RPC) when the observation is stale; claude windows arrive via streams."""
+        try:
+            from .adapters import codex_cli
+            if "codex_cli" in REGISTRY:
+                codex_cli.poll_capacity(self.layout, max_age_s=codex_cli.POLL_MAX_AGE_S)
+        except Exception as exc:                         # never let a usage probe kill the loop
+            tasks_mod.log(self.layout, "capacity_poll_error", "loop", error=str(exc)[:200])
+
+    def sleep(self) -> None:
+        deadline = time.monotonic() + self.sleep_s
+        while time.monotonic() < deadline:
+            if self.layout.wake.exists():
+                try:
+                    self.layout.wake.unlink()
+                except OSError:
+                    pass
+                return
+            time.sleep(0.2)
+
+    def run(self, max_iterations: int | None = None, reset_decision: bool = False) -> int:
+        try:
+            lock = FileLock(self.layout.lock, owner=f"supervisor pid {os.getpid()}").acquire()
+            self._lock = lock
+        except LockHeld:
+            print("another supervisor holds state/.lock", file=sys.stderr)
+            return 2
+        try:
+            runtime.write(self.layout, status="RUNNING", pid=os.getpid(), started=now_iso(), decision=runtime.read(self.layout).get("decision", "RUN"))
+            if reset_decision and runtime.read(self.layout).get("decision") in ("STOP", "RELOAD"):
+                runtime.set_decision(self.layout, "RUN", "loop-start")   # `supervisor run` = owner Start
+            while True:
+                try:
+                    decision = self.once()
+                except Exception:  # noqa: BLE001 - loop error budget
+                    tasks_mod.log(self.layout, "loop_error", "loop", traceback=traceback.format_exc()[-2000:])
+                    self.errors = [t for t in self.errors if time.time() - t < 600] + [time.time()]
+                    if len(self.errors) >= 5:
+                        runtime.heartbeat(self.layout, "BLOCKED", reason="5 loop errors in 10 minutes")
+                        return 1
+                    decision = "RUN"
+                if decision == "STOP":
+                    runtime.heartbeat(self.layout, "STOPPED")
+                    return 0
+                if decision == "RELOAD":
+                    runtime.heartbeat(self.layout, "STOPPED", reason="reload requested")
+                    runtime.set_decision(self.layout, "RUN", "loop-reload")
+                    return EXIT_RELOAD
+                if max_iterations is not None and self.iteration >= max_iterations:
+                    runtime.heartbeat(self.layout, "STOPPED", reason="max iterations")
+                    return 0
+                self.sleep()
+        finally:
+            lock.release()
