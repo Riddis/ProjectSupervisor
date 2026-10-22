@@ -15,6 +15,7 @@ from ... import jobs as jobs_mod
 from ... import tasks as tasks_mod
 from ... import extensions as extensions_mod
 from ... import project as project_mod
+from ... import updates as updates_mod
 from ...models.task import TaskStatus
 from ...paths import Layout
 from .. import logtail
@@ -82,7 +83,12 @@ def overview_context(layout: Layout) -> dict:
     nearby_gates = [g for g in all_gates if g.get("phase", 0) >= current_phase][:5]
     active_jobs = [j for j in open_jobs if j.get("phase") in gate_mod.ACTIVE_PHASES and j.get("adapter") != "human"]
     draining = live and rt.get("decision") == "DRAIN"
+    try:
+        update = updates_mod.check(layout, fetch=False)       # cached by the background checker; cheap otherwise
+    except Exception:                                       # noqa: BLE001
+        update = None
     return {
+        "update": update, "update_lines": updates_mod.describe(update) if update else [],
         "draining": draining, "active_jobs": active_jobs, "shutdown_armed": bool(rt.get("shutdown_on_drain")),
         "shutdown_pending_s": shutdown_mod.pending(layout),
         "phase": current_phase, "phase_label": labels.get(current_phase, "Project progress"),
@@ -192,3 +198,26 @@ def capacity_reset(request: Request, engine: str = Form(...), csrf_token: str = 
     from ..auth import require_csrf
     require_csrf(request, csrf_token)
     return act(request, layout, "capacity.reset", {"engine": engine, "message": "owner reset via Control Center"}, "/overview")
+
+
+@router.post("/overview/update")
+def apply_update(request: Request, csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
+    """Apply the framework update the banner showed: pull, reinstall, migrate, doctor, reload the loop, then restart
+    this Control Center process (exit 3; the launcher starts it again on the new code)."""
+    from ..auth import require_csrf
+    require_csrf(request, csrf_token)
+    status = updates_mod.check(layout, fetch=True, max_age_s=0)
+    result = updates_mod.apply(layout, status)
+    if result.ok and result.restart_ui:
+        updates_mod.restart_process_later()
+        level, message = "applied", "updated: " + "; ".join(result.steps) + " — Control Center restarting, reload this page in a few seconds"
+    elif result.ok:
+        level, message = "applied", "; ".join(result.steps)
+    else:
+        level, message = "error", result.error
+    if request.headers.get("HX-Request"):
+        return render(request, "partials/action_result.html", {"level": level, "message": message, "outcome": {}})
+    from fastapi.responses import RedirectResponse
+
+    from ..deps import encode_flash
+    return RedirectResponse(url=f"/overview?flash={encode_flash(level, message)}", status_code=303)

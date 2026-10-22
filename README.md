@@ -74,7 +74,7 @@ project folder.
 - `docs/TASK_CONTRACT.md` — task, gate, decision, issue, inbox and owner-task records.
 - `docs/FRAMEWORK_VS_EXTENSION.md` — what goes in the framework, what goes in a project, how extensions work.
 - `docs/SETUP_INTERVIEW.md` — the project setup interview (system-agnostic; the skill wraps it).
-- `docs/UPDATING.md` — updating the framework under running projects; versioning and migrations.
+- `docs/UPDATING.md` — updating the framework under running projects (the launch-time check and **Update now**); versioning and migrations.
 - `docs/runbooks/` — supervisor loop, Control Center, Claude/Codex/API lanes, policy, environment.
 - `CHANGELOG.md`.
 
@@ -87,7 +87,7 @@ itself runs on Linux/macOS and the test suite runs there.
 
 ## Naming
 
-The package is `supervisor`; the distribution is `supervisor-framework`. If `supervisor` ever collides with another
+The package is `supervisor`; the distribution is `supervisor-framework`; the GitHub repo is `ProjectSupervisor`. If `supervisor` ever collides with another
 package in a project venv (the unrelated `supervisord` is published as `supervisor` on PyPI), install this framework
 first or in its own venv per project — the template's `setup_env.ps1` does the latter.
 

@@ -3,6 +3,7 @@ mutating route funnels through supervisor.commands, the same library the CLI use
 from __future__ import annotations
 
 import secrets
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -15,6 +16,24 @@ from .auth import CSRF_COOKIE, check_host_origin
 from .routes import router as routes_router
 
 DEFAULT_PORT = 8790
+
+
+UPDATE_CHECK_EVERY_S = 1800
+
+
+def _start_update_checker(layout: Layout) -> None:
+    """Fetch origin in the background so the overview banner is current without a fetch inside a page render."""
+    import threading
+    from .. import updates
+
+    def loop():
+        while True:
+            try:
+                updates.check(layout, fetch=True, max_age_s=0)
+            except Exception:                               # noqa: BLE001 - the banner just stays stale
+                pass
+            time.sleep(UPDATE_CHECK_EVERY_S)
+    threading.Thread(target=loop, name="update-check", daemon=True).start()
 
 
 def create_app(layout: Layout | None = None) -> FastAPI:
@@ -46,6 +65,7 @@ def create_app(layout: Layout | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(routes_router)
     if layout is not None:
+        _start_update_checker(layout)
         for ext_router, _label, _path in extensions_mod.load(layout).ui_routers:
             app.include_router(ext_router)
     return app

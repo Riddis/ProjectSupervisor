@@ -1,0 +1,280 @@
+"""Framework update check and apply. The framework is a git clone installed editable into each project, so "update"
+means: fetch `origin`, show the commits the clone is behind, and on the owner's yes `git pull --ff-only`, reinstall
+the package (dependencies may have changed), run the project's migrations and doctor, and restart the running
+processes so they import the new code (the loop through `loop.reload`; the Control Center by exiting with
+RESTART_EXIT_CODE, which the launcher turns into a restart).
+
+Everything here is fail-soft: no remote, no network, no git, or a dirty clone all produce a `Status` that says why
+nothing can be done, never an exception out of a launch path."""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from . import __version__
+from .paths import Layout
+
+RESTART_EXIT_CODE = 3            # same convention as the loop's reload: the launcher restarts the process
+FETCH_TIMEOUT_S = 20
+CHECK_TTL_S = 300                # a check younger than this is reused instead of fetching again
+_VERSION_FILE = "supervisor/__init__.py"
+
+
+@dataclass
+class Commit:
+    sha: str
+    subject: str
+
+
+@dataclass
+class Status:
+    ok: bool                                  # a check was performed (false: see `reason`)
+    reason: str = ""                          # why not, or a note
+    framework_dir: str = ""
+    branch: str = ""
+    behind: int = 0
+    ahead: int = 0
+    dirty: bool = False
+    commits: list[Commit] = field(default_factory=list)
+    installed_version: str = __version__
+    remote_version: str = ""
+    migration_hint: bool = False              # the remote CHANGELOG mentions a migration since HEAD
+    checked_at: float = 0.0
+
+    @property
+    def available(self) -> bool:
+        return self.ok and self.behind > 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Status":
+        d = dict(d)
+        d["commits"] = [Commit(**c) for c in d.get("commits") or []]
+        return cls(**d)
+
+
+def framework_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _git(args: list[str], cwd: Path, timeout: float = FETCH_TIMEOUT_S) -> tuple[int, str]:
+    exe = shutil.which("git")
+    if not exe:
+        return 127, "git not on PATH"
+    try:
+        proc = subprocess.run([exe, "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout, check=False,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, str(exc)[:300]
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()
+
+
+def _remote_version(cwd: Path, ref: str) -> str:
+    code, out = _git(["show", f"{ref}:{_VERSION_FILE}"], cwd, timeout=10)
+    if code != 0:
+        return ""
+    for line in out.splitlines():
+        if line.startswith("__version__"):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    return ""
+
+
+def _cache_path(layout: Layout | None) -> Path | None:
+    return (layout.runtime / "update_check.json") if layout is not None else None
+
+
+def check(layout: Layout | None = None, fetch: bool = True, max_age_s: float = CHECK_TTL_S) -> Status:
+    """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`."""
+    cache = _cache_path(layout)
+    if cache is not None and cache.exists():
+        try:
+            prior = Status.from_dict(json.loads(cache.read_text(encoding="utf-8")))
+            if prior.ok and time.time() - prior.checked_at < max_age_s:
+                return prior
+        except (OSError, ValueError, TypeError):
+            pass
+    status = _check(fetch)
+    if cache is not None:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(status.to_dict()), encoding="utf-8")
+        except OSError:
+            pass
+    return status
+
+
+def _check(fetch: bool) -> Status:
+    fw = framework_dir()
+    st = Status(ok=False, framework_dir=str(fw), checked_at=time.time())
+    if not (fw / ".git").exists():
+        st.reason = "framework is not a git clone (installed from a package?)"
+        return st
+    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], fw, timeout=10)
+    if code != 0:
+        st.reason = f"git: {branch}"
+        return st
+    st.branch = branch
+    code, remote = _git(["remote", "get-url", "origin"], fw, timeout=10)
+    if code != 0:
+        st.reason = "no `origin` remote configured on the framework clone"
+        return st
+    if fetch:
+        code, out = _git(["fetch", "--quiet", "origin", branch], fw)
+        if code != 0:
+            st.reason = f"fetch failed (offline?): {out[-200:]}"
+            return st
+    code, counts = _git(["rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"], fw, timeout=10)
+    if code != 0:
+        st.reason = f"origin/{branch} unknown: {counts[-200:]}"
+        return st
+    ahead, behind = (int(x) for x in counts.split())
+    st.ahead, st.behind = ahead, behind
+    code, dirty = _git(["status", "--porcelain", "--untracked-files=no"], fw, timeout=10)
+    st.dirty = code == 0 and bool(dirty.strip())
+    if behind:
+        code, log = _git(["log", "--format=%h%x09%s", f"HEAD..origin/{branch}"], fw, timeout=10)
+        if code == 0:
+            st.commits = [Commit(*line.split("\t", 1)) if "\t" in line else Commit(line, "") for line in log.splitlines()]
+        st.remote_version = _remote_version(fw, f"origin/{branch}")
+        code, diff = _git(["diff", f"HEAD..origin/{branch}", "--", "CHANGELOG.md"], fw, timeout=10)
+        st.migration_hint = code == 0 and "migration" in diff.lower()
+    st.ok = True
+    return st
+
+
+def describe(status: Status) -> list[str]:
+    """Human lines for the console and the Control Center."""
+    if not status.ok:
+        return [f"update check skipped: {status.reason}"]
+    if not status.behind:
+        return [f"framework {status.installed_version} is up to date with origin/{status.branch}"]
+    head = f"framework update available: {status.behind} commit(s) on origin/{status.branch}"
+    if status.remote_version and status.remote_version != status.installed_version:
+        head += f" ({status.installed_version} → {status.remote_version})"
+    lines = [head] + [f"  {c.sha} {c.subject}" for c in status.commits[:20]]
+    if len(status.commits) > 20:
+        lines.append(f"  … {len(status.commits) - 20} more")
+    if status.migration_hint:
+        lines.append("  note: the changelog mentions a migration; `supervisor migrate` runs as part of the update")
+    if status.dirty:
+        lines.append("  blocked: the framework clone has uncommitted changes; commit or stash them first")
+    if status.ahead:
+        lines.append(f"  note: the clone is also {status.ahead} commit(s) ahead of origin (unpushed work)")
+    return lines
+
+
+@dataclass
+class Applied:
+    ok: bool
+    steps: list[str] = field(default_factory=list)
+    error: str = ""
+    restart_ui: bool = False
+
+
+def apply(layout: Layout, status: Status | None = None, reinstall: bool = True) -> Applied:
+    """Pull, reinstall, migrate, doctor, reload the loop. The caller restarts the UI (restart_ui)."""
+    from . import doctor as doctor_mod, migrations, tasks as tasks_mod
+    fw = framework_dir()
+    status = status or check(layout, fetch=True, max_age_s=0)
+    out = Applied(ok=False)
+    if not status.ok:
+        out.error = status.reason
+        return out
+    if status.dirty:
+        out.error = "framework clone has uncommitted changes; commit or stash them first"
+        return out
+    if not status.behind:
+        out.steps.append("already up to date")
+    else:
+        code, text = _git(["pull", "--ff-only", "origin", status.branch], fw, timeout=120)
+        if code != 0:
+            out.error = f"git pull --ff-only failed: {text[-300:]}"
+            return out
+        out.steps.append(f"pulled {status.behind} commit(s) from origin/{status.branch}")
+        if reinstall:
+            try:
+                proc = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{fw}[ui]"], capture_output=True,
+                                      text=True, timeout=600, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                out.steps.append("reinstalled the package" if proc.returncode == 0 else
+                                 f"pip install -e failed (dependencies may be stale): {(proc.stderr or '')[-200:]}")
+            except (OSError, subprocess.SubprocessError) as exc:
+                out.steps.append(f"pip install -e skipped: {exc}")
+    # The running process still has the old code; migrations run in a child on the NEW code so the project is
+    # brought forward before anything restarts into it.
+    try:
+        proc = subprocess.run([sys.executable, "-m", "supervisor", "migrate"], cwd=str(layout.root), capture_output=True,
+                              text=True, timeout=300, check=False, env={**os.environ, "SUPERVISOR_ROOT": str(layout.root)},
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        notes = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        out.steps.append("migrate: " + ("; ".join(notes) if notes else "nothing to migrate")
+                         + ("" if proc.returncode == 0 else f" (exit {proc.returncode}: {(proc.stderr or '')[-200:]})"))
+    except (OSError, subprocess.SubprocessError) as exc:
+        migrations.run(layout)                          # fall back to in-process (old code, but still correct for its version)
+        out.steps.append(f"migrate (in-process): child failed: {exc}")
+    try:
+        proc = subprocess.run([sys.executable, "-m", "supervisor", "doctor"], cwd=str(layout.root), capture_output=True,
+                              text=True, timeout=300, check=False, env={**os.environ, "SUPERVISOR_ROOT": str(layout.root)},
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        fails = [ln for ln in (proc.stdout or "").splitlines() if ln.startswith("FAIL")]
+        out.steps.append("doctor: all checks OK" if proc.returncode == 0 else "doctor: " + ("; ".join(fails) or "failed"))
+    except (OSError, subprocess.SubprocessError):
+        checks = doctor_mod.run(layout)
+        fails = [f"{c.name}: {c.detail}" for c in checks if not c.ok]
+        out.steps.append("doctor: all checks OK" if not fails else "doctor: " + "; ".join(fails))
+    from . import commands as commands_mod, runtime
+    if runtime.is_live(layout):
+        commands_mod.submit_or_apply(layout, "loop.reload", {}, actor="update")
+        out.steps.append("loop: reload requested (the launcher restarts it on the new code)")
+    else:
+        out.steps.append("loop: not running; it starts on the new code next time")
+    tasks_mod.log(layout, "framework_update", "owner", steps=out.steps, behind=status.behind,
+                  from_version=status.installed_version, to_version=status.remote_version or None)
+    try:
+        cache = _cache_path(layout)
+        if cache and cache.exists():
+            cache.unlink()
+    except OSError:
+        pass
+    out.ok = True
+    out.restart_ui = status.behind > 0
+    return out
+
+
+def restart_process_later(delay_s: float = 1.0, code: int = RESTART_EXIT_CODE) -> None:
+    """Exit this process shortly with the restart code (after the HTTP response has gone out). The launcher
+    (`start_control_center.bat`, `tools/run_supervisor.ps1`) restarts it; a manually started process just exits and
+    the message on screen says to start it again."""
+    def _bye():
+        time.sleep(delay_s)
+        os._exit(code)
+    threading.Thread(target=_bye, daemon=True).start()
+
+
+def prompt_and_apply(layout: Layout, status: Status, ask=input, echo=print) -> Applied | None:
+    """Console flow for `supervisor ui`/`run` launches: list the updates, ask y/N, apply on yes."""
+    for line in describe(status):
+        echo(line)
+    if not status.available or status.dirty:
+        return None
+    try:
+        answer = ask("Update now? Pulls, reinstalls, runs migrate + doctor, reloads the loop [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if answer not in ("y", "yes"):
+        echo("not updating; run `supervisor update` later")
+        return None
+    result = apply(layout, status)
+    for step in result.steps:
+        echo("  " + step)
+    if not result.ok:
+        echo("update failed: " + result.error)
+    return result

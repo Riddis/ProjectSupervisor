@@ -17,6 +17,13 @@ note the agent reads between steps), Inbox (answer/snooze/reopen, gate acknowled
 issue / owner task), Log (SSE tail of `state/log.jsonl`), Owner tasks, Settings (the few numeric routing knobs).
 Extensions can add sidebar pages (`registry.ui_router`) and overview panels (`registry.overview_panel`).
 
+## Framework updates
+
+At launch the UI fetches the framework clone's `origin` and, on a terminal, asks whether to apply what it is
+behind; while running, the Overview shows an "Framework update available" banner with the commit list and an
+**Update now** button (`POST /overview/update`). See `docs/UPDATING.md` for what applying does. The UI exits with
+code 3 afterwards; `tools/run_control_center.ps1` relaunches it. `--no-update-check` skips the launch check.
+
 ## How writes work
 
 Every mutating route calls `supervisor.commands.submit_or_apply(layout, kind, payload, actor="owner-ui")` — the

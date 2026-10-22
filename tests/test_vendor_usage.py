@@ -5,7 +5,7 @@ from supervisor._vendor import usage_policy as u
 
 @pytest.fixture(autouse=True)
 def state(tmp_path):
-    u.configure(tmp_path, {"claude": 10, "codex": 10})
+    u.configure(tmp_path, {"claude": 10, "codex": 10}, {"claude": 0, "codex": 0})   # explicit: another test may have configured a project with weekly gates
     return tmp_path
 
 

@@ -3,6 +3,21 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.1.0 — 2026-10-23
+
+- Framework update check (`supervisor/updates.py`): at launch, `supervisor ui` fetches `origin`, lists the commits
+  the clone is behind (with the version change and a migration hint from the changelog) and, on a terminal, asks
+  whether to apply; `supervisor run` only reports. The Control Center shows the same as a banner with an **Update
+  now** button (a background thread refreshes the check every 30 min). Applying = `git pull --ff-only`, reinstall
+  the package, `supervisor migrate` + `supervisor doctor` in a child on the new code, `loop.reload` if a loop is
+  live, and the UI exits with code 3 so the launcher restarts it. New CLI: `supervisor update [--check] [--yes]`.
+  A dirty framework clone blocks the update and says so.
+- Template: `tools/run_control_center.ps1` (restart-on-exit-3 wrapper); `start_control_center.bat` uses it.
+- Guard rails: `supervisor init` refuses a target inside the framework clone; the framework `.gitignore` ignores
+  project-shaped paths at its root so project work cannot be committed to the framework repo by accident.
+- Fix: `tasks.import_seed` now writes `status: NOT_STARTED` and the runtime fields explicitly, so a hand-written
+  seed dispatches on the first run (the first launch used to crash on a missing `status` key).
+
 ## 1.0.0 — 2026-10-22
 
 Initial release, extracted and generalised from a project-specific supervisor.

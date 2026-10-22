@@ -312,3 +312,26 @@ def test_a_seed_task_without_status_runs_through_the_loop(fresh, monkeypatch):
     t = tasks_mod.load(layout, "T0-01")
     assert t.status == TaskStatus.COMPLETE, t.history
     assert (fresh / "hello.txt").exists()
+
+
+# ------------------------------------------------------------------ the framework repo never holds project work
+
+def test_init_refuses_a_target_inside_the_framework_clone(tmp_path, monkeypatch):
+    from supervisor import updates
+    monkeypatch.delenv("SUPERVISOR_ROOT", raising=False)
+    inside = updates.framework_dir() / "docs" / "accidental-project"
+    r = runner.invoke(app, ["init", str(inside)])
+    assert r.exit_code != 0 and "framework" in r.output.replace("\n", "")
+    assert not inside.exists()
+
+
+def test_framework_gitignore_blocks_project_shapes_at_the_root():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    for line in ("/project.yaml", "/state/", "/secrets/", "/extensions/", "/agents/", "/config/", "/uploads/"):
+        assert line in text, line
+    out = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "project.yaml", "state/x.yaml", "config/routing.yaml"],
+                         capture_output=True)
+    if out.returncode == 128:
+        pytest.skip("not a git checkout")
+    assert out.returncode == 0

@@ -77,8 +77,12 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
          force: bool = typer.Option(False, help="write template files even if the folder already has a project.yaml")):
     """Create a thin project from the framework's template: project.yaml, config/, agents/, state/, docs/, extensions/,
     start scripts. Nothing project-specific is decided here — the setup skill (or you) fills the template in."""
-    from . import template
+    from . import template, updates
     target = Path(directory).resolve()
+    fw = updates.framework_dir()
+    if target == fw or (fw in target.parents and (fw / "runs") not in (target, *target.parents)):   # runs/ is scratch
+        raise typer.BadParameter(f"{target} is inside the framework clone ({fw}); projects live in their own folder, "
+                                 "never in the framework repository")
     if (target / "project.yaml").exists() and not force:
         raise typer.BadParameter(f"{target} already has a project.yaml (use --force to re-stamp template files)")
     written = template.stamp(target, name=name or target.name, force=force)
@@ -297,10 +301,63 @@ def extension_new(name: str):
 # ------------------------------------------------------------------ loop and control
 
 @app.command()
-def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unattended: bool = False):
+def update(check_only: bool = typer.Option(False, "--check", help="report only; change nothing"),
+           yes: bool = typer.Option(False, "--yes", "-y", help="apply without asking")):
+    """Check the framework clone against origin; on yes: pull, reinstall, migrate, doctor, reload the loop."""
+    from . import updates
+    layout = _layout()
+    status = updates.check(layout, fetch=True, max_age_s=0)
+    if check_only or not status.available:
+        for line in updates.describe(status):
+            typer.echo(line)
+        raise typer.Exit(0 if status.ok else 1)
+    if yes:
+        for line in updates.describe(status):
+            typer.echo(line)
+        result = updates.apply(layout, status)
+        for step in result.steps:
+            typer.echo("  " + step)
+        if not result.ok:
+            raise typer.BadParameter(result.error)
+    else:
+        result = updates.prompt_and_apply(layout, status, echo=typer.echo)
+    if result and result.ok and result.restart_ui:
+        typer.echo("restart any running Control Center so it imports the new code")
+
+
+def _launch_update_check(layout: Layout, interactive: bool) -> None:
+    """At launch: list what origin has that this clone does not; on a terminal, offer to update (fail-soft)."""
+    from . import updates
+    try:
+        status = updates.check(layout, fetch=True)
+    except Exception as exc:                                # noqa: BLE001 - never block a launch on the check
+        typer.echo(f"update check skipped: {exc}")
+        return
+    if not status.available and not status.ok:
+        typer.echo(updates.describe(status)[0])
+        return
+    if not status.available:
+        return
+    if not interactive:
+        for line in updates.describe(status):
+            typer.echo(line)
+        typer.echo("run `supervisor update` (or use the Control Center banner) to apply")
+        return
+    result = updates.prompt_and_apply(layout, status, echo=typer.echo)
+    if result and result.ok and result.restart_ui:
+        typer.echo("updated: restarting on the new code (exit 3; a manual start needs to be run again)")
+        raise typer.Exit(updates.RESTART_EXIT_CODE)
+
+
+@app.command()
+def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unattended: bool = False,
+        no_update_check: bool = typer.Option(False, help="skip the origin check at launch")):
     """Run the supervisor loop (holds state/.lock). Exit code 3 = reload requested."""
     from .loop import Supervisor
-    sup = Supervisor(_layout(), sleep_s=sleep, unattended=unattended)
+    layout = _layout()
+    if not no_update_check and not once and not max_iterations:
+        _launch_update_check(layout, interactive=False)     # the loop never blocks on a prompt: the UI asks
+    sup = Supervisor(layout, sleep_s=sleep, unattended=unattended)
     code = sup.run(max_iterations=1 if once else (max_iterations or None), reset_decision=True)
     raise typer.Exit(code)
 
@@ -350,10 +407,15 @@ def supervisor():
 
 
 @app.command()
-def ui(host: str = "127.0.0.1", port: int = 0):
-    """Start the Control Center (FastAPI + Uvicorn), loopback-only by default; port from project.yaml unless given."""
+def ui(host: str = "127.0.0.1", port: int = 0,
+       no_update_check: bool = typer.Option(False, help="skip the origin check at launch")):
+    """Start the Control Center (FastAPI + Uvicorn), loopback-only by default; port from project.yaml unless given.
+    At launch, lists framework updates available on origin and offers to apply them (exit 3 = restart on new code)."""
+    import sys
     from .ui.app import run as run_ui
     layout = _layout()
+    if not no_update_check:
+        _launch_update_check(layout, interactive=sys.stdin.isatty())
     run_ui(layout, host=host, port=port or project_mod.ui_port(layout))
 
 

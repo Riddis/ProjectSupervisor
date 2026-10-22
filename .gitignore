@@ -11,3 +11,14 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# Project work never lives in the framework repository (projects are their own folders; see docs/FRAMEWORK_VS_EXTENSION.md).
+# These shapes only exist in a project and are ignored here so an accidental `supervisor init .` cannot be committed.
+/project.yaml
+/state/
+/uploads/
+/secrets/
+/extensions/
+/agents/
+/config/
+/*.bat

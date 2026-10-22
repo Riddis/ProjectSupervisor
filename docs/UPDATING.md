@@ -6,18 +6,28 @@ project — and it is also why the framework carries a version and migrations.
 
 ## As a project owner
 
+You normally do nothing by hand. When the Control Center launches (`start_control_center.bat`) it fetches the
+framework's `origin`, prints the commits your clone is behind, and asks `Update now? [y/N]` in its window; the
+same appears as a banner on the Overview with an **Update now** button while it runs (re-checked every 30 min).
+Saying yes does, in order: `git pull --ff-only` in the framework clone, `pip install -e` (dependencies may have
+changed), `supervisor migrate` and `supervisor doctor` in a child process on the new code, `loop.reload` if a loop
+is running (its launcher restarts it), and finally the Control Center restarts itself (exit code 3, which
+`tools/run_control_center.ps1` turns into a relaunch). A clone with uncommitted changes is never pulled over; the
+banner says to commit or stash first.
+
+The same by hand, from the project folder:
+
 ```
-git -C D:\Repos\Supervisor pull
-cd D:\Repos\my-project
-.venv\Scripts\python.exe -m supervisor doctor          # "project.yaml records framework 1.0.0; installed 1.1.0 — run `supervisor migrate`"
-.venv\Scripts\python.exe -m supervisor migrate --dry-run
-.venv\Scripts\python.exe -m supervisor migrate
-.venv\Scripts\python.exe -m supervisor render
+.venv\Scripts\python.exe -m supervisor update --check     # list what origin has
+.venv\Scripts\python.exe -m supervisor update             # asks, then applies
+.venv\Scripts\python.exe -m supervisor update --yes       # unattended
 ```
 
-Then **Reload** in the Control Center (or restart `start_supervisor.bat`) so the loop imports the new code; a
-running loop keeps the old code until it restarts. Restart the UI too. Projects that are not touched keep working
-on the old version in their running processes and pick the new one up on their next start.
+Or fully manual: `git -C <framework> pull`, then `supervisor doctor` (reports the version mismatch),
+`supervisor migrate --dry-run`, `supervisor migrate`, `supervisor render`, Reload in the Control Center, restart
+the UI. `supervisor run` never prompts (it may be unattended); it prints the available update and carries on.
+Projects that are not touched keep working on the old version in their running processes and pick the new one up
+on their next start.
 
 If a release says a *major* migration is required, do not start the loop before `supervisor migrate` has run:
 the doctor check for the project is FAIL until then, and the Control Center's Start button reports it.
