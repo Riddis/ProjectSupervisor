@@ -262,6 +262,67 @@ def test_doctor_flags_a_framework_version_mismatch_and_migrate_fixes_it(fresh):
     assert migrations.run(layout) == []                             # idempotent
 
 
+def test_doctor_fails_on_malformed_or_versionless_project_yaml(fresh):
+    layout = Layout(fresh)
+    raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
+    del raw["framework_version"]
+    project.write(layout, raw)
+    check = doctor.check_project(layout)
+    assert not check.ok and "framework_version" in check.detail and "supervisor migrate" in check.detail
+    notes = migrations.run(layout)
+    assert any("unset →" in n for n in notes) and doctor.check_project(layout).ok
+    layout.project_file.write_text("name: [unclosed\nframework_version: 1\n", encoding="utf-8")
+    check = doctor.check_project(layout)
+    assert not check.ok and "malformed" in check.detail
+    with pytest.raises(migrations.MigrationError):
+        migrations.run(layout)
+    assert project.name(layout) == project.DEFAULTS["name"]           # readers still get defaults, never a crash
+
+
+def test_migrate_without_a_project_yaml_fails_clearly(tmp_path):
+    layout = Layout(tmp_path / "nowhere").ensure()
+    with pytest.raises(migrations.MigrationError, match="supervisor init"):
+        migrations.run(layout)
+    assert not layout.project_file.exists()
+
+
+def test_legacy_approval_responses_are_migrated(fresh):
+    from supervisor import tasks as tasks_mod
+    layout = Layout(fresh)
+    make_task(layout, "T-01", status="IN_PROGRESS")
+    p = layout.tasks / "T-01.yaml"
+    doc = yaml.safe_load(p.read_text(encoding="utf-8"))
+    doc["delivery"] = {"digest": "d2", "approvals": [
+        {"digest": "d1", "by": "owner", "response": "MORE_LIKE", "at": "2026-01-01T00:00:00+00:00"},
+        {"digest": "d2", "by": "owner", "response": "APPROVE", "at": "2026-01-01T00:00:00+00:00"}]}
+    p.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    (layout.inbox / "H-01.yaml").write_text(yaml.safe_dump({"id": "H-01", "status": "open", "for": "owner",
+                                                            "allowed_responses": ["ACCEPT", "MORE_LIKE", "REGENERATE"]}), encoding="utf-8")
+    with pytest.raises(tasks_mod.TaskError):
+        tasks_mod.load(layout, "T-01")
+    notes = migrations.run(layout, dry_run=True)
+    assert any("T-01.yaml: response MORE_LIKE → REDO, APPROVE → ACCEPT" in n for n in notes)
+    assert "MORE_LIKE" in p.read_text(encoding="utf-8")
+    migrations.run(layout)
+    t = tasks_mod.load(layout, "T-01")
+    assert [a.response.value for a in t.delivery.approvals] == ["REDO", "ACCEPT"]
+    assert yaml.safe_load((layout.inbox / "H-01.yaml").read_text(encoding="utf-8"))["allowed_responses"] == ["ACCEPT", "REDO"]
+    assert migrations.run(layout) == []
+
+
+def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
+    layout = Layout(fresh)
+    before = layout.project_file.read_text(encoding="utf-8")
+    monkeypatch.chdir(fresh)
+    r = runner.invoke(app, ["extension", "new", "demo_job"])
+    assert r.exit_code == 0, r.output
+    after = layout.project_file.read_text(encoding="utf-8")
+    assert project.extensions(layout) == ["demo_job"] and "demo_job" in after
+    for comment in ("# project.yaml - what makes this folder", "# checked by `supervisor doctor`", "# Phase labels only."):
+        assert comment in before and comment in after
+    assert after.count("#") == before.count("#")
+
+
 def test_the_old_limit_name_is_still_understood_at_runtime(fresh):
     from supervisor import gate
     layout = Layout(fresh)
@@ -330,8 +391,10 @@ def test_framework_gitignore_blocks_project_shapes_at_the_root():
     text = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
     for line in ("/project.yaml", "/state/", "/secrets/", "/extensions/", "/agents/", "/config/", "/uploads/"):
         assert line in text, line
-    out = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "project.yaml", "state/x.yaml", "config/routing.yaml"],
-                         capture_output=True)
-    if out.returncode == 128:
+    probe = subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
         pytest.skip("not a git checkout")
-    assert out.returncode == 0
+    # `check-ignore -q` accepts a single pathname only (several -> exit 128, which used to look like "no git checkout")
+    for rel in ("project.yaml", "state/x.yaml", "config/routing.yaml", "secrets/k.txt", "agents/x.md", "uploads/f.bin"):
+        out = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", rel], capture_output=True, text=True)
+        assert out.returncode == 0, f"{rel} is not git-ignored at the framework root: rc={out.returncode} {out.stderr}"

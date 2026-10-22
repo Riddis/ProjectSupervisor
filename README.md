@@ -26,6 +26,9 @@ Supervisor/                 the framework (this repo) — generic, installed int
 
 ## Quick start
 
+The `D:\Repos\...` paths below are illustrative; nothing in the framework or template depends on an absolute
+location (projects find themselves via `SUPERVISOR_ROOT` or the nearest `project.yaml`).
+
 ```powershell
 git clone <this repo> D:\Repos\Supervisor
 mkdir D:\Repos\my-project && cd D:\Repos\my-project

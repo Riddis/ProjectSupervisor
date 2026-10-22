@@ -17,12 +17,13 @@ lane, and parks anything that needs a human in the owner's inbox. The owner work
    `supervisor task import` only creates tasks that do not exist yet.
 5. Work **one** task at a time: `supervisor task set-status <id> IN_PROGRESS` → implement → test →
    `supervisor task digest/deliver/verify` → review (`supervisor task review`) and owner approval
-   (`supervisor task approve`) when the task requires them → `supervisor render` → commit with the task id → next task.
-   COMPLETE is only reachable through those records.
+   (`supervisor task approve`) when the task requires them → `supervisor render` → next task.
+   COMPLETE is only reachable through those records. Never commit: the supervisor checkpoints accepted work itself
+   (`checkpoint` in `config/routing.yaml`) and agents do not run `git commit`, push, reset or rewrite history.
 6. State is single-writer: never edit `state/` while `supervisor run` holds `state/.lock`; use `supervisor` commands or
    the Control Center (they queue command files the loop applies).
-7. Near a usage limit or interruption: write `runs/<task>/<attempt>/HANDOFF.md`, record its path in the task YAML,
-   commit. Leave the repository consistent.
+7. Near a usage limit or interruption: write `runs/<task>/<attempt>/HANDOFF.md`, record its path in the task YAML
+   and end with an honest PARTIAL. Leave the working tree consistent; do not commit.
 
 ## Layout
 
@@ -39,4 +40,7 @@ projections of `state/` and must not be edited by hand.
 - Software does software; agents do judgement.
 - Process success ≠ acceptance: every delivery is verified deterministically, important work is independently reviewed.
 - No new recurring cost, external commitment or irreversible action without an owner-approved proposal.
+- Phase gates (`state/gates.yaml`) open only on PASSED plus what the gate declares: evidence links
+  (`evidence_required`) and an owner acknowledgement (`owner_ack_required`) — an agent cannot pass an owner gate;
+  the owner acknowledges it in the Control Center or with `supervisor gate ack <id>`.
 - Framework code lives in the Supervisor repo; anything specific to this project lives here (`extensions/` for code).

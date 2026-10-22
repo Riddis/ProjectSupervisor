@@ -41,7 +41,7 @@ NESTING_ENV = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "ANTHROPIC_BASE_URL", "CL
 
 
 def scrub_env(env: dict, layout=None) -> dict:
-    """Agent children get subscription logins only: no API keys/tokens, no vendor-nesting markers (review T0-07/08 #15).
+    """Agent children get subscription logins only: no API keys/tokens, no vendor-nesting markers.
 
     The suffix list is `policy.env_key_suffixes()` - the same data that decides what is screened out of a packet
     and redacted from a log - so the documented guarantee and this filter cannot drift apart."""

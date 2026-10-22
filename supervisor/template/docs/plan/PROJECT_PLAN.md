@@ -15,7 +15,8 @@ rules from it, and the Senior PM plans from it._
 (which roles are active, which lane each runs on, what each may decide — mirrors `config/routing.yaml` and `agents/`)
 
 ## 5. Phases and gates
-(one row per phase: goal, exit gate, evidence the gate needs, whether the owner must acknowledge — mirrors `state/gates.yaml`)
+(one row per phase: goal, exit gate, evidence the gate needs, whether the owner must acknowledge — mirrors `state/gates.yaml`;
+then the first phase's task list — mirrors `state/tasks_seed.yaml`)
 
 ## 6. Tracker
 (what a task record must carry for this project beyond the standard contract; owner-task conventions)

@@ -348,7 +348,7 @@ def test_start_supervisor_targets_this_layout_not_the_real_repo(monkeypatch, lay
     assert r.status_code == 303
     assert len(calls) == 1
     argv, kw = calls[0]
-    assert argv[-3:] == ["-m", "supervisor", "run"]
+    assert argv[-2:] == ["-m", "supervisor.launcher"]            # the restart-on-reload wrapper, not the bare loop
     assert kw["cwd"] == str(layout.root)
     assert kw["env"]["SUPERVISOR_ROOT"] == str(layout.root)
 

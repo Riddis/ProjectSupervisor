@@ -29,8 +29,9 @@ it, and `secrets/` values are refused in briefs.
 Lists (`patterns`, `secret_key_words`, `env_key_suffixes`) are unioned with the built-in floor — an edit can only add.
 `min_value_length` can only be lowered; `ignore_files` can never hide a dotenv file; an empty
 `redaction_placeholder` falls back to the built-in. A wrongly-typed entry (`patterns: null`) is dropped, the floor
-stands, and `policy.config_problems()` (shown by `supervisor doctor`) names it. Sections the floor does not know
-(a project's own) are taken as given for extensions to read with `policy.section(name)`.
+stands, and `policy.config_problems()` names it — `supervisor doctor` shows them as the `policy` check (ok when the
+list is empty). Sections the floor does not know (a project's own) are taken as given for extensions to read with
+`policy.section(name)`.
 
 ## Adding a project rule
 
@@ -43,3 +44,9 @@ def setup(registry):
             raise PolicyViolation(f"{where} refused: customer records never leave this machine")
     registry.packet_screen(no_customer_data)
 ```
+
+A screen is only a protection while its extension loads. If the extension fails to import (a typo, a missing
+dependency), `assert_packet_clean()` refuses **every** packet naming the extension and the loop refuses to start
+(runtime `BLOCKED`, reason `required extension(s) failed to load: <name>: ...`); `supervisor doctor` shows the
+error under `extensions`. Fix the module, or — only for an extension whose absence is genuinely harmless — list it
+as `{name: <name>, required: false}` in `project.yaml` (docs/FRAMEWORK_VS_EXTENSION.md).

@@ -79,21 +79,80 @@ def test_dirty_clone_blocks_apply(world):
     assert not res.ok and "uncommitted" in res.error
 
 
-def test_apply_pulls_migrates_doctors_and_reloads(world, monkeypatch):
-    from supervisor import commands as commands_mod, runtime
+@pytest.fixture
+def live_loop(world, monkeypatch):
+    """Pretend a loop is live: a RUNNING heartbeat, commands recorded instead of applied, the wrapper spawn stubbed."""
+    from supervisor import commands as commands_mod, launcher, runtime
+    runtime.heartbeat(world["layout"], "RUNNING")
+    submitted, spawned = [], []
+    monkeypatch.setattr(commands_mod, "submit_or_apply", lambda lay, kind, payload, actor: submitted.append(kind) or {"ok": True})
+    monkeypatch.setattr(launcher, "spawn", lambda layout, args=None: spawned.append(layout.root))
+    return {"submitted": submitted, "spawned": spawned}
+
+
+def test_apply_stops_the_loop_pulls_migrates_doctors_and_restarts_it(world, live_loop):
     push_update(world["author"])
     layout = world["layout"]
-    runtime.heartbeat(layout, "RUNNING")                   # pretend a loop is live so a reload gets queued
-    submitted = []
-    monkeypatch.setattr(commands_mod, "submit_or_apply", lambda lay, kind, payload, actor: submitted.append(kind) or {"ok": True})
     st = updates.check(layout, fetch=True, max_age_s=0)
     res = updates.apply(layout, st, reinstall=False)
-    assert res.ok and res.restart_ui, res
+    assert res.ok and res.restart_ui and res.loop_restarted, res
     assert git(world["clone"], "rev-parse", "HEAD") == git(world["author"], "rev-parse", "HEAD")
     assert any(s.startswith("pulled 1") for s in res.steps)
     assert any(s.startswith("migrate:") for s in res.steps) and any(s.startswith("doctor:") for s in res.steps)
-    assert submitted == ["loop.reload"]
+    assert live_loop["submitted"] == ["loop.stop"] and live_loop["spawned"] == [layout.root]
     assert updates.check(layout, fetch=True, max_age_s=0).behind == 0
+
+
+def test_migration_failure_fails_the_update_and_starts_nothing(world, live_loop, monkeypatch):
+    push_update(world["author"])
+    layout = world["layout"]
+    monkeypatch.setattr(updates, "_child", lambda args, lay: (2, "", "a supervisor holds state/.lock (supervisor pid 1)"))
+    st = updates.check(layout, fetch=True, max_age_s=0)
+    res = updates.apply(layout, st, reinstall=False)
+    assert not res.ok and not res.restart_ui and not res.loop_restarted
+    assert "migrate failed (exit 2)" in res.error and "supervisor migrate" in res.error
+    assert live_loop["spawned"] == [] and "loop.reload" not in live_loop["submitted"]
+    assert layout.runtime.joinpath("update_check.json").exists()       # not cleared: the banner keeps showing the update
+
+
+def test_a_new_doctor_failure_fails_the_update(world, live_loop, monkeypatch):
+    push_update(world["author"])
+    layout = world["layout"]
+    monkeypatch.setattr(updates, "_child", lambda args, lay: (0, "nothing to migrate", "") if args == ["migrate"]
+                        else (1, "OK   project: P\nFAIL state: task store unreadable: boom\nFAIL git: not a repo", ""))
+    st = updates.check(layout, fetch=True, max_age_s=0)
+    res = updates.apply(layout, st, reinstall=False)
+    assert not res.ok and "state: task store unreadable" in res.error and "git" not in res.error   # git failed before too
+    assert live_loop["spawned"] == []
+
+
+def test_apply_waits_for_the_loop_to_release_the_lock(world, live_loop):
+    """A held state/.lock: the updater requests a stop and waits for the lock before pulling; it fails, changing
+    nothing, when the lock is not released within the timeout."""
+    import threading
+    from supervisor.locks import FileLock
+    push_update(world["author"])
+    layout = world["layout"]
+    before = git(world["clone"], "rev-parse", "HEAD")
+    release = threading.Event()
+    held = threading.Event()
+
+    def hold():
+        with FileLock(layout.lock, owner="supervisor pid 999"):
+            held.set()
+            release.wait(10)
+    t = threading.Thread(target=hold, daemon=True)
+    t.start()
+    held.wait(5)
+    st = updates.check(layout, fetch=True, max_age_s=0)
+    res = updates.apply(layout, st, reinstall=False, stop_timeout_s=1.0)
+    assert not res.ok and "state/.lock" in res.error and "supervisor stop" in res.error
+    assert git(world["clone"], "rev-parse", "HEAD") == before and live_loop["spawned"] == []
+    threading.Timer(0.7, release.set).start()                       # the loop reaches its safe point and exits
+    res = updates.apply(layout, st, reinstall=False, stop_timeout_s=10.0)
+    t.join(5)
+    assert res.ok, res
+    assert any(s == "loop: stopped" for s in res.steps) and live_loop["submitted"].count("loop.stop") == 2
 
 
 def test_no_origin_is_reported_not_raised(world):
@@ -109,7 +168,7 @@ def test_prompt_flow_declines_and_accepts(world, monkeypatch):
     echoed = []
     assert updates.prompt_and_apply(world["layout"], st, ask=lambda _: "n", echo=echoed.append) is None
     assert any("not updating" in e for e in echoed)
-    monkeypatch.setattr(updates, "apply", lambda layout, status, reinstall=True: updates.Applied(ok=True, steps=["pulled"], restart_ui=True))
+    monkeypatch.setattr(updates, "apply", lambda layout, status, reinstall=True, **kw: updates.Applied(ok=True, steps=["pulled"], restart_ui=True))
     res = updates.prompt_and_apply(world["layout"], st, ask=lambda _: "y", echo=echoed.append)
     assert res and res.ok
 
@@ -127,6 +186,6 @@ def test_overview_banner_and_update_route(world, monkeypatch):
     assert page.status_code == 200 and "Framework update available" in page.text and "feature 0" in page.text
     restarted = []
     monkeypatch.setattr(updates, "restart_process_later", lambda *a, **k: restarted.append(True))
-    monkeypatch.setattr(updates, "apply", lambda layout, status, reinstall=True: updates.Applied(ok=True, steps=["pulled 1 commit(s)"], restart_ui=True))
+    monkeypatch.setattr(updates, "apply", lambda layout, status, reinstall=True, **kw: updates.Applied(ok=True, steps=["pulled 1 commit(s)"], restart_ui=True))
     r = client.post("/overview/update", data={"csrf_token": "t0ken"}, headers={"HX-Request": "true"})
     assert r.status_code == 200 and "restarting" in r.text and restarted == [True]

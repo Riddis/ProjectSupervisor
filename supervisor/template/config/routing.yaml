@@ -5,7 +5,9 @@ version: 1
 capacity:                             # subscription usage windows (measured from the CLIs' own reports)
   claude: {reserve_percent: 20, weekly_gate_percent: 20}   # stop automation when this much of a window remains
   codex: {reserve_percent: 10, weekly_gate_percent: 20}
-  unattended_prefers_api_credits: false                    # `supervisor run --unattended` may route claude_cli -> claude_api
+  unattended_prefers_api_credits: false                    # true: `supervisor run --unattended` may move a claude_cli pick to the
+                                                           # metered claude_api lane while credits remain; false (default): it waits
+                                                           # on claude_cli capacity instead and never spends API credits
 
 claude_api:                           # Messages API lane (optional; needs a key in secrets/ and an owner-approved budget)
   monthly_budget_usd: 0               # 0 disables the lane
@@ -13,8 +15,10 @@ claude_api:                           # Messages API lane (optional; needs a key
   max_tokens: 8192
   timeout_s: 600
 
-# Default adapter per task cost_category when the task's own `job.adapter` is absent. An extension lane that holds
-# the project's single heavy resource (a GPU, a device, a build farm) is usually mapped to `local`.
+# Default adapter per task cost_category when the task's own `job.adapter` is absent. For the model categories
+# (claude, codex, mixed, paid) the owner role's `roles.<role>.adapter` (below) decides the provider instead; the
+# non-model lanes (deterministic, local, human) apply whoever owns the task. An extension lane that holds the
+# project's single heavy resource (a GPU, a device, a build farm) is usually mapped to `local`.
 cost_lanes:
   deterministic: python
   local: python
@@ -26,11 +30,14 @@ cost_lanes:
 
 # ---------------------------------------------------------------------------- roles
 # One entry per role id that appears as owner_role or reviewer in state/tasks/, plus the Control Center chat lane.
-#   adapter          registered adapter name
+#   adapter          registered adapter name; the lane this role's agent work runs on, whatever model
+#                    cost_category the task carries (a task's own `job.adapter` still overrides it; a
+#                    deterministic/local/human task keeps its `cost_lanes` entry)
 #   model / effort   provider-specific; these names live here and nowhere else - never in a role card
 #   tools            writer | reader | web | none (claude_cli.DEFAULT_TOOLS) or an explicit tool list
 #   card             agents/<file>, or null while the role is dormant
-#   active           true once the role has work; a dormant role costs nothing
+#   active           true once the role has work; a dormant role costs nothing - its tasks are parked by the
+#                    scheduler (logged `schedule_skip`), never dispatched on another lane
 #   active_from      the first phase the role has work in
 #   result_kinds     schemas in agents/schemas/ this role may produce
 #   senior_model     model for the second automatic revision

@@ -8,7 +8,9 @@ One Python package, one process per role of the system (loop, UI, CLI), one dire
    `state/`. Everyone else — CLI, Control Center — writes a command file (`state/commands/<id>.json`) that the lock
    holder applies within one iteration (`commands.py`). With no loop running, the CLI/UI take the lock and apply the
    command themselves. Handlers are idempotent by command id.
-2. **One transition function.** `tasks.advance()` is the only path to COMPLETE; `tasks._evaluate()` is the rule.
+2. **One transition function.** `tasks.advance()` is the only path to COMPLETE through records; `tasks._evaluate()` is
+   the rule. The one exception is an owner force (`tasks.set_status(..., force=True)` with `actor="owner"` and a
+   note), which is persisted on the task as `forced`, rendered and logged.
    Every status change happens inside the store lock, deciding from the freshly read document.
 3. **One launch gate.** Every job — delivery, review, revision, continuation, verify job, chat turn — reaches an
    adapter's `submit()` only through `Supervisor.launch()`, which asks `gate.check()`: owner decision, measured
@@ -74,7 +76,7 @@ scheduler.plan() ──▶ Supervisor.dispatch(task, adapter)
 
 ```
 state/tasks/*.yaml  state/gates.yaml  state/decisions/*.md  state/issues/*.yaml  state/inbox/*.yaml
-state/owner_tasks.yaml  state/conversations/*.yaml  state/log.jsonl
+state/owner_tasks.yaml  state/conversations/*.jsonl  state/log.jsonl
 state/commands/*.json (+applied/)  state/runtime/{supervisor.json, usage_*.json, jobs/*.json, wake}
 runs/<task>/<attempt>/{prompt.md, stdout.jsonl, stderr.txt, result.json, HANDOFF.md, verification.json, ...}
 ```

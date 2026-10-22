@@ -63,12 +63,17 @@ phases:
   1: {requires: [G0]}
   2: {requires: [G1], note: "docs may start on G0"}
 gates:
-  G0: {status: OPEN, phase: 0, evidence: [], passed_at: null, owner_ack: null}
+  G0: {status: OPEN, phase: 0, owner_ack_required: true, evidence_required: true, evidence: [], passed_at: null, owner_ack: null}
 ```
 
-A phase is open when every gate in `requires` is PASSED; an unlisted phase is closed. `supervisor gate set G0
-PASSED --evidence path1,path2` and `supervisor gate ack G0` (or the inbox's *Acknowledge gate* button) record it.
-Gates are not necessarily linear — a phase may require a gate from a non-adjacent phase.
+A phase is open when every gate in `requires` is open; an unlisted phase is closed. A gate is open when its status is
+PASSED **and** its declared requirements are met: `evidence_required: true` needs a non-empty `evidence` list,
+`owner_ack_required: true` needs an `owner_ack` recorded by an owner actor (`owner`, `owner-ui`). Both keys default
+to false when absent. `supervisor gate set G0 PASSED --evidence path1,path2 --actor owner` and `supervisor gate ack
+G0` (or the Control Center's *Acknowledge gate* button) record it; the set is refused with a clear error when the
+evidence is missing or when a non-owner actor (an agent, the default `cli`) tries to pass an owner gate — an owner's
+own PASSED doubles as the acknowledgement. Gates are not necessarily linear — a phase may require a gate from a
+non-adjacent phase.
 
 ## Decisions (`state/decisions/D-nnn-<slug>.md`)
 

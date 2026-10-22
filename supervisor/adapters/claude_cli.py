@@ -100,7 +100,7 @@ def role_profile(layout: Layout, role: str) -> dict:
     prof.setdefault("effort", "high")
     # Builders write; strategists research AND write; reviewers/QA read.
     prof.setdefault("tools", "web" if role in ("research_strategist", "senior_pm") else
-                    "reader" if role in ("code_review", "visual_qa_reviewer") else "writer")
+                    "reader" if role == "code_review" else "writer")
     return prof
 
 

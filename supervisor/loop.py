@@ -47,14 +47,46 @@ class Supervisor:
         self.iteration = 0
         self.errors: list[float] = []
 
+    def extensions_blocked(self) -> str | None:
+        """Why this loop must not dispatch, or None: a required extension (project.yaml `extensions:`) failed to
+        load, so the lane, screen or check it provides is missing. `supervisor doctor` shows the error; the owner
+        fixes the module or marks it `required: false`."""
+        from . import extensions
+        return extensions.load(self.layout).blocking_reason()
+
+    def _require_extensions(self) -> None:
+        from . import extensions
+        reason = self.extensions_blocked()
+        if reason:
+            raise extensions.ExtensionError(reason)
+
     # ------------------------------------------------------------ dispatch and ingestion
+
+    def _adapter_failed(self, rec: dict, stage: str, exc: BaseException) -> None:
+        """An adapter call raised: that is this attempt's failure (recorded on the job and the task through the
+        normal FAILED path), never a loop error — a broken or flaky lane must not spend the loop's error budget."""
+        error = f"adapter {rec['adapter']}.{stage}() raised {type(exc).__name__}: {exc}"[:1000]
+        tasks_mod.log(self.layout, "adapter_error", "loop", task=rec["task_id"], attempt=rec["attempt_id"],
+                      adapter=rec["adapter"], stage=stage, error=error, traceback=traceback.format_exc()[-2000:])
+        rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], rec["phase"], error=error, failed_stage=stage)
+        self.ingest(rec, Result(status="FAILED", error=error))
 
     def dispatch(self, task: Task, adapter_name: str, deferred_until: float | None = None, note: str = "dispatch",
                 kind: str = "delivery", extra: dict | None = None) -> dict:
+        self._require_extensions()
         ad = REGISTRY[adapter_name]
         n = len(jobs_mod.for_task(self.layout, task.id)) + 1
         attempt_id = f"{task.id}.a{n}"
-        spec = ad.prepare(self.layout, task, attempt_id)
+        try:
+            spec = ad.prepare(self.layout, task, attempt_id)
+        except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
+            spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
+            rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
+                                   gpu=bool(getattr(ad, "gpu", False)), **(extra or {}))
+            if kind != "conversation":
+                tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}: prepare failed")
+            self._adapter_failed(rec, "prepare", exc)
+            return jobs_mod.read(self.layout, attempt_id)
         spec["kind"] = kind
         if gate.owned_for(task, adapter_name, kind):          # every writing job: declared roots or exclusive
             atomic_json(Path(spec["run_dir"]) / "before_manifest.json", verify_mod.snapshot(self.layout, task))
@@ -126,7 +158,11 @@ class Supervisor:
         conversation = (rec.get("spec") or {}).get("kind") == "conversation"
         if not conversation and (rec.get("spec") or {}).get("kind") != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
             self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}")
-        handle = ad.recover(rec["spec"])                      # a previous loop may have launched it already
+        try:
+            handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
+        except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
+            self._adapter_failed(rec, "recover", exc)
+            return jobs_mod.read(self.layout, rec["attempt_id"])
         if handle is not None:
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "SUBMITTED", handle=handle, submitted=now_iso(), recovered=True)
             tasks_mod.log(self.layout, "job_recovered", "loop", task=rec["task_id"], attempt=rec["attempt_id"])
@@ -175,6 +211,9 @@ class Supervisor:
                                      deferred_until=exc.reset_epoch, deferred_reason=str(exc))
             tasks_mod.log(self.layout, "capacity_deferred", "loop", task=rec["task_id"], attempt=rec["attempt_id"], until=exc.reset_epoch)
             return rec
+        except Exception as exc:                              # noqa: BLE001 - nothing launched: the attempt fails here
+            self._adapter_failed(rec, "submit", exc)
+            return jobs_mod.read(self.layout, rec["attempt_id"])
         rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "SUBMITTED", handle=handle, submitted=now_iso())
         tasks_mod.log(self.layout, "job_submitted", "loop", task=rec["task_id"], attempt=rec["attempt_id"], adapter=rec["adapter"])
         return rec
@@ -248,7 +287,8 @@ class Supervisor:
             # a worker may add deliverables, never narrow the list.
             patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
             files, missing = self._expand_artifacts(patterns)
-            volatile = [f for f in files if f.startswith("state/") or f in RENDERED_PROJECTIONS]
+            rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and extension views
+            volatile = [f for f in files if f.startswith("state/") or f in rendered]
             if volatile:                                           # the store/projections change on every tick: never an
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
                 tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=volatile,
@@ -439,19 +479,25 @@ class Supervisor:
             if rec["phase"] == "PREPARED":
                 continue
             handle = rec.get("handle") or {}
-            result = ad.collect(rec["spec"], handle)
-            if result is None:
-                if rec["phase"] == "SUBMITTED":
-                    jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
+            try:
+                result = ad.collect(rec["spec"], handle)
+                if result is None:
+                    if rec["phase"] == "SUBMITTED":
+                        jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
+                    continue
+                if result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
+                    result.error = f"lost: {result.error}"
+            except Exception as exc:                          # noqa: BLE001 - the job's failure, not the loop's
+                self._adapter_failed(rec, "collect", exc)
                 continue
-            if result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
-                result.error = f"lost: {result.error}"
             self.ingest(rec, result)
 
     # ------------------------------------------------------------ one iteration
 
     def once(self) -> str:
-        """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD)."""
+        """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD). Raises ExtensionError (before
+        touching anything) while a required extension is missing: `run()` reports that as BLOCKED instead."""
+        self._require_extensions()
         self.iteration += 1
         commands_mod.apply_all(self.layout)
         decision = runtime.read(self.layout).get("decision", "RUN")
@@ -527,6 +573,12 @@ class Supervisor:
             print("another supervisor holds state/.lock", file=sys.stderr)
             return 2
         try:
+            blocked = self.extensions_blocked()
+            if blocked:                                       # a missing protection is not a loop error to budget: refuse
+                tasks_mod.log(self.layout, "extensions_blocked", "loop", reason=blocked)
+                runtime.heartbeat(self.layout, "BLOCKED", reason=blocked)
+                print(f"supervisor refuses to run: {blocked}", file=sys.stderr)
+                return 1
             runtime.write(self.layout, status="RUNNING", pid=os.getpid(), started=now_iso(), decision=runtime.read(self.layout).get("decision", "RUN"))
             if reset_decision and runtime.read(self.layout).get("decision") in ("STOP", "RELOAD"):
                 runtime.set_decision(self.layout, "RUN", "loop-start")   # `supervisor run` = owner Start

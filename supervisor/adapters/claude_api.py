@@ -1,14 +1,14 @@
 """Claude Messages API adapter: a single bounded HTTP
-call to api.anthropic.com for unattended runs, so overnight batches draw the linked Console org's $100/month
-credit allowance instead of the owner's interactive 5-hour/weekly window (routing.yaml:
-`capacity.unattended_prefers_api_credits`, the `scheduler.plan(unattended=True)` switch).
+call to api.anthropic.com for unattended runs, so overnight batches draw a metered API credit allowance
+(`routing.yaml claude_api.monthly_budget_usd`) instead of the owner's interactive subscription window
+(routing.yaml: `capacity.unattended_prefers_api_credits`, the `scheduler.plan(unattended=True)` switch).
 
 No tool use: the Messages API call carries exactly the same role prompt text `claude_cli` puts on stdin
 (`packets.delivery_brief`) as a single user message, and the same fenced-JSON result contract is expected back
 (`structured_result`). The model cannot Read/Write/Edit or run Bash through this adapter — it is for
 reasoning/text roles (research, review, planning) run unattended, not file-writing engineering work. Disabled
 (a clear FAILED result, never raised) while `secrets/.env` carries no `ANTHROPIC_API_KEY` — see
-docs/runbooks/api_credits.md and OT-001 for how the owner links a Console org and places the key.
+docs/runbooks/claude_api.md and secrets/README.md for how the owner places the key and approves a budget.
 
 Runs synchronously inside submit() like the `python` adapter (one bounded call, not a long-lived child); the
 finished result lives in `result.json` before submit() returns, so a crash between submit and the loop reading
@@ -33,7 +33,7 @@ API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TIMEOUT_S = 600
-DEFAULT_BUDGET_USD = 100.0           # OT-001: the included Max-plan API credit allowance
+DEFAULT_BUDGET_USD = 100.0           # fallback when routing.yaml claude_api.monthly_budget_usd is absent (the template sets 0 = lane off)
 LEDGER_CATEGORY = "api_credits"
 # Model ids the Messages API accepts; routing.yaml roles.<role>.model uses the CLI's short aliases.
 MODEL_ALIASES = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-5", "haiku": "claude-haiku-4-5-20251001"}
@@ -128,7 +128,7 @@ def spent_this_month(layout: Layout) -> float:
 
 
 def available(layout: Layout) -> bool:
-    """False while the owner has not linked a Console org / placed a key in secrets/.env (OT-001): the adapter
+    """False while the owner has not placed a key in secrets/.env: the adapter
     is disabled, not gated-and-waiting, since no amount of time fixes a missing key."""
     return bool(api_key(layout))
 
@@ -172,7 +172,7 @@ class ClaudeApiAdapter(Adapter):
         key = api_key(layout)
         if not key:
             atomic_json(result_path, {"status": "FAILED", "error": "claude_api disabled: no ANTHROPIC_API_KEY in "
-                        "secrets/.env (docs/runbooks/api_credits.md, OT-001)"})
+                        "secrets/.env (docs/runbooks/claude_api.md)"})
             return {"kind": "claude_api", "result_path": str(result_path)}
         if not credits_remaining(layout):
             atomic_json(result_path, {"status": "FAILED",

@@ -64,14 +64,14 @@ class CodexCliAdapter(ProcessAdapter):
         cfg = routing(layout).get("codex") or {}
         # Model names in the roles block are the role's PRIMARY adapter's (usually Claude's); a codex job takes its
         # model from the role only when that role's adapter is codex_cli, else from routing.codex.model, else the
-        # account default (no -m). T0-12.a1 failed sending "sonnet" to Codex.
+        # account default (no -m). Codex rejects Claude model aliases such as "sonnet".
         if prof.get("adapter") != "codex_cli":
             prof["model"] = cfg.get("model")
         # The role NAME is only a last-resort default for the sandbox; a review job passes `sandbox` explicitly
         # (supervisor.review.REVIEW_LANE / routing.yaml roles.<role>.review), because roles that both build and review
         # must not review with write capability. Codex has no per-path write mode, so a review runs read-only and
         # its handoff is prose in result.txt (_vendor.handoff.instructions).
-        prof.setdefault("sandbox", cfg.get("sandbox", "read-only" if role in ("code_review", "visual_qa_reviewer") else "workspace-write"))
+        prof.setdefault("sandbox", cfg.get("sandbox", "read-only" if role == "code_review" else "workspace-write"))
         prof.update({k: v for k, v in job.items() if k in ("model", "effort", "sandbox")})
         prompt_file = run_dir / "prompt.md"
         if job.get("prompt_file"):

@@ -1,7 +1,11 @@
 # Gate status and phase eligibility. A phase's tasks become eligible when every gate in phases.<n>.requires is
-# PASSED. Gate values: OPEN | PASSED | FAILED. PASSED needs evidence links and, where the plan says so, owner_ack.
+# open. A gate is open when status is PASSED and its declared requirements are met:
+#   evidence_required: true   -> PASSED needs at least one evidence link (supervisor gate set G0 PASSED --evidence ...)
+#   owner_ack_required: true  -> only an owner actor may pass it, and owner_ack must be recorded by an owner
+#                                (Control Center "Acknowledge gate", or `supervisor gate ack G0`)
+# Gate values: OPEN | PASSED | FAILED. Omitted requirement keys default to false (status alone then decides).
 # The setup skill writes the real phases and gates here from the approved plan.
 phases:
   0: {requires: []}
 gates:
-  G0: {status: OPEN, phase: 0, evidence: [], passed_at: null, owner_ack: null}
+  G0: {status: OPEN, phase: 0, owner_ack_required: true, evidence_required: true, evidence: [], passed_at: null, owner_ack: null}

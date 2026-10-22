@@ -120,9 +120,9 @@ def _control(kind: str):
 
 @router.post("/overview/start")
 def start_supervisor(request: Request, csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
-    import subprocess
-    import sys
-
+    """Start the loop through `supervisor.launcher`, the restart-on-reload wrapper, so a Reload or a framework
+    update (exit 3) brings it back on the new code just as the console launchers do."""
+    from ... import launcher
     from ..auth import require_csrf
 
     require_csrf(request, csrf_token)
@@ -132,14 +132,7 @@ def start_supervisor(request: Request, csrf_token: str = Form(...), layout: Layo
     elif mismatch:
         level, message = "error", mismatch                 # never start a loop on state the new code may not understand
     else:
-        import os
-
-        log_path = layout.runtime / "supervisor_ui_launch.log"
-        with open(log_path, "ab") as out:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            env = {**os.environ, "SUPERVISOR_ROOT": str(layout.root)}  # `supervisor run` otherwise always targets the
-            subprocess.Popen([sys.executable, "-m", "supervisor", "run"], cwd=str(layout.root), stdout=out, stderr=out,
-                             stdin=subprocess.DEVNULL, creationflags=flags, env=env)
+        launcher.spawn(layout)
         level, message = "applied", "supervisor starting (see state/runtime/supervisor_ui_launch.log)"
     if request.headers.get("HX-Request"):
         return render(request, "partials/action_result.html", {"level": level, "message": message, "outcome": {}})

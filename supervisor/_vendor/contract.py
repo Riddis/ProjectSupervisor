@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
@@ -37,8 +38,19 @@ def atomic_write_text(path, text):
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    temporary.write_text(text, encoding="utf-8")
+    # mkstemp: the OS guarantees a fresh name (O_EXCL). A PID + clock name is not unique on Windows, where the clock
+    # ticks coarsely enough for two threads to pick the same name and one to hit the other's open handle.
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     try:
         for attempt in range(_REPLACE_ATTEMPTS):
             try:
@@ -229,7 +241,7 @@ def review_result(text):
 def structured_result(text, kind, schema_version=1):
     """result_object(), except a `review` kind is also checked against review_result()'s contract (verdict enum,
     finding shape, the ACCEPT/advisory cross-field rules) — a reviewer's self-contradictory verdict (an ACCEPT
-    carrying a blocking finding) must never reach the task store as a recorded verdict (review round 3, code_review)."""
+    carrying a blocking finding) must never reach the task store as a recorded verdict."""
     if kind == "review":
         return review_result(text)
     return result_object(text, kind, schema_version)

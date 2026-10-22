@@ -42,9 +42,11 @@ itself and shows **applied**. The UI never writes `state/` directly.
 
 ## Shut down PC when idle
 
-With a live supervisor the button submits `loop.drain {"shutdown": true}`: nothing new launches, running jobs finish
-and are verified/reviewed, then the loop sets STOP and asks the OS to power off after 60 s (`shutdown /s /t 60` on
-Windows, `shutdown -h +1` elsewhere). The button becomes **Cancel shutdown** while draining or counting down. With the
+With a live supervisor the button submits `loop.drain {"shutdown": true}`: nothing new launches (no deliveries,
+reviews or conversations), running jobs finish and their results are collected and ingested, then the loop sets STOP
+and asks the OS to power off after 60 s (`shutdown /s /t 60` on Windows, `shutdown -h +1` elsewhere). Reviews,
+approvals and checkpoints that the ingested results call for are not dispatched while draining; they run on the next
+start. A `human` job never holds the drain open. The button becomes **Cancel shutdown** while draining or counting down. With the
 supervisor offline the same button powers off after the grace period, cancellable. From the CLI: `supervisor drain
 --shutdown`, `supervisor resume`.
 

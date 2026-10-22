@@ -129,6 +129,8 @@ def test_crash_between_submit_and_collect_never_resubmits(layout, ad, monkeypatc
 
 def test_unattended_switch_picks_claude_api_when_credits_available(layout):
     write_key(layout)
+    layout.config.mkdir(parents=True, exist_ok=True)      # the switch is opt-in: capacity.unattended_prefers_api_credits
+    (layout.config / "routing.yaml").write_text("capacity: {unattended_prefers_api_credits: true}\n", encoding="utf-8")
     plain_claude_task(layout, "CB")
     plan = scheduler.plan(layout, unattended=True)
     assert {t.id: name for t, name in plan}["CB"] == "claude_api"

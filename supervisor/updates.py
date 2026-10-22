@@ -1,8 +1,9 @@
 """Framework update check and apply. The framework is a git clone installed editable into each project, so "update"
 means: fetch `origin`, show the commits the clone is behind, and on the owner's yes `git pull --ff-only`, reinstall
 the package (dependencies may have changed), run the project's migrations and doctor, and restart the running
-processes so they import the new code (the loop through `loop.reload`; the Control Center by exiting with
-RESTART_EXIT_CODE, which the launcher turns into a restart).
+processes so they import the new code (the loop is stopped first — `supervisor migrate` refuses while it holds the
+state lock — and started again through `supervisor.launcher`; the Control Center exits with RESTART_EXIT_CODE,
+which its launcher turns into a restart).
 
 Everything here is fail-soft: no remote, no network, no git, or a dirty clone all produce a `Status` that says why
 nothing can be done, never an exception out of a launch path."""
@@ -176,13 +177,58 @@ def describe(status: Status) -> list[str]:
 class Applied:
     ok: bool
     steps: list[str] = field(default_factory=list)
-    error: str = ""
+    error: str = ""                           # on failure: what went wrong and what the owner should do now
     restart_ui: bool = False
+    loop_restarted: bool = False              # a loop was running, was stopped for the update and started again
 
 
-def apply(layout: Layout, status: Status | None = None, reinstall: bool = True) -> Applied:
-    """Pull, reinstall, migrate, doctor, reload the loop. The caller restarts the UI (restart_ui)."""
-    from . import doctor as doctor_mod, migrations, tasks as tasks_mod
+STOP_TIMEOUT_S = 120.0           # how long apply() waits for a running loop to reach its safe point and release the lock
+
+
+def _stop_loop(layout: Layout, out: Applied, timeout_s: float) -> bool:
+    """Ask a running loop to stop (`loop.stop` through the commands library: it stops at the next safe point and
+    releases state/.lock) and wait for the lock. Returns False, with `out.error` set, when the lock is still held
+    after `timeout_s`. A lock held by something that is not the loop (e.g. `supervisor task import`) is waited for
+    the same way. Nothing is pulled or migrated while anything holds the lock: `supervisor migrate` refuses then."""
+    from . import commands as commands_mod, runtime
+    from .locks import holder
+    live = runtime.is_live(layout)
+    h = holder(layout.lock)
+    if not live and h is None:
+        return True
+    if live:
+        commands_mod.submit_or_apply(layout, "loop.stop", {}, actor="update")
+        out.steps.append("loop: stop requested (it stops at its next safe point; running jobs are picked up on restart)")
+    deadline = time.monotonic() + timeout_s
+    while holder(layout.lock) is not None:
+        if time.monotonic() >= deadline:
+            out.error = (f"the loop did not release state/.lock within {int(timeout_s)}s (holder: "
+                         f"{(holder(layout.lock) or {}).get('owner')}); nothing was changed. Stop it (Stop button or "
+                         "`supervisor stop`), wait for it to exit, then run the update again")
+            return False
+        time.sleep(0.5)
+    if live:
+        out.steps.append("loop: stopped")
+    return True
+
+
+def _child(args: list[str], layout: Layout) -> tuple[int, str, str] | None:
+    """Run `python -m supervisor <args>` on the project in a child (the NEW code after a pull); None if it could
+    not be started at all."""
+    try:
+        proc = subprocess.run([sys.executable, "-m", "supervisor", *args], cwd=str(layout.root), capture_output=True,
+                              text=True, timeout=300, check=False, env={**os.environ, "SUPERVISOR_ROOT": str(layout.root)},
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, stop_timeout_s: float = STOP_TIMEOUT_S) -> Applied:
+    """Stop a running loop, pull, reinstall, migrate, doctor, start the loop again. The caller restarts the UI
+    (restart_ui). Any failing step fails the update (ok=False, `error` says what to do); the loop is not started
+    on a project that did not migrate or does not pass the doctor."""
+    from . import doctor as doctor_mod, launcher, migrations, tasks as tasks_mod
     fw = framework_dir()
     status = status or check(layout, fetch=True, max_age_s=0)
     out = Applied(ok=False)
@@ -192,6 +238,12 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True) 
     if status.dirty:
         out.error = "framework clone has uncommitted changes; commit or stash them first"
         return out
+    from . import runtime
+    was_live = runtime.is_live(layout)
+    if not _stop_loop(layout, out, stop_timeout_s):
+        return out
+    failing_before = {c.name for c in doctor_mod.run(layout) if not c.ok}   # the update must not make the doctor worse
+    pulled = False
     if not status.behind:
         out.steps.append("already up to date")
     else:
@@ -199,41 +251,67 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True) 
         if code != 0:
             out.error = f"git pull --ff-only failed: {text[-300:]}"
             return out
+        pulled = True
         out.steps.append(f"pulled {status.behind} commit(s) from origin/{status.branch}")
         if reinstall:
             try:
                 proc = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{fw}[ui]"], capture_output=True,
                                       text=True, timeout=600, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                out.steps.append("reinstalled the package" if proc.returncode == 0 else
-                                 f"pip install -e failed (dependencies may be stale): {(proc.stderr or '')[-200:]}")
+                err = "" if proc.returncode == 0 else (proc.stderr or "")[-300:]
             except (OSError, subprocess.SubprocessError) as exc:
-                out.steps.append(f"pip install -e skipped: {exc}")
+                err = str(exc)[:300]
+            if err:
+                out.steps.append("pip install -e failed")
+                out.error = (f"pip install -e {fw} failed: {err} — the clone is on the new code but its dependencies are not "
+                             "installed; run the install by hand (tools/setup_env), then `supervisor migrate`, "
+                             "`supervisor doctor`, and start the loop")
+                return out
+            out.steps.append("reinstalled the package")
     # The running process still has the old code; migrations run in a child on the NEW code so the project is
     # brought forward before anything restarts into it.
-    try:
-        proc = subprocess.run([sys.executable, "-m", "supervisor", "migrate"], cwd=str(layout.root), capture_output=True,
-                              text=True, timeout=300, check=False, env={**os.environ, "SUPERVISOR_ROOT": str(layout.root)},
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        notes = [ln for ln in (proc.stdout or "").splitlines() if ln.strip()]
-        out.steps.append("migrate: " + ("; ".join(notes) if notes else "nothing to migrate")
-                         + ("" if proc.returncode == 0 else f" (exit {proc.returncode}: {(proc.stderr or '')[-200:]})"))
-    except (OSError, subprocess.SubprocessError) as exc:
-        migrations.run(layout)                          # fall back to in-process (old code, but still correct for its version)
-        out.steps.append(f"migrate (in-process): child failed: {exc}")
-    try:
-        proc = subprocess.run([sys.executable, "-m", "supervisor", "doctor"], cwd=str(layout.root), capture_output=True,
-                              text=True, timeout=300, check=False, env={**os.environ, "SUPERVISOR_ROOT": str(layout.root)},
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        fails = [ln for ln in (proc.stdout or "").splitlines() if ln.startswith("FAIL")]
-        out.steps.append("doctor: all checks OK" if proc.returncode == 0 else "doctor: " + ("; ".join(fails) or "failed"))
-    except (OSError, subprocess.SubprocessError):
-        checks = doctor_mod.run(layout)
-        fails = [f"{c.name}: {c.detail}" for c in checks if not c.ok]
-        out.steps.append("doctor: all checks OK" if not fails else "doctor: " + "; ".join(fails))
-    from . import commands as commands_mod, runtime
-    if runtime.is_live(layout):
-        commands_mod.submit_or_apply(layout, "loop.reload", {}, actor="update")
-        out.steps.append("loop: reload requested (the launcher restarts it on the new code)")
+    res = _child(["migrate"], layout)
+    if res is None:
+        try:
+            notes = migrations.run(layout)              # fall back to in-process (old code, but still correct for its version)
+            out.steps.append("migrate (in-process): " + ("; ".join(notes) if notes else "nothing to migrate"))
+        except Exception as exc:                        # noqa: BLE001 - reported as the update's failure
+            out.steps.append("migrate (in-process) failed")
+            out.error = f"supervisor migrate failed: {exc}; fix it and run `supervisor migrate` by hand, then start the loop"
+            return out
+    else:
+        code, stdout, stderr = res
+        notes = [ln for ln in stdout.splitlines() if ln.strip()]
+        if code != 0:
+            detail = (stderr.strip() or "; ".join(notes))[-300:]
+            out.steps.append(f"migrate failed (exit {code})")
+            out.error = (f"supervisor migrate failed (exit {code}): {detail}" + (" — the framework clone is already on the new code;" if pulled else ";")
+                         + " fix the cause and run `supervisor migrate` then `supervisor doctor` by hand before starting the loop")
+            return out
+        out.steps.append("migrate: " + ("; ".join(notes) if notes else "nothing to migrate"))
+    res = _child(["doctor"], layout)
+    if res is None:
+        fails = {c.name: c.detail for c in doctor_mod.run(layout) if not c.ok}
+    else:
+        fails = {}
+        for ln in res[1].splitlines():
+            if ln.startswith("FAIL "):
+                name, _, detail = ln[5:].partition(":")
+                fails[name.strip()] = detail.strip()
+    new_fails = {k: v for k, v in fails.items() if k not in failing_before}
+    if new_fails:
+        out.steps.append("doctor: " + "; ".join(f"{k}: {v}" for k, v in fails.items()))
+        out.error = ("supervisor doctor fails after the update: " + "; ".join(f"{k}: {v}" for k, v in new_fails.items())
+                     + " — fix it (`supervisor doctor`), then start the loop")
+        return out
+    out.steps.append("doctor: all checks OK" if not fails else "doctor: OK apart from pre-existing " + ", ".join(fails))
+    if was_live:
+        try:
+            launcher.spawn(layout)
+            out.loop_restarted = True
+            out.steps.append("loop: started again on the new code (through the restart-on-reload wrapper)")
+        except OSError as exc:
+            out.error = f"the loop was stopped for the update but could not be started again: {exc}; press Start"
+            return out
     else:
         out.steps.append("loop: not running; it starts on the new code next time")
     tasks_mod.log(layout, "framework_update", "owner", steps=out.steps, behind=status.behind,
@@ -266,7 +344,7 @@ def prompt_and_apply(layout: Layout, status: Status, ask=input, echo=print) -> A
     if not status.available or status.dirty:
         return None
     try:
-        answer = ask("Update now? Pulls, reinstalls, runs migrate + doctor, reloads the loop [y/N] ").strip().lower()
+        answer = ask("Update now? Stops the loop, pulls, reinstalls, runs migrate + doctor, restarts the loop [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return None
     if answer not in ("y", "yes"):

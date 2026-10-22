@@ -53,6 +53,16 @@ EXCLUDED_FILES = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_IN
 LARGE_FILE_BYTES = 32 * 1024 * 1024
 
 
+def excluded_files(layout: Layout | None = None) -> set[str]:
+    """Root-relative files that are never evidence about what an agent wrote: the built-in rendered views plus
+    every projection a project extension registered (`registry.projection`, supervisor.extensions)."""
+    out = set(EXCLUDED_FILES)
+    if layout is not None:
+        from . import extensions
+        out |= extensions.load(layout).projection_paths
+    return out
+
+
 @dataclass
 class Outcome:
     ok: bool
@@ -60,20 +70,22 @@ class Outcome:
     report: dict = field(default_factory=dict)
 
 
-def repo_manifest(root: Path, exclude: set[str] = EXCLUDED_DIRS) -> dict:
-    """Content manifest of the whole working tree with `exclude` pruned, root-relative POSIX keys. Links are
-    recorded, never followed or hashed; files over LARGE_FILE_BYTES are recorded by size+mtime so one dropped
-    checkpoint cannot make verification cost minutes."""
+def repo_manifest(root: Path, exclude: set[str] = EXCLUDED_DIRS, exclude_files: set[str] | None = None) -> dict:
+    """Content manifest of the whole working tree with `exclude` pruned and the rendered views in `exclude_files`
+    (default EXCLUDED_FILES) skipped, root-relative POSIX keys. Links are recorded, never followed or hashed; files
+    over LARGE_FILE_BYTES are recorded by size+mtime so one dropped checkpoint cannot make verification cost
+    minutes."""
     import hashlib
     entries: dict[str, dict] = {}
     root = Path(root)
+    skip = EXCLUDED_FILES if exclude_files is None else exclude_files
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if d not in exclude and not d.endswith(".egg-info"))
         here = Path(dirpath)
         for name in sorted(filenames):
             p = here / name
             key = p.relative_to(root).as_posix()
-            if key in EXCLUDED_FILES:
+            if key in skip:
                 continue
             try:
                 if p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction()):
@@ -97,7 +109,7 @@ def snapshot(layout: Layout, task: Task) -> dict:
     """Pre-dispatch state: the sha256 manifest of the task's owned paths plus a working-tree manifest. A manifest
     error (a link or a path escaping the root inside owned_paths) is recorded, not raised: it is a verification
     failure, and raising here would kill the dispatch that is taking the snapshot."""
-    out: dict = {"owned": {}, "repo": repo_manifest(layout.root)}
+    out: dict = {"owned": {}, "repo": repo_manifest(layout.root, exclude_files=excluded_files(layout))}
     if task.scoped_paths():                       # exclusive mode owns the tree: the repo manifest is its manifest
         try:
             out["owned"] = manifest(task.scoped_paths(), root=layout.root)
@@ -220,11 +232,13 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
 
 
 def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list[str], root: Path,
-               ignore: tuple[str, ...]) -> tuple[list[str], list[str]]:
-    """(changes inside owned_paths, changes outside it) that the delivery did not declare."""
+               ignore: tuple[str, ...], skip: set[str] = frozenset()) -> tuple[list[str], list[str]]:
+    """(changes inside owned_paths, changes outside it) that the delivery did not declare. `skip` names rendered
+    views (excluded_files) — also filtered here, because a projection first learned after the `before` snapshot
+    was taken is in that snapshot and not in the next one."""
     inside, outside = [], []
     for p in changed_paths(before, after):
-        if p in declared or (ignore and contained(p, list(ignore), root)):
+        if p in declared or p in skip or (ignore and contained(p, list(ignore), root)):
             continue
         (inside if contained(p, owned_paths, root) else outside).append(p)
     return inside, outside
@@ -282,12 +296,14 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
             return Outcome(False, f"post-delivery snapshot failed: {exc}")
         if after.get("error"):
             return Outcome(False, f"post-delivery snapshot failed: {after['error']}")
+        skip = excluded_files(layout)
         if scoped:
-            inside, _ = _undeclared(before.get("owned") or {}, after.get("owned") or {}, set(files), scoped, layout.root, ignore)
+            inside, _ = _undeclared(before.get("owned") or {}, after.get("owned") or {}, set(files), scoped, layout.root,
+                                    ignore, skip)
             if inside:
                 return Outcome(False, "undeclared changes inside owned paths: " + ", ".join(inside))
         inside_repo, outside_repo = _undeclared(before.get("repo") or {}, after.get("repo") or {}, set(files),
-                                                scoped, layout.root, ignore)
+                                                scoped, layout.root, ignore, skip)
         undeclared = outside_repo if scoped else inside_repo + outside_repo
         if undeclared:
             what = "undeclared writes outside owned paths: " if scoped else "undeclared writes: "

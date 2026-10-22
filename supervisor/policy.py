@@ -487,9 +487,15 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
 # ---------------------------------------------------------------------------- extension screens
 
 def extension_screens(layout: Layout | None):
+    """The project's registered packet screens — or PolicyViolation when a required extension failed to load: the
+    screen that extension would have registered is not running, so no packet can be called clean."""
     if layout is None:
         return []
     from . import extensions
-    return extensions.load(layout).packet_screens
+    try:
+        return extensions.assert_loaded(layout).packet_screens
+    except extensions.ExtensionError as exc:
+        raise PolicyViolation(f"packet refused: {exc} (fix the extension or mark it `required: false` in "
+                              "project.yaml; `supervisor doctor` shows the error)") from exc
 
 

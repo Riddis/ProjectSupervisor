@@ -27,7 +27,7 @@ class Issue(BaseModel):
     status: str = "open"               # open | resolved | wontfix
     severity: str = "medium"           # blocking | high | medium | low
     title: str
-    owner_role: str = "manager"
+    owner_role: str = "senior_pm"      # the template's manager card (routing.yaml escalation.manager_role)
     resolution_task: Optional[str] = None
     systemic: bool = False
     notes: list[str] = Field(default_factory=list)

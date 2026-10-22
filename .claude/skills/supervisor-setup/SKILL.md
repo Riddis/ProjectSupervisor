@@ -15,10 +15,10 @@ who wants to answer questions, approve a plan, and then watch the Control Center
    `docs/SETUP_INTERVIEW.md`); the project is the folder the owner is working in. If they are the same folder, stop:
    projects are never created inside the framework repo — ask where the project should live.
 2. Read `docs/SETUP_INTERVIEW.md`, `docs/TASK_CONTRACT.md` and `docs/FRAMEWORK_VS_EXTENSION.md` from the framework.
-3. In the project folder: if there is no `project.yaml`, run
-   `python -m supervisor init <folder> --name "<name>"` (the project's venv if it exists, else any Python with the
-   framework installed). Then read everything Stage 0 lists and run `supervisor doctor`. Tell the owner in two lines
-   what you found already decided.
+3. In the project folder: read everything Stage 0 lists. If it already is a supervisor project (`project.yaml`
+   exists) also run `supervisor doctor`. If it is not, do **not** run `supervisor init` yet — init stamps config,
+   cards, gates and extension skeletons, and nothing but the plan is written before approval. Tell the owner in two
+   lines what you found already decided.
 
 ## Running the interview
 
@@ -33,15 +33,19 @@ who wants to answer questions, approve a plan, and then watch the Control Center
 
 ## The plan and the approval
 
-- Write `docs/plan/PROJECT_PLAN.md` (the template's sections, filled, with a "Setup summary" at the top listing the
-  files the approval will create/change). Show it. Revise until the owner says "approved" — the literal word, or an
-  unambiguous equivalent. Record the date in the plan.
+- Write `docs/plan/PROJECT_PLAN.md` by hand (the template's eight sections, filled, with a "Setup summary" at the
+  top listing the files the approval will create/change; copy the headings from
+  `supervisor/template/docs/plan/PROJECT_PLAN.md` in the framework when the folder has no plan yet). Show it. Revise
+  until the owner says "approved" — the literal word, or an unambiguous equivalent. Record the date in the plan.
 - **Do not create or modify config, cards, gates, tasks or extensions before approval.** The plan file is the only
-  thing you write before then.
+  thing you write before then; `supervisor init` keeps an existing plan file, so writing it first is safe.
 
 ## Scaffolding (after approval)
 
-Do Stage 3 steps 1–12 in order. Specifics that matter:
+Do Stage 3 steps 0–12 in order. Step 0 is the CLI command `python -m supervisor init <folder> --name "<name>"` (the
+project's venv if it exists, else any Python with the framework installed) when the folder has no `project.yaml`;
+it stamps generic defaults that the following steps adapt. Steps 1–4 and 7–9 are direct file authoring; steps 5, 6,
+10 and 11 run CLI/git commands. Specifics that matter:
 
 - Cards: start from `supervisor/template/agents/*.md`; adapt mandate/authority/escalation to the owner's answers;
   ≤ 400 words; never a model or vendor name (the framework's tests enforce this for the template, and the project's

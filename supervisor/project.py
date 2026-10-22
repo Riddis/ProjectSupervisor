@@ -2,14 +2,22 @@
 `supervisor init` write it, the framework reads it (name, phase labels, extensions, framework version)."""
 from __future__ import annotations
 
+import io
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
+from ruamel.yaml import YAML
 
 from . import __version__
 from .paths import Layout
+
+# Round-trip YAML for `write`: project.yaml is born from the commented template, and the comments are the
+# documentation most owners read, so an update (migration, `extension new`) must keep them (same approach as
+# settings.py for routing.yaml).
+_rt_yaml = YAML()
+_rt_yaml.preserve_quotes = True
 
 DEFAULTS: dict[str, Any] = {
     "name": "Untitled project",
@@ -35,16 +43,27 @@ def _stamp(p: Path) -> tuple:
         return (str(p), 0, 0)
 
 
+def _read_raw(p: Path) -> tuple[dict, str]:
+    """(document as written, problem): the problem is a one-line note when the file is missing, malformed or
+    not a mapping — the raw document is then empty. Callers that must not crash merge DEFAULTS over it; the
+    doctor/migrate paths look at the problem."""
+    try:
+        loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return {}, f"{p} unreadable: {exc}"
+    except yaml.YAMLError as exc:
+        return {}, f"{p} is malformed YAML: {str(exc).splitlines()[0][:160]}"
+    if loaded is None:
+        return {}, ""
+    if not isinstance(loaded, dict):
+        return {}, f"{p} must be a YAML mapping, not {type(loaded).__name__}"
+    return loaded, ""
+
+
 @lru_cache(maxsize=16)
 def _load_cached(stamp: tuple) -> dict:
     p = Path(stamp[0])
-    doc: dict = {}
-    if p.exists():
-        try:
-            loaded = yaml.safe_load(p.read_text(encoding="utf-8"))
-            doc = loaded if isinstance(loaded, dict) else {}
-        except yaml.YAMLError:
-            doc = {}
+    doc = _read_raw(p)[0] if p.exists() else {}
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULTS.items()}
     for k, v in doc.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -61,6 +80,25 @@ def load(layout: Layout) -> dict:
 
 def exists(layout: Layout) -> bool:
     return path(layout).is_file()
+
+
+def raw(layout: Layout) -> dict:
+    """The document exactly as written (no DEFAULTS merged); {} when the file is missing or malformed."""
+    return _read_raw(path(layout))[0] if exists(layout) else {}
+
+
+def problem(layout: Layout) -> str | None:
+    """Why project.yaml cannot be trusted, or None: malformed YAML, not a mapping, or no `framework_version`
+    (so nothing says which framework version wrote the state — `supervisor migrate` records the installed one).
+    A missing file is not a problem here (`doctor` reports it separately; DEFAULTS apply)."""
+    if not exists(layout):
+        return None
+    doc, note = _read_raw(path(layout))
+    if note:
+        return note
+    if not str(doc.get("framework_version") or ""):
+        return "project.yaml has no framework_version (cannot tell which version wrote the state); run `supervisor migrate`"
+    return None
 
 
 def name(layout: Layout) -> str:
@@ -87,7 +125,14 @@ def phase_labels(layout: Layout) -> dict[int, str]:
 
 
 def extensions(layout: Layout) -> list[str]:
-    return [str(x) for x in (load(layout).get("extensions") or []) if x]
+    """Configured extension names. Entries are a bare name or a mapping with `name` (and `required`, see
+    supervisor.extensions.specs); this returns the names only."""
+    names = []
+    for x in load(layout).get("extensions") or []:
+        name = x.get("name") if isinstance(x, dict) else x
+        if name:
+            names.append(str(name))
+    return names
 
 
 def ui_port(layout: Layout) -> int:
@@ -97,17 +142,48 @@ def ui_port(layout: Layout) -> int:
         return 8790
 
 
+def _merge_into(existing, new: dict) -> None:
+    """Update a ruamel round-trip mapping in place from a plain dict: changed values replace, nested mappings
+    recurse (keeping their comments), keys absent from `new` are dropped, new keys are appended."""
+    for k in [k for k in list(existing.keys()) if k not in new]:
+        del existing[k]
+    for k, v in new.items():
+        cur = existing.get(k) if k in existing else None
+        if isinstance(v, dict) and isinstance(cur, dict):
+            _merge_into(cur, v)
+        elif k not in existing or cur != v:
+            existing[k] = v
+
+
 def write(layout: Layout, doc: dict) -> Path:
-    """Write project.yaml (full document). Used by `supervisor init` and migrations only."""
+    """Write project.yaml (full document), preserving the comments and layout of the existing file. Used by
+    migrations and `supervisor extension new`; `supervisor init` stamps the template instead."""
     p = path(layout)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    existing = None
+    if p.is_file():
+        try:
+            existing = _rt_yaml.load(p.read_text(encoding="utf-8"))
+        except Exception:                                   # noqa: BLE001 - malformed: replaced by the full document
+            existing = None
+    if isinstance(existing, dict):
+        _merge_into(existing, doc)
+        out = existing
+    else:
+        out = dict(doc)
+    buf = io.StringIO()
+    _rt_yaml.dump(out, buf)
+    p.write_text(buf.getvalue(), encoding="utf-8")
     _load_cached.cache_clear()
     return p
 
 
 def version_mismatch(layout: Layout) -> str | None:
-    """A one-line note when the installed framework differs from the version recorded in project.yaml, else None."""
+    """A one-line note when project.yaml cannot be trusted (see `problem`) or records a framework version other
+    than the installed one, else None. The doctor's project check and the Control Center's Start use it."""
+    note = problem(layout)
+    if note:
+        return note
     recorded = str(load(layout).get("framework_version") or "")
     if recorded and recorded != __version__:
         return f"project.yaml records framework {recorded}; installed {__version__} — run `supervisor migrate`"

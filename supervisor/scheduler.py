@@ -10,26 +10,68 @@ from .paths import Layout
 DEFAULT_LIMITS = gate.DEFAULT_LIMITS
 MODEL_LANES = gate.MODEL_LANES
 # Default adapter per cost category; config/routing.yaml `cost_lanes` overrides any entry (an extension lane for
-# `local`, say). A task's own `job.adapter` always wins.
+# `local`, say). Selection order (`adapter_name`): the task's own `job.adapter`; else, when the cost lane is a model
+# lane, the owner role's configured lane (`roles.<owner_role>.adapter`); else the cost lane. The role entry is where
+# the setup skill records which provider a role runs on, so a task that keeps the default `cost_category: claude`
+# still lands on the role's lane - while deterministic/local/human work keeps its non-model lane whoever owns it.
 ADAPTER_FOR_COST = {CostCategory.deterministic: "python", CostCategory.local: "python", CostCategory.claude: "claude_cli",
                     CostCategory.codex: "codex_cli", CostCategory.human: "human", CostCategory.mixed: "claude_cli",
                     CostCategory.paid: "claude_api"}
 
 
+def routing_doc(layout: Layout | None) -> dict:
+    """config/routing.yaml as a mapping; {} when absent or malformed (every reader below then uses its default)."""
+    if layout is None:
+        return {}
+    cfg = layout.config / "routing.yaml"
+    if not cfg.exists():
+        return {}
+    import yaml
+    try:
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def cost_lanes(layout: Layout | None) -> dict:
     out = {k.value: v for k, v in ADAPTER_FOR_COST.items()}
-    if layout is not None:
-        cfg = layout.config / "routing.yaml"
-        if cfg.exists():
-            import yaml
-            try:
-                data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError:
-                data = {}
-            out.update({str(k): str(v) for k, v in (data.get("cost_lanes") or {}).items()})
+    out.update({str(k): str(v) for k, v in (routing_doc(layout).get("cost_lanes") or {}).items()})
     return out
 
+
+def role_entry(task: Task, layout: Layout | None) -> dict:
+    """The raw `roles.<owner_role>` entry of routing.yaml for this task, or {} when the role is not configured."""
+    roles = routing_doc(layout).get("roles") or {}
+    entry = roles.get(task.owner_role) if isinstance(roles, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def role_inactive(task: Task, layout: Layout | None) -> bool:
+    """True when the task's owner role is configured with `active: false`: a dormant role is never dispatched,
+    on any lane. An unconfigured role, or one without the key, is treated as active."""
+    return role_entry(task, layout).get("active", True) is False
+
+
+def unattended_prefers_api_credits(layout: Layout | None) -> bool:
+    """routing.yaml `capacity.unattended_prefers_api_credits`: whether `--unattended` may move a `claude_cli` pick
+    onto the metered `claude_api` lane. Off unless the owner set it to true (spend is never the default)."""
+    cap = routing_doc(layout).get("capacity") or {}
+    return isinstance(cap, dict) and cap.get("unattended_prefers_api_credits") is True
+
 limits = gate.limits
+
+_skips_logged: set[tuple[str, str]] = set()
+
+
+def _skip_once(layout: Layout, task: Task, reason: str) -> None:
+    """Log a `schedule_skip` for a parked task once per process per reason: plan() runs every loop tick and the
+    condition persists until the owner edits routing.yaml, so repeating it would flood state/log.jsonl."""
+    key = (task.id, reason)
+    if key in _skips_logged:
+        return
+    _skips_logged.add(key)
+    tasks_mod.log(layout, "schedule_skip", "loop", task=task.id, reason=reason)
 
 
 def job_spec(task) -> dict:
@@ -42,7 +84,11 @@ def adapter_name(task: Task, layout: Layout | None = None) -> str:
     job = job_spec(task)
     if job and job.get("adapter"):
         return job["adapter"]
-    return cost_lanes(layout).get(task.cost_category.value, "claude_cli")
+    lane = cost_lanes(layout).get(task.cost_category.value, "claude_cli")
+    role_adapter = role_entry(task, layout).get("adapter")
+    if role_adapter and lane in MODEL_LANES:
+        return str(role_adapter)           # the role says which provider its agent work runs on
+    return lane                            # deterministic / local / human work is not agent work for the role
 
 
 def writing_lane(task: Task, layout: Layout | None = None) -> bool:
@@ -54,20 +100,29 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
     """Return [(task, adapter_name)] to dispatch now. Every pick passes gate.check() against the open job records
     plus the picks already made in this plan, so the plan can never admit what launch() would refuse.
 
-    `unattended`: a `claude_cli` pick is switched to `claude_api` when the Console org is
-    linked and its monthly credit budget is not exhausted, so overnight batches draw API credits instead of the
-    owner's interactive window. Interactive runs (the default) never take this branch."""
+    A task whose owner role is configured `active: false` is parked (skipped with a logged reason), never moved to
+    another lane.
+
+    `unattended`: a `claude_cli` pick is switched to `claude_api` only when routing.yaml
+    `capacity.unattended_prefers_api_credits` is true, the Console org is linked and its monthly credit budget is
+    not exhausted, so overnight batches draw API credits instead of the owner's interactive window. With the
+    preference off the pick stays on `claude_cli` and waits on that lane's capacity gate; interactive runs (the
+    default) never take this branch."""
     tasks = tasks or tasks_mod.load_all(layout)
     running = jobs_mod.open_records(layout)
     running_task_ids = {r["task_id"] for r in running}
     chosen: list[tuple[Task, str]] = []
     chosen_paths: list[tuple[str, str]] = []
     extra_agent = extra_gpu = 0
+    prefer_api = unattended and unattended_prefers_api_credits(layout)
     for t in tasks_mod.eligible(layout, tasks):
         if t.id in running_task_ids:
             continue
+        if role_inactive(t, layout):
+            _skip_once(layout, t, f"role {t.owner_role} is inactive (routing.yaml roles.{t.owner_role}.active: false)")
+            continue
         name = adapter_name(t, layout)
-        if unattended and name == "claude_cli" and "claude_api" in REGISTRY:
+        if prefer_api and name == "claude_cli" and "claude_api" in REGISTRY:
             from .adapters import claude_api
             if claude_api.credits_remaining(layout):
                 name = "claude_api"

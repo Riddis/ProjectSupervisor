@@ -1,6 +1,7 @@
 # Project setup interview
 
-This is the procedure that turns an empty `supervisor init` folder into a planned, gated, ready-to-run project. It
+This is the procedure that turns an empty folder (or a bare `supervisor init` one) into a planned, gated,
+ready-to-run project. It
 is written for any agent (Claude Code, Codex, Cowork, a human with a notebook); the Claude skill in
 `.claude/skills/supervisor-setup/SKILL.md` is a thin wrapper around it. The output is a plan the owner approves, then
 a project whose first phase the supervisor can start.
@@ -19,8 +20,11 @@ longer interview. Nothing below the **Approval** line happens without an explici
 
 Read, if present: `project.yaml`, `README.md`, `docs/plan/PROJECT_PLAN.md`, `config/routing.yaml`,
 `state/tasks_seed.yaml`, `state/gates.yaml`, the git log, any existing source tree. Run `supervisor doctor` and
-`supervisor version`. Note what is already decided; skip those questions. If the folder is not a supervisor project
-yet, run `supervisor init <folder> --name "<folder name>"` first (ask for the name if it is not obvious).
+`supervisor version` if `project.yaml` exists. Note what is already decided; skip those questions (a freshly stamped
+template — untouched placeholders, the template's comments intact — is *not* a decision: its values are the defaults
+you offer). If the folder is
+not a supervisor project yet, do **not** run `supervisor init` now: init stamps `config/`, `agents/`, `state/gates.yaml`
+and `extensions/` with generic defaults, and nothing but the plan is written before approval (Stage 3 step 0 runs it).
 
 ## Stage 1 — the interview
 
@@ -40,8 +44,8 @@ This folder (default), another existing repo (path), or a fresh repo to create. 
 pushes stay manual). Default branch. Decides: `project.yaml repo`, checkpoint behaviour (needs a git repo).
 
 **4. Language, runtime, toolchain, and the single command that proves it works.**
-E.g. "Python 3.12, uv, `python -m pytest -q`"; "Node 22, `npm test`"; "Godot 4.3, `godot --headless --script
-tests/run.gd`"; "none — prose, checked by `vale .`". Decides: `verification.allowed_test_commands`,
+E.g. "Python 3.12, uv, `python -m pytest -q`"; "Node 22, `npm test`"; "Rust 1.80, `cargo test`"; "none — prose,
+checked by `vale .`". Decides: `verification.allowed_test_commands`,
 `claude.bash_allow`, the engineer card's toolchain line, `checks` on tasks. Default for Python: the template's list.
 
 **5. Which agent lanes does the owner have, and what should run where?**
@@ -95,9 +99,11 @@ how much the owner wants to be asked (default: gates + spend + irreversible). De
 
 ## Stage 2 — write the plan
 
-Write `docs/plan/PROJECT_PLAN.md` with the template's eight sections filled from the answers (quote the owner where
-it matters), plus a short **Setup summary** at the top listing exactly which files the approval will create or
-change. Show it to the owner. Iterate until they say "approved" (record the date).
+Write `docs/plan/PROJECT_PLAN.md` by hand (no CLI command does this) with the template's eight sections filled from
+the answers (quote the owner where it matters; the headings are in `supervisor/template/docs/plan/PROJECT_PLAN.md`
+in the framework), §5 including the first phase's task list from Q10, plus a short **Setup summary** at the top
+listing exactly which files the approval will create or change. Show it to the owner. Iterate until they say
+"approved" (record the date). `supervisor init` keeps existing files, so the plan survives step 0 below.
 
 ---
 
@@ -105,8 +111,11 @@ change. Show it to the owner. Iterate until they say "approved" (record the date
 
 ## Stage 3 — scaffold
 
-In this order, each step idempotent:
+In this order, each step idempotent. Steps marked *CLI* are `supervisor` (or git) commands; the rest are files you
+author directly.
 
+0. *CLI* — if there is no `project.yaml`: `supervisor init <folder> --name "<name>"` (ask for the name if it is not
+   obvious). This stamps generic defaults for everything below; the approved plan may still change any of them.
 1. `project.yaml`: `name`, `description`, `repo`, `phases` (labels), `ui.port`, `extensions` (names only; modules
    come in step 6).
 2. `config/routing.yaml`: roles (adapter/model/effort/tools/card/active/active_from/result_kinds/review/fallback),
@@ -114,15 +123,15 @@ In this order, each step idempotent:
 3. `agents/<role>.md` for every active role (≤ 400 words; mandate, authority, escalates to, how you work, deliver,
    lines you do not cross; no model or vendor names). Remove cards for roles the owner dropped; keep schemas.
 4. `state/gates.yaml` from §5 of the plan; `state/owner_tasks.yaml` from §8.
-5. `state/tasks_seed.yaml` from §10 of the plan; then `supervisor task import`.
-6. For each resource from Q6: `supervisor extension new <name>`, fill the adapter/check skeleton with what is known,
+5. `state/tasks_seed.yaml` from the phase-0 task list in §5 of the plan; then *CLI* `supervisor task import`.
+6. *CLI* `supervisor extension new <name>` for each resource from Q6, then fill the adapter/check skeleton with what is known,
    leave a `TODO` for what is not, add a task in phase 0 to finish and prove it.
 7. `state/decisions/D-001-project-setup.md` recording the approved plan (date, the owner's answers that constrain
    later work), and one record per numbered decision in plan §7.
 8. `secrets/README.md` listing the credentials the project will need (names only).
 9. `README.md`: replace the "Status" line with the current phase and the next task.
-10. `supervisor doctor` → every check OK or explained; `supervisor check` → graph valid; `supervisor render`.
-11. `git add -A && git commit -m "Project setup: approved plan, roles, gates, phase 0 tasks"` — the one commit setup
+10. *CLI* `supervisor doctor` → every check OK or explained; `supervisor check` → graph valid; `supervisor render`.
+11. *CLI* `git add -A && git commit -m "Project setup: approved plan, roles, gates, phase 0 tasks"` — the one commit setup
     makes itself (the supervisor checkpoints everything after this).
 12. Tell the owner: how to start (`start_control_center.bat`, then Start in the UI, or `start_supervisor.bat`), what
     the first task is, which owner tasks are open.

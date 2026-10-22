@@ -6,6 +6,8 @@ Set-Location $Root
 $env:SUPERVISOR_ROOT = $Root
 while ($true) {
   $env:PYTHONDONTWRITEBYTECODE = "1"
+  New-Item -ItemType Directory -Force -Path (Join-Path $Root "runs\tmp") | Out-Null
+  $env:TMP = Join-Path $Root "runs\tmp"; $env:TEMP = $env:TMP
   & $Py -B -m supervisor ui
   $code = $LASTEXITCODE
   if ($code -eq 3) { Write-Host "restarting the Control Center on the updated framework"; Start-Sleep -Seconds 1; continue }

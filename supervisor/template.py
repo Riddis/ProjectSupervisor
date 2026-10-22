@@ -8,7 +8,7 @@ from pathlib import Path
 from . import __version__
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "template"
-TEXT_SUFFIXES = {".md", ".yaml", ".yml", ".txt", ".py", ".bat", ".ps1", ".json", ".gitignore", ""}
+TEXT_SUFFIXES = {".md", ".yaml", ".yml", ".txt", ".py", ".bat", ".ps1", ".sh", ".json", ".gitignore", ""}
 
 
 def files() -> list[Path]:

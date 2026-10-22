@@ -98,7 +98,10 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
     """Bring a project's state and config up to the installed framework version (idempotent)."""
     from . import migrations
     layout = _writer()
-    notes = migrations.run(layout, dry_run=dry_run)
+    try:
+        notes = migrations.run(layout, dry_run=dry_run)
+    except migrations.MigrationError as exc:
+        raise typer.BadParameter(str(exc))
     for n in notes:
         typer.echo(n)
     if not notes:
@@ -262,14 +265,21 @@ def gate_show():
 
 @gate_app.command("set")
 def gate_set(gate_id: str, status: str, evidence: str = "", actor: str = "cli"):
-    gates_mod.set_status(_writer(), gate_id, status, [e for e in evidence.split(",") if e], actor)
+    """Record a gate status. An owner gate (owner_ack_required) needs --actor owner; an evidence gate needs --evidence."""
+    try:
+        gates_mod.set_status(_writer(), gate_id, status, [e for e in evidence.split(",") if e], actor)
+    except gates_mod.GateError as exc:
+        raise typer.BadParameter(str(exc))
     render.render_all(_layout())
     typer.echo(f"{gate_id}: {status}")
 
 
 @gate_app.command("ack")
 def gate_ack(gate_id: str, note: str = "", actor: str = "owner"):
-    gates_mod.ack(_writer(), gate_id, actor, note)
+    try:
+        gates_mod.ack(_writer(), gate_id, actor, note)
+    except gates_mod.GateError as exc:
+        raise typer.BadParameter(str(exc))
     typer.echo(f"{gate_id}: acknowledged by {actor}")
 
 

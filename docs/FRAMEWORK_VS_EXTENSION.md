@@ -17,9 +17,28 @@ The framework never imports from a project. A project never edits framework file
 
 ## Extensions
 
-`project.yaml` lists modules under `extensions:`; each is imported from the project's `extensions/` directory
-(or as a dotted name) and its `setup(registry)` is called once per process — by the CLI, the loop and the Control
-Center alike. `supervisor extension new <name>` scaffolds one and registers it.
+`project.yaml` lists modules under `extensions:`; each is loaded from the project's `extensions/<name>.py` (or, when
+the project has no such file, imported as an installed dotted module) and its `setup(registry)` is called once per
+process — by the CLI, the loop and the Control Center alike. `supervisor extension new <name>` scaffolds one and
+registers it.
+
+```yaml
+extensions:
+  - render_farm                        # required (the default): if it fails to load, the loop refuses to run
+  - {name: nightly_report, required: false}   # optional: a load failure is only a doctor warning
+```
+
+- **Isolation.** The `extensions/` directory is loaded by file path as its own package (`supervisor_ext.<root hash>`);
+  it is never put on `sys.path`. Two projects' `shared_ext.py` are two different modules, and an extension named
+  `json` is the project's file, not the stdlib. Modules in one project's `extensions/` import each other with
+  relative imports (`from . import helpers`). Names must be identifiers (dotted for sub-packages).
+- **Failure.** A configured extension that does not import, or has no `setup(registry)`, is recorded and shown by
+  `supervisor doctor` (`extensions`). Unless the entry says `required: false`, it also blocks: `supervisor run`
+  exits 1 with runtime status `BLOCKED` and a reason naming the extension, and `policy.assert_packet_clean()` refuses
+  every packet — a missing packet screen or lane is a missing protection, not a degraded mode.
+- **Adapters.** An exception from an extension adapter's `prepare()`, `recover()`, `submit()` or `collect()` fails
+  that one attempt (job record `FAILED` with the exception text, event `adapter_error`, the task's verification
+  detail carries it) and the loop goes on; it does not count against the loop's own error budget.
 
 ```python
 # extensions/render_farm.py
@@ -54,7 +73,7 @@ What the registry offers (`supervisor/extensions.py`):
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}`; a resource block on the Overview. |
 | `ui_router(router, label, path)` | a FastAPI `APIRouter` (use `supervisor.ui.deps.render` and `act` so your page looks and writes like the others) plus a sidebar entry. |
 | `packet_screen(fn)` | `fn(layout, text, where)` raising `policy.PolicyViolation` to refuse a brief — content that must not leave the machine, say. Runs after the credential screen on every packet. |
-| `projection(fn)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. |
+| `projection(fn, path=None)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. Like the built-in views it is never an artifact and never an "undeclared write" in verification; pass `path="WEEKLY.md"` (root-relative) to declare the file before the first render, otherwise it is learned from the first render. |
 | `cli(typer_app, name)` | a `supervisor <name> ...` command group. |
 | `python_job(name, fn)` | a deterministic job for `job: {adapter: python, fn: name, params: {...}}`; `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}`. |
 

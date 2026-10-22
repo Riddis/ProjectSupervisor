@@ -66,7 +66,7 @@ def _lock(layout: Layout) -> FileLock:
 
 
 def create(layout: Layout, role: str = DEFAULT_ROLE, actor: str = "owner") -> dict:
-    """A new thread addressed to `role` (default senior_pm, )."""
+    """A new thread addressed to `role` (default DEFAULT_ROLE, the template's manager card)."""
     layout.conversations.mkdir(parents=True, exist_ok=True)
     with _lock(layout):
         thread_id = _new_id()
@@ -154,7 +154,7 @@ def _recent_events(layout: Layout, n: int = 10) -> list[dict]:
 
 
 def state_packet(layout: Layout) -> dict:
-    """phase, open items, capacity, last events, for a chat turn to answer "why is T0-15 blocked?" groundedly — the same facts the Overview screen shows, read straight from the store modules."""
+    """phase, open items, capacity, last events, for a chat turn to answer "why is this task blocked?" groundedly — the same facts the Overview screen shows, read straight from the store modules."""
     from . import capacity
     from . import inbox as inbox_mod
     from .models.task import TaskStatus

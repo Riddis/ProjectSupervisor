@@ -3,6 +3,57 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.2.0 — 2026-10-23
+
+Review round on 1.1.0 (seven blocking, eleven should-fix findings). No state migration is needed for projects
+created with 1.0.0 or later; the one migration below only touches approvals recorded before 1.0.0.
+
+- Fix (Control Center): Stop/Pause/Resume and every other HTMX action returned HTTP 500 on current Starlette
+  (`TemplateResponse(name, context)` was removed upstream) although the command had been applied. The action
+  helper now renders request-first like every page. The test suite exercises real HTMX requests and never fetches
+  `origin` (`SUPERVISOR_UPDATE_CHECK=0`, also honoured by `supervisor ui` on offline machines).
+- Fix (scheduler): `roles.<role>.adapter` in routing.yaml now decides the provider of agent work (model cost
+  categories); it used to be ignored in favour of `cost_lanes`, so an engineer configured for Codex still ran on
+  Claude. A role with `active: false` is never dispatched: its tasks are parked with a `schedule_skip` log entry.
+- Fix (scheduler): the unattended `claude_cli → claude_api` switch is opt-in through
+  `capacity.unattended_prefers_api_credits: true`; it used to spend API credits whenever a key was present.
+- Fix (extensions): a configured extension that fails to import now blocks the loop (`BLOCKED`, reason names the
+  extension) and makes `assert_packet_clean` refuse every packet, instead of silently running without the hooks
+  it provides (a failed privacy screen let customer text through). `extensions: [{name: x, required: false}]`
+  opts an extension out of blocking. Extensions load by file path under a per-project namespace
+  (`supervisor_ext.<hash>.<name>`), no `sys.path` mutation: two projects' same-named extensions no longer share an
+  implementation and an extension called `json` no longer resolves to the standard library.
+- Fix (loop): an adapter that raises in `prepare/recover/submit/collect` fails that attempt (error on the job and
+  the task) instead of consuming the loop's error budget and blocking the whole project.
+- Fix (verify): extension-registered projections (`registry.projection(fn, path=...)`) are excluded from
+  "undeclared writes" like the built-in views; a projection re-rendered during an attempt no longer fails it.
+- Fix (gates): gates declare `owner_ack_required` / `evidence_required` (the template's G0 sets both). A gate is
+  open only when PASSED and those are satisfied; an agent actor cannot pass an owner gate and PASSED without
+  evidence is refused. Absent keys keep the old behaviour. `supervisor gate set` takes `--actor owner`.
+- Fix (store): atomic writes use `tempfile.mkstemp` temp names; PID + `time_ns()` collided between threads on
+  Windows (PermissionError on replace). The concurrency test fails on worker exceptions.
+- Doctor: new `policy` check (`policy.config_problems()`), as the policy runbook already claimed.
+- Docs/template: agents never commit (the supervisor checkpoints); the setup skill interviews and writes the plan
+  before `supervisor init` and says which steps are CLI and which are file authoring; architecture/runbook
+  statements corrected (owner-forced COMPLETE, `.jsonl` conversations, which commands queue vs refuse while the
+  loop runs, what drain does); the Control Center launcher sets project-local TMP/TEMP; remaining references to
+  the framework's source project removed and the blacklist test now covers `_vendor` and the template.
+
+- Fix (updater): the updater stops a running loop (`loop.stop`, waits for `state/.lock` with a bounded timeout) before
+  pulling and migrating — `supervisor migrate` refuses while the loop holds the lock, and the update used to report
+  success anyway. A failing reinstall, migration or newly failing doctor check now fails the update (no restart,
+  the error says what to do); a stopped loop is started again on the new code.
+- `supervisor.launcher`: restart-on-exit-3 wrapper for the loop; the Control Center's Start button launches
+  through it, so a UI-started loop survives Reload and framework updates like the console launchers.
+- **Migration**: owner approval responses recorded before 1.0.0 are mapped to `ApprovalResponse`:
+  `MORE_LIKE` → `REDO`, `REGENERATE` → `REDO` (both asked for another attempt at the same deliverable),
+  `APPROVE` → `ACCEPT` (the inbox spelling). A task holding an old value could not be loaded. Inbox items'
+  `allowed_responses` are mapped the same way. `supervisor migrate` applies it.
+- Doctor: a malformed `project.yaml` or one without `framework_version` fails the project check (it used to pass
+  on defaults); `supervisor migrate` refuses without a usable `project.yaml` instead of reporting a version change.
+- `project.write` (migrations, `supervisor extension new`) preserves the comments and layout of `project.yaml`
+  (ruamel round-trip, as Settings does for routing.yaml) instead of rewriting it from scratch.
+
 ## 1.1.0 — 2026-10-23
 
 - Framework update check (`supervisor/updates.py`): at launch, `supervisor ui` fetches `origin`, lists the commits

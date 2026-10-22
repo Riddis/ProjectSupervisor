@@ -122,13 +122,29 @@ check_codex_cli = _lane_check("codex_cli", ("codex", "codex.exe"), "install the 
 
 def check_extensions(layout: Layout) -> Check:
     reg = extensions.load(layout)
+    if reg.blocking:
+        return Check("extensions", False, ("LOOP BLOCKED until fixed (or `required: false` in project.yaml): "
+                                           + "; ".join(reg.errors))[:300])
     if reg.errors:
-        return Check("extensions", False, "; ".join(reg.errors)[:300])
+        return Check("extensions", False, ("optional extension(s) not loaded: " + "; ".join(reg.errors))[:300])
     return Check("extensions", True, ", ".join(reg.loaded) or "none configured")
 
 
-CHECKS = [check_project, check_python, check_state, check_routing, check_git, check_claude_cli, check_codex_cli,
-          check_extensions]
+def check_policy(layout: Layout) -> Check:
+    """config/policy.yaml entries the floor rejected (supervisor.policy.config_problems): each one is a value the
+    owner wrote that is NOT in effect."""
+    from . import policy
+    try:
+        problems = policy.config_problems(layout)
+    except Exception as exc:                                # noqa: BLE001 - report, never crash doctor
+        return Check("policy", False, f"policy unreadable: {exc}"[:300])
+    if problems:
+        return Check("policy", False, "; ".join(problems)[:300])
+    return Check("policy", True, f"{policy.CONFIG_NAME} ok (built-in floor" + (" + project values)" if (layout.config / policy.CONFIG_NAME).exists() else " only)"))
+
+
+CHECKS = [check_project, check_python, check_state, check_routing, check_policy, check_git, check_claude_cli,
+          check_codex_cli, check_extensions]
 
 
 def run(layout: Layout) -> list[Check]:

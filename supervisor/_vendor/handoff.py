@@ -1,6 +1,6 @@
 """Cooperative capacity checkpointing: HANDOFF_REQUEST.json / HANDOFF.md protocol and hash-bound scope baselines.
 
-Vendored from an earlier supervisor's `agent_handoff.py`; sprint/epic fields and the evidence-view dependency removed.
+Vendored from an earlier supervisor's `agent_handoff.py`; iteration-planning fields and the evidence-view dependency removed.
 """
 from __future__ import annotations
 

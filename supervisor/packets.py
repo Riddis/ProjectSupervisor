@@ -1,6 +1,6 @@
 """Packet construction: the brief, frozen inputs and result schema for a dispatch. Role cards and
-the delivery brief are shared with the claude_cli/codex_cli adapters; review and revision briefs are new here
-because review dispatch and automatic revision are what T0-10 adds.
+the delivery brief are shared with the claude_cli/codex_cli adapters; review and revision briefs live here
+because review dispatch and automatic revision are the supervisor's, not an adapter's.
 
 A review packet freezes the reviewed inputs (sha256 manifest) and gives the reviewer the original contract plus
 the producer's delivered artifacts — never the producer's own notes/self-assessment. A revision packet quotes the failure verbatim so the next attempt sees the
