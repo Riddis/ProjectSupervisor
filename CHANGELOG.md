@@ -15,6 +15,8 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 - Template: `tools/run_control_center.ps1` (restart-on-exit-3 wrapper); `start_control_center.bat` uses it.
 - Guard rails: `supervisor init` refuses a target inside the framework clone; the framework `.gitignore` ignores
   project-shaped paths at its root so project work cannot be committed to the framework repo by accident.
+- Fix: the Overview's Disk bar filled with the free fraction while its caption said "used"; it now fills with the
+  used fraction (extension panels pass their own `progress` and are unaffected).
 - Fix: `tasks.import_seed` now writes `status: NOT_STARTED` and the runtime fields explicitly, so a hand-written
   seed dispatches on the first run (the first launch used to crash on a missing `status` key).
 

@@ -40,7 +40,7 @@
     {% if panel.progress %}<progress value="{{ panel.progress[0] }}" max="{{ panel.progress[1] }}" aria-label="{{ panel.title }}"></progress>{% endif %}{% for label, value in panel.rows[1:] %}<small>{{ label }}: {{ value }}</small>{% endfor %}
   </div>{% endfor %}
   <div class="resource-block"><div class="resource-heading"><span>{{ icon('disk') }} Disk</span><strong>{% if disk.total_gb is defined and disk.total_gb %}{{ '{:,.0f}'.format(disk.free_gb) }}<small> / {{ '{:,.0f}'.format(disk.total_gb) }} GB free</small>{% else %}<small>Unavailable</small>{% endif %}</strong></div>
-    {% if disk.total_gb is defined and disk.total_gb %}<progress value="{{ disk.free_gb }}" max="{{ disk.total_gb }}" aria-label="Disk space free"></progress><small>{{ (disk.used_gb / disk.total_gb * 100) | round | int }}% used &middot; Local storage</small>{% else %}<small>Storage readings are unavailable</small>{% endif %}
+    {% if disk.total_gb is defined and disk.total_gb %}<progress value="{{ disk.used_gb }}" max="{{ disk.total_gb }}" aria-label="Disk space used"></progress><small>{{ (disk.used_gb / disk.total_gb * 100) | round | int }}% used &middot; Local storage</small>{% else %}<small>Storage readings are unavailable</small>{% endif %}
   </div>
 </section>
 <section class="panel capacity-panel">
