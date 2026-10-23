@@ -6,6 +6,11 @@ _TMP = pathlib.Path(__file__).resolve().parents[1] / "runs" / "tmp"
 _TMP.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("TMP", str(_TMP)); os.environ.setdefault("TEMP", str(_TMP)); os.environ.setdefault("TMPDIR", str(_TMP))
 tempfile.tempdir = str(_TMP)          # the workstation's %TEMP% is access-denied; everything temporary lives in runs/tmp
+# Scratch projects live under runs/ inside the framework clone. Git must not discover the clone from there: a fresh
+# project is "not a git repo" to doctor and friends, whatever directory the suite happens to run in.
+_RUNS = str(pathlib.Path(__file__).resolve().parents[1] / "runs")
+os.environ["GIT_CEILING_DIRECTORIES"] = _RUNS + (os.pathsep + os.environ["GIT_CEILING_DIRECTORIES"]
+                                                 if os.environ.get("GIT_CEILING_DIRECTORIES") else "")
 import pytest
 import yaml
 

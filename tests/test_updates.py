@@ -189,3 +189,29 @@ def test_overview_banner_and_update_route(world, monkeypatch):
     monkeypatch.setattr(updates, "apply", lambda layout, status, reinstall=True, **kw: updates.Applied(ok=True, steps=["pulled 1 commit(s)"], restart_ui=True))
     r = client.post("/overview/update", data={"csrf_token": "t0ken"}, headers={"HX-Request": "true"})
     assert r.status_code == 200 and "restarting" in r.text and restarted == [True]
+
+
+def test_doctor_dying_without_a_verdict_fails_the_update(world, live_loop, monkeypatch):
+    """A doctor child that exits non-zero without printing FAIL lines (an exception on the new code) is a failed
+    update, never 'all checks OK': the exit code is authoritative."""
+    push_update(world["author"])
+    layout = world["layout"]
+    monkeypatch.setattr(updates, "_child", lambda args, lay: (0, "nothing to migrate", "") if args == ["migrate"]
+                        else (1, "", "Traceback (most recent call last):\n  ...\nImportError: boom"))
+    res = updates.apply(layout, updates.check(layout, fetch=True, max_age_s=0), reinstall=False)
+    assert not res.ok and "doctor" in res.error and "ImportError: boom" in res.error
+    assert not any("all checks OK" in s for s in res.steps) and live_loop["spawned"] == []
+
+
+def test_pip_failure_with_empty_output_fails_the_update(world, live_loop, monkeypatch):
+    push_update(world["author"])
+    layout = world["layout"]
+
+    class Proc:
+        returncode, stdout, stderr = 1, "", ""
+    real_run = updates.subprocess.run
+    monkeypatch.setattr(updates.subprocess, "run",
+                        lambda argv, *a, **k: Proc() if "pip" in argv else real_run(argv, *a, **k))
+    monkeypatch.setattr(updates, "_child", lambda args, lay: (0, "", ""))
+    res = updates.apply(layout, updates.check(layout, fetch=True, max_age_s=0), reinstall=True)
+    assert not res.ok and "pip install -e" in res.error and "exit 1" in res.error and live_loop["spawned"] == []

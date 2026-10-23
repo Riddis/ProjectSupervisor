@@ -9,12 +9,20 @@
   <ul>
   {% for g in p.gates %}
     <li>{{ g.id }}: {{ g.status }}
-      {% if g.status == 'PASSED' and not g.owner_ack %}
+      {% if g.owner_ack_required %}<span class="muted">(owner gate)</span>{% endif %}
+      {% if g.evidence_required %}<span class="muted">(evidence required)</span>{% endif %}
+      {% if g.status != 'PASSED' %}
+      <form method="post" action="/roadmap/gate/{{ g.id }}/pass" style="display:inline">
+        {% include "partials/csrf.html" %}
+        {% if g.evidence_required %}<input type="text" name="evidence" placeholder="evidence (path, link or note)" required>{% endif %}
+        <button type="submit">Pass gate</button>
+      </form>
+      {% elif not g.owner_ack %}
       <form method="post" action="/roadmap/gate/{{ g.id }}/ack" style="display:inline">
         {% include "partials/csrf.html" %}
         <button type="submit">Acknowledge</button>
       </form>
-      {% elif g.owner_ack %}(acked by {{ g.owner_ack.by }}){% endif %}
+      {% else %}(acked by {{ g.owner_ack.by }}){% endif %}
     </li>
   {% endfor %}
   </ul>

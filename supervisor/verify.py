@@ -59,7 +59,7 @@ def excluded_files(layout: Layout | None = None) -> set[str]:
     out = set(EXCLUDED_FILES)
     if layout is not None:
         from . import extensions
-        out |= extensions.load(layout).projection_paths
+        out |= extensions.load(layout).projection_paths | extensions.known_projection_paths(layout)
     return out
 
 

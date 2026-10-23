@@ -34,3 +34,14 @@ def gate_ack(gate_id: str, request: Request, note: str = Form(""), csrf_token: s
             layout: Layout = Depends(require_auth)):
     require_csrf(request, csrf_token)
     return act(request, layout, "gate.ack", {"gate_id": gate_id, "note": note}, "/roadmap")
+
+
+@router.post("/roadmap/gate/{gate_id}/pass")
+def gate_pass(gate_id: str, request: Request, evidence: str = Form(""), csrf_token: str = Form(...),
+              layout: Layout = Depends(require_auth)):
+    """The owner passes a gate from the Roadmap: the Control Center acts as an owner actor, so an owner-acknowledged
+    gate is passed and acknowledged in one step (agents cannot do this; see gates.set_status). `evidence` is one
+    entry per line — an evidence gate refuses without any."""
+    require_csrf(request, csrf_token)
+    items = [ln.strip() for ln in evidence.splitlines() if ln.strip()]
+    return act(request, layout, "gate.set", {"gate_id": gate_id, "status": "PASSED", "evidence": items}, "/roadmap")

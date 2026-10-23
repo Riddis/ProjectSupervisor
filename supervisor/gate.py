@@ -36,6 +36,42 @@ def limits(layout: Layout) -> dict:
     return out
 
 
+def routing_doc(layout: Layout | None) -> dict:
+    """config/routing.yaml as a mapping; {} when absent or malformed (every reader then uses its default)."""
+    if layout is None:
+        return {}
+    cfg = layout.config / "routing.yaml"
+    if not cfg.exists():
+        return {}
+    try:
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def role_config(layout: Layout | None, role: str | None) -> dict:
+    """The raw `roles.<role>` entry of routing.yaml, or {} when the role is not configured."""
+    roles = routing_doc(layout).get("roles") or {}
+    entry = roles.get(role) if isinstance(roles, dict) and role else None
+    return entry if isinstance(entry, dict) else {}
+
+
+def role_inactive(layout: Layout | None, role: str | None) -> bool:
+    """True when the role is configured `active: false`: a dormant role never launches, on any lane and by any
+    path (plan, queued record, review, continuation). An unconfigured role, or one without the key, is active."""
+    return role_config(layout, role).get("active", True) is False
+
+
+def inactive_reason(role: str) -> str:
+    return f"role {role} is inactive (routing.yaml roles.{role}.active: false)"
+
+
+# Job kinds whose agent is the task's owner role; a review's agent is its `review_role`, a verify job runs
+# deterministic commands and a diagnosis/conversation names its own role in the spec.
+OWNER_ROLE_KINDS = ("delivery",)
+
+
 def owned_for(task: Task | None, adapter_name: str, kind: str) -> list[str]:
     """What this job owns while it runs: only a delivery owns anything; a model lane without declared ownership is
     exclusive by default (the scan and the overlap rule must never be inert)."""
@@ -63,15 +99,21 @@ def busy_paths(layout: Layout, running: list[dict], tasks: dict[str, Task] | Non
 
 def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, running: list[dict],
           extra_paths: list[tuple[str, str]] = (), extra_agent: int = 0, extra_gpu: int = 0,
-          decision: str | None = None, tasks: dict[str, Task] | None = None) -> str | None:
+          decision: str | None = None, tasks: dict[str, Task] | None = None, role: str | None = None) -> str | None:
     """None when the job may launch now, else the reason it may not. `running` are the job records that count as
     busy (callers choose: all open records when planning, only SUBMITTED/RUNNING when launching a PREPARED one);
-    `extra_*` let the scheduler account for picks made earlier in the same plan."""
+    `extra_*` let the scheduler account for picks made earlier in the same plan. `role` is the agent role the job
+    runs as (a review's reviewer role, say); for a delivery it defaults to the task's owner role. A role configured
+    `active: false` is refused here, so a record queued before the owner disabled the role never launches either."""
     decision = decision or runtime.read(layout).get("decision", "RUN")
     if decision != "RUN" and not (decision == "DRAIN" and kind == "verify"):
         # a verify job finishes work already delivered: a drain lets it run so what was delivered is verified
         # before the stop; PAUSE and STOP still hold it
         return f"decision is {decision}"
+    if role is None and task is not None and kind in OWNER_ROLE_KINDS:
+        role = task.owner_role
+    if role and role_inactive(layout, role):
+        return inactive_reason(role)
     ad = REGISTRY.get(adapter_name)
     if ad is None:
         return f"adapter {adapter_name} not registered"

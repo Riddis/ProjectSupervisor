@@ -40,7 +40,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import project
+from ._vendor.contract import atomic_json, read_json
 from .paths import Layout
+
+PROJECTIONS_FILE = "projection_paths.json"          # state/runtime/: projection files learned at render time
+
+
+def known_projection_paths(layout: Layout) -> set[str]:
+    """Root-relative projection files recorded by earlier renders of this project (any process). Rendering happens
+    in the loop; verification may run in a child or after a restart, so what a render learned is kept on disk."""
+    try:
+        data = read_json(layout.runtime / PROJECTIONS_FILE)
+    except (OSError, ValueError):
+        return set()
+    paths = data.get("paths") if isinstance(data, dict) else None
+    return {str(x) for x in paths} if isinstance(paths, list) else set()
 
 NAMESPACE = "supervisor_ext"
 
@@ -63,6 +77,21 @@ class Registry:
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
 
+    def __post_init__(self) -> None:
+        self.projection_paths |= known_projection_paths(self.layout)
+
+    def _remember_projection(self, rel: str) -> None:
+        """A projection file learned from a render: kept in state/runtime so a verify child or a restarted loop
+        excludes it too (an exclusion that lived only in this process came back as `undeclared writes`)."""
+        if rel in self.projection_paths:
+            return
+        self.projection_paths.add(rel)
+        try:
+            atomic_json(self.layout.runtime / PROJECTIONS_FILE,
+                        {"paths": sorted(self.projection_paths | known_projection_paths(self.layout))})
+        except OSError:                                     # best effort: the in-memory set still covers this process
+            pass
+
     def adapter(self, adapter) -> None:
         from .adapters.base import register
         register(adapter)
@@ -83,7 +112,7 @@ class Registry:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
         way the file is a rendered view like TASKS.md: never an artifact, never an undeclared write (supervisor.verify)."""
         if path:
-            self.projection_paths.add(Path(path).as_posix())
+            self._remember_projection(Path(path).as_posix())
         root = self.layout.root
 
         @functools.wraps(fn)
@@ -91,7 +120,7 @@ class Registry:
             out = fn(layout)
             try:
                 p = Path(out)
-                self.projection_paths.add((p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
+                self._remember_projection((p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
             except (TypeError, ValueError):               # not a path under the root: nothing to exclude
                 pass
             return out
@@ -196,6 +225,15 @@ def load(layout: Layout) -> Registry:
         return reg
     reg = Registry(layout)
     _registries[key] = reg
+    if project.exists(layout):
+        _doc, note = project._read_raw(project.path(layout))
+        if note:
+            # A project.yaml that cannot be parsed hides its `extensions:` list — which may name the policy screens
+            # this project relies on. Falling back to "no extensions" would silently drop that protection, so the
+            # unreadable file blocks exactly like a required extension that failed to import.
+            reg.errors.append(f"project.yaml: {note}")
+            reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
+            return reg
     for name, required in specs(layout):
         try:
             mod = _import(layout, name)

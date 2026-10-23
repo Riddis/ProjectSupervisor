@@ -128,3 +128,49 @@ def test_preference_must_be_a_real_boolean_true(layout):
     write_routing(layout, {"capacity": {"unattended_prefers_api_credits": "yes"}})
     plain_claude_task(layout, "U6")
     assert picks(layout, unattended=True)["U6"] == "claude_cli"
+
+
+# ------------------------------------------------------------------ re-review: inactivity applies at every launch path
+
+def test_a_record_queued_before_the_role_was_disabled_never_launches(layout):
+    """The scheduler's skip is not the only guard: a PREPARED record (queued while the role was active) is held by
+    the launch gate once routing says active: false, and launches again when the owner re-enables the role."""
+    from supervisor import jobs as jobs_mod
+    from supervisor.loop import Supervisor
+    make_task(layout, "R9")
+    tasks._update(layout, "R9", lambda d: d.update(job={"adapter": "python", "fn": "x"}))
+    sup = Supervisor(layout, sleep_s=0)
+    write_routing(layout, {"roles": {"engineer": {"active": False}}})
+    rec = sup.dispatch(tasks.load(layout, "R9"), "python")               # a direct dispatch bypasses the scheduler...
+    assert rec["phase"] == "PREPARED" and "inactive" in (rec.get("held") or "") and "engineer" in rec["held"]
+    rec = sup.launch(jobs_mod.read(layout, rec["attempt_id"]))           # ...and the launch gate still holds it
+    assert rec["phase"] == "PREPARED" and "inactive" in rec["held"]
+    assert jobs_mod.read(layout, rec["attempt_id"]).get("handle") is None
+    write_routing(layout, {"roles": {"engineer": {"active": True}}})
+    rec = sup.launch(jobs_mod.read(layout, rec["attempt_id"]))
+    assert rec["phase"] in ("SUBMITTED", "RUNNING", "DONE") and not rec.get("held")
+
+
+def test_reviews_for_an_inactive_reviewer_role_are_not_dispatched(layout):
+    from supervisor import review
+    make_task(layout, "R10", reviewer=("code_review",))
+    tasks.set_status(layout, "R10", "IN_PROGRESS")
+    tasks.record_delivery(layout, "R10", "d" * 64, actor="test", paths=["R10.txt"])
+    tasks.record_verification(layout, "R10", "d" * 64, True, detail="ok")
+    tasks.advance(layout, "R10")                                           # -> WAITING_FOR_REVIEW
+    assert [role for _t, role in review.pending(layout)] == ["code_review"]
+    write_routing(layout, {"roles": {"code_review": {"adapter": "claude_cli", "active": False}}})
+    assert review.pending(layout) == []
+    assert tasks.load(layout, "R10").status == "WAITING_FOR_REVIEW"       # waits; nothing launched on another lane
+    write_routing(layout, {"roles": {"code_review": {"adapter": "claude_cli"}}})
+    assert [role for _t, role in review.pending(layout)] == ["code_review"]
+
+
+def test_gate_refuses_a_review_record_whose_reviewer_role_is_inactive(layout):
+    from supervisor import gate
+    make_task(layout, "R11", reviewer=("code_review",))
+    write_routing(layout, {"roles": {"code_review": {"active": False}}})
+    task = tasks.load(layout, "R11")
+    assert gate.check(layout, task, "claude_cli", "review", [], role="code_review") == gate.inactive_reason("code_review")
+    assert gate.check(layout, task, "claude_cli", "review", [], role="code_review_2") is None
+    assert gate.check(layout, task, "python", "verify", []) is None       # a verify job runs for no agent role

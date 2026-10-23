@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import jobs as jobs_mod
+from . import gate, jobs as jobs_mod
 from . import tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, digest as digest_of, read_json
 from .adapters import REGISTRY
@@ -94,8 +94,24 @@ def pending(layout, tasks: dict[str, Task] | None = None) -> list[tuple[Task, st
         for role in t.reviewer:
             if role in live or (t.id, role) in in_flight:
                 continue
+            if gate.role_inactive(layout, role):
+                _skip_once(layout, t, role)
+                continue
             out.append((t, role))
     return out
+
+
+_skips_logged: set[tuple[str, str]] = set()
+
+
+def _skip_once(layout, task: Task, role: str) -> None:
+    """A review that cannot be dispatched because its reviewer role is `active: false`: logged once per process (the
+    condition persists until the owner edits routing.yaml; the task waits in WAITING_FOR_REVIEW)."""
+    key = (task.id, role)
+    if key in _skips_logged:
+        return
+    _skips_logged.add(key)
+    tasks_mod.log(layout, "review_skip", "loop", task=task.id, role=role, reason=gate.inactive_reason(role))
 
 
 def dispatch(supervisor, task: Task, role: str) -> dict | None:

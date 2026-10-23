@@ -111,3 +111,31 @@ def test_cli_gate_set_reports_a_clear_error_for_an_agent_on_an_owner_gate(layout
     r = CliRunner().invoke(app, ["gate", "set", "G0", "PASSED", "--evidence", "x", "--actor", "owner"])
     assert r.exit_code == 0, r.output
     assert gates.phase_open(layout, 1) is True
+
+
+def test_owner_passes_an_owner_gate_from_the_roadmap(layout, monkeypatch):
+    """The Control Center is an owner actor: the Roadmap's Pass button passes and acknowledges an owner gate in one
+    step (with the evidence the gate requires), so no CLI workaround is needed; an evidence gate refuses without any."""
+    import yaml
+    from fastapi.testclient import TestClient
+    from supervisor import gates as gates_mod
+    from supervisor.ui.app import create_app
+    from supervisor.ui.auth import CSRF_COOKIE
+    (layout.state / "gates.yaml").write_text(yaml.safe_dump({
+        "phases": {0: {"requires": []}, 1: {"requires": ["G0"]}},
+        "gates": {"G0": {"status": "OPEN", "phase": 0, "owner_ack_required": True, "evidence_required": True}}}),
+        encoding="utf-8")
+    client = TestClient(create_app(layout), base_url="http://127.0.0.1")
+    client.cookies.set(CSRF_COOKIE, "t0ken")
+    page = client.get("/roadmap")
+    assert page.status_code == 200 and "/roadmap/gate/G0/pass" in page.text and "owner gate" in page.text
+    r = client.post("/roadmap/gate/G0/pass", data={"csrf_token": "t0ken", "evidence": ""}, follow_redirects=False)
+    assert r.status_code == 303 and "flash=error" in r.headers["location"]
+    assert not gates_mod.phase_open(layout, 1)
+    r = client.post("/roadmap/gate/G0/pass", data={"csrf_token": "t0ken", "evidence": "docs/review.md\n  \nhttps://x/1"}, follow_redirects=False)
+    assert r.status_code == 303 and "flash=applied" in r.headers["location"]
+    g = gates_mod.load(layout)["gates"]["G0"]
+    assert g["status"] == "PASSED" and g["owner_ack"]["by"] == "owner-ui" and len(g["evidence"]) == 2
+    assert gates_mod.phase_open(layout, 1)
+    page = client.get("/roadmap")
+    assert "/roadmap/gate/G0/pass" not in page.text and "acked by owner-ui" in page.text

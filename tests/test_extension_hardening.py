@@ -64,6 +64,28 @@ def test_a_failing_required_extension_blocks_the_loop_and_the_packets(layout):
     assert checks["extensions"].ok is False and "LOOP BLOCKED" in checks["extensions"].detail
 
 
+def test_a_malformed_project_yaml_blocks_like_a_failed_required_extension(layout):
+    """An unparseable project.yaml hides its extensions: list — including the policy screens the project relies on.
+    It must block the loop and the packets, never fall back to 'no extensions'."""
+    _configure(layout.root, ["privacy"], {"privacy": PRIVACY})
+    assert extensions.load(layout).loaded == ["privacy"]
+    project.path(layout).write_text("name: [unterminated\nextensions:\n  - privacy\n", encoding="utf-8")
+    extensions.reset()
+    reg = extensions.load(layout)
+    assert reg.loaded == [] and reg.blocking and "project.yaml" in reg.blocking[0] and "malformed" in reg.blocking[0]
+    with pytest.raises(policy.PolicyViolation, match="project.yaml"):
+        policy.assert_packet_clean("brief with CUSTOMER-RECORD text", layout, "delivery packet")
+    with pytest.raises(policy.PolicyViolation, match="project.yaml"):
+        policy.assert_packet_clean("an ordinary brief", layout)
+    make_task(layout, "M")
+    assert Supervisor(layout, sleep_s=0).run(max_iterations=1) == 1
+    doc = runtime.read(layout)
+    assert doc["status"] == "BLOCKED" and "project.yaml" in doc["reason"]
+    assert tasks.load(layout, "M").status == TaskStatus.NOT_STARTED and not list(layout.jobs.glob("*.json"))
+    checks = {c.name: c for c in doctor.run(layout)}
+    assert checks["project"].ok is False and checks["extensions"].ok is False
+
+
 def test_an_explicitly_optional_extension_failing_is_a_warning_only(layout):
     _configure(layout.root, [{"name": "privacy", "required": False}], {"privacy": "raise RuntimeError('boom')\n"})
     reg = extensions.load(layout)
@@ -218,6 +240,37 @@ def setup(registry):
     assert (layout.root / "WEEKLY.md").read_text().endswith("2")
     outcome = verify.verify(layout, task, ["x"], before=before)
     assert outcome.ok, outcome.detail
+
+
+def test_a_learned_projection_survives_a_restart_and_reaches_a_fresh_process(layout):
+    """What a render learned is written to state/runtime: after the registry is reset (a new loop process, or the
+    verify child) the projection is still excluded, so an untouched WEEKLY.md never comes back as an undeclared
+    write."""
+    _configure(layout.root, ["weekly"], {"weekly": '''
+def setup(registry):
+    def weekly(layout):
+        p = layout.root / "WEEKLY.md"
+        p.write_text("# weekly " + str(len(list(layout.tasks.glob("*.yaml")))))
+        return p
+    registry.projection(weekly)
+'''})
+    from supervisor import render
+    render.render_all(layout)
+    assert "WEEKLY.md" in extensions.known_projection_paths(layout)
+    extensions.reset()                                                   # a new process: nothing learned in memory
+    assert "WEEKLY.md" in extensions.load(layout).projection_paths and "WEEKLY.md" in verify.excluded_files(layout)
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    make_task(layout, "U")
+    extensions.reset()
+    render.render_all(layout)
+    extensions.reset()
+    outcome = verify.verify(layout, task, ["x"], before=before)
+    assert outcome.ok, outcome.detail
+    (layout.root / "stray.md").write_text("not a projection")
+    assert not verify.verify(layout, task, ["x"], before=before).ok     # a real undeclared write is still caught
 
 
 def test_a_projection_declared_up_front_is_excluded_before_any_render(layout):

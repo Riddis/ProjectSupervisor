@@ -257,9 +257,12 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, 
             try:
                 proc = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", f"{fw}[ui]"], capture_output=True,
                                       text=True, timeout=600, check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                err = "" if proc.returncode == 0 else (proc.stderr or "")[-300:]
+                if proc.returncode == 0:
+                    err = ""
+                else:                                   # a failed pip may say nothing on stderr: the exit code is the verdict
+                    err = (proc.stderr or proc.stdout or "").strip()[-300:] or f"exit {proc.returncode}"
             except (OSError, subprocess.SubprocessError) as exc:
-                err = str(exc)[:300]
+                err = str(exc)[:300] or type(exc).__name__
             if err:
                 out.steps.append("pip install -e failed")
                 out.error = (f"pip install -e {fw} failed: {err} — the clone is on the new code but its dependencies are not "
@@ -292,11 +295,17 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, 
     if res is None:
         fails = {c.name: c.detail for c in doctor_mod.run(layout) if not c.ok}
     else:
+        code, stdout, stderr = res
         fails = {}
-        for ln in res[1].splitlines():
+        for ln in stdout.splitlines():
             if ln.startswith("FAIL "):
                 name, _, detail = ln[5:].partition(":")
                 fails[name.strip()] = detail.strip()
+        if code != 0 and not fails:
+            # Doctor died before it could print its verdict (an exception on the new code, say): that is a failure
+            # of the update, never "all checks OK" — the exit code is authoritative, the FAIL lines are only detail.
+            detail = (stderr.strip() or stdout.strip())[-300:] or "no output"
+            fails["doctor"] = f"exited {code} without a verdict: {detail}"
     new_fails = {k: v for k, v in fails.items() if k not in failing_before}
     if new_fails:
         out.steps.append("doctor: " + "; ".join(f"{k}: {v}" for k, v in fails.items()))

@@ -19,19 +19,7 @@ ADAPTER_FOR_COST = {CostCategory.deterministic: "python", CostCategory.local: "p
                     CostCategory.paid: "claude_api"}
 
 
-def routing_doc(layout: Layout | None) -> dict:
-    """config/routing.yaml as a mapping; {} when absent or malformed (every reader below then uses its default)."""
-    if layout is None:
-        return {}
-    cfg = layout.config / "routing.yaml"
-    if not cfg.exists():
-        return {}
-    import yaml
-    try:
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
+routing_doc = gate.routing_doc
 
 
 def cost_lanes(layout: Layout | None) -> dict:
@@ -42,15 +30,13 @@ def cost_lanes(layout: Layout | None) -> dict:
 
 def role_entry(task: Task, layout: Layout | None) -> dict:
     """The raw `roles.<owner_role>` entry of routing.yaml for this task, or {} when the role is not configured."""
-    roles = routing_doc(layout).get("roles") or {}
-    entry = roles.get(task.owner_role) if isinstance(roles, dict) else None
-    return entry if isinstance(entry, dict) else {}
+    return gate.role_config(layout, task.owner_role)
 
 
 def role_inactive(task: Task, layout: Layout | None) -> bool:
-    """True when the task's owner role is configured with `active: false`: a dormant role is never dispatched,
-    on any lane. An unconfigured role, or one without the key, is treated as active."""
-    return role_entry(task, layout).get("active", True) is False
+    """True when the task's owner role is configured `active: false` (see gate.role_inactive, which every launch
+    path also applies — this early skip only keeps the plan and its log honest)."""
+    return gate.role_inactive(layout, task.owner_role)
 
 
 def unattended_prefers_api_credits(layout: Layout | None) -> bool:
@@ -119,7 +105,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
         if t.id in running_task_ids:
             continue
         if role_inactive(t, layout):
-            _skip_once(layout, t, f"role {t.owner_role} is inactive (routing.yaml roles.{t.owner_role}.active: false)")
+            _skip_once(layout, t, gate.inactive_reason(t.owner_role))
             continue
         name = adapter_name(t, layout)
         if prefer_api and name == "claude_cli" and "claude_api" in REGISTRY:

@@ -3,6 +3,28 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.2.1 — 2026-10-23
+
+Second review round (on 1.2.0, commit 52cf048).
+
+- Fix: a role configured `active: false` is refused by the launch gate itself (`gate.check`), not only by the
+  scheduler's plan — a job queued before the role was disabled, a review for a dormant reviewer role (skipped in
+  `review.pending`, logged once as `review_skip`) and a direct dispatch all stay PREPARED/waiting instead of going
+  RUNNING/SUBMITTED.
+- Fix (updater): a doctor child that exits non-zero without printing a FAIL line (an exception on the new code),
+  and a pip reinstall that fails with empty output, fail the update; the exit code is the verdict, FAIL lines are
+  detail.
+- Fix: a `project.yaml` that cannot be parsed blocks the loop and the packet screens like a failed required
+  extension (its `extensions:` list — and the policy screens it names — cannot be read), instead of loading no
+  extensions at all.
+- Control Center: the Roadmap has a **Pass gate** action (with the evidence an evidence gate requires); the
+  Control Center acts as owner, so an owner gate is passed and acknowledged in one step and needs no CLI.
+- Fix: projection files learned at render time are recorded in `state/runtime/projection_paths.json`, so the
+  verify child and a restarted loop exclude them too (an untouched WEEKLY.md came back as an undeclared write
+  after a restart). Declaring `registry.projection(fn, path=...)` remains the explicit form.
+- Tests: scratch projects under `runs/` are fenced from the framework clone's git (`GIT_CEILING_DIRECTORIES`), so
+  the suite passes with its default in-repo basetemp.
+
 ## 1.2.0 — 2026-10-23
 
 Review round on 1.1.0 (seven blocking, eleven should-fix findings). No state migration is needed for projects

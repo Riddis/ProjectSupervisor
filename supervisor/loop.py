@@ -186,7 +186,8 @@ class Supervisor:
             task = None
         running = [r for r in jobs_mod.open_records(self.layout)
                    if r["phase"] in gate.ACTIVE_PHASES and r["attempt_id"] != rec["attempt_id"]]
-        reason = gate.check(self.layout, task, rec["adapter"], kind, running)
+        reason = gate.check(self.layout, task, rec["adapter"], kind, running,
+                            role=rec.get("review_role") if kind == "review" else None)
         if reason:
             if rec.get("held") != reason:
                 tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
