@@ -368,3 +368,71 @@ def setup(registry):
     project.write(layout, doc)
     extensions.reset()
     assert "WEEKLY.md" in verify.excluded_files(layout)
+
+
+WEEKLY_EXT = '''
+def setup(registry):
+    def weekly(layout):
+        p = layout.root / "%s"
+        p.write_text("# view")
+        return p
+    registry.projection(weekly)
+'''
+
+
+def test_a_renamed_projection_output_retires_the_old_file(layout):
+    """A projection that now writes REPORT.md instead of WEEKLY.md: only the current output is excluded; a hand edit
+    to the retired WEEKLY.md is an undeclared write again."""
+    from supervisor import render
+    _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
+    render.render_all(layout)
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+    _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "REPORT.md"})     # resets the registry
+    render.render_all(layout)
+    assert extensions.known_projection_paths(layout) == {"REPORT.md"}
+    extensions.reset()
+    assert verify.excluded_files(layout) >= {"REPORT.md"} and "WEEKLY.md" not in verify.excluded_files(layout)
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    (layout.root / "WEEKLY.md").write_text("edited by hand")
+    outcome = verify.verify(layout, task, ["x"], before=before)
+    assert not outcome.ok and "WEEKLY.md" in outcome.detail
+    (layout.root / "WEEKLY.md").write_text("# view")                         # restore; REPORT.md re-rendering is fine
+    before = verify.snapshot(layout, task)
+    (layout.root / "REPORT.md").write_text("# view 2")
+    assert verify.verify(layout, task, ["x"], before=before).ok
+
+
+def test_a_1_2_1_projection_cache_is_honoured_until_the_first_full_render(layout):
+    """Upgrading from the flat `paths` list: before anything has rendered on the new code, an untouched WEEKLY.md
+    is still excluded; after every projection rendered once the unattributed entries are gone (re-recorded)."""
+    import json
+    from supervisor import render
+    _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
+    (layout.root / "WEEKLY.md").write_text("# view")
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    (layout.runtime / extensions.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["WEEKLY.md", "OLD.md"]}))
+    extensions.reset()
+    assert extensions.known_projection_paths(layout) >= {"WEEKLY.md", "OLD.md"}
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    (layout.root / "WEEKLY.md").write_text("# view (loop re-rendered it before verify ran)")
+    assert verify.verify(layout, task, ["x"], before=before).ok
+    render.render_all(layout)                                                # every projection rendered once
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}       # OLD.md: unattributed, gone
+    assert "WEEKLY.md" in extensions.load(layout).projection_paths and "OLD.md" not in extensions.load(layout).projection_paths
+    extensions.reset()
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+
+
+def test_a_1_2_1_x_by_extension_cache_is_read(layout):
+    import json
+    _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    (layout.runtime / extensions.PROJECTIONS_FILE).write_text(json.dumps({"by_extension": {"weekly": ["WEEKLY.md"]}}))
+    extensions.reset()
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}

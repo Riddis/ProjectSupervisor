@@ -3,6 +3,20 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.2.3 — 2026-10-23
+
+Fourth review round (on 1.2.2, commit 52c639e).
+
+- Fix: chat replies stalled on a freshly stamped project — 1.2.2 made the gate read the `conversation` lane's
+  `active` flag and the template ships it as false. The chat lane is owner-driven, not a role that has or lacks
+  work, so `active` is ignored for it (projects stamped by 1.2.2 or earlier need no change; the template now says
+  `active: true` with a note that it is informational).
+- Fix: projection exclusions are recorded per projection (`state/runtime/projection_paths.json` `projections`:
+  `<extension>:<function>` → declared paths + last rendered path). A projection that starts writing REPORT.md
+  instead of WEEKLY.md retires the old file (1.2.2 kept both excluded forever). A 1.2.1 flat `paths` list and the
+  1.2.2 `by_extension` map are read as unattributed entries and honoured until every projection has rendered once
+  on the new code, so an upgrade never rejects an untouched view before the first render.
+
 ## 1.2.2 — 2026-10-23
 
 Third review round (on 1.2.1, commit c7274b9).

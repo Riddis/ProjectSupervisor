@@ -109,7 +109,7 @@ roles:
     effort: medium
     tools: reader
     card:
-    active: false
+    active: true                    # informational: the chat lane is owner-driven, `active` never parks a reply
     active_from: 0
     result_kinds: []
     note: a chat turn that dispatches work does so under the target role's own entry

@@ -46,25 +46,62 @@ from .paths import Layout
 PROJECTIONS_FILE = "projection_paths.json"          # state/runtime/: projection files learned at render time
 
 
-def _recorded_projections(layout: Layout) -> dict[str, list[str]]:
-    """{extension name: [root-relative paths]} as recorded by earlier renders (any process)."""
+def _read_projection_record(layout: Layout) -> dict:
+    """The projection record as written: {"projections": {"<ext>:<fn>": {"declared": [...], "rendered": path|None}},
+    "legacy": [...]}. A 1.2.1 file (`paths`: a flat list, unattributed) is carried as `legacy` until every projection
+    of the current registry has rendered once, so an upgrade never loses the exclusions of untouched views."""
     try:
         data = read_json(layout.runtime / PROJECTIONS_FILE)
     except (OSError, ValueError):
-        return {}
-    by_ext = data.get("by_extension") if isinstance(data, dict) else None
-    if not isinstance(by_ext, dict):
-        return {}
-    return {str(k): sorted({str(x) for x in v}) for k, v in by_ext.items() if isinstance(v, list)}
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    projections = data.get("projections") if isinstance(data.get("projections"), dict) else {}
+    out: dict[str, dict] = {}
+    for key, entry in projections.items():
+        if not isinstance(entry, dict):
+            continue
+        declared = entry.get("declared") if isinstance(entry.get("declared"), list) else []
+        rendered = entry.get("rendered") if isinstance(entry.get("rendered"), str) else None
+        out[str(key)] = {"declared": sorted({str(x) for x in declared}), "rendered": rendered}
+    legacy = data.get("legacy") if isinstance(data.get("legacy"), list) else data.get("paths")   # 1.2.1 format
+    legacy = sorted({str(x) for x in legacy}) if isinstance(legacy, list) else []
+    # 1.2.1.x interim format: {"by_extension": {ext: [paths]}} - attributed to the extension but not the projection
+    by_ext = data.get("by_extension")
+    if isinstance(by_ext, dict) and not projections:
+        legacy = sorted(set(legacy) | {str(x) for v in by_ext.values() if isinstance(v, list) for x in v})
+    return {"projections": out, "legacy": legacy}
+
+
+def _recorded_projections(layout: Layout) -> dict[str, list[str]]:
+    """{extension name: [root-relative paths]} currently recorded, for inspection and tests."""
+    out: dict[str, set[str]] = {}
+    for key, entry in _read_projection_record(layout)["projections"].items():
+        ext = key.split(":", 1)[0]
+        out.setdefault(ext, set()).update(entry["declared"])
+        if entry["rendered"]:
+            out[ext].add(entry["rendered"])
+    return {k: sorted(v) for k, v in out.items()}
 
 
 def known_projection_paths(layout: Layout) -> set[str]:
     """Root-relative projection files recorded by earlier renders of this project, for the extensions project.yaml
     configures NOW. Rendering happens in the loop; verification may run in a child or after a restart, so what a
-    render learned is kept on disk — but a path belongs to the extension that rendered it: remove the extension
-    and its files are ordinary files again (an exclusion that outlived its extension hid real undeclared writes)."""
+    render learned is kept on disk — but a path belongs to the projection that rendered it: remove the extension,
+    or point its projection at another file, and the old file is an ordinary file again (an exclusion that outlived
+    its projection hid real undeclared writes). Unattributed 1.2.1 entries count while any extension is configured
+    and until the registry has seen every projection render once."""
     configured = {name for name, _required in specs(layout)}
-    return {path for ext, paths in _recorded_projections(layout).items() if ext in configured for path in paths}
+    rec = _read_projection_record(layout)
+    out: set[str] = set()
+    for key, entry in rec["projections"].items():
+        if key.split(":", 1)[0] in configured:
+            out.update(entry["declared"])
+            if entry["rendered"]:
+                out.add(entry["rendered"])
+    if configured:
+        out.update(rec["legacy"])
+    return out
 
 NAMESPACE = "supervisor_ext"
 
@@ -81,6 +118,7 @@ class Registry:
     overview_panels: list[Callable] = field(default_factory=list)
     packet_screens: list[Callable] = field(default_factory=list)
     projections: list[Callable] = field(default_factory=list)
+    _projection_keys: list[str] = field(default_factory=list)   # "<ext>:<fn>" per registered projection, same order
     projection_paths: set[str] = field(default_factory=set)     # root-relative files the projections write (verify excludes them)
     cli_apps: list[tuple[Any, str]] = field(default_factory=list)
     loaded: list[str] = field(default_factory=list)
@@ -91,18 +129,32 @@ class Registry:
 
     def __post_init__(self) -> None:
         self.projection_paths |= known_projection_paths(self.layout)
+        self._rendered_keys: set[str] = set()
 
-    def _remember_projection(self, ext: str, rel: str) -> None:
-        """A projection file learned from a render, attributed to the extension that registered the projection:
-        kept in state/runtime so a verify child or a restarted loop excludes it too, and dropped with the extension
-        (`known_projection_paths` only returns paths of extensions still configured)."""
+    def _remember_projection(self, key: str, rel: str, declared: bool) -> None:
+        """A projection file, attributed to its projection (`<ext>:<fn>`): kept in state/runtime so a verify child or
+        a restarted loop excludes it too. A render replaces the projection's previous rendered path (a renamed output
+        retires the old file); a declared path stays until the extension or the declaration goes. Once every
+        projection of this registry has rendered, unattributed 1.2.1 entries are dropped: they are all re-recorded."""
         self.projection_paths.add(rel)
-        recorded = _recorded_projections(self.layout)
-        if rel in recorded.get(ext, []):
+        rec = _read_projection_record(self.layout)
+        entry = rec["projections"].setdefault(key, {"declared": [], "rendered": None})
+        before = (list(entry["declared"]), entry["rendered"], list(rec["legacy"]))
+        if declared:
+            entry["declared"] = sorted(set(entry["declared"]) | {rel})
+        else:
+            if entry["rendered"] and entry["rendered"] != rel and entry["rendered"] not in entry["declared"]:
+                self.projection_paths.discard(entry["rendered"])
+            entry["rendered"] = rel
+            self._rendered_keys.add(key)
+            if rec["legacy"] and all(k in self._rendered_keys for k in self._projection_keys):
+                self.projection_paths.difference_update(set(rec["legacy"]) - {rel})
+                rec["legacy"] = []
+        if before == (entry["declared"], entry["rendered"], rec["legacy"]):
             return
-        recorded[ext] = sorted(set(recorded.get(ext, [])) | {rel})
         try:
-            atomic_json(self.layout.runtime / PROJECTIONS_FILE, {"by_extension": recorded})
+            atomic_json(self.layout.runtime / PROJECTIONS_FILE,
+                        {"projections": rec["projections"], "legacy": rec["legacy"]})
         except OSError:                                     # best effort: the in-memory set still covers this process
             pass
 
@@ -126,8 +178,10 @@ class Registry:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
         way the file is a rendered view like TASKS.md: never an artifact, never an undeclared write (supervisor.verify)."""
         ext = self._setting_up or getattr(fn, "__module__", None) or "?"
+        key = f"{ext}:{getattr(fn, '__name__', None) or f'projection{len(self.projections)}'}"
+        self._projection_keys.append(key)
         if path:
-            self._remember_projection(ext, Path(path).as_posix())
+            self._remember_projection(key, Path(path).as_posix(), declared=True)
         root = self.layout.root
 
         @functools.wraps(fn)
@@ -135,7 +189,8 @@ class Registry:
             out = fn(layout)
             try:
                 p = Path(out)
-                self._remember_projection(ext, (p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
+                self._remember_projection(key, (p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix(),
+                                          declared=False)
             except (TypeError, ValueError):               # not a path under the root: nothing to exclude
                 pass
             return out

@@ -89,6 +89,24 @@ def test_ask_dispatches_the_turn_with_the_state_packet_and_stores_the_reply(layo
     assert "T0-99" in prompt and "why is T0-99 blocked?" in prompt and '"phase"' in prompt
 
 
+def test_a_reply_is_produced_with_the_shipped_routing_template(layout):
+    """The template's `conversation` lane (whatever its informational `active` flag says, and 1.2.1 projects still
+    carry active: false) must never leave a reply pending with its job PREPARED."""
+    import shutil
+    from supervisor import template as template_mod
+    layout.config.mkdir(parents=True, exist_ok=True)
+    shutil.copy(template_mod.TEMPLATE_DIR / "config" / "routing.yaml", layout.config / "routing.yaml")
+    text = (layout.config / "routing.yaml").read_text(encoding="utf-8")
+    (layout.config / "routing.yaml").write_text(text.replace("active: true                    # informational",
+                                                             "active: false                   # informational"), encoding="utf-8")
+    meta = conversations.create(layout, role="senior_pm")
+    thread_id = meta["id"]
+    os.environ["FAKE_CONVERSATION_REPLY"] = "replied"
+    conversations.ask(layout, thread_id, "are you there?")
+    run_until(layout, _turn_done(layout, thread_id))
+    assert conversations.load(layout, thread_id)["turns"][1]["text"] == "replied"
+
+
 def test_pending_turns_skips_a_turn_with_an_in_flight_job(layout):
     meta = conversations.create(layout)
     thread_id = meta["id"]

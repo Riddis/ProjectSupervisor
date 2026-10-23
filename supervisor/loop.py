@@ -156,14 +156,13 @@ class Supervisor:
     @staticmethod
     def _agent_role(rec: dict, kind: str) -> str | None:
         """The role a job record runs as, for the gate's `active: false` check: a review's reviewer, a diagnosis's
-        diagnosing role, the chat lane's own `conversation` role; a delivery defaults to the task's owner role inside
-        the gate and a verify job runs for no agent role."""
+        diagnosing role; a delivery defaults to the task's owner role inside the gate. A verify job runs for no agent
+        role, and neither does a chat turn: the `conversation` lane is the owner's own channel, not a role that has
+        or lacks work, so its `active` flag means nothing (1.2.2 read it and parked every reply)."""
         if kind == "review":
             return rec.get("review_role")
         if kind == diagnosis_mod.KIND:
             return rec.get("diag_role")
-        if kind == "conversation":
-            return "conversation"
         return None
 
     def launch(self, rec: dict) -> dict:

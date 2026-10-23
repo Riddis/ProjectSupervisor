@@ -202,5 +202,11 @@ def test_the_gate_role_for_each_job_kind(layout):
     r = Supervisor._agent_role
     assert r({"review_role": "code_review"}, "review") == "code_review"
     assert r({"diag_role": "senior_pm"}, diagnosis.KIND) == "senior_pm"
-    assert r({}, "conversation") == "conversation"
+    assert r({}, "conversation") is None                                     # owner-driven: never parked by `active`
     assert r({}, "delivery") is None and r({}, "verify") is None            # delivery → owner role inside the gate
+
+
+def test_a_chat_turn_runs_whatever_the_conversation_lanes_active_flag_says(layout):
+    from supervisor import gate
+    write_routing(layout, {"roles": {"conversation": {"adapter": "claude_cli", "active": False}}})
+    assert gate.check(layout, None, "claude_cli", "conversation", [], role=None) is None
