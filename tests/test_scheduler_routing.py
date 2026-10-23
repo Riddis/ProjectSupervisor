@@ -174,3 +174,33 @@ def test_gate_refuses_a_review_record_whose_reviewer_role_is_inactive(layout):
     assert gate.check(layout, task, "claude_cli", "review", [], role="code_review") == gate.inactive_reason("code_review")
     assert gate.check(layout, task, "claude_cli", "review", [], role="code_review_2") is None
     assert gate.check(layout, task, "python", "verify", []) is None       # a verify job runs for no agent role
+
+
+def test_a_diagnosis_for_an_inactive_role_is_held_at_the_gate(layout, monkeypatch):
+    """Diagnoses run as the configured manager role (routing/policy `diagnosis.roles`), not the task's owner: the
+    gate receives that role and holds the record while it is active: false."""
+    from supervisor import diagnosis, jobs as jobs_mod
+    from supervisor.loop import Supervisor
+    from tests.test_review import FakeReviewClaude
+    monkeypatch.setitem(REGISTRY, "claude_cli", FakeReviewClaude())
+    make_task(layout, "D1")
+    tasks.set_status(layout, "D1", "IN_PROGRESS")
+    sup = Supervisor(layout, sleep_s=0)
+    role = diagnosis.settings(layout)["roles"]["manager"]
+    write_routing(layout, {"roles": {role: {"adapter": "claude_cli", "active": False}}})
+    rec = diagnosis.dispatch(sup, tasks.load(layout, "D1"), "test", "it broke", "sig-1", level="manager")
+    assert rec is not None and rec.get("diag_role") == role
+    rec = jobs_mod.read(layout, rec["attempt_id"])
+    assert rec["phase"] == "PREPARED" and "inactive" in (rec.get("held") or "") and role in rec["held"]
+    rec = sup.launch(rec)
+    assert rec["phase"] == "PREPARED" and "inactive" in rec["held"]     # still held on the next tick
+
+
+def test_the_gate_role_for_each_job_kind(layout):
+    from supervisor import diagnosis
+    from supervisor.loop import Supervisor
+    r = Supervisor._agent_role
+    assert r({"review_role": "code_review"}, "review") == "code_review"
+    assert r({"diag_role": "senior_pm"}, diagnosis.KIND) == "senior_pm"
+    assert r({}, "conversation") == "conversation"
+    assert r({}, "delivery") is None and r({}, "verify") is None            # delivery → owner role inside the gate

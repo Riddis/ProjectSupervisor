@@ -334,3 +334,37 @@ def test_doctor_reports_policy_config_problems(layout):
     (layout.config / policy.CONFIG_NAME).write_text(yaml.safe_dump({"secrets": {"min_value_length": 12}}), encoding="utf-8")
     checks = {c.name: c for c in doctor.run(layout)}
     assert checks["policy"].ok is True
+
+
+def test_a_removed_extensions_projection_paths_stop_being_excluded(layout):
+    """Persisted projection paths belong to the extension that rendered them: once the extension is removed from
+    project.yaml its files are ordinary files again, so a change to WEEKLY.md is an undeclared write."""
+    _configure(layout.root, ["weekly"], {"weekly": '''
+def setup(registry):
+    def weekly(layout):
+        p = layout.root / "WEEKLY.md"
+        p.write_text("# weekly")
+        return p
+    registry.projection(weekly)
+'''})
+    from supervisor import render
+    render.render_all(layout)
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+    assert extensions._recorded_projections(layout) == {"weekly": ["WEEKLY.md"]}
+    doc = dict(project.load(layout))
+    doc["extensions"] = []
+    project.write(layout, doc)
+    extensions.reset()
+    assert extensions.known_projection_paths(layout) == set()
+    assert "WEEKLY.md" not in verify.excluded_files(layout)
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    (layout.root / "WEEKLY.md").write_text("edited by hand")
+    outcome = verify.verify(layout, task, ["x"], before=before)
+    assert not outcome.ok and "WEEKLY.md" in outcome.detail
+    doc["extensions"] = ["weekly"]                                        # re-adding the extension restores it
+    project.write(layout, doc)
+    extensions.reset()
+    assert "WEEKLY.md" in verify.excluded_files(layout)

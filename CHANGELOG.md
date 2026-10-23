@@ -3,6 +3,19 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.2.2 — 2026-10-23
+
+Third review round (on 1.2.1, commit c7274b9).
+
+- Fix: the launch gate receives the role of every agent job kind — a diagnosis runs as its `diag_role`, a chat
+  turn as the `conversation` lane role, a review as its reviewer — so `active: false` holds diagnoses too (they
+  used to go SUBMITTED).
+- Fix (process adapter): `recover()` looks for `result.json` again after the process scan. A child that finished
+  while the scan ran was reported lost and launched a second time (duplicate execution of one attempt).
+- Fix: recorded projection paths are keyed by the extension that rendered them (`state/runtime/projection_paths.json`
+  `by_extension`); removing the extension from project.yaml removes its exclusions, so a hand edit to a former
+  projection file is an undeclared write again.
+
 ## 1.2.1 — 2026-10-23
 
 Second review round (on 1.2.0, commit 52cf048).

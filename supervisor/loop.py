@@ -153,6 +153,19 @@ class Supervisor:
         if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY, TaskStatus.FAILED, TaskStatus.BLOCKED):
             tasks_mod.set_status(self.layout, task_id, TaskStatus.IN_PROGRESS, actor="loop", note=note)
 
+    @staticmethod
+    def _agent_role(rec: dict, kind: str) -> str | None:
+        """The role a job record runs as, for the gate's `active: false` check: a review's reviewer, a diagnosis's
+        diagnosing role, the chat lane's own `conversation` role; a delivery defaults to the task's owner role inside
+        the gate and a verify job runs for no agent role."""
+        if kind == "review":
+            return rec.get("review_role")
+        if kind == diagnosis_mod.KIND:
+            return rec.get("diag_role")
+        if kind == "conversation":
+            return "conversation"
+        return None
+
     def launch(self, rec: dict) -> dict:
         ad = REGISTRY[rec["adapter"]]
         conversation = (rec.get("spec") or {}).get("kind") == "conversation"
@@ -186,8 +199,7 @@ class Supervisor:
             task = None
         running = [r for r in jobs_mod.open_records(self.layout)
                    if r["phase"] in gate.ACTIVE_PHASES and r["attempt_id"] != rec["attempt_id"]]
-        reason = gate.check(self.layout, task, rec["adapter"], kind, running,
-                            role=rec.get("review_role") if kind == "review" else None)
+        reason = gate.check(self.layout, task, rec["adapter"], kind, running, role=self._agent_role(rec, kind))
         if reason:
             if rec.get("held") != reason:
                 tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)

@@ -46,15 +46,25 @@ from .paths import Layout
 PROJECTIONS_FILE = "projection_paths.json"          # state/runtime/: projection files learned at render time
 
 
-def known_projection_paths(layout: Layout) -> set[str]:
-    """Root-relative projection files recorded by earlier renders of this project (any process). Rendering happens
-    in the loop; verification may run in a child or after a restart, so what a render learned is kept on disk."""
+def _recorded_projections(layout: Layout) -> dict[str, list[str]]:
+    """{extension name: [root-relative paths]} as recorded by earlier renders (any process)."""
     try:
         data = read_json(layout.runtime / PROJECTIONS_FILE)
     except (OSError, ValueError):
-        return set()
-    paths = data.get("paths") if isinstance(data, dict) else None
-    return {str(x) for x in paths} if isinstance(paths, list) else set()
+        return {}
+    by_ext = data.get("by_extension") if isinstance(data, dict) else None
+    if not isinstance(by_ext, dict):
+        return {}
+    return {str(k): sorted({str(x) for x in v}) for k, v in by_ext.items() if isinstance(v, list)}
+
+
+def known_projection_paths(layout: Layout) -> set[str]:
+    """Root-relative projection files recorded by earlier renders of this project, for the extensions project.yaml
+    configures NOW. Rendering happens in the loop; verification may run in a child or after a restart, so what a
+    render learned is kept on disk — but a path belongs to the extension that rendered it: remove the extension
+    and its files are ordinary files again (an exclusion that outlived its extension hid real undeclared writes)."""
+    configured = {name for name, _required in specs(layout)}
+    return {path for ext, paths in _recorded_projections(layout).items() if ext in configured for path in paths}
 
 NAMESPACE = "supervisor_ext"
 
@@ -77,18 +87,22 @@ class Registry:
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
 
+    _setting_up: str | None = None                              # the extension whose setup(registry) is running
+
     def __post_init__(self) -> None:
         self.projection_paths |= known_projection_paths(self.layout)
 
-    def _remember_projection(self, rel: str) -> None:
-        """A projection file learned from a render: kept in state/runtime so a verify child or a restarted loop
-        excludes it too (an exclusion that lived only in this process came back as `undeclared writes`)."""
-        if rel in self.projection_paths:
-            return
+    def _remember_projection(self, ext: str, rel: str) -> None:
+        """A projection file learned from a render, attributed to the extension that registered the projection:
+        kept in state/runtime so a verify child or a restarted loop excludes it too, and dropped with the extension
+        (`known_projection_paths` only returns paths of extensions still configured)."""
         self.projection_paths.add(rel)
+        recorded = _recorded_projections(self.layout)
+        if rel in recorded.get(ext, []):
+            return
+        recorded[ext] = sorted(set(recorded.get(ext, [])) | {rel})
         try:
-            atomic_json(self.layout.runtime / PROJECTIONS_FILE,
-                        {"paths": sorted(self.projection_paths | known_projection_paths(self.layout))})
+            atomic_json(self.layout.runtime / PROJECTIONS_FILE, {"by_extension": recorded})
         except OSError:                                     # best effort: the in-memory set still covers this process
             pass
 
@@ -111,8 +125,9 @@ class Registry:
     def projection(self, fn: Callable, path: str | None = None) -> None:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
         way the file is a rendered view like TASKS.md: never an artifact, never an undeclared write (supervisor.verify)."""
+        ext = self._setting_up or getattr(fn, "__module__", None) or "?"
         if path:
-            self._remember_projection(Path(path).as_posix())
+            self._remember_projection(ext, Path(path).as_posix())
         root = self.layout.root
 
         @functools.wraps(fn)
@@ -120,7 +135,7 @@ class Registry:
             out = fn(layout)
             try:
                 p = Path(out)
-                self._remember_projection((p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
+                self._remember_projection(ext, (p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
             except (TypeError, ValueError):               # not a path under the root: nothing to exclude
                 pass
             return out
@@ -240,7 +255,11 @@ def load(layout: Layout) -> Registry:
             setup = getattr(mod, "setup", None)
             if setup is None:
                 raise ExtensionError(f"no setup(registry) function in {getattr(mod, '__file__', None) or mod.__name__}")
-            setup(reg)
+            reg._setting_up = name
+            try:
+                setup(reg)
+            finally:
+                reg._setting_up = None
             reg.loaded.append(name)
         except Exception as exc:                            # noqa: BLE001 - recorded; a required one blocks the loop
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]

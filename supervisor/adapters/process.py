@@ -123,8 +123,9 @@ class ProcessAdapter(Adapter):
         if st.get("status") == "RUNNING" and st.get("pid"):
             return {k: st.get(k) for k in ("kind", "pid", "create_time", "started", "deadline")}   # alive → adopt; dead → lost
         if st.get("status") == "LAUNCHING":
+            finished = {"kind": "process", "pid": None, "create_time": None, "started": st.get("at"), "deadline": float("inf")}
             if (run_dir / "result.json").exists():
-                return {"kind": "process", "pid": None, "create_time": None, "started": st.get("at"), "deadline": float("inf")}
+                return finished
             attempt = str(spec.get("attempt_id", ""))
             top = _topmost_tagged(attempt) if attempt else None      # killed between Popen and the RUNNING write
             if top is not None:
@@ -132,6 +133,10 @@ class ProcessAdapter(Adapter):
                           "deadline": time.time() + spec.get("timeout_s", 3600)}
                 atomic_json(run_dir / "status.json", {"status": "RUNNING", **handle})
                 return handle
+            # The scan takes time; a child that finished while it ran is no longer in the process table but has
+            # left its result — look again before declaring the attempt lost, or the caller launches it a second time.
+            if (run_dir / "result.json").exists():
+                return finished
         return None
 
     def env(self, spec):

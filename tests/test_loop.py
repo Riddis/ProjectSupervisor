@@ -228,3 +228,29 @@ def test_recover_adopts_child_killed_before_running_write(layout):
     rec = REGISTRY["process"].recover(spec)
     assert rec is not None and rec["pid"] == handle["pid"]
     REGISTRY["process"].terminate(handle)
+
+
+def test_recover_does_not_relaunch_a_child_that_finished_during_the_scan(layout, monkeypatch):
+    """LAUNCHING status, no result yet when recover() starts, and the child finishes while the process scan runs:
+    the scan finds nothing, but the result is there — recover must adopt it, not return None (which relaunches
+    the attempt and executes it twice)."""
+    import json
+    from supervisor.adapters import REGISTRY, process as process_mod
+    from supervisor._vendor.contract import atomic_json
+    proc_task(layout, "P2", seconds=0.1)
+    task = tasks.load(layout, "P2")
+    spec = REGISTRY["process"].prepare(layout, task, "P2.a1")
+    jobs.prepare(layout, "P2", "P2.a1", "process", spec)
+    run_dir = layout.runs / "P2" / "P2.a1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    atomic_json(run_dir / "status.json", {"status": "LAUNCHING", "attempt_id": "P2.a1"})
+    launches = []
+
+    def scan_that_takes_a_while(attempt):
+        launches.append(attempt)
+        (run_dir / "result.json").write_text(json.dumps({"status": "COMPLETE", "artifacts": ["P2.txt"]}))   # child finished meanwhile
+        return None
+    monkeypatch.setattr(process_mod, "_topmost_tagged", scan_that_takes_a_while)
+    handle = REGISTRY["process"].recover(spec)
+    assert launches == ["P2.a1"]
+    assert handle is not None and handle["pid"] is None and handle["deadline"] == float("inf")   # adopted as finished
