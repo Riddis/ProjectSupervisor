@@ -88,6 +88,14 @@ to a subscription, and/or the Codex CLI (`codex`) signed in. No API keys are nee
 `claude_api` lane. Windows is the primary platform (PowerShell/batch launchers ship with the template); the package
 itself runs on Linux/macOS and the test suite runs there.
 
+## Licence
+
+Apache License 2.0 with the Commons Clause (`LICENSE`). You may use, modify and share the framework, at work too.
+You may not sell it, or sell a product or service whose value comes entirely or substantially from it, hosting and
+paid support included. That makes it source-available rather than open source in the formal sense. Extensions are
+their authors' own and carry their own licences. Contributions are accepted under a contributor licence agreement
+(see `CONTRIBUTING.md` once it exists).
+
 ## Naming
 
 The package is `supervisor`; the distribution is `supervisor-framework`; the GitHub repo is `ProjectSupervisor`. If `supervisor` ever collides with another

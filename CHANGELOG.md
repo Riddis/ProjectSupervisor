@@ -3,6 +3,12 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **Licence.** The framework is licensed under Apache License 2.0 with the Commons Clause (`LICENSE`): free to use,
+  modify and share; not to be sold, nor offered as a product or service whose value derives substantially from it.
+  `pyproject.toml` declares it; the README explains it. No code change.
+
 ## 1.8.3 — 2026-10-24
 
 Review round on 1.8.2: `tools/test_windows.ps1` did not parse — `"$out:"` inside a string is read by PowerShell as a
