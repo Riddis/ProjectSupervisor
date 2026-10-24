@@ -3,6 +3,18 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.8.2 — 2026-10-24
+
+Review round on 1.8.1 (verdict REVISE, one remaining finding on the Windows validation script).
+
+- **`tools/test_windows.ps1` fails loudly when its results file cannot be written.** `Set-Content`/`Out-File`
+  errors are non-terminating by default, so a busy `runs/pytest_windows.txt` (another run holding it) let the
+  script continue, show the previous run's output and exit 0 — a false pass. Every write to the results file is
+  now a terminating error: a busy or unwritable log ends the run with exit 2 before pytest starts (or voids it if
+  the file becomes unwritable mid-run); a log that ends without a pytest summary exits 3; otherwise the exit code
+  is pytest's own. `tools/test_windows_selfcheck.ps1` holds the results file open, runs the script and expects
+  exit 2 with the file untouched.
+
 ## 1.8.1 — 2026-10-24
 
 Review round on 1.8.0 (verdict REVISE): two reproduced findings.
