@@ -105,12 +105,14 @@ def _evidence_view(layout: Layout, ref: str) -> dict:
     return {"ref": ref, "kind": "link"}
 
 
-def _item_view(layout: Layout, item: dict, info=None) -> dict:
+def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None) -> dict:
     """`info` is the extension's InboxKind for the item's kind, if claimed. An extension page owns the detail of its
     items: `show_evidence=False` keeps the per-option rows (and their scores) off this card — the owner sees a count
-    and a link to the page — and `answerable=False` replaces the generic form with that link."""
+    and a link to the page — and `answerable=False` replaces the generic form with that link. `unknown` (see
+    inbox.ownership_unknown) means the kind's owner may be a required extension that failed to load: the card is then
+    rendered blind and without the form, and says why."""
     sub_items = item.get("items") or []
-    blind = info is not None and not info.show_evidence
+    blind = (info is not None and not info.show_evidence) or bool(unknown)
     keys = info.score_keys if info is not None else ()
     return {
         **item,
@@ -121,7 +123,8 @@ def _item_view(layout: Layout, item: dict, info=None) -> dict:
         "plain_items": [] if blind else [i for i in sub_items if not _is_score_block(i, keys)],
         "item_count": len(sub_items),
         "ext_page": info.page_for(str(item.get("id") or "")) if info is not None else None,
-        "ext_answerable": info.answerable if info is not None else True,
+        "ext_answerable": (info.answerable if info is not None else True) and not unknown,
+        "ownership_unknown": unknown,
         "age_display": _age_display(_age_seconds(item)),
     }
 
@@ -139,7 +142,8 @@ def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(req
     groups = {k: [] for k in order}
     for item in shown:
         kind = item.get("kind") if item.get("kind") in labels else "question"
-        groups[kind].append(_item_view(layout, item, ext_kinds.get(item.get("kind"))))
+        groups[kind].append(_item_view(layout, item, ext_kinds.get(item.get("kind")),
+                                       inbox_mod.ownership_unknown(layout, item.get("kind"))))
     return render(request, "inbox.html", {
         "tab": tab, "groups": groups, "kind_labels": labels, "kind_order": order,
         "open_count": sum(1 for i in items if i.get("status") == "open"),

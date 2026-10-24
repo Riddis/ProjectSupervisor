@@ -132,9 +132,29 @@ def kind_info(layout: Layout | None, kind: str | None):
     return extensions.load(layout).inbox_kinds.get(str(kind))
 
 
+def ownership_unknown(layout: Layout | None, kind: str | None) -> str | None:
+    """Why the owner of `kind` cannot be established, or None. A kind that is neither built in nor claimed while a
+    required extension failed to load may well belong to that extension — its `inbox_kind()` registration never ran —
+    so the generic path must fail closed: answering the item would skip the per-option validation the extension
+    enforces, and rendering it would show rows the extension keeps blind. Built-in kinds are unaffected (their
+    recovery actions stay available)."""
+    if layout is None or not kind or str(kind) in BUILTIN_KINDS:
+        return None
+    from . import extensions
+    reg = extensions.load(layout)
+    if str(kind) in reg.inbox_kinds or not reg.blocking:
+        return None
+    return (f"kind {kind!r} cannot be answered or shown in full: a required extension failed to load "
+            f"({'; '.join(reg.blocking)}) and may own this kind; fix the extension (`supervisor doctor`)")
+
+
 def owned_by_extension(layout: Layout | None, doc: dict) -> str | None:
     """Why the generic answer path may not close this item, or None: an extension claimed its kind with
-    `answerable=False`, so only that extension's own code (`answer(..., internal=True)`) finalises it."""
+    `answerable=False`, so only that extension's own code (`answer(..., internal=True)`) finalises it — or the kind's
+    owner cannot be established because a required extension failed to load (`ownership_unknown`)."""
+    unknown = ownership_unknown(layout, doc.get("kind"))
+    if unknown:
+        return f"{doc.get('id')}: {unknown}"
     info = kind_info(layout, doc.get("kind"))
     if info is None or info.answerable:
         return None

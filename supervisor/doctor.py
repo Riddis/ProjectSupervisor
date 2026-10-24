@@ -52,8 +52,13 @@ def check_framework(layout: Layout) -> Check:
         return Check("framework", True, f"{rt['version']} (installed package, {rt['path']})")
     where = f"{rt['version']} @ {rt['commit'] or '?'}" + (f" ({rt['tag']})" if rt["tag"] else "") + f", {rt['path']}"
     problems = []
-    if rt["dirty"]:
-        problems.append("the checkout has uncommitted changes")
+    if rt.get("status_error"):
+        problems.append(f"its state could not be verified ({rt['status_error']})")
+    elif rt["dirty"]:
+        untracked = rt.get("untracked") or []
+        problems.append("the checkout has uncommitted changes"
+                        + (f" including untracked files ({', '.join(untracked[:5])}{'…' if len(untracked) > 5 else ''})"
+                           if untracked else ""))
     if not rt["tag"]:
         problems.append("HEAD is not at a tag")
     if problems:

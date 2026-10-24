@@ -3,6 +3,30 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.8.1 — 2026-10-24
+
+Review round on 1.8.0 (verdict REVISE): two reproduced findings.
+
+- **A failed required extension no longer unlocks the inbox items it owns.** When a required extension failed to
+  import, its `inbox_kind()` registrations never ran, and the generic answer path read the missing metadata as
+  permission: a `labelling` item could be closed by `inbox.answer()`, the `inbox.answer` command or the inbox form
+  without the extension's per-option validation, and the inbox page rendered its blind rows. Now a kind that is
+  neither built in nor claimed, while any required extension is blocking, has an owner that cannot be established
+  (`inbox.ownership_unknown`): the generic path refuses (the error names the failed extension), the card is rendered
+  blind and without a form and says why. Built-in kinds (`gate`, `decision`, `approval`, …) stay answerable, so the
+  owner can still act; with every extension loaded, an unclaimed kind is ordinary data as before.
+- **`doctor`'s framework check counts untracked files.** `updates.runtime_checkout()` ran `git status
+  --untracked-files=no`, so a tagged checkout with an extra, untracked Python module was reported clean — and an
+  editable install imports that module like any other. The status now includes non-ignored untracked files
+  (`untracked` lists them, the check names them), and a `git status` that fails is a failed verification
+  (`status_error`, `dirty: None`, FAIL "could not be verified"), never "clean".
+- `tools/test_windows.ps1` sets `PYTHONPATH` to the checkout for the run (process-local, so a venv that does not
+  have the framework installed can still run the updater tests, whose subprocesses import `supervisor`) and exits
+  with pytest's exit code instead of 0.
+- Tests: the owned item after its extension stops loading (API, command, UI render and UI answer), the unclaimed
+  kind with everything loaded, and a real tagged temporary repository for the cleanliness check (untracked file,
+  ignored file, failing `git status`).
+
 ## 1.8.0 — 2026-10-24
 
 Seven extension hooks and three fixes, for a project whose work runs on one heavy local resource, reviews images in

@@ -58,6 +58,7 @@
     </ul>
     {% endif %}
 
+    {% if item.ownership_unknown %}<p class="flash flash-error">{{ item.ownership_unknown }}</p>{% endif %}
     {% if item.ext_page %}
     {% if item.item_count and not item.score_items and not item.plain_items %}<p class="muted">{{ item.item_count }} item(s) &mdash; shown on the extension's page</p>{% endif %}
     <p><a class="quiet-link" href="{{ item.ext_page }}">Open {{ kind_labels[item.kind] | lower }} page</a></p>

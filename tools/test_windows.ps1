@@ -13,8 +13,13 @@ $out = "$Root\runs\pytest_windows.txt"
 "pytest $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') root=$Root python=$Python" | Set-Content -Encoding UTF8 $out
 "commit $(git -C $Root rev-parse --short HEAD) $(git -C $Root describe --tags --always --dirty)" | Out-File -Encoding UTF8 -Append $out
 $env:PYTHONDONTWRITEBYTECODE = "1"
+# The suite's updater tests spawn `python -m supervisor` in a child: make this checkout importable for THIS run only
+# (process-local; nothing is installed into the interpreter's environment and no other project is repointed).
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$Root;$env:PYTHONPATH" } else { "$Root" }
 # AppData\Local\Temp can be access-denied for sandboxed agents; keep temp inside the repo (runs/ is gitignored).
 $env:TMP = "$Root\runs\tmp"; $env:TEMP = "$Root\runs\tmp"
 Get-ChildItem -Path $Root -Recurse -Directory -Filter "__pycache__" | Where-Object { $_.FullName -notlike "*\.venv\*" } | Remove-Item -Recurse -Force
 & $Python -B -m pytest -q -p no:cacheprovider 2>&1 | Out-File -Encoding UTF8 -Append $out
+$code = $LASTEXITCODE
 Get-Content $out | Select-Object -Last 15
+exit $code

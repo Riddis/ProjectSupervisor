@@ -358,3 +358,84 @@ def test_doctor_reports_the_framework_checkout_and_refuses_a_dirty_or_untagged_o
     monkeypatch.setattr(updates, "runtime_checkout", lambda: dict(base, is_git=False, commit=None, tag=None))
     assert doctor.check_framework(layout).ok                              # an installed package has no checkout to judge
     assert "framework" in {c.name for c in doctor.run(layout)}
+
+
+# ------------------------------------------------------------------ 1.8.1: review findings on 1.8.0
+
+def test_an_owned_item_stays_closed_to_the_generic_path_after_its_extension_stops_loading(layout):
+    """A required extension that fails to import never registers its inbox kinds. Its existing items must not become
+    answerable through the generic path (that skips the extension's per-option validation), and the inbox page must
+    not reveal rows the extension keeps blind. Built-in kinds keep working so the owner can still act on them."""
+    _configure(layout.root, ["rounds"], {"rounds": ROUNDS_EXT})
+    item = _labelling_item(layout)
+    _configure(layout.root, ["rounds"], {"rounds": "import nosuchmodule_xyz\n" + ROUNDS_EXT})   # the extension breaks
+    reg = extensions.load(layout)
+    assert reg.blocking and "labelling" not in reg.inbox_kinds
+    with pytest.raises(inbox.InboxError, match="cannot be answered.*required extension failed"):
+        inbox.answer(layout, item["id"], "ACCEPT")
+    out = commands.submit_or_apply(layout, "inbox.answer", {"item_id": item["id"], "response": "ACCEPT"}, "owner")
+    assert not out["ok"] and "required extension failed" in out["error"]
+    assert inbox.load(layout, item["id"])["status"] == "open"
+    gate_item = inbox.create(layout, for_role="owner", subject="g", summary="g", kind="gate",
+                             allowed_responses=["APPROVE", "REJECT"])
+    assert inbox.answer(layout, gate_item["id"], "APPROVE")["status"] == "answered"       # built-in: still answerable
+    client = _client(layout)
+    html = client.get("/inbox").text
+    assert "0.91" not in html and "identity_mean" not in html                            # still blind
+    assert f'action="/inbox/{item["id"]}/answer"' not in html and "required extension failed" in html
+    r = client.post(f"/inbox/{item['id']}/answer", data={"csrf_token": CSRF, "response": "ACCEPT"}, follow_redirects=False)
+    assert r.status_code == 400 and "required extension failed" in r.text
+    assert inbox.load(layout, item["id"])["status"] == "open"
+
+
+def test_an_unclaimed_kind_with_every_extension_loaded_is_an_ordinary_item(layout):
+    """No blocking failure: a kind nobody claims (an extension removed on purpose) is generic data, answerable."""
+    _configure(layout.root, [], {})
+    item = inbox.create(layout, for_role="owner", subject="old", summary="orphan", kind="labelling")
+    assert inbox.ownership_unknown(layout, "labelling") is None
+    assert inbox.answer(layout, item["id"], "ACCEPT")["status"] == "answered"
+
+
+def _git(args, cwd):
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True,
+                          env={**__import__("os").environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"})
+
+
+@pytest.mark.skipif(__import__("shutil").which("git") is None, reason="git not on PATH")
+def test_runtime_checkout_counts_untracked_files_and_reports_an_uninspectable_checkout(tmp_path, monkeypatch, layout):
+    """Against a real tagged repository, not a mocked status: an editable install imports an untracked module in the
+    package directory just like a tracked one, so an untracked file is unreviewed runtime code and the checkout is
+    not clean. A `git status` that fails is a failed verification, never "clean"."""
+    from supervisor import updates
+    repo = tmp_path / "fwrepo"
+    (repo / "pkg").mkdir(parents=True)
+    (repo / "pkg" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("*.pyc\n__pycache__/\n", encoding="utf-8")
+    _git(["init", "-q"], repo)
+    _git(["add", "-A"], repo)
+    _git(["commit", "-q", "-m", "one"], repo)
+    _git(["tag", "-a", "v9.9.9", "-m", "tag"], repo)
+    monkeypatch.setattr(updates, "framework_dir", lambda: repo)
+    rt = updates.runtime_checkout()
+    assert rt["is_git"] and rt["tag"] == "v9.9.9" and rt["dirty"] is False and rt["status_error"] is None
+    assert doctor.check_framework(layout).ok
+    (repo / "pkg" / "new_runtime_code.py").write_text("y = 2\n", encoding="utf-8")       # untracked, not ignored
+    rt = updates.runtime_checkout()
+    assert rt["dirty"] is True and rt["untracked"] == ["pkg/new_runtime_code.py"]
+    c = doctor.check_framework(layout)
+    assert not c.ok and "untracked" in c.detail and "new_runtime_code.py" in c.detail
+    (repo / "pkg" / "new_runtime_code.py").unlink()
+    (repo / "pkg" / "scratch.pyc").write_bytes(b"\x00")                                 # ignored: not runtime code git tracks
+    assert updates.runtime_checkout()["dirty"] is False
+    real = updates._git
+
+    def failing(args, cwd, timeout=10):
+        if args and args[0] == "status":
+            return 128, "fatal: index file corrupt"
+        return real(args, cwd, timeout)
+    monkeypatch.setattr(updates, "_git", failing)
+    rt = updates.runtime_checkout()
+    assert rt["dirty"] is None and "index file corrupt" in rt["status_error"]
+    c = doctor.check_framework(layout)
+    assert not c.ok and "could not be verified" in c.detail

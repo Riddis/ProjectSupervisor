@@ -70,10 +70,15 @@ def framework_dir() -> Path:
 def runtime_checkout() -> dict:
     """What is running: the installed framework version, and — when the package is an editable install of a git
     checkout — that checkout's commit, the tag exactly at it (if any) and whether the working tree is dirty.
-    {"version", "is_git", "commit", "tag", "dirty", "path"}; commit/tag are None without git or outside a checkout."""
+    {"version", "is_git", "commit", "tag", "dirty", "status_error", "path"}; commit/tag are None without git or
+    outside a checkout. `dirty` counts modified tracked files AND non-ignored untracked files: an editable install
+    imports whatever Python file sits in the package directory, tracked or not, so an untracked module is
+    unreviewed runtime code. `status_error` is set (and `dirty` None) when git could not report the status at all —
+    a checkout whose state cannot be inspected is not a clean one."""
     from . import __version__
     fw = framework_dir()
-    out = {"version": __version__, "path": str(fw), "is_git": False, "commit": None, "tag": None, "dirty": False}
+    out = {"version": __version__, "path": str(fw), "is_git": False, "commit": None, "tag": None, "dirty": False,
+           "status_error": None}
     code, inside = _git(["rev-parse", "--is-inside-work-tree"], fw, timeout=10)
     if code != 0 or inside.strip() != "true":
         return out
@@ -82,8 +87,13 @@ def runtime_checkout() -> dict:
     out["commit"] = sha.strip() if code == 0 and sha.strip() else None
     code, tag = _git(["describe", "--tags", "--exact-match", "HEAD"], fw, timeout=10)
     out["tag"] = tag.strip().splitlines()[0] if code == 0 and tag.strip() else None
-    code, dirty = _git(["status", "--porcelain", "--untracked-files=no"], fw, timeout=10)
-    out["dirty"] = code == 0 and bool(dirty.strip())
+    code, status = _git(["status", "--porcelain", "--untracked-files=normal"], fw, timeout=10)
+    if code != 0:
+        out["dirty"] = None
+        out["status_error"] = f"git status failed ({status.strip()[:200] or f'exit {code}'})"
+    else:
+        out["dirty"] = bool(status.strip())
+        out["untracked"] = [ln[3:] for ln in status.splitlines() if ln.startswith("?? ")]
     return out
 
 
