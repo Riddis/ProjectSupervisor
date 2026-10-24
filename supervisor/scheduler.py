@@ -110,7 +110,9 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
         name = adapter_name(t, layout)
         if prefer_api and name == "claude_cli" and "claude_api" in REGISTRY:
             from .adapters import claude_api
-            if claude_api.credits_remaining(layout):
+            # ...and only for a contract the tool-less Messages API lane can actually fulfil (unattended_eligible):
+            # an engineering task moved here could neither read its inputs nor write its artifacts.
+            if claude_api.credits_remaining(layout) and claude_api.unattended_eligible(layout, t, job_spec(t)):
                 name = "claude_api"
         if name not in REGISTRY:
             continue                                   # adapter not built yet, or not registered in this process

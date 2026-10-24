@@ -336,8 +336,8 @@ class ClaudeCliAdapter(ProcessAdapter):
                           usage=meta["model_usage"] or {}, raw=meta)
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
-        except ValueError:
-            obj = self.follow_up(spec, meta["session_id"])
+        except ValueError as exc:
+            obj = self.follow_up(spec, meta["session_id"], str(exc))
             if obj is None:
                 return Result(status="FAILED", error="no structured result after follow-up", session_id=meta["session_id"],
                               usage=meta["model_usage"] or {}, raw=meta)
@@ -354,8 +354,10 @@ class ClaudeCliAdapter(ProcessAdapter):
         return Result(status=status, artifacts=list(obj.get("artifacts") or []), notes=notes, error=error,
                       model=spec.get("model"), session_id=meta["session_id"], usage=meta["model_usage"] or {}, raw=obj)
 
-    def follow_up(self, spec, session_id):
-        """One tool-less resume asking only for the JSON block."""
+    def follow_up(self, spec, session_id, error: str = ""):
+        """One tool-less resume asking only for the JSON block. `error` is the contract's own description of what
+        was wrong with the first answer (structured_result's ValueError), quoted so the model fixes that and keeps
+        the rest — a bare "lacked a JSON block" made reviewers rewrite their verdict from scratch."""
         if not session_id:
             return None
         run_dir = Path(spec["run_dir"])
@@ -363,8 +365,10 @@ class ClaudeCliAdapter(ProcessAdapter):
         if out_file.exists():                              # exactly one follow-up per attempt, crash-safe
             return self._parse_follow_up(spec, out_file)
         ask = run_dir / "followup_prompt.md"
-        ask.write_text(f"Your previous answer lacked the required fenced JSON `{spec.get('result_kind', 'delivery')}` object "
-                       "(schema_version 1). Reply with ONLY that JSON block describing what you actually completed.", encoding="utf-8")
+        why = (f" The supervisor could not accept it: {error[:600]}." if error else "")
+        ask.write_text(f"Your previous answer lacked a valid fenced JSON `{spec.get('result_kind', 'delivery')}` object "
+                       f"(schema_version 1).{why} Reply with ONLY the corrected JSON block describing what you actually "
+                       "completed — keep your verdict and findings, fix only what the error names.", encoding="utf-8")
         argv = self.command({**spec, "resume": session_id})
         tmp = run_dir / "followup_stdout.partial"
         try:

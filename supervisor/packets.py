@@ -159,6 +159,11 @@ def _verification_summary(layout: Layout, task: Task, digest: str) -> str:
            "defect in the delivery.\n" + "\n".join(lines) + "\n")
 
 
+# The vocabulary _vendor/contract.review_result accepts; told to the reviewer so a verdict is not lost over a
+# category spelling the contract refuses.
+FINDING_CATEGORY_LIST = "correctness | requirement | regression | architecture | quality | advisory"
+
+
 def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], role: str) -> str:
     card = role_card(layout, role)
     example = json.dumps({"kind": "review", "schema_version": 1, "verdict": "ACCEPT|REVISE|REJECT|BLOCKED",
@@ -181,7 +186,10 @@ def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], 
         "\n## Delivered artifacts (frozen inputs — read these, not the producer's notes)\n"
         + "\n".join(f"- {a}" for a in artifacts) +
         _verification_summary(layout, task, digest) + review_guidance_block(task, digest) +
-        "\n\n## Result contract\nEnd your answer with exactly one fenced JSON block:\n```json\n" + example + "\n```\n"),
+        "\n\n## Result contract\nEnd your answer with exactly one fenced JSON block:\n```json\n" + example + "\n```\n"
+        "Each entry in `findings` is an object {\"category\": one of " + FINDING_CATEGORY_LIST + ", \"blocking\": "
+        "true|false, \"message\": \"...\", \"evidence\": \"file:line, command output or quote\"}. Use exactly those "
+        "category names. `advisory` findings are never blocking; an ACCEPT carries no blocking finding.\n"),
         layout, f"review packet {task.id}")
 
 

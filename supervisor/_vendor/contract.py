@@ -218,6 +218,23 @@ def result_object(text, kind, schema_version=1):
 
 REVIEW_VERDICTS = ("ACCEPT", "REVISE", "REJECT", "BLOCKED")
 FINDING_CATEGORIES = {"correctness", "requirement", "regression", "architecture", "quality", "advisory"}
+# Near-misses reviewers actually write ("acceptance", "requirements", "bug") mapped onto the canonical set, so a
+# real verdict is never discarded over a category spelling. Anything else is still rejected.
+CATEGORY_ALIASES = {"requirements": "requirement", "acceptance": "requirement", "acceptance_criteria": "requirement",
+                    "spec": "requirement", "scope": "requirement", "completeness": "requirement",
+                    "bug": "correctness", "bugs": "correctness", "correct": "correctness",
+                    "regressions": "regression", "design": "architecture", "invariant": "architecture",
+                    "maintainability": "quality", "style": "quality", "tests": "quality", "testing": "quality",
+                    "docs": "quality", "documentation": "quality", "nit": "advisory", "suggestion": "advisory"}
+
+
+def normalize_category(value):
+    """A finding category as the contract spells it: canonical names pass, known aliases are mapped, anything
+    else is returned unchanged (and then refused by review_result)."""
+    if not isinstance(value, str):
+        return value
+    key = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return key if key in FINDING_CATEGORIES else CATEGORY_ALIASES.get(key, value)
 
 
 def review_result(text):
@@ -228,9 +245,15 @@ def review_result(text):
     if not isinstance(findings, list):
         raise ValueError("Review findings must be a list")
     for f in findings:
+        if isinstance(f, dict) and "category" in f:
+            f["category"] = normalize_category(f["category"])
         if (not isinstance(f, dict) or f.get("category") not in FINDING_CATEGORIES
                 or not isinstance(f.get("blocking"), bool) or not f.get("evidence") or not f.get("message")):
-            raise ValueError("Each finding needs category, blocking, message and evidence")
+            # Descriptive on purpose: claude_cli.follow_up quotes this back to the model, which then fixes exactly
+            # what is named instead of guessing.
+            raise ValueError("Each finding needs category (one of " + ", ".join(sorted(FINDING_CATEGORIES))
+                             + "), blocking (true/false), message and evidence; offending finding: "
+                             + json.dumps(f, ensure_ascii=False)[:300])
         if f["category"] == "advisory" and f["blocking"] and value["verdict"] != "BLOCKED":
             raise ValueError("Advisory findings cannot block")
     if value["verdict"] == "ACCEPT" and any(f["blocking"] for f in findings):

@@ -3,6 +3,49 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.7.2 — 2026-10-24
+
+Fixes ported from the project the framework was extracted from (migration plan phase 1a: the drift ledger's
+"upstream" rows). Generic hardening the project had made after the extraction and the framework lacked.
+
+- **`claude_api` results were read as empty.** `collect()` returned the result-file envelope as `Result.raw`, while
+  `review.ingest` reads the verdict, `loop.ingest` the declared `tests` and a diagnosis its decision off `raw`
+  — so every API-lane review came back "no verdict" and every API-lane delivery lost its test evidence. `raw` is
+  now the structured object itself (the envelope only when there is none, so the error still travels).
+- **One paid POST per attempt, ever.** The response body is persisted (`response.json`) before the ledger append
+  and the result write; a submit re-entered after a kill in that window finishes from the saved body instead
+  of calling the API again, and the ledger entry is keyed by the response id so it is never billed twice
+  (`claude_api.entries`, `recorded`, `record_usage(..., response_id=)`).
+- **The unattended switch only moves work the tool-less lane can do.** `claude_api.unattended_eligible`: the pick
+  must be the cost-category default (an explicit `job.adapter` is never overridden), the contract must declare no
+  artifacts, tests or executable checks (there is no Read/Write/Bash through the Messages API), and the task or
+  its role must be opted in (`job.api_credits: true` or routing.yaml `claude_api.eligible_roles`). Before, any
+  `claude_cli` pick was switched once credits were available, engineering tasks included.
+- **Fail-closed credential scanning** (`policy`). *There is no credential store* (absent `secrets/`, the normal
+  state of a fresh clone) is now distinct from *the store could not be read*: an unreadable directory or file,
+  a non-regular entry, a file too large to scan, one that is not UTF-8, a half-written `.json` token file or a
+  relocated `secrets.dir` that does not exist is a scan failure (`secret_scan_problems()`), never cached, and
+  while one stands `assert_packet_clean()` refuses every dispatch and the log redactor withholds every field
+  value long enough to be a credential (`policy_unscreened` names why). Both halves of the packet judgement
+  come from one scan. A config file that cannot be stat-ed is reported and never served from cache.
+- **Numeric credentials and credential keys.** A digit-only password stored as a JSON number is collected (in
+  both the file's literal and the canonical `str()` form) and screened wherever it appears — a packet, a log
+  value, a log key, a numeric field name — while unrelated numbers keep their value and their type. Mapping
+  keys are redacted like values; two keys that redact alike both keep their record (`[REDACTED]#2`).
+- **The log's `actor` and `event` are screened.** `tasks.log()` passes both through `screen_log_identity()`:
+  screened for literals and patterns, never blanked (the trail stays readable while the store is unreadable).
+  `actor` is data — `commands.apply_all()` reads it from a queued command file.
+- **Review verdicts are not lost over a category spelling.** `_vendor/contract` maps the near-misses reviewers
+  write ("acceptance", "requirements", "bug", …) onto the canonical categories and names the offending finding
+  in its error; `packets.review_brief` tells the reviewer the vocabulary; `claude_cli.follow_up(error)` quotes
+  the contract's own error back to the model so it fixes only that; and `review.salvage()` ingests a finished
+  review attempt whose answer parses now, before paying for a fresh review (`review_salvaged` event, `salvaged`
+  on the job record).
+- `tasks.record_delivery` filters the delivery's paths through `verify.excluded_files`, so an extension
+  projection is never frozen as a review input (the loop already dropped it from the artifact list).
+- Tests: `test_policy_hardening.py` (40), `test_review_salvage.py`, `test_delivery_paths.py`, the `claude_api`
+  resume/ledger/eligibility cases, the follow-up prompt and the review-brief vocabulary.
+
 ## 1.7.1 — 2026-10-24
 
 Review round on 1.7.0 (verdict REVISE): three time-limit edges around upgraded and interrupted jobs.

@@ -227,3 +227,11 @@ def test_max_turns_is_failure_not_limit(layout, tmp_path):
                                                  "result": "Reached max turns; limit resets in 2h", "session_id": "s"}) + "\n")
     r = ad.parse_result(spec, {})
     assert r.status == "FAILED" and "max turns" in r.error
+
+
+def test_followup_quotes_the_contract_error_so_the_model_fixes_only_that(layout):
+    ctask(layout, mode="nojson")
+    run_until_done(layout, "C")
+    run_dir = layout.runs / "C" / "C.a1"
+    ask = (run_dir / "followup_prompt.md").read_text(encoding="utf-8")
+    assert "The supervisor could not accept it:" in ask and "keep your verdict and findings" in ask

@@ -263,11 +263,22 @@ def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
 # ------------------------------------------------------------------ logging
 
 def log(layout: Layout, event: str, actor: str = "system", **fields):
-    """The single append path to state/log.jsonl. Every field is redacted here: the log is read by the
-    Control Center, quoted into revision packets and committed in projections, so a credential that reaches it
-    has effectively left `secrets/`. Redacted, not refused — losing an audit record would be the worse failure."""
+    """The single append path to state/log.jsonl. Everything a caller supplies is screened here: the log is read
+    by the Control Center, quoted into revision packets and committed in projections, so a credential that
+    reaches it has effectively left `secrets/`. Redacted, not refused — losing an audit record would be the
+    worse failure.
+
+    Named, not asserted in general: `**fields` and everything nested inside them go through `redact_fields()`,
+    which also blanks any value long enough to be a credential while the store cannot be enumerated; `actor`
+    and `event` go through `screen_log_identity()`, which screens them for literals and patterns but never
+    blanks them, so the trail stays readable. `actor` needs it because it is data — `commands.apply_all()`
+    reads it from a queued `state/commands/*.json` file. `ts` is this machine's clock and is the one value no
+    caller supplies."""
     layout.log.parent.mkdir(parents=True, exist_ok=True)
-    record = {"ts": store.now_iso(), "actor": actor, "event": event, **policy_mod.redact_fields(fields, layout)}
+    record = {"ts": store.now_iso(),
+              "actor": policy_mod.screen_log_identity(actor, layout),
+              "event": policy_mod.screen_log_identity(event, layout),
+              **policy_mod.redact_fields(fields, layout)}
     with layout.log.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -433,9 +444,13 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
             doc["result"] = result
         if paths:
             # the delivery's own paths replace the previous delivery's (a review freezes on them; accumulated stale
-            # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never count.
+            # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never
+            # count — the built-in views and every projection an extension registered (verify.excluded_files), so
+            # a rendered file is never frozen as a review input.
             doc["paths"] = sorted({str(x) for x in paths if not str(x).startswith("state/")
-                                   and str(x) not in VOLATILE_PROJECTIONS})
+                                   and str(x) not in volatile})
+    from . import verify as verify_mod                   # local: verify imports this module
+    volatile = VOLATILE_PROJECTIONS | verify_mod.excluded_files(layout)
     t = _update(layout, task_id, fn)
     log(layout, "delivery", actor, task=task_id, digest=digest)
     return t

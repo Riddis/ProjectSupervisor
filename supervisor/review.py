@@ -275,3 +275,50 @@ def _findings_text(layout, report_path: str | None) -> str:
     findings = "; ".join(f"[{f.get('category')}] {f.get('message')} ({f.get('evidence')})"
                          for f in obj.get("findings") or [])
     return findings or str(obj.get("summary") or "")
+
+
+def salvage(supervisor, task: Task, role: str) -> bool:
+    """Before paying for a fresh review: a finished review attempt for this digest and role whose answer was thrown
+    away as unreadable (no result.json) may parse now that the contract accepts category near-misses (a reviewer
+    that wrote "acceptance" for "requirement" lost a whole REVISE verdict that way). The newest readable answer is
+    ingested exactly as if it had parsed the first time; True when one was."""
+    import json as _json
+    from ._vendor.contract import atomic_json, structured_result
+    from .adapters.base import Result
+    from .adapters.claude_cli import classify_status
+    layout = supervisor.layout
+    digest = task.delivery.digest
+    recs = [r for r in jobs_mod.for_task(layout, task.id)
+            if (r.get("spec") or {}).get("kind") == "review" and r.get("review_role") == role
+            and r.get("review_digest") == digest and r.get("phase") in ("DONE", "FAILED") and not r.get("salvaged")]
+    import re as _re
+    recs.sort(key=lambda r: int((_re.search(r"(\d+)$", str(r["attempt_id"])) or [0, 0])[1]), reverse=True)   # newest first
+    for r in recs:
+        run_dir = Path((r.get("spec") or {}).get("run_dir") or "")
+        if not str(run_dir) or not run_dir.is_dir() or (run_dir / "result.json").exists():
+            continue
+        texts = []
+        follow = run_dir / "followup_stdout.jsonl"
+        if follow.exists():
+            for line in reversed(follow.read_text(encoding="utf-8-sig", errors="replace").splitlines()):
+                try:
+                    e = _json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("type") == "result":
+                    texts.append(e.get("result") or "")
+                    break
+        if (run_dir / "result.txt").exists():
+            texts.append((run_dir / "result.txt").read_text(encoding="utf-8", errors="replace"))
+        for text in texts:
+            try:
+                obj = structured_result(text, "review")
+            except ValueError:
+                continue
+            atomic_json(run_dir / "result.json", obj)
+            rec = jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], salvaged=True)
+            tasks_mod.log(layout, "review_salvaged", "loop", task=task.id, role=role, attempt=r["attempt_id"],
+                          verdict=obj.get("verdict"))
+            ingest(supervisor, rec, Result(status=classify_status(obj), raw=obj, notes=str(obj.get("summary") or "")))
+            return True
+    return False

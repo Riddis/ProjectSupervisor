@@ -476,6 +476,8 @@ class Supervisor:
         lim = scheduler.limits(self.layout)
         agent_busy = sum(1 for r in jobs_mod.open_records(self.layout) if r.get("adapter") in gate.MODEL_LANES)
         for task, role in review_mod.pending(self.layout):
+            if review_mod.salvage(self, task, role):                 # a verdict already on disk costs no new review
+                continue
             if agent_busy >= lim["max_agent_jobs"]:
                 break
             if review_mod.dispatch(self, task, role) is not None:

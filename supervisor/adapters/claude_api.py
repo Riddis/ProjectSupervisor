@@ -6,13 +6,15 @@ call to api.anthropic.com for unattended runs, so overnight batches draw a meter
 No tool use: the Messages API call carries exactly the same role prompt text `claude_cli` puts on stdin
 (`packets.delivery_brief`) as a single user message, and the same fenced-JSON result contract is expected back
 (`structured_result`). The model cannot Read/Write/Edit or run Bash through this adapter — it is for
-reasoning/text roles (research, review, planning) run unattended, not file-writing engineering work. Disabled
+reasoning/text roles (research, review, planning) run unattended, not file-writing engineering work, which is
+why the unattended switch only moves a task here when `unattended_eligible()` says its contract needs no tools.
+Disabled
 (a clear FAILED result, never raised) while `secrets/.env` carries no `ANTHROPIC_API_KEY` — see
 docs/runbooks/claude_api.md and secrets/README.md for how the owner places the key and approves a budget.
 
-Runs synchronously inside submit() like the `python` adapter (one bounded call, not a long-lived child); the
-finished result lives in `result.json` before submit() returns, so a crash between submit and the loop reading
-collect() never re-spends the call."""
+Runs synchronously inside submit() like the `python` adapter (one bounded call, not a long-lived child). One
+attempt makes at most one paid POST: the response body is persisted before anything is derived from it, and a
+re-entered submit() finishes from `response.json` (ledger included, idempotently) instead of calling again."""
 from __future__ import annotations
 
 import json
@@ -78,6 +80,7 @@ def api_config(layout: Layout) -> dict:
     cfg.setdefault("pricing_usd_per_mtok", {})
     cfg.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
     cfg.setdefault("timeout_s", DEFAULT_TIMEOUT_S)
+    cfg.setdefault("eligible_roles", [])
     return cfg
 
 
@@ -91,14 +94,44 @@ def _price(cfg: dict, model: str, kind: str) -> float:
     return float((cfg.get("pricing_usd_per_mtok") or {}).get(model, {}).get(kind, 0.0))
 
 
-def record_usage(layout: Layout, task_id: str, attempt_id: str, model: str, usage: dict) -> dict:
-    """Append one ledger entry for a completed call (plain JSONL append, same durability as `tasks.log`; a torn
-    last line is skipped by readers). Cost is 0 for a model with no configured rate — never blocks on a missing price."""
+def entries(layout: Layout) -> list[dict]:
+    """Every readable ledger line (a torn last line from a kill mid-append is skipped, as for `tasks.log`)."""
+    path = ledger_path(layout)
+    if not path.exists():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def recorded(layout: Layout, task_id: str, attempt_id: str, response_id: str) -> dict | None:
+    """The entry already written for this API response, if any. One attempt makes at most one paid call, so
+    (task, attempt, response id) identifies it; a crash between the append and `result.json` makes submit()
+    process the same persisted response again, and it must not be billed twice."""
+    for entry in entries(layout):
+        if (entry.get("category"), entry.get("task_id"), entry.get("attempt_id"), entry.get("response_id") or "") == \
+           (LEDGER_CATEGORY, task_id, attempt_id, response_id):
+            return entry
+    return None
+
+
+def record_usage(layout: Layout, task_id: str, attempt_id: str, model: str, usage: dict, response_id: str = "") -> dict:
+    """Append one ledger entry for a completed call (plain JSONL append, same durability as `tasks.log`). Idempotent
+    per response: re-processing a persisted response returns the existing entry instead of appending a second one.
+    Cost is 0 for a model with no configured rate — never blocks on a missing price."""
+    prior = recorded(layout, task_id, attempt_id, response_id)
+    if prior is not None:
+        return prior
     cfg = api_config(layout)
     input_tok, output_tok = int(usage.get("input_tokens", 0) or 0), int(usage.get("output_tokens", 0) or 0)
     cost = input_tok / 1_000_000 * _price(cfg, model, "input") + output_tok / 1_000_000 * _price(cfg, model, "output")
     entry = {"ts": now_iso(), "category": LEDGER_CATEGORY, "task_id": task_id, "attempt_id": attempt_id,
-             "model": model, "input_tokens": input_tok, "output_tokens": output_tok, "cost_usd": round(cost, 6)}
+             "model": model, "response_id": response_id, "input_tokens": input_tok, "output_tokens": output_tok,
+             "cost_usd": round(cost, 6)}
     path = ledger_path(layout)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -112,16 +145,9 @@ def _month_key(ts: str | None = None) -> str:
 
 
 def spent_this_month(layout: Layout) -> float:
-    path = ledger_path(layout)
-    if not path.exists():
-        return 0.0
     now_key = _month_key()
     total = 0.0
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
+    for entry in entries(layout):
         if entry.get("category") == LEDGER_CATEGORY and _month_key(entry.get("ts")) == now_key:
             total += float(entry.get("cost_usd") or 0.0)
     return total
@@ -135,6 +161,32 @@ def available(layout: Layout) -> bool:
 
 def credits_remaining(layout: Layout) -> bool:
     return available(layout) and spent_this_month(layout) < api_config(layout)["monthly_budget_usd"]
+
+
+# ------------------------------------------------------------------ what may be moved onto credits unattended
+
+def unattended_eligible(layout: Layout, task, job: dict) -> bool:
+    """May the unattended switch move this `claude_cli` pick onto API credits? Switching on the adapter name
+    alone sends engineering tasks to a tool-less lane, where they can neither read their inputs nor write the
+    artifacts and run the tests their contract requires. Three conditions, all necessary:
+
+    * the pick is the cost-category default — an explicit `job.adapter` is a deliberate choice and is never
+      overridden;
+    * the contract needs no tools: no declared `artifacts`, no `tests`, no executable `checks`. There is no
+      Write/Edit/Bash through the Messages API, and `loop.ingest` requires test evidence from a model lane for any
+      task that declares tests, so such a task could only fail here;
+    * it is opted in, per task (`job.api_credits: true`) or per role (`routing.yaml claude_api.eligible_roles`,
+      empty by default — the owner/architect adds a role only once its tasks are self-contained text jobs).
+    """
+    if job.get("adapter"):
+        return False
+    if list(getattr(task, "artifacts", []) or []) or list(getattr(task, "tests", []) or []) or \
+       list(getattr(task, "checks", []) or []):
+        return False
+    if job.get("api_credits") is True:
+        return True
+    role = job.get("role") or getattr(task, "owner_role", "")
+    return role in (api_config(layout).get("eligible_roles") or [])
 
 
 # ------------------------------------------------------------------ adapter
@@ -169,6 +221,13 @@ class ClaudeApiAdapter(Adapter):
         if result_path.exists():          # crash between submit and the loop collecting it: never re-spend the call
             return {"kind": "claude_api", "result_path": str(result_path)}
         layout = Layout(spec["root"])
+        saved = run_dir / "response.json"
+        if saved.exists():
+            # The call was made and its body is durable, but the ledger append or the result write did not finish
+            # (a kill in that window). Resume from the saved body: the money is already spent, so POSTing again
+            # would spend it twice.
+            request = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
+            return self._finish(spec, layout, request, json.loads(saved.read_text(encoding="utf-8")))
         key = api_key(layout)
         if not key:
             atomic_json(result_path, {"status": "FAILED", "error": "claude_api disabled: no ANTHROPIC_API_KEY in "
@@ -189,9 +248,16 @@ class ClaudeApiAdapter(Adapter):
             atomic_json(result_path, {"status": "FAILED", "error": f"claude_api http {resp.status_code}: {resp.text[:500]}"})
             return {"kind": "claude_api", "result_path": str(result_path)}
         body = resp.json()
-        atomic_json(run_dir / "response.json", body)
+        atomic_json(saved, body)          # durable BEFORE the ledger and the result: one POST per attempt, ever
+        return self._finish(spec, layout, request, body)
+
+    def _finish(self, spec: dict, layout: Layout, request: dict, body: dict) -> dict:
+        """Ledger entry, parse, `result.json` — for a response body that is already on disk. Re-entrant: every step
+        is idempotent, so a crash anywhere inside it costs nothing but the work, never a second paid call."""
+        result_path = Path(spec["run_dir"]) / "result.json"
         usage = body.get("usage") or {}
-        record_usage(layout, spec["task_id"], spec["attempt_id"], request["model"], usage)
+        record_usage(layout, spec["task_id"], spec["attempt_id"], request["model"], usage,
+                     response_id=str(body.get("id") or ""))
         text = "".join(block.get("text", "") for block in body.get("content", []) if block.get("type") == "text")
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
@@ -202,10 +268,12 @@ class ClaudeApiAdapter(Adapter):
         status = classify_status(obj)
         notes = str(obj.get("notes") or obj.get("summary") or "")
         atomic_json(result_path, {"status": status, "artifacts": list(obj.get("artifacts") or []), "notes": notes,
-                    "usage": usage, "model": request["model"], "raw": obj})
+                    "usage": usage, "model": request["model"], "result": obj})
         return {"kind": "claude_api", "result_path": str(result_path)}
 
     def recover(self, spec: dict) -> dict | None:
+        """A finished result is adopted; a half-finished attempt (response persisted, result not) is deliberately
+        NOT a handle — the loop relaunches, and submit() finishes from `response.json` without a second call."""
         p = Path(spec["run_dir"]) / "result.json"
         return {"kind": "claude_api", "result_path": str(p)} if p.exists() else None
 
@@ -217,9 +285,14 @@ class ClaudeApiAdapter(Adapter):
         if not p.exists():
             return Result(status="FAILED", error="claude_api left no result")
         payload = json.loads(p.read_text(encoding="utf-8"))
+        # `raw` is the structured result object itself, exactly as claude_cli returns it: the delivery's declared
+        # `tests` (loop.ingest), a review's verdict/findings (supervisor.review) and a diagnosis' decision are all read
+        # off Result.raw, so an envelope here silently emptied every one of them. A response
+        # that produced no structured object falls back to the envelope, which carries the error.
+        obj = payload.get("result")
         return Result(status=payload.get("status", "FAILED"), artifacts=payload.get("artifacts", []),
                       notes=payload.get("notes", ""), error=payload.get("error"), model=payload.get("model"),
-                      usage=payload.get("usage", {}), raw=payload)
+                      usage=payload.get("usage", {}), raw=obj if isinstance(obj, dict) else payload)
 
 
 register(ClaudeApiAdapter())

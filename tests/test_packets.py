@@ -141,3 +141,13 @@ def test_revision_brief_quotes_the_failure_verbatim(layout):
     prior = packets.delivery_brief(layout, task)
     brief = packets.revision_brief(task, prior, "verification", "missing artifacts: out.txt")
     assert "missing artifacts: out.txt" in brief and "Revision required" in brief and prior in brief
+
+
+def test_review_brief_tells_the_reviewer_the_finding_category_vocabulary(layout):
+    """The contract refuses an unknown category; a reviewer that was never told the names loses its verdict over a
+    spelling. The brief states them, in the contract's own words."""
+    from supervisor._vendor.contract import FINDING_CATEGORIES
+    make_task(layout, "T")
+    brief = packets.review_brief(layout, tasks.load(layout, "T"), "d" * 64, ["out/thing.py"], "code_review")
+    assert packets.FINDING_CATEGORY_LIST in brief
+    assert set(packets.FINDING_CATEGORY_LIST.split(" | ")) == FINDING_CATEGORIES
