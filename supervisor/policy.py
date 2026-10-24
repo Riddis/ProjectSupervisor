@@ -825,8 +825,15 @@ def screen_log_identity(value: Any, layout: Layout | None = None) -> Any:
     return _screen_name(value, _redaction(layout))
 
 
-def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "packet") -> str:
+def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "packet", *,
+                        job: dict | None = None, task: Any = None, lane: str | None = None) -> str:
     """Return `text` unchanged, or raise PolicyViolation naming *what kind* of credential was found and where.
+
+    `job`, `task` and `lane` are the dispatch context the hosted adapters pass from `prepare()` (the task's `job`
+    block, the Task, the adapter name): a project screen may refuse on *what the job is*, not only on the prompt
+    text — a job tagged for a channel its content may not leave the machine for, say. Each extension screen is
+    called as `fn(layout, text, where, **ctx)` with exactly the keyword arguments it declares (or all three when it
+    takes `**kwargs`); a screen written as `fn(layout, text, where)` keeps working and sees text only.
 
     A packet is refused, not redacted: a brief that needed a credential to make sense is a design error, and
     silently blanking it would hand the agent a prompt that no longer says what the author meant. Credentials
@@ -847,9 +854,25 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
         raise PolicyViolation(
             f"{where} refused: credential-like content ({', '.join(hits)}). Secrets live in secrets/ and are "
             "never referenced from a packet (config/policy.yaml, docs/runbooks/policy.md).")
+    ctx = {"job": job, "task": task, "lane": lane}
     for screen in extension_screens(layout):
-        screen(layout, text, where)                     # raises PolicyViolation to refuse
+        screen(layout, text, where, **_accepted(screen, ctx))     # raises PolicyViolation to refuse
     return text
+
+
+def _accepted(fn, ctx: dict) -> dict:
+    """The subset of `ctx` the screen's signature accepts: named keyword parameters, or everything for `**kwargs`.
+    Decided from the signature, never by catching TypeError — a TypeError raised *inside* a screen must surface."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(ctx)
+    positional = [n for n, p in params.items() if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                                            inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    return {k: v for k, v in ctx.items() if k in params and k not in positional[:3]}
 
 
 # ---------------------------------------------------------------------------- extension screens

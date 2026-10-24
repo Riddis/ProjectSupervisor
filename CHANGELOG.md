@@ -3,6 +3,48 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.8.0 — 2026-10-24
+
+Seven extension hooks and three fixes, for a project whose work runs on one heavy local resource, reviews images in
+its own Control Center pages and screens content by what a job *is*. Nothing in them is specific to any project.
+
+- **A model-lane job can hold the resource lock** — `limits.resource_cost_categories` (routing.yaml, default `[]`).
+  The single resource slot (`max_resource_jobs`) used to be held only by adapters declared `gpu = True`; an agent
+  session doing the resource's own engineering work (installing into it, starting it, benchmarking it) ran on
+  `claude_cli` and could overlap with a lane job on the same card. Listing a cost category (`[local]`) makes the
+  *delivery* of such a task hold the slot on any lane (`gate.holds_resource`), the scheduler counts it in a plan,
+  and the job record's `gpu` flag follows the same rule so a restarted loop re-adopts the lock.
+- **`registry.command(kind, fn)`** — an extension's owner command kind, applied by the loop, the Control Center's
+  direct path and the CLI like a built-in; a kind that already exists is an error, never a silent overwrite.
+- **`registry.inbox_kind(kind, label, page=, answerable=, show_evidence=, score_keys=)`** — an inbox item kind an
+  extension owns. The inbox page groups it under its label, links the extension's page, hides the per-option rows
+  and their scores when `show_evidence=False` (blind labelling: the card shows a count), and drops the generic form
+  when `answerable=False`; `inbox.answer()`, the `inbox.answer` command and the UI route refuse to close such an
+  item (the error names the page), while the extension finalises it with `inbox.answer(..., internal=True)`.
+  Before, unknown kinds fell under "Agent questions" with their scores visible and a working answer form.
+- **Job-aware packet screens** — `assert_packet_clean(text, layout, where, *, job=None, task=None, lane=None)`.
+  The hosted lanes (`claude_cli`, `codex_cli`, `claude_api`) pass the task's `job` block, the Task and the lane name
+  from `prepare()`; a screen receives exactly the keyword arguments it declares (`**kwargs` gets all), so a screen
+  can refuse on a job's channel or measured content classes, and `fn(layout, text, where)` screens keep working.
+  Decided from the signature, never by catching `TypeError`.
+- **`registry.template_dir(path)`** — extension Jinja templates behind the framework's own in a ChoiceLoader, so an
+  extension page can `{% extends "base.html" %}` and a framework template can never be shadowed.
+- **`registry.static_dir(path, prefix)`** — extension assets at `/static/<prefix>/...`, mounted ahead of the
+  framework's `/static`.
+- **`supervisor.gpu`** — the shared nvidia-smi probe (`free_mb`, `used_mb`, `total_mb`, `available`): lanes,
+  doctor checks, overview panels and tools outside the framework import it from one place; it never raises.
+- Fix: a `required: false` extension that fails to load is logged once per process (`extension_error`) and said on
+  stderr; before, it showed only in `supervisor doctor`, indistinguishable from an extension left out on purpose.
+- Fix: `supervisor --help` no longer silently drops a broken extension's command group — the CLI says on stderr
+  which extension did not load and that its commands are missing.
+- Fix: `supervisor doctor` has a `framework` check: the installed version plus, for an editable install of a git
+  checkout, its commit and tag, FAILING when the checkout is dirty or not exactly at a tag — a project must run from
+  code a review accepted and a CHANGELOG names, never a working tree being edited. An installed package (no
+  checkout) reports its version only. `updates.runtime_checkout()` is the underlying probe.
+- Docs: `docs/FRAMEWORK_VS_EXTENSION.md` lists the new hooks; the routing template documents
+  `limits.resource_cost_categories`.
+- Tests: `tests/test_hooks_180.py` (hooks 1–7 and the three fixes, 17 tests).
+
 ## 1.7.3 — 2026-10-24
 
 Migration plan phase 1b (periphery modules of the drift ledger): one port.

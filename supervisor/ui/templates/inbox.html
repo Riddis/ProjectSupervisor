@@ -58,7 +58,13 @@
     </ul>
     {% endif %}
 
+    {% if item.ext_page %}
+    {% if item.item_count and not item.score_items and not item.plain_items %}<p class="muted">{{ item.item_count }} item(s) &mdash; shown on the extension's page</p>{% endif %}
+    <p><a class="quiet-link" href="{{ item.ext_page }}">Open {{ kind_labels[item.kind] | lower }} page</a></p>
+    {% endif %}
+
     {% if item.status == 'open' %}
+    {% if item.ext_answerable %}
     <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form">
       {% include "partials/csrf.html" %}
       {% for r in item.allowed_responses %}
@@ -67,6 +73,7 @@
       <input type="text" name="text" placeholder="MODIFY text / free-text answer">
       <button type="submit">Send</button>
     </form>
+    {% endif %}
 
     {% if item.gate_id %}
     <form method="post" action="/inbox/{{ item.id }}/gate-ack" class="inline-form">

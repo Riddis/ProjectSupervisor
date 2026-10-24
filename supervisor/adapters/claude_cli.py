@@ -205,7 +205,8 @@ class ClaudeCliAdapter(ProcessAdapter):
             note = conversations_mod.owner_note_instructions(layout, run_dir)
             if note:
                 prompt_text += "\n\n" + note
-        policy.assert_packet_clean(prompt_text, layout, f"{self.name} prompt {task.id}/{attempt_id}")
+        policy.assert_packet_clean(prompt_text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
+                                   job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(prompt_text, encoding="utf-8")
         tools = prof["tools"] if isinstance(prof["tools"], list) else DEFAULT_TOOLS.get(prof["tools"], DEFAULT_TOOLS["reader"])
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),

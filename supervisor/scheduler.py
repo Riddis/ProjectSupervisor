@@ -124,7 +124,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             continue
         chosen.append((t, name))
         chosen_paths += [(t.id, p) for p in gate.owned_for(t, name, "delivery")]
-        if REGISTRY[name].gpu:
+        if gate.holds_resource(layout, t, name, "delivery"):
             extra_gpu += 1
         if name in MODEL_LANES:
             extra_agent += 1

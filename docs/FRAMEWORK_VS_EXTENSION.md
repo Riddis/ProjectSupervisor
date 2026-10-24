@@ -72,13 +72,24 @@ What the registry offers (`supervisor/extensions.py`):
 | `doctor_check(fn)` | `fn(layout) -> Check(name, ok, detail)`; shown by `supervisor doctor` and the Control Center's doctor button. |
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}`; a resource block on the Overview. |
 | `ui_router(router, label, path)` | a FastAPI `APIRouter` (use `supervisor.ui.deps.render` and `act` so your page looks and writes like the others) plus a sidebar entry. |
-| `packet_screen(fn)` | `fn(layout, text, where)` raising `policy.PolicyViolation` to refuse a brief — content that must not leave the machine, say. Runs after the credential screen on every packet. |
+| `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)` raising `policy.PolicyViolation` to refuse a brief. Runs after the credential screen on every packet. The hosted lanes (`claude_cli`, `codex_cli`, `claude_api`) pass the task's `job` block, the Task and their lane name, so a screen can refuse on *what the job is* (a channel whose content may not leave the machine, a measured content class), not only on the prompt text; declare only the keyword arguments you use — `fn(layout, text, where)` still works and sees text only. |
 | `projection(fn, path=None, name=None)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. Like the built-in views it is never an artifact and never an "undeclared write" in verification; pass `path="WEEKLY.md"` (root-relative) to declare the file before the first render, otherwise it is learned from the first render. The exclusion follows the current registration: change the declared path, stop registering the projection, or remove the extension, and the old file is an ordinary file again. Each projection is recorded as `<extension>:<name>` — pass `name=` for a stable identity (two lambdas or two callbacks from one factory are otherwise told apart by registration order). |
 | `cli(typer_app, name)` | a `supervisor <name> ...` command group. |
 | `python_job(name, fn)` | a deterministic job for `job: {adapter: python, fn: name, params: {...}}`; `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}`. |
+| `command(kind, fn)` | an owner command kind (`my_ext.submit`) applied by whoever holds the state lock — loop, Control Center, CLI — exactly like the built-in kinds: `fn(layout, payload, actor) -> dict`, idempotent by `payload["_id"]`. A kind that already exists is an error, never an overwrite. |
+| `inbox_kind(kind, label, page=None, answerable=False, show_evidence=True, score_keys=())` | claim an inbox item kind your extension creates. `label` heads its group on the inbox page; `page` (`"/review/{id}"`) is linked from the card; `answerable=False` means the generic answer path (inbox form, `inbox.answer` command, `inbox.answer()`) refuses to close the item and only your code may, with `inbox.answer(..., internal=True)`; `show_evidence=False` keeps the per-option rows and their scores off the card (blind labelling — the owner sees a count and the link); `score_keys` names the sub-item fields that make a row a scored one. Built-in kinds (`gate`, `decision`, `approval`, `spend`, `policy`, `question`) cannot be claimed. |
+| `template_dir(path)` | Jinja templates for your pages. Loaded after the framework's, so a page can `{% extends "base.html" %}` and include the partials; a framework template is never overridden by a same-named file of yours. |
+| `static_dir(path, prefix)` | files served at `/static/<prefix>/...` (your `review.js`, a stylesheet, icons). One path segment per prefix; the framework's own assets stay directly under `/static/`. |
 
 Extensions may read their own section of `config/policy.yaml` through `supervisor.policy.section("my_section")`
-and their own keys in `config/routing.yaml` (`supervisor.adapters.claude_cli.routing(layout)`).
+and their own keys in `config/routing.yaml` (`supervisor.adapters.claude_cli.routing(layout)`). `supervisor.gpu`
+(`free_mb`, `used_mb`, `total_mb`, `available`) is the shared nvidia-smi probe for lanes, checks and panels that need
+to know what the card has free; it never raises.
+
+The single heavy resource (`limits.max_resource_jobs`, default 1) is held by any adapter declared `gpu = True` and,
+when routing.yaml lists `limits.resource_cost_categories: [local]`, by the *delivery* of a task of that cost category
+on any lane — an agent session installing into, starting or benchmarking the resource holds the slot like the lane
+that renders on it, so two such jobs never share it.
 
 ## Promoting an extension into the framework
 

@@ -124,7 +124,7 @@ class Supervisor:
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                                   gpu=bool(getattr(ad, "gpu", False)), **(extra or {}))
+                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **(extra or {}))
             if kind != "conversation":
                 tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}: prepare failed")
             self._adapter_failed(rec, "prepare", exc)
@@ -136,7 +136,8 @@ class Supervisor:
             atomic_json(Path(spec["run_dir"]) / "frozen_inputs.json", extra["review_frozen"])   # audit trail
         # One durable write carries everything a continuation or ingestion needs: a crash between prepare() and a
         # second record write used to leave a review job without its role and discard the finished verdict.
-        rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec, gpu=ad.gpu,
+        rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
+                               gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
                                **(extra or {}))                                   # durable BEFORE launch
         if kind != "conversation":            # no Task backs a conversation thread (supervisor.conversations)
             tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}", run_dir=spec.get("run_dir"))

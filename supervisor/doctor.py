@@ -41,6 +41,27 @@ def check_project(layout: Layout) -> Check:
     return Check("project", True, f"{doc.get('name')} (framework {__version__})")
 
 
+def check_framework(layout: Layout) -> Check:
+    """Which framework code is running. An editable install tracks its checkout's working tree, so a project may only
+    run from a checkout that is exactly at a tag and clean: a dirty or untagged checkout means the running code is
+    something no review accepted and no CHANGELOG names, and every rehearsal or cutover note that records "framework
+    commit X" would be wrong. An installed package (no git checkout) reports its version only."""
+    from . import updates
+    rt = updates.runtime_checkout()
+    if not rt["is_git"]:
+        return Check("framework", True, f"{rt['version']} (installed package, {rt['path']})")
+    where = f"{rt['version']} @ {rt['commit'] or '?'}" + (f" ({rt['tag']})" if rt["tag"] else "") + f", {rt['path']}"
+    problems = []
+    if rt["dirty"]:
+        problems.append("the checkout has uncommitted changes")
+    if not rt["tag"]:
+        problems.append("HEAD is not at a tag")
+    if problems:
+        return Check("framework", False, where + " — " + "; ".join(problems)
+                     + ". Run the project from a tagged, clean checkout (git checkout <tag>), never a working tree being edited")
+    return Check("framework", True, where)
+
+
 def check_python(layout: Layout) -> Check:
     v = sys.version.split()[0]
     major, minor = sys.version_info[:2]
@@ -143,8 +164,8 @@ def check_policy(layout: Layout) -> Check:
     return Check("policy", True, f"{policy.CONFIG_NAME} ok (built-in floor" + (" + project values)" if (layout.config / policy.CONFIG_NAME).exists() else " only)"))
 
 
-CHECKS = [check_project, check_python, check_state, check_routing, check_policy, check_git, check_claude_cli,
-          check_codex_cli, check_extensions]
+CHECKS = [check_project, check_framework, check_python, check_state, check_routing, check_policy, check_git,
+          check_claude_cli, check_codex_cli, check_extensions]
 
 
 def run(layout: Layout) -> list[Check]:

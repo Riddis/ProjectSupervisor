@@ -17,6 +17,19 @@ from .timefmt import local_stamp
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def use_extension_templates(dirs) -> None:
+    """Make the extension template directories (registry.template_dir) available to the shared environment. The
+    framework's own folder stays first in the ChoiceLoader: an extension page can `{% extends "base.html" %}` and
+    include the partials, but an extension file can never replace a framework template of the same name."""
+    import jinja2
+    extra = [str(Path(d)) for d in dirs]
+    loaders = [jinja2.FileSystemLoader(str(TEMPLATES_DIR))]
+    if extra:
+        loaders.append(jinja2.FileSystemLoader(extra))
+    templates.env.loader = jinja2.ChoiceLoader(loaders)
+    templates.env.cache.clear() if templates.env.cache is not None else None
 templates.env.globals["now"] = lambda: time.time()
 templates.env.globals["stylesheet_url"] = stylesheet_url
 templates.env.filters["localtime"] = local_stamp      # store timestamps are UTC; the owner reads local wall-clock

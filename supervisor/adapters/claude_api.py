@@ -207,7 +207,8 @@ class ClaudeApiAdapter(Adapter):
         prof.update({k: v for k, v in job.items() if k in ("model", "effort")})
         cfg = api_config(layout)
         prompt_text = packets.worker_prompt(task, job, job.get("prompt") or packets.delivery_brief(layout, task))
-        prompt_text = policy.assert_packet_clean(prompt_text, layout, f"{self.name} request {task.id}/{attempt_id}")
+        prompt_text = policy.assert_packet_clean(prompt_text, layout, f"{self.name} request {task.id}/{attempt_id}",
+                                                job=job, task=task, lane=self.name)   # hosted lane: screens see the job too
         request = {"model": model_id(prof["model"]), "max_tokens": int(job.get("max_tokens", cfg["max_tokens"])),
                    "messages": [{"role": "user", "content": prompt_text}]}
         atomic_json(run_dir / "request.json", request)

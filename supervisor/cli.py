@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -455,10 +456,17 @@ def _attach_extension_clis() -> None:
     if root is None:
         return
     try:
-        for ext_app, name in extensions_mod.load(Layout(root)).cli_apps:
+        reg = extensions_mod.load(Layout(root))
+    except Exception as exc:                                # noqa: BLE001 - a broken extension must not break the CLI
+        print(f"warning: extensions not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
+        return
+    for err in reg.errors:                                  # a failed extension's `supervisor <name>` group is absent: say so
+        print(f"warning: extension not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
+    for ext_app, name in reg.cli_apps:
+        try:
             app.add_typer(ext_app, name=name)
-    except Exception:                                       # noqa: BLE001 - a broken extension must not break the CLI
-        pass
+        except Exception as exc:                            # noqa: BLE001
+            print(f"warning: command group {name!r} could not be attached: {exc}", file=sys.stderr)
 
 
 _attach_extension_clis()

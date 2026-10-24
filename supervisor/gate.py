@@ -20,7 +20,7 @@ from .models.task import EXCLUSIVE, Task
 from .paths import Layout
 
 MODEL_LANES = ("claude_cli", "codex_cli", "claude_api")
-DEFAULT_LIMITS = {"max_agent_jobs": 2, "max_resource_jobs": 1}
+DEFAULT_LIMITS = {"max_agent_jobs": 2, "max_resource_jobs": 1, "resource_cost_categories": []}
 ACTIVE_PHASES = ("SUBMITTED", "RUNNING")
 
 
@@ -33,7 +33,28 @@ def limits(layout: Layout) -> dict:
         if "max_gpu_jobs" in lim and "max_resource_jobs" not in lim:      # pre-1.0 name
             lim["max_resource_jobs"] = lim.pop("max_gpu_jobs")
         out.update(lim)
+    cats = out.get("resource_cost_categories")
+    out["resource_cost_categories"] = [str(c) for c in (cats if isinstance(cats, (list, tuple)) else [cats] if cats else [])]
     return out
+
+
+def holds_resource(layout: Layout, task: Task | None, adapter_name: str, kind: str = "delivery") -> bool:
+    """True when the job takes the project's single resource slot (`limits.max_resource_jobs`): an adapter declared
+    `gpu = True` (a renderer, a build farm — the lane itself is the resource), OR the delivery of a task whose
+    `cost_category` is listed in routing.yaml `limits.resource_cost_categories`, on any lane. The second case is an
+    agent session doing the resource's engineering work itself (installing into it, running it, benchmarking it):
+    it runs on a model lane, so the adapter flag cannot know, and two such sessions must not share the one resource.
+    The job record's `gpu` flag is set from this same rule (loop.dispatch), so a restarted loop re-adopts the lock."""
+    ad = REGISTRY.get(adapter_name)
+    if ad is not None and getattr(ad, "gpu", False):
+        return True
+    if task is None or kind != "delivery":
+        return False
+    cats = limits(layout)["resource_cost_categories"]
+    if not cats:
+        return False
+    cost = getattr(task, "cost_category", None)
+    return str(getattr(cost, "value", cost) or "") in cats
 
 
 def routing_doc(layout: Layout | None) -> dict:
@@ -126,7 +147,7 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     lim = limits(layout)
     gpu_busy = sum(1 for r in running if r.get("gpu")) + extra_gpu
     agent_busy = sum(1 for r in running if r.get("adapter") in MODEL_LANES) + extra_agent
-    if ad.gpu and gpu_busy >= lim["max_resource_jobs"]:
+    if holds_resource(layout, task, adapter_name, kind) and gpu_busy >= lim["max_resource_jobs"]:
         return f"resource-lock limit {lim['max_resource_jobs']} reached"
     if adapter_name in MODEL_LANES and agent_busy >= lim["max_agent_jobs"]:
         return f"agent limit {lim['max_agent_jobs']} reached"

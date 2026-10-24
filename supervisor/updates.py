@@ -67,6 +67,26 @@ def framework_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def runtime_checkout() -> dict:
+    """What is running: the installed framework version, and — when the package is an editable install of a git
+    checkout — that checkout's commit, the tag exactly at it (if any) and whether the working tree is dirty.
+    {"version", "is_git", "commit", "tag", "dirty", "path"}; commit/tag are None without git or outside a checkout."""
+    from . import __version__
+    fw = framework_dir()
+    out = {"version": __version__, "path": str(fw), "is_git": False, "commit": None, "tag": None, "dirty": False}
+    code, inside = _git(["rev-parse", "--is-inside-work-tree"], fw, timeout=10)
+    if code != 0 or inside.strip() != "true":
+        return out
+    out["is_git"] = True
+    code, sha = _git(["rev-parse", "--short=12", "HEAD"], fw, timeout=10)
+    out["commit"] = sha.strip() if code == 0 and sha.strip() else None
+    code, tag = _git(["describe", "--tags", "--exact-match", "HEAD"], fw, timeout=10)
+    out["tag"] = tag.strip().splitlines()[0] if code == 0 and tag.strip() else None
+    code, dirty = _git(["status", "--porcelain", "--untracked-files=no"], fw, timeout=10)
+    out["dirty"] = code == 0 and bool(dirty.strip())
+    return out
+
+
 def _git(args: list[str], cwd: Path, timeout: float = FETCH_TIMEOUT_S) -> tuple[int, str]:
     exe = shutil.which("git")
     if not exe:

@@ -67,8 +67,19 @@ def _age_display(seconds: float | None) -> str:
     return f"{seconds / 86400:.1f}d"
 
 
-def _is_score_block(entry) -> bool:
-    return isinstance(entry, dict) and bool(SCORE_KEYS & set(entry.keys()))
+def _is_score_block(entry, extra_keys=()) -> bool:
+    return isinstance(entry, dict) and bool((SCORE_KEYS | set(extra_keys)) & set(entry.keys()))
+
+
+def _kinds(layout: Layout) -> tuple[dict, list[str], dict]:
+    """(labels, order, extension kinds) — the built-in groups plus every kind an extension claimed
+    (registry.inbox_kind), in registration order after the built-ins."""
+    from ... import extensions as extensions_mod
+    labels = dict(KIND_LABELS)
+    ext = dict(extensions_mod.load(layout).inbox_kinds)
+    for kind, info in ext.items():
+        labels[kind] = info.label
+    return labels, list(labels), ext
 
 
 def _evidence_view(layout: Layout, ref: str) -> dict:
@@ -94,15 +105,23 @@ def _evidence_view(layout: Layout, ref: str) -> dict:
     return {"ref": ref, "kind": "link"}
 
 
-def _item_view(layout: Layout, item: dict) -> dict:
+def _item_view(layout: Layout, item: dict, info=None) -> dict:
+    """`info` is the extension's InboxKind for the item's kind, if claimed. An extension page owns the detail of its
+    items: `show_evidence=False` keeps the per-option rows (and their scores) off this card — the owner sees a count
+    and a link to the page — and `answerable=False` replaces the generic form with that link."""
     sub_items = item.get("items") or []
+    blind = info is not None and not info.show_evidence
+    keys = info.score_keys if info is not None else ()
     return {
         **item,
         "summary_html": render_md(item.get("summary", "")),
         "detail_html": render_md(item["detail"]) if item.get("detail") else "",
         "evidence_views": [_evidence_view(layout, e) for e in (item.get("evidence") or [])],
-        "score_items": [i for i in sub_items if _is_score_block(i)],
-        "plain_items": [i for i in sub_items if not _is_score_block(i)],
+        "score_items": [] if blind else [i for i in sub_items if _is_score_block(i, keys)],
+        "plain_items": [] if blind else [i for i in sub_items if not _is_score_block(i, keys)],
+        "item_count": len(sub_items),
+        "ext_page": info.page_for(str(item.get("id") or "")) if info is not None else None,
+        "ext_answerable": info.answerable if info is not None else True,
         "age_display": _age_display(_age_seconds(item)),
     }
 
@@ -116,12 +135,13 @@ def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(req
     items = inbox_mod.all_items(layout)
     tab = "archive" if tab == "archive" else "open"
     shown = [i for i in items if (i.get("status") == "open") == (tab == "open")]
-    groups = {k: [] for k in KIND_ORDER}
+    labels, order, ext_kinds = _kinds(layout)
+    groups = {k: [] for k in order}
     for item in shown:
-        kind = item.get("kind") if item.get("kind") in KIND_LABELS else "question"
-        groups[kind].append(_item_view(layout, item))
+        kind = item.get("kind") if item.get("kind") in labels else "question"
+        groups[kind].append(_item_view(layout, item, ext_kinds.get(item.get("kind"))))
     return render(request, "inbox.html", {
-        "tab": tab, "groups": groups, "kind_labels": KIND_LABELS, "kind_order": KIND_ORDER,
+        "tab": tab, "groups": groups, "kind_labels": labels, "kind_order": order,
         "open_count": sum(1 for i in items if i.get("status") == "open"),
         "archive_count": sum(1 for i in items if i.get("status") != "open"),
         "shown_count": len(shown), "flash": decode_flash(request),
@@ -132,7 +152,10 @@ def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(req
 def answer_item(item_id: str, request: Request, response: str = Form(""), text: str = Form(""),
                 note: str = Form(""), csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
     require_csrf(request, csrf_token)
-    _get_item(layout, item_id)
+    item = _get_item(layout, item_id)
+    refusal = inbox_mod.owned_by_extension(layout, item)
+    if refusal:                                          # the extension's page is the door; name it in the error
+        raise HTTPException(status_code=400, detail=refusal)
     text = text.strip()
     if response and text:
         final = f"{response} {text}"

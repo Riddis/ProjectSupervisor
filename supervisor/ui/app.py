@@ -75,12 +75,19 @@ def create_app(layout: Layout | None = None, update_check: bool | None = None) -
         # Do not let Last-Modified/ETag checks reuse an older response during local edits.
         return Response(content, media_type="text/css", headers={"Cache-Control": "no-store"})
 
+    reg = extensions_mod.load(layout) if layout is not None else None
+    if reg is not None:
+        # Extension static files first: Starlette tries mounts in order, and `/static/<prefix>` must win over `/static`.
+        for prefix, directory in reg.static_dirs:
+            app.mount(f"/static/{prefix}", StaticFiles(directory=str(directory)), name=f"static-{prefix}")
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.include_router(routes_router)
-    if layout is not None:
+    if reg is not None:
+        from .deps import use_extension_templates
+        use_extension_templates(reg.template_dirs)      # extension pages may extend base.html (registry.template_dir)
         if update_check:
             _start_update_checker(layout)
-        for ext_router, _label, _path in extensions_mod.load(layout).ui_routers:
+        for ext_router, _label, _path in reg.ui_routers:
             app.include_router(ext_router)
     return app
 

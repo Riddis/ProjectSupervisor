@@ -12,6 +12,10 @@ once per process and its `setup(registry)` function is called with a `Registry`,
     registry.projection(fn, path=None, name=None)  # fn(layout) -> Path; an extra rendered markdown file (like TASKS.md)
     registry.cli(typer_app, name)                  # a `supervisor <name> ...` command group
     registry.python_job(name, fn)                  # a deterministic job the `python` adapter can run: fn(root, run_dir, **params) -> result dict
+    registry.command(kind, fn)                     # an owner command kind the loop/UI/CLI apply: fn(layout, payload, actor) -> result dict
+    registry.inbox_kind(kind, label, ...)          # an inbox item kind the extension owns (own page, not answerable from the generic form, ...)
+    registry.template_dir(path)                    # Jinja templates an extension page renders; they may `{% extends "base.html" %}`
+    registry.static_dir(path, prefix)              # static files (js/css/images) served under /static/<prefix>/
 
 Isolation: a project's `extensions/` directory is loaded as its own package (`supervisor_ext.<root hash>`) by file
 path — never by putting the directory on `sys.path` — so two projects' `shared_ext.py` are two modules, and an
@@ -112,6 +116,27 @@ class ExtensionError(RuntimeError):
     """A required extension did not load: the loop and the packet screens refuse to proceed (see `assert_loaded`)."""
 
 
+@dataclass(frozen=True)
+class InboxKind:
+    """How the Control Center and the generic answer path treat inbox items of one extension-owned `kind`.
+
+    `label`: the group heading on the inbox page. `page`: a path (e.g. "/review/{id}") the card links to instead of
+    showing the generic form; `{id}` is the item id. `answerable`: whether the generic answer path — the inbox form,
+    `inbox.answer` command, `inbox.answer()` without `internal=True` — may close the item; False means only the
+    extension's own code may (it calls `inbox.answer(..., internal=True)`). `show_evidence`: whether the per-option
+    sub-items (`item["items"]`) and their score fields are rendered on the card; False keeps them for the extension's
+    page (blind labelling). `score_keys`: the sub-item fields that mark a scored option, added to the built-in set."""
+    kind: str
+    label: str
+    page: str | None = None
+    answerable: bool = False
+    show_evidence: bool = True
+    score_keys: tuple[str, ...] = ()
+
+    def page_for(self, item_id: str) -> str | None:
+        return self.page.replace("{id}", item_id) if self.page else None
+
+
 @dataclass
 class Registry:
     layout: Layout
@@ -124,6 +149,10 @@ class Registry:
     _declared: dict[str, set[str]] = field(default_factory=dict)  # key -> paths its registration declares NOW
     projection_paths: set[str] = field(default_factory=set)     # root-relative files the projections write (verify excludes them)
     cli_apps: list[tuple[Any, str]] = field(default_factory=list)
+    commands: dict[str, Callable] = field(default_factory=dict)    # command kinds registered by extensions (commands.HANDLERS has them too)
+    inbox_kinds: dict[str, InboxKind] = field(default_factory=dict)
+    template_dirs: list[Path] = field(default_factory=list)
+    static_dirs: list[tuple[str, Path]] = field(default_factory=list)   # (url prefix, directory)
     loaded: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
@@ -259,6 +288,58 @@ class Registry:
         from .adapters.python import job
         job(name)(fn)
 
+    def command(self, kind: str, fn: Callable) -> None:
+        """An owner command kind, `fn(layout, payload, actor) -> dict`, applied by whoever holds the state lock (the
+        loop, the Control Center's direct path, the CLI) exactly like the built-in kinds. Handlers must be idempotent
+        by command id (`payload["_id"]`): a crash between the handler and the applied-file write replays it. A
+        documented wrapper over `commands.handler`, so the registry can list what an extension added; a kind that
+        collides with a built-in or another extension's is an error (a silent overwrite would be a hijack)."""
+        from . import commands as commands_mod
+        if not kind or not isinstance(kind, str):
+            raise ExtensionError(f"command kind must be a non-empty string, got {kind!r}")
+        if kind in commands_mod.HANDLERS and commands_mod.HANDLERS[kind] is not fn:
+            raise ExtensionError(f"command kind {kind!r} is already registered")
+        commands_mod.HANDLERS[kind] = fn
+        self.commands[kind] = fn
+        _extension_commands.add(kind)
+
+    def inbox_kind(self, kind: str, label: str, page: str | None = None, answerable: bool = False,
+                   show_evidence: bool = True, score_keys: tuple[str, ...] | list[str] = ()) -> None:
+        """Claim an inbox item kind (see InboxKind). Built-in kinds cannot be claimed; one kind, one extension."""
+        from . import inbox as inbox_mod
+        if not kind or not isinstance(kind, str):
+            raise ExtensionError(f"inbox kind must be a non-empty string, got {kind!r}")
+        if kind in inbox_mod.BUILTIN_KINDS:
+            raise ExtensionError(f"inbox kind {kind!r} is built in and cannot be claimed by an extension")
+        if kind in self.inbox_kinds:
+            raise ExtensionError(f"inbox kind {kind!r} is already claimed")
+        if page is not None and (not page.startswith("/") or "{id}" not in page):
+            raise ExtensionError(f"inbox kind {kind!r}: page must be an absolute path containing {{id}}, got {page!r}")
+        self.inbox_kinds[kind] = InboxKind(kind, str(label), page, bool(answerable), bool(show_evidence),
+                                           tuple(str(k) for k in score_keys))
+
+    def template_dir(self, path) -> None:
+        """A directory of Jinja templates for an extension's Control Center pages. Loaded *after* the framework's own
+        templates (ChoiceLoader), so an extension page can `{% extends "base.html" %}` and use the partials, and a
+        framework template can never be overridden by an extension file of the same name."""
+        p = Path(path)
+        if not p.is_dir():
+            raise ExtensionError(f"template_dir {p} is not a directory")
+        if p not in self.template_dirs:
+            self.template_dirs.append(p)
+
+    def static_dir(self, path, prefix: str) -> None:
+        """Static files served at `/static/<prefix>/...` (the framework's own live under `/static/` directly)."""
+        p = Path(path)
+        if not p.is_dir():
+            raise ExtensionError(f"static_dir {p} is not a directory")
+        prefix = str(prefix).strip("/")
+        if not prefix or "/" in prefix or not all(c.isalnum() or c in "-_" for c in prefix):
+            raise ExtensionError(f"static_dir prefix must be one path segment (letters, digits, - _), got {prefix!r}")
+        if any(pre == prefix for pre, _ in self.static_dirs):
+            raise ExtensionError(f"static prefix {prefix!r} is already registered")
+        self.static_dirs.append((prefix, p))
+
     def blocking_reason(self) -> str | None:
         """Why the loop must not run, or None: names every required extension that failed to load."""
         if not self.blocking:
@@ -267,6 +348,7 @@ class Registry:
 
 
 _registries: dict[str, Registry] = {}
+_extension_commands: set[str] = set()                        # command kinds extensions registered in this process
 
 
 def specs(layout: Layout) -> list[tuple[str, bool]]:
@@ -377,8 +459,23 @@ def load(layout: Layout) -> Registry:
             reg.errors.append(f"{name}: {why}")
             if required:
                 reg.blocking.append(f"{name}: {why}")
+            else:
+                _report_optional_failure(layout, name, why)
     reg._reconcile(set(reg.loaded))
     return reg
+
+
+def _report_optional_failure(layout: Layout, name: str, why: str) -> None:
+    """A `required: false` extension that did not load is still a lane, a check or a screen that is now missing.
+    Recording it only in `registry.errors` made it visible nowhere but `supervisor doctor`; it is logged once per
+    process (`extension_error` in state/log.jsonl) and said on stderr, so the owner can tell a failed optional
+    extension from one that was deliberately left out."""
+    try:
+        from . import tasks as tasks_mod                   # local: tasks imports policy, which reaches back here
+        tasks_mod.log(layout, "extension_error", "extensions", extension=name, required=False, error=why[:500])
+    except Exception:                                       # noqa: BLE001 - the log must never make a load fail
+        pass
+    print(f"extension {name!r} (required: false) did not load: {why}", file=sys.stderr)
 
 
 def registry(layout: Layout) -> Registry:
@@ -399,6 +496,10 @@ def reset() -> None:
     """Tests only: forget loaded registries and the per-project extension packages (adapters registered by
     extensions stay registered)."""
     _registries.clear()
+    from . import commands as commands_mod
+    for kind in _extension_commands:
+        commands_mod.HANDLERS.pop(kind, None)
+    _extension_commands.clear()
     for key in [k for k in sys.modules if k == NAMESPACE or k.startswith(NAMESPACE + ".")]:
         del sys.modules[key]
 

@@ -154,3 +154,5 @@ timeouts:                           # supervisor/timeouts.py: an agent session (
 limits:
   max_agent_jobs: 2                 # concurrent model-lane jobs (deliveries + reviews + chat turns share this)
   max_resource_jobs: 1              # concurrent holders of the single heavy local resource (extension lanes with gpu=True)
+  resource_cost_categories: []      # cost categories whose DELIVERY also holds that resource slot, on any lane — e.g. [local]
+                                    # when an agent session does the resource's own engineering work (installs, runs, benchmarks it)
