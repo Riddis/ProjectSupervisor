@@ -19,7 +19,7 @@ try {
     "pytest $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') root=$Root python=$Python" | Set-Content -Encoding UTF8 -ErrorAction Stop $out
     "commit $(git -C $Root rev-parse --short HEAD) $(git -C $Root describe --tags --always --dirty)" | Out-File -Encoding UTF8 -Append -ErrorAction Stop $out
 } catch {
-    Write-Error "cannot write the results file $out ($($_.Exception.Message)); is another run holding it?"
+    Write-Error "cannot write the results file ${out} ($($_.Exception.Message)); is another run holding it?"
     exit 2
 }
 $env:PYTHONDONTWRITEBYTECODE = "1"
@@ -34,13 +34,13 @@ try {
     & $Python -B -m pytest -q -p no:cacheprovider 2>&1 | Out-File -Encoding UTF8 -Append -ErrorAction Stop $out
     $code = $LASTEXITCODE
 } catch {
-    Write-Error "the results file $out became unwritable while the suite ran ($($_.Exception.Message)); this run is void"
+    Write-Error "the results file ${out} became unwritable while the suite ran ($($_.Exception.Message)); this run is void"
     exit 2
 }
 $tail = Get-Content $out | Select-Object -Last 15
 $tail
 if (-not ($tail -match '\b(passed|failed|error|errors|no tests ran)\b')) {
-    Write-Error "no pytest summary in $out: the suite did not run (python=$Python)"
+    Write-Error "no pytest summary in ${out}: the suite did not run (python=$Python)"
     exit 3
 }
 if ($null -eq $code) { $code = 1 }

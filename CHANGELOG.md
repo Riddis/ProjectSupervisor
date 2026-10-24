@@ -3,6 +3,11 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.8.3 — 2026-10-24
+
+Review round on 1.8.2: `tools/test_windows.ps1` did not parse — `"$out:"` inside a string is read by PowerShell as a
+scope qualifier. Now `${out}:`; the other `$out` interpolations are braced too. No other change.
+
 ## 1.8.2 — 2026-10-24
 
 Review round on 1.8.1 (verdict REVISE, one remaining finding on the Windows validation script).
