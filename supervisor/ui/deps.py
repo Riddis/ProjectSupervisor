@@ -13,11 +13,13 @@ from .. import commands as commands_mod
 from ..paths import Layout
 from .assets import stylesheet_url
 from .auth import CSRF_COOKIE
+from .timefmt import local_stamp
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["now"] = lambda: time.time()
 templates.env.globals["stylesheet_url"] = stylesheet_url
+templates.env.filters["localtime"] = local_stamp      # store timestamps are UTC; the owner reads local wall-clock
 
 
 def _inbox_badge(request: Request) -> int:

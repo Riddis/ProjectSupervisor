@@ -91,7 +91,7 @@
       <button type="submit">Reopen</button>
     </form>
     {% elif item.answer %}
-    <p class="answer">Answered {{ item.answered_at }} by {{ item.answer.by }}: <strong>{{ item.answer.response }}</strong>
+    <p class="answer">Answered {{ item.answered_at | localtime }} by {{ item.answer.by }}: <strong>{{ item.answer.response }}</strong>
        {% if item.answer.note %}— {{ item.answer.note }}{% endif %}</p>
     {% endif %}
   </article>

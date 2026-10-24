@@ -8,6 +8,8 @@ from pathlib import Path
 
 from fastapi import Request
 
+from .timefmt import local_stamp
+
 
 def _format(data: str, event: str | None = None) -> str:
     lines = "".join(f"data: {line}\n" for line in data.splitlines() or [""])
@@ -53,7 +55,7 @@ def log_line_text(raw: str) -> str:
         ev = json.loads(raw)
     except ValueError:
         return raw
-    bits = [ev.get("ts", ""), ev.get("actor", ""), ev.get("event", "")]
+    bits = [local_stamp(ev.get("ts", "")), ev.get("actor", ""), ev.get("event", "")]
     extra = {k: v for k, v in ev.items() if k not in ("ts", "actor", "event") and v not in (None, "")}
     if extra:
         bits.append(json.dumps(extra, ensure_ascii=False))

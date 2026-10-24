@@ -3,6 +3,16 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.7.3 — 2026-10-24
+
+Migration plan phase 1b (periphery modules of the drift ledger): one port.
+
+- **Control Center timestamps in local time.** Store values are ISO-8601 UTC; every timestamp the Control Center
+  shows (activity table, log page, inbox answers, task history, notes, approvals, attempts, the heartbeat tooltip
+  and the live log stream) now renders as the machine's local `YYYY-MM-DD HH:MM` through the `localtime` Jinja
+  filter (`supervisor/ui/timefmt.local_stamp`; a value that does not parse is shown unchanged). Before, pages
+  showed raw UTC ISO strings or a clipped slice of one.
+
 ## 1.7.2 — 2026-10-24
 
 Fixes ported from the project the framework was extracted from (migration plan phase 1a: the drift ledger's

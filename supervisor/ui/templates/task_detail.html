@@ -53,7 +53,7 @@
   <ul>{% for r in t.delivery.reviews %}<li>{{ r.role }}: {{ r.verdict.value }}{{ ' (superseded)' if r.superseded else '' }}</li>{% endfor %}</ul>
   {% endif %}
   {% if t.delivery.approvals %}
-  <ul>{% for a in t.delivery.approvals %}<li>Owner: {{ a.response.value }} ({{ a.by }}, {{ a.at[:16] }}){{ ' (superseded)' if a.superseded else '' }}{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>
+  <ul>{% for a in t.delivery.approvals %}<li>Owner: {{ a.response.value }} ({{ a.by }}, {{ a.at | localtime }}){{ ' (superseded)' if a.superseded else '' }}{% if a.note %} — {{ a.note }}{% endif %}</li>{% endfor %}</ul>
   {% endif %}
   {% if t.status.value == 'WAITING_FOR_HUMAN' and t.human_approval.value != 'none' %}
   <p><strong>Needs your approval</strong> for digest <code>{{ t.delivery.digest[:16] }}…</code>{% if t.approval_note %} — {{ t.approval_note }}{% endif %}</p>
@@ -85,7 +85,7 @@
     {% for row in attempts %}
       {% set a = row.attempt %}{% set j = row.job %}
       <tr>
-        <td>{{ a.id }}</td><td>{{ a.resource }}</td><td>{{ a.model or '—' }}</td><td>{{ a.at }}</td>
+        <td>{{ a.id }}</td><td>{{ a.resource }}</td><td>{{ a.model or '—' }}</td><td>{{ a.at | localtime }}</td>
         <td>{{ (j.result if j else None) or a.outcome or (j.phase if j else '') }}</td>
         <td>
           <form method="post" action="/tasks/{{ t.id }}/attempts/{{ a.id }}/open-run-dir" class="inline-form">
@@ -104,7 +104,7 @@
   <h2>History</h2>
   <ul>
   {% for h in t.history %}
-    <li>{{ h.at }} {{ h.by }}: {{ h['from'] }} → {{ h.to }}{{ ' (FORCED: ' + h.note + ')' if h.forced else (' — ' + h.note if h.note else '') }}</li>
+    <li>{{ h.at | localtime }} {{ h.by }}: {{ h['from'] }} → {{ h.to }}{{ ' (FORCED: ' + h.note + ')' if h.forced else (' — ' + h.note if h.note else '') }}</li>
   {% endfor %}
   </ul>
 </section>
@@ -113,7 +113,7 @@
   <h2>Notes</h2>
   <ul>
   {% for n in (t.model_extra or {}).get('notes', []) %}
-    <li>{{ n.at }} {{ n.by }}: {{ n.note }}</li>
+    <li>{{ n.at | localtime }} {{ n.by }}: {{ n.note }}</li>
   {% else %}<li>none</li>{% endfor %}
   </ul>
 </section>

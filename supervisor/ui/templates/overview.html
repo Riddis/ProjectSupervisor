@@ -52,8 +52,8 @@
 </section>
 <section class="panel events-panel">
   <div class="section-heading"><h2>Recent activity</h2><a href="/log">View full log {{ icon('arrow') }}</a></div>
-  <table class="tasks-table activity-table"><thead><tr><th>Time (UTC)</th><th>Agent</th><th>Event</th><th>Task</th></tr></thead><tbody>
-    {% for e in last_events[:5] %}<tr><td><time title="{{ e.ts }}">{{ e.ts[11:19] if e.ts and e.ts | length > 18 else e.ts }}</time></td><td><span class="agent-dot agent-{{ 'claude' if 'claude' in (e.actor or '') else 'codex' if 'codex' in (e.actor or '') else 'system' }}"></span>{{ (e.actor or 'System') | replace('_',' ') | title }}</td><td>{{ e.event | replace('_',' ') | capitalize }}{% if e.to %}<span class="event-state">{{ e.to }}</span>{% endif %}</td><td>{% if e.task %}<a href="/tasks/{{ e.task }}">{{ e.task }}</a>{% else %}<span class="muted">&mdash;</span>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No activity yet.</td></tr>{% endfor %}
+  <table class="tasks-table activity-table"><thead><tr><th>Time</th><th>Agent</th><th>Event</th><th>Task</th></tr></thead><tbody>
+    {% for e in last_events[:5] %}<tr><td><time title="{{ e.ts }}">{{ e.ts | localtime }}</time></td><td><span class="agent-dot agent-{{ 'claude' if 'claude' in (e.actor or '') else 'codex' if 'codex' in (e.actor or '') else 'system' }}"></span>{{ (e.actor or 'System') | replace('_',' ') | title }}</td><td>{{ e.event | replace('_',' ') | capitalize }}{% if e.to %}<span class="event-state">{{ e.to }}</span>{% endif %}</td><td>{% if e.task %}<a href="/tasks/{{ e.task }}">{{ e.task }}</a>{% else %}<span class="muted">&mdash;</span>{% endif %}</td></tr>{% else %}<tr><td colspan="4">No activity yet.</td></tr>{% endfor %}
   </tbody></table>
   {% if last_events | length > 5 %}<a class="activity-more" href="/log">View all recent events {{ icon('arrow') }}</a>{% endif %}
 </section>
