@@ -15,6 +15,10 @@ from .paths import Layout
 
 MAX_OPEN_PER_ROLE = 3
 MAX_SUMMARY_CHARS = 600
+# The summary is the card's headline and stays short; anything longer the writer had to say goes in `detail`, which
+# the Control Center shows behind "Show full message". A hard cut at MAX_SUMMARY_CHARS used to drop whatever came
+# last — for an escalation that was the question and the options.
+MAX_DETAIL_CHARS = 8000
 DEFAULT_RESPONSES = ["ACCEPT", "REJECT", "MODIFY", "REDO"]
 
 # Owner approval of a delivery (tasks with human_approval=required). The loop opens one `approval` item per
@@ -24,6 +28,18 @@ APPROVAL_KIND = "approval"
 APPROVAL_RESPONSES = ["APPROVE", "REJECT", "MODIFY"]
 APPROVAL_ALIASES = {"APPROVE": "ACCEPT", "ACCEPT": "ACCEPT", "YES": "ACCEPT", "OK": "ACCEPT", "LGTM": "ACCEPT",
                     "REJECT": "REJECT", "NO": "REJECT", "MODIFY": "MODIFY", "REDO": "REDO"}
+
+
+def fit(text: str) -> tuple[str, str | None]:
+    """Split prose for an item into (summary, detail): text within the summary budget is the summary alone; longer
+    text becomes a summary cut at a word boundary plus the full text (up to MAX_DETAIL_CHARS) as detail, so nothing
+    the writer said is lost. Callers put what the owner must act on first — that is the part the summary keeps."""
+    text = str(text or "").strip()
+    if len(text) <= MAX_SUMMARY_CHARS:
+        return text, None
+    cut = text[:MAX_SUMMARY_CHARS - 1]
+    head = cut.rsplit(" ", 1)[0] if " " in cut[MAX_SUMMARY_CHARS // 2:] else cut
+    return head.rstrip(" ,;:") + "…", text[:MAX_DETAIL_CHARS]
 
 
 class InboxError(ValueError):
@@ -79,11 +95,15 @@ def _next_id(layout: Layout) -> str:
 
 def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: str = "question",
           allowed_responses: list[str] | None = None, free_text: bool = True, from_: str = "system",
-          task_id: str | None = None, attempt_id: str | None = None, approval_digest: str | None = None) -> dict:
-    """Write a new open item. Enforces the per-role cap and the prose budget; the cap check and id allocation happen
-    under one lock so concurrent creates never collide or overshoot."""
+          task_id: str | None = None, attempt_id: str | None = None, approval_digest: str | None = None,
+          extra: dict | None = None, detail: str | None = None) -> dict:
+    """Write a new open item. Enforces the per-role cap and the prose budget (summary ≤ MAX_SUMMARY_CHARS; the
+    optional `detail` — the full text, see fit() — ≤ MAX_DETAIL_CHARS); the cap check and id allocation happen
+    under one lock so concurrent creates never collide or overshoot. `extra` adds fields without overriding any."""
     if len(summary) > MAX_SUMMARY_CHARS:
         raise InboxError(f"summary is {len(summary)} characters; limit is {MAX_SUMMARY_CHARS}")
+    if detail is not None and len(detail) > MAX_DETAIL_CHARS:
+        raise InboxError(f"detail is {len(detail)} characters; limit is {MAX_DETAIL_CHARS}")
     with FileLock(layout.state / ".inbox.lock", owner="inbox", timeout=5.0):
         if len(open_items(layout, for_role)) >= MAX_OPEN_PER_ROLE:
             raise InboxFull(for_role)
@@ -93,6 +113,10 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
                "free_text": free_text, "task_id": task_id, "attempt_id": attempt_id}
         if approval_digest:
             doc["approval_digest"] = approval_digest
+        if detail and detail.strip() != summary.strip():
+            doc["detail"] = detail
+        for k, v in (extra or {}).items():
+            doc.setdefault(k, v)
         store.write_new(path_for(layout, item_id), doc)
     tasks_mod.log(layout, "inbox_open", from_, item=item_id, for_role=for_role, task=task_id)
     return load(layout, item_id)
@@ -130,6 +154,7 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
     if not outcome.get("skipped"):
         tasks_mod.log(layout, "inbox_answer", by, item=item_id, response=outcome.get("kind"), task=doc.get("task_id"))
         apply_approval(layout, doc, by=by, command_id=command_id)
+        apply_decision(layout, doc, by=by)
     return doc
 
 
@@ -215,3 +240,112 @@ def reopen(layout: Layout, item_id: str, by: str = "owner") -> dict:
     doc = store.update(path_for(layout, item_id), fn, lock_path=layout.state / ".inbox.lock")
     tasks_mod.log(layout, "inbox_reopen", by, item=item_id, task=doc.get("task_id"))
     return doc
+
+
+# ------------------------------------------------------------------ owner decisions on stopped tasks
+
+DECISION_KIND = "decision"
+DECISION_RESPONSES = ["REQUEUE", "CANCEL", "DEFER"]
+OWNER_DECISION_MARK = "owner decision needed"
+
+
+def is_decision(item: dict) -> bool:
+    """A REQUEUE/CANCEL/DEFER item about one task: the loop's `decision` items (Supervisor.request_owner_decisions)
+    and the owner route of a diagnosis (diagnosis.route_to_owner). Framework versions before 1.4.0 wrote the latter
+    as kind `question`; those are recognised by origin and responses so an answer to one still takes effect."""
+    if not item.get("task_id"):
+        return False
+    if item.get("kind") == DECISION_KIND:
+        return True
+    return (item.get("kind") == "question" and item.get("from") == "escalation"
+            and set(item.get("allowed_responses") or []) == set(DECISION_RESPONSES))
+
+
+def add_guidance(layout: Layout, task_id: str, item_id: str, text: str, resume: str = "task",
+                 digest: str | None = None) -> None:
+    """Owner guidance for the next attempt, in the task's `guidance` list (the field packets.py reads). A review
+    resume scopes it to the review of `digest`; anything else to the next delivery. Idempotent per item."""
+    entry = {"at": store.now_iso(), "by": "owner", "item": item_id, "text": text[:4000],
+             "scope": "review" if resume == "review" else "delivery"}
+    if digest:
+        entry["digest"] = digest
+
+    def fn(doc):
+        items = doc.setdefault("guidance", [])
+        if not any(g.get("item") == item_id for g in items if isinstance(g, dict)):
+            items.append(entry)
+    tasks_mod._update(layout, task_id, fn)
+
+
+def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None:
+    """Act on an answered decision item (is_decision) for a task that is BLOCKED ("owner decision needed") or FAILED
+    (a diagnosis handed it to the owner). REQUEUE resets the budget that stopped the task and puts it back where it
+    stopped (`resume`: review | delivery | task), CANCEL cancels it, DEFER / free text only annotate it. REQUEUE also
+    resets the task's escalation budget (spent revisions, failure signatures). Text after the keyword ("REQUEUE use
+    the cached outputs") becomes owner guidance that the next delivery brief (or, for a review resume, the next
+    review brief) carries, plus a task note for the record. Idempotent: the outcome is written to the item as
+    `applied` and an applied item is never acted on twice."""
+    if item.get("status") != "answered" or not is_decision(item) or item.get("applied"):
+        return None
+    from . import jobs as jobs_mod
+    from .models.task import TaskStatus
+    task_id = item.get("task_id")
+    answer = item.get("answer") or {}
+    token = str(answer.get("response") or "").split(None, 1)[0].upper()
+    # the Control Center sends a button plus typed text as one response ("REQUEUE <text>"): the words after the
+    # keyword are the guidance
+    raw = str(answer.get("response") or "").strip()
+    arg = raw.split(None, 1)[1].strip() if answer.get("kind") != "text" and len(raw.split(None, 1)) > 1 else ""
+    note = (answer.get("note") or "").strip() or arg or (raw if answer.get("kind") == "text" else "")
+    out: dict = {"response": token if token in DECISION_RESPONSES else "text"}
+    try:
+        task = tasks_mod.load(layout, task_id)
+        if task.status not in (TaskStatus.BLOCKED, TaskStatus.FAILED):
+            out["skipped"] = f"task is {task.status.value}"
+        elif token == "CANCEL":
+            tasks_mod.set_status(layout, task_id, TaskStatus.CANCELLED, actor="owner", note=f"{item['id']}: cancelled by owner")
+        elif token == "REQUEUE":
+            resume = item.get("resume") or "task"
+            if note:
+                # the note is the audit trail; `guidance` is what the next packet actually carries (packets.py):
+                # the delivery brief for a task/delivery resume, the review brief of this digest for a review resume
+                add_guidance(layout, task_id, item["id"], note, resume=resume,
+                             digest=task.delivery.digest if resume == "review" else None)
+                tasks_mod.add_note(layout, task_id, f"{item['id']} owner guidance: {note}", actor="owner")
+            # REQUEUE grants a fresh start: the spent revisions and failure signatures go too, or the next failure
+            # escalates at once instead of getting the normal revision budget. Keyed by the item, so a re-apply
+            # after a crash between this write and `applied` never grants a second reset.
+            from . import escalation as escalation_mod
+            escalation_mod.reset_retries(layout, task_id, reason=f"owner REQUEUE ({item['id']})", key=item["id"])
+            if resume == "review":
+                digest = task.delivery.digest
+                for r in jobs_mod.for_task(layout, task_id):
+                    if ((r.get("spec") or {}).get("kind") == "review" and r.get("review_digest") == digest
+                            and any(r.get(k) for k in ("failed_review", "blocked_review", "invalidated"))):
+                        jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], failed_review=False, blocked_review=False,
+                                           invalidated=False, budget_reset_by=item["id"])
+                tasks_mod.set_status(layout, task_id, TaskStatus.WAITING_FOR_REVIEW, actor="owner", force=True,
+                                     note=f"{item['id']}: owner re-queued the review (review budget reset)")
+            else:
+                if resume == "delivery":
+                    for r in jobs_mod.for_task(layout, task_id):
+                        reason = str(r.get("deferred_reason", ""))
+                        if reason.startswith("continuation"):
+                            jobs_mod.set_phase(layout, r["attempt_id"], r["phase"],
+                                               deferred_reason=f"reset by owner ({item['id']}): {reason}")
+                tasks_mod.set_status(layout, task_id, TaskStatus.READY, actor="owner",
+                                     note=f"{item['id']}: owner re-queued the task")
+            out["resumed"] = resume
+        else:
+            if note:
+                tasks_mod.add_note(layout, task_id, f"{item['id']} ({out['response']}): {note}", actor="owner")
+            out["skipped"] = "deferred"
+    except tasks_mod.TaskError as exc:
+        out["error"] = str(exc)[:200]
+
+    def mark(doc):
+        doc["applied"] = {"at": store.now_iso(), "by": by, **out}
+        return doc
+    store.update(path_for(layout, item["id"]), mark, lock_path=layout.state / ".inbox.lock")
+    tasks_mod.log(layout, "decision_applied", by, item=item["id"], task=task_id, **out)
+    return out

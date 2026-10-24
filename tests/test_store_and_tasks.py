@@ -273,3 +273,28 @@ def test_lock_respects_fresh_foreign_sidecar(tmp_path, monkeypatch):
     with locks.FileLock(lock):
         assert json.loads(sc.read_text())["host"] == locks.HOST
     assert not sc.exists()
+
+
+def test_a_view_that_cannot_render_is_skipped_not_fatal(layout):
+    """A YAML record caught half-written (an agent editing it) must not fail the loop iteration: the view is
+    skipped, its previous file stays, the error is logged once and the recovery once."""
+    import json as _json
+
+    from supervisor import render
+    good = render.render_all(layout)
+    issues_md = layout.root / "ISSUES.md"
+    before = issues_md.read_text(encoding="utf-8")
+    layout.issues.mkdir(parents=True, exist_ok=True)
+    broken = layout.issues / "ISS-900.yaml"
+    broken.write_text("id: ISS-900\ntitle: half: written: value\n", encoding="utf-8")
+    for _ in range(3):
+        paths = render.render_all(layout)                    # no exception
+    skipped = {p.name for p in good} - {p.name for p in paths}
+    assert skipped == {"ISSUES.md", "STATE.md"}                  # STATE.md counts open issues too
+    assert issues_md.read_text(encoding="utf-8") == before   # previous projection kept
+    broken.write_text("id: ISS-900\ntitle: fixed\nstatus: open\n", encoding="utf-8")
+    assert issues_md in render.render_all(layout)
+    events = [_json.loads(line) for line in layout.log.read_text(encoding="utf-8").splitlines()]
+    assert [e["view"] for e in events if e.get("event") == "render_error"] == ["render_issues", "render_state"]
+    assert [e["view"] for e in events if e.get("event") == "render_recovered"] == ["render_issues", "render_state"]
+

@@ -33,6 +33,48 @@ def _attempt_no(attempt_id: str) -> int:
         return 0
 
 
+def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
+    """What the worker said about why it stopped — its notes plus the head of its HANDOFF.md — so the failure detail
+    (revision brief, diagnosis brief, task record, owner item) carries the reason, not just "status BLOCKED"."""
+    parts = []
+    if getattr(result, "notes", None):
+        parts.append(str(result.notes).strip())
+    if run_dir:
+        hp = Path(run_dir) / "HANDOFF.md"
+        try:
+            if hp.exists():
+                parts.append(hp.read_text(encoding="utf-8", errors="replace").strip())
+        except OSError:
+            pass
+    text = "\n\n".join(p for p in parts if p)
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _handoff_reason(run_dir) -> str | None:
+    """Why the supervisor asked this session for a handoff (`HANDOFF_REQUEST.json`), if it did."""
+    try:
+        return str(read_json(Path(run_dir) / "HANDOFF_REQUEST.json").get("reason") or "") or None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _epoch(iso: str) -> float:
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return time.time()                       # unparseable: treat as "just now" (never acts early)
+
+
+def scheduler_routing(layout: Layout) -> dict:
+    import yaml
+    cfg = layout.config / "routing.yaml"
+    try:
+        return (yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}) if cfg.exists() else {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
 RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
 
 
@@ -238,6 +280,8 @@ class Supervisor:
                       ([self.layout.root / pat] if (self.layout.root / pat).is_file() else [])
             if matches:
                 files += [str(m.relative_to(self.layout.root).as_posix()) for m in matches]
+            elif (self.layout.root / pat).is_dir():                 # a directory never matches: say so, not "missing"
+                missing.append(f"{pat} (a directory — the task contract must name files or a glob)")
             else:
                 missing.append(pat)
         return sorted(set(files)), missing
@@ -285,8 +329,13 @@ class Supervisor:
         run_dir = (rec.get("spec") or {}).get("run_dir")
         if result.status == "DEFERRED":
             return self.requeue(rec, result, "capacity limit")
+        timed_out = (result.raw or {}).get("timeout") if result.status == "FAILED" else None
+        if timed_out and rec.get("adapter") in gate.MODEL_LANES and kind != self.VERIFY_KIND:
+            # 1.7.0: a session stopped by its time limit (supervisor.timeouts) was busy or stalled, not wrong — a
+            # fresh session continues from its HANDOFF.md instead of spending a revision.
+            return self.requeue(rec, result, "time limit (hard cap)" if timed_out == "cap" else "time limit (idle)")
         if result.status in ("PARTIAL", "BLOCKED") and run_dir and handoff.incomplete(Path(run_dir)):
-            return self.requeue(rec, result, "capacity handoff")
+            return self.requeue(rec, result, "time limit handoff" if _handoff_reason(run_dir) == "time limit" else "capacity handoff")
         if kind == "review":
             review_mod.ingest(self, rec, result)
         elif kind == diagnosis_mod.KIND:
@@ -330,14 +379,22 @@ class Supervisor:
                                   error=result.error, verification="pending")
                     return
             else:
-                outcome = verify_mod.Outcome(False, result.error or f"status {result.status}; missing: " + ", ".join(missing))
-            self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE")
+                head = result.error or f"status {result.status}" + (f"; missing: {', '.join(missing)}" if missing else "")
+                report = worker_report(result, run_dir) if result.status != "COMPLETE" else ""
+                outcome = verify_mod.Outcome(False, head + (f"\n\nWorker report:\n{report}" if report else ""))
+            self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE",
+                                worker_status=result.status)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
         tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
 
-    def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None) -> None:
-        """Write a verification Outcome for digest `dg` into the task store, advance, and hand a substantive failure to
-        escalation (keyed by the delivery attempt, `event`, so a replay never spends a second revision)."""
+    def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None,
+                       worker_status: str | None = None) -> None:
+        """Write a verification Outcome for digest `dg` into the task store, advance, and hand EVERY failure to
+        escalation (keyed by the delivery attempt, `event`, so a replay never spends a second revision).
+
+        Before 1.6.0 only a substantive failure (the worker claimed COMPLETE, verification disagreed) reached
+        escalation; a worker that ended BLOCKED/FAILED/PARTIAL, or crashed, timed out or was lost, left the task
+        FAILED with no retry, no diagnosis and no owner item."""
         report_path = None
         if getattr(outcome, "report", None) and (rec.get("spec") or {}).get("run_dir"):
             rp = Path(rec["spec"]["run_dir"]) / "verification.json"
@@ -345,12 +402,30 @@ class Supervisor:
             report_path = rp.relative_to(self.layout.root).as_posix() if rp.is_relative_to(self.layout.root) else str(rp)
         tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail, actor="loop")
         tasks_mod.advance(self.layout, task_id, actor="advance")
-        if not outcome.ok and substantive:
-            # a substantive failure: the agent believed it was done and deterministic verification disagreed.
-            # An infra failure (crash/timeout/lost/capacity) is not the agent's fault and is not auto-retried here.
+        if outcome.ok:
+            return
+        lane = rec.get("adapter", "")
+        if substantive:
+            # the agent believed it was done and deterministic verification disagreed
             escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=event or rec["attempt_id"])
+        elif lane == "human":
+            # the owner answered REJECT / MORE_LIKE: that is the owner's decision, never auto-retried
+            return
+        elif worker_status == "BLOCKED":
+            # the worker says it cannot proceed: no blind retry, straight to the exception route (diagnosis → owner)
+            escalation_mod.record_failure(self, task_id, "worker_blocked", outcome.detail, event=event or rec["attempt_id"],
+                                          retry=False)
+        elif lane in self.IMMEDIATE_RETRY_LANES:
+            # an agent run that ended FAILED/PARTIAL, crashed, timed out or was lost: retried within the revision
+            # budget, then the exception route. (Capacity limits never get here — DEFERRED and handoff-incomplete runs
+            # are continuations, see requeue().)
+            escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=event or rec["attempt_id"])
+        # a deterministic lane (process/python/extension adapters) that FAILED is left to sweep_stalled(): its grace
+        # period is the back-off — a timeout or a busy resource usually clears by itself — and it then retries within the same
+        # budget and escalates the same way
 
     VERIFY_KIND = "verify"
+    IMMEDIATE_RETRY_LANES = gate.MODEL_LANES
 
     def dispatch_verify(self, task: Task, delivery_rec: dict, dg: str, commands: list[dict], fixed: list[str]) -> dict:
         """Queue the tracked verify job for one delivery digest: a `process` job running supervisor.verify_job
@@ -439,6 +514,176 @@ class Supervisor:
                     self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
                     jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
+    def request_owner_decisions(self) -> None:
+        """A task BLOCKED with "owner decision needed" (review budget spent, continuations exhausted, ...) gets exactly
+        one `decision` inbox item per block (keyed by the history entry's timestamp), so the owner actually hears
+        about it; inbox.apply_decision acts on the answer. Before 1.4.0 such a task only had an issue and a note —
+        nothing reached the inbox. Also re-applies an answered item whose effect never landed."""
+        items = [i for i in inbox_mod.all_items(self.layout) if inbox_mod.is_decision(i)]
+        for i in items:
+            if i.get("status") == "answered" and not i.get("applied"):
+                inbox_mod.apply_decision(self.layout, i, by="loop")
+        for task in tasks_mod.load_all(self.layout).values():
+            if task.status != TaskStatus.BLOCKED:
+                continue
+            history = task.history or []
+            last = next((h for h in reversed(history) if h.get("to") == TaskStatus.BLOCKED.value), None)
+            note = str((last or {}).get("note") or "")
+            if not last or inbox_mod.OWNER_DECISION_MARK not in note:
+                continue
+            if any(i.get("task_id") == task.id and i.get("blocked_at") == last.get("at") for i in items):
+                continue
+            # an invalidated review means the delivered files changed after delivery: re-reviewing the same digest can
+            # only be invalidated again, so REQUEUE re-runs the task to record a fresh delivery instead
+            if note.startswith("review of digest") and "invalidated" not in note:
+                resume = "review"
+            else:
+                resume = "delivery" if "continuations" in note else "task"
+            action = {"review": "run the review again (its retry budget is reset)",
+                      "delivery": "resume the work with a fresh continuation budget",
+                      "task": "re-run the task so it records a fresh delivery" if "invalidated" in note
+                              else "put the task back in the queue"}[resume]
+            # the options lead: a long block note must never push them out of the summary (fit() keeps the rest)
+            summary, detail = inbox_mod.fit(
+                f"REQUEUE = {action}; CANCEL = cancel the task; DEFER = leave it blocked. "
+                "Text you add is passed on as guidance. "
+                f"{task.id} is blocked: {note.replace('; ' + inbox_mod.OWNER_DECISION_MARK, '')}.")
+            try:
+                inbox_mod.create(self.layout, for_role="owner", subject=f"Decision needed: {task.id} — {task.title}",
+                                 summary=summary, detail=detail, kind=inbox_mod.DECISION_KIND,
+                                 allowed_responses=list(inbox_mod.DECISION_RESPONSES), free_text=True,
+                                 from_="loop", task_id=task.id,
+                                 extra={"resume": resume, "blocked_at": last.get("at")})
+            except inbox_mod.InboxFull:
+                return                                            # try again next iteration
+
+    # ------------------------------------------------------------ nothing stops silently
+
+    STALL_GRACE_S = 600
+
+    def _stall_grace(self) -> float:
+        esc = (scheduler_routing(self.layout).get("escalation") or {})
+        try:
+            return float(esc.get("stall_grace_s", self.STALL_GRACE_S))
+        except (TypeError, ValueError):
+            return float(self.STALL_GRACE_S)
+
+    def sweep_stalled(self, now: float | None = None) -> list[str]:
+        """Safety net under escalation: a task FAILED or BLOCKED with nothing in flight for it and nothing waiting on
+        the owner is a silent stall, whatever left it there (an adapter that vanished, a launch that never got a
+        handle, a diagnosis deferred for capacity, a record from before this sweep existed). After a grace period:
+
+          1. no escalation since it stopped → escalation.record_failure("stalled"), keyed by the stop, so it is
+             decided once: a FAILED task gets a retry within the budget, a BLOCKED one goes to diagnosis;
+          2. escalated since it stopped and still nothing routing it → one owner decision item.
+
+        Deliberate holds are left alone: a stop the owner made themselves (Hold / set-status), an open or snoozed owner
+        item for the task, an owner answer (DEFER / note) given after the stop, a failure of the task's `human`
+        attempt (the owner's REJECT/MORE_LIKE — linked through the attempt, not by comparing timestamps, because the
+        loop collects the answer after it was given), or a diagnosis that deferred it after the stop. Returns the task
+        ids acted on."""
+        now = time.time() if now is None else now
+        grace = self._stall_grace()
+        busy = {r["task_id"] for r in jobs_mod.open_records(self.layout)}
+        items = inbox_mod.all_items(self.layout)
+        acted = []
+        for task in tasks_mod.load_all(self.layout).values():
+            if task.status not in (TaskStatus.FAILED, TaskStatus.BLOCKED) or task.id in busy:
+                continue
+            stop = next((h for h in reversed(task.history or []) if h.get("to") == task.status.value), None)
+            at = str((stop or {}).get("at") or task.updated or "")
+            if not at or now - _epoch(at) < grace:
+                continue
+            if str((stop or {}).get("by") or "").startswith("owner"):
+                continue                                          # the owner put it here (Hold, set-status): their call
+            mine = [i for i in items if i.get("task_id") == task.id]
+            if any(i.get("status") in ("open", "snoozed") for i in mine):
+                continue                                          # waiting on the owner (a snooze defers, it is not a stall)
+            if any(max(str((i.get("applied") or {}).get("at") or ""), str(i.get("answered_at") or "")) >= at for i in mine):
+                continue                                          # the owner already answered this stop
+            records = jobs_mod.for_task(self.layout, task.id)
+            deliveries = [r for r in records if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
+            if deliveries and max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])).get("adapter") == "human":
+                continue                                          # the owner's own answer (REJECT/MORE_LIKE) failed it
+            diags = [r for r in records
+                     if (r.get("spec") or {}).get("kind") == diagnosis_mod.KIND and r.get("diag_action")]
+            if any(r.get("diag_action") == "defer" and str(r.get("finished") or r.get("updated") or "") >= at for r in diags):
+                continue                                          # a diagnosis parked it on purpose
+            key = f"stall:{at}"
+            state = escalation_mod._load(self.layout, task.id)
+            last_note = str((stop or {}).get("note") or "")
+            run_dir = next((a.run_dir for a in reversed(task.attempts) if a.run_dir), None)
+            report = worker_report(Result(status=task.status.value), run_dir)
+            detail = (f"{task.id} has been {task.status.value} since {at} with nothing in flight and no owner item. "
+                      f"Last status note: {last_note or '(none)'}" + (f"\n\nLatest run report:\n{report}" if report else ""))
+            if key not in state["events"] and escalation_mod.last_decision_at(self.layout, task.id) < at:
+                tasks_mod.log(self.layout, "stall_detected", "loop", task=task.id, status=task.status.value, since=at)
+                escalation_mod.record_failure(self, task.id, "stalled", detail, event=key,
+                                              retry=task.status == TaskStatus.FAILED)
+                acted.append(task.id)
+                continue
+            if state.get("stall_owner", {}).get(at):
+                continue                                          # already handed to the owner for this stop
+            if now - _epoch(escalation_mod.last_decision_at(self.layout, task.id) or at) < grace:
+                continue                                          # the escalation is still settling
+            out = diagnosis_mod.route_to_owner(self.layout, task, {"diag_role": "supervisor"}, detail, "",
+                                               "escalated, but nothing picked it up")
+            if out.get("inbox"):
+                state = escalation_mod._load(self.layout, task.id)
+                state.setdefault("stall_owner", {})[at] = out["inbox"]
+                escalation_mod._save(self.layout, task.id, state)
+                tasks_mod.log(self.layout, "stall_to_owner", "loop", task=task.id, item=out["inbox"])
+                acted.append(task.id)
+        return acted
+
+    def alert_if_idle(self, now: float | None = None) -> dict | None:
+        """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
+        work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
+        per-task sweep gets its chance first. It lists what each stuck task is waiting for."""
+        now = time.time() if now is None else now
+        path = self.layout.runtime / "idle_alert.json"
+        state = read_json(path) if path.exists() else {}
+        tasks = tasks_mod.load_all(self.layout)
+        remaining = [t for t in tasks.values() if t.status not in (TaskStatus.COMPLETE, TaskStatus.CANCELLED)]
+        idle = (not jobs_mod.open_records(self.layout) and not tasks_mod.eligible(self.layout, tasks)
+                and not inbox_mod.open_items(self.layout, "owner") and remaining)
+        if not idle:
+            if state.get("idle_since"):
+                atomic_json(path, {k: v for k, v in state.items() if k != "idle_since"})
+            return None
+        if not state.get("idle_since"):
+            state["idle_since"] = now
+            atomic_json(path, state)
+            return None
+        if now - float(state["idle_since"]) < 2 * self._stall_grace():
+            return None
+        stuck = sorted((t for t in remaining if t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.WAITING_FOR_HUMAN)),
+                       key=lambda t: t.id)
+        fingerprint = "|".join(f"{t.id}:{t.status.value}:{t.updated}" for t in stuck) or "deps-or-gates"
+        if state.get("fingerprint") == fingerprint:
+            return None
+        lines = []
+        for t in stuck[:8]:
+            notes = (t.model_extra or {}).get("notes") or []
+            last = (notes[-1].get("note") if notes else "") or next(
+                (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
+            lines.append(f"{t.id} {t.status.value}: {str(last)[:220]}")
+        if not stuck:
+            lines.append("No task is failed or blocked: the remaining work waits on a phase gate or unfinished dependencies.")
+        summary, detail = inbox_mod.fit(
+            f"Nothing can run: {len(remaining)} task(s) remain, none is eligible, nothing is in flight. "
+            + " · ".join(lines))
+        try:
+            item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
+                                    summary=summary, detail=detail, kind="question", from_="loop",
+                                    extra={"idle_fingerprint": fingerprint})
+        except inbox_mod.InboxFull:
+            return None
+        state.update(fingerprint=fingerprint, item=item["id"], raised=now_iso())
+        atomic_json(path, state)
+        tasks_mod.log(self.layout, "pipeline_idle", "loop", item=item["id"], stuck=[t.id for t in stuck])
+        return item
+
     def request_approvals(self) -> None:
         """Owner approval dispatch: a task that advance() parked in
         WAITING_FOR_HUMAN because its current digest is verified and reviewed but unapproved gets exactly one `approval`
@@ -464,14 +709,13 @@ class Supervisor:
                 continue
             reviews = ", ".join(f"{r.role} {r.verdict.value}" for r in task.delivery.reviews
                                 if r.digest == digest and not r.superseded) or "none required"
-            summary = (f"{task.id} is verified and reviewed ({reviews}) on digest {digest[:12]} and needs your approval "
-                       f"to complete. {task.approval_note or ''} Acceptance: {task.acceptance} Artifacts: "
-                       + ", ".join(task.artifacts[:6]))
-            if len(summary) > inbox_mod.MAX_SUMMARY_CHARS:
-                summary = summary[:inbox_mod.MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+            summary, detail = inbox_mod.fit(
+                f"{task.id} is verified and reviewed ({reviews}) on digest {digest[:12]} and needs your approval "
+                f"to complete. {task.approval_note or ''} Acceptance: {task.acceptance} Artifacts: "
+                + ", ".join(task.artifacts))
             try:
                 inbox_mod.create(self.layout, for_role="owner", subject=f"Approve delivery: {task.id} — {task.title}",
-                                 summary=summary, kind=inbox_mod.APPROVAL_KIND,
+                                 summary=summary, detail=detail, kind=inbox_mod.APPROVAL_KIND,
                                  allowed_responses=inbox_mod.APPROVAL_RESPONSES, free_text=True, from_="loop",
                                  task_id=task.id, approval_digest=digest)
             except inbox_mod.InboxFull:
@@ -529,6 +773,9 @@ class Supervisor:
             self.dispatch_conversations()
             self.settle()                                             # synchronous adapters finish at once
             self.request_approvals()
+            self.request_owner_decisions()
+            self.sweep_stalled()                                      # nothing stops silently
+            self.alert_if_idle()
             checkpoint_mod.run(self.layout)                           # accepted work → git, exactly as accepted
             runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
                               open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)])

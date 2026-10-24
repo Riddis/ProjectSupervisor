@@ -9,7 +9,7 @@ once per process and its `setup(registry)` function is called with a `Registry`,
     registry.ui_router(router, label, path)        # a FastAPI APIRouter + sidebar entry, for a project-specific Control Center page
     registry.overview_panel(fn)                    # fn(layout) -> {"title": str, "rows": [(label, value), ...]}; rendered on the overview
     registry.packet_screen(fn)                     # fn(layout, text, where) -> None | raises policy.PolicyViolation; runs on every packet
-    registry.projection(fn, path=None)             # fn(layout) -> Path; an extra rendered markdown file (like TASKS.md)
+    registry.projection(fn, path=None, name=None)  # fn(layout) -> Path; an extra rendered markdown file (like TASKS.md)
     registry.cli(typer_app, name)                  # a `supervisor <name> ...` command group
     registry.python_job(name, fn)                  # a deterministic job the `python` adapter can run: fn(root, run_dir, **params) -> result dict
 
@@ -91,8 +91,10 @@ def known_projection_paths(layout: Layout) -> set[str]:
     or point its projection at another file, and the old file is an ordinary file again (an exclusion that outlived
     its projection hid real undeclared writes). Unattributed 1.2.1 entries count while any extension is configured
     and until the registry has seen every projection render once."""
-    configured = {name for name, _required in specs(layout)}
-    rec = _read_projection_record(layout)
+    return _paths_in_record(_read_projection_record(layout), {name for name, _required in specs(layout)})
+
+
+def _paths_in_record(rec: dict, configured: set[str]) -> set[str]:
     out: set[str] = set()
     for key, entry in rec["projections"].items():
         if key.split(":", 1)[0] in configured:
@@ -118,7 +120,8 @@ class Registry:
     overview_panels: list[Callable] = field(default_factory=list)
     packet_screens: list[Callable] = field(default_factory=list)
     projections: list[Callable] = field(default_factory=list)
-    _projection_keys: list[str] = field(default_factory=list)   # "<ext>:<fn>" per registered projection, same order
+    _projection_keys: list[str] = field(default_factory=list)   # "<ext>:<name>" per registered projection, same order
+    _declared: dict[str, set[str]] = field(default_factory=dict)  # key -> paths its registration declares NOW
     projection_paths: set[str] = field(default_factory=set)     # root-relative files the projections write (verify excludes them)
     cli_apps: list[tuple[Any, str]] = field(default_factory=list)
     loaded: list[str] = field(default_factory=list)
@@ -131,32 +134,68 @@ class Registry:
         self.projection_paths |= known_projection_paths(self.layout)
         self._rendered_keys: set[str] = set()
 
-    def _remember_projection(self, key: str, rel: str, declared: bool) -> None:
-        """A projection file, attributed to its projection (`<ext>:<fn>`): kept in state/runtime so a verify child or
-        a restarted loop excludes it too. A render replaces the projection's previous rendered path (a renamed output
-        retires the old file); a declared path stays until the extension or the declaration goes. Once every
-        projection of this registry has rendered, unattributed 1.2.1 entries are dropped: they are all re-recorded."""
-        self.projection_paths.add(rel)
-        rec = _read_projection_record(self.layout)
-        entry = rec["projections"].setdefault(key, {"declared": [], "rendered": None})
-        before = (list(entry["declared"]), entry["rendered"], list(rec["legacy"]))
-        if declared:
-            entry["declared"] = sorted(set(entry["declared"]) | {rel})
-        else:
-            if entry["rendered"] and entry["rendered"] != rel and entry["rendered"] not in entry["declared"]:
-                self.projection_paths.discard(entry["rendered"])
-            entry["rendered"] = rel
-            self._rendered_keys.add(key)
-            if rec["legacy"] and all(k in self._rendered_keys for k in self._projection_keys):
-                self.projection_paths.difference_update(set(rec["legacy"]) - {rel})
-                rec["legacy"] = []
-        if before == (entry["declared"], entry["rendered"], rec["legacy"]):
-            return
+    def _write_record(self, rec: dict) -> None:
         try:
             atomic_json(self.layout.runtime / PROJECTIONS_FILE,
                         {"projections": rec["projections"], "legacy": rec["legacy"]})
         except OSError:                                     # best effort: the in-memory set still covers this process
             pass
+
+    def _remember_projection(self, key: str, rel: str) -> None:
+        """A rendered projection file, attributed to its projection (`<ext>:<name>`): kept in state/runtime so a verify
+        child or a restarted loop excludes it too. A render replaces the projection's previous rendered path (a
+        renamed output retires the old file). Once every projection of this registry has rendered, unattributed 1.2.1
+        entries are dropped: they are all re-recorded."""
+        self.projection_paths.add(rel)
+        rec = _read_projection_record(self.layout)
+        entry = rec["projections"].setdefault(key, {"declared": sorted(self._declared.get(key, ())), "rendered": None})
+        before = (list(entry["declared"]), entry["rendered"], list(rec["legacy"]))
+        if entry["rendered"] and entry["rendered"] != rel and entry["rendered"] not in entry["declared"]:
+            self.projection_paths.discard(entry["rendered"])
+        entry["rendered"] = rel
+        self._rendered_keys.add(key)
+        if rec["legacy"] and all(k in self._rendered_keys for k in self._projection_keys):
+            rec["legacy"] = []
+            configured = {name for name, _required in specs(self.layout)}
+            self.projection_paths = _paths_in_record(rec, configured) | self._all_declared() | {rel}
+        if before != (entry["declared"], entry["rendered"], rec["legacy"]):
+            self._write_record(rec)
+
+    def _all_declared(self) -> set[str]:
+        return {p for paths in self._declared.values() for p in paths}
+
+    def _reconcile(self, loaded: set[str]) -> None:
+        """Make the record match what is registered NOW, for every extension that just set up successfully: a
+        projection it no longer registers is forgotten, a projection's declared paths are exactly what it declares
+        (a changed declaration retires the old file, and the rendered path learned for it), and with no projection
+        registered at all the unattributed 1.2.1 entries go too (nothing would ever re-record them). Extensions that
+        are not configured keep their entries (filtered on read, so re-adding one restores them); one that failed to
+        load keeps them as they were (its registrations are unknown)."""
+        rec = _read_projection_record(self.layout)
+        snapshot = repr(rec)
+        current = set(self._projection_keys)
+        for key in list(rec["projections"]):
+            if key.split(":", 1)[0] in loaded and key not in current:
+                del rec["projections"][key]
+        for key in self._projection_keys:
+            new = sorted(self._declared.get(key, ()))
+            entry = rec["projections"].get(key)
+            if entry is None:
+                if new:
+                    rec["projections"][key] = {"declared": new, "rendered": None}
+                continue
+            if entry["declared"] != new:
+                if entry["rendered"] in entry["declared"] and entry["rendered"] not in new:
+                    entry["rendered"] = None            # learned from the old declaration: re-learned on the next render
+                entry["declared"] = new
+            if not entry["declared"] and not entry["rendered"]:
+                del rec["projections"][key]
+        if not self.errors and not self._projection_keys:
+            rec["legacy"] = []
+        if repr(rec) != snapshot:
+            self._write_record(rec)
+        configured = {name for name, _required in specs(self.layout)}
+        self.projection_paths = _paths_in_record(rec, configured) | self._all_declared()
 
     def adapter(self, adapter) -> None:
         from .adapters.base import register
@@ -174,14 +213,32 @@ class Registry:
     def packet_screen(self, fn: Callable) -> None:
         self.packet_screens.append(fn)
 
-    def projection(self, fn: Callable, path: str | None = None) -> None:
+    def projection(self, fn: Callable, path: str | None = None, name: str | None = None) -> None:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
-        way the file is a rendered view like TASKS.md: never an artifact, never an undeclared write (supervisor.verify)."""
+        way the file is a rendered view like TASKS.md: never an artifact, never an undeclared write (supervisor.verify).
+
+        Each projection is recorded under `<extension>:<name>` — `name` if given, else the function's __name__. Two
+        callbacks with the same __name__ (two lambdas, two closures from one factory) get `#2`, `#3`, ... in
+        registration order, so neither overwrites the other's record; pass `name=` for an identity that survives
+        reordering. A `name` registered twice by one extension is an error."""
         ext = self._setting_up or getattr(fn, "__module__", None) or "?"
-        key = f"{ext}:{getattr(fn, '__name__', None) or f'projection{len(self.projections)}'}"
+        base = f"{ext}:{name or getattr(fn, '__name__', None) or 'projection'}"
+        if name and base in self._projection_keys:
+            raise ExtensionError(f"projection name {name!r} is registered twice by {ext}")
+        key, n = base, 2
+        while key in self._projection_keys:
+            key, n = f"{base}#{n}", n + 1
         self._projection_keys.append(key)
         if path:
-            self._remember_projection(key, Path(path).as_posix(), declared=True)
+            rel = Path(path).as_posix()
+            self._declared.setdefault(key, set()).add(rel)
+            self.projection_paths.add(rel)
+            if self._setting_up is None:                  # registered outside load(): nothing reconciles it later
+                rec = _read_projection_record(self.layout)
+                entry = rec["projections"].setdefault(key, {"declared": [], "rendered": None})
+                if entry["declared"] != sorted(self._declared[key]):
+                    entry["declared"] = sorted(self._declared[key])
+                    self._write_record(rec)
         root = self.layout.root
 
         @functools.wraps(fn)
@@ -189,8 +246,7 @@ class Registry:
             out = fn(layout)
             try:
                 p = Path(out)
-                self._remember_projection(key, (p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix(),
-                                          declared=False)
+                self._remember_projection(key, (p.resolve().relative_to(root.resolve()) if p.is_absolute() else p).as_posix())
             except (TypeError, ValueError):               # not a path under the root: nothing to exclude
                 pass
             return out
@@ -321,6 +377,7 @@ def load(layout: Layout) -> Registry:
             reg.errors.append(f"{name}: {why}")
             if required:
                 reg.blocking.append(f"{name}: {why}")
+    reg._reconcile(set(reg.loaded))
     return reg
 
 

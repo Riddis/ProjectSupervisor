@@ -436,3 +436,116 @@ def test_a_1_2_1_x_by_extension_cache_is_read(layout):
     (layout.runtime / extensions.PROJECTIONS_FILE).write_text(json.dumps({"by_extension": {"weekly": ["WEEKLY.md"]}}))
     extensions.reset()
     assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+
+
+# ------------------------------------------------------------------ 1.4.1: the record follows the current registrations
+
+def _hand_edit_is_caught(layout, retired: str) -> None:
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    (layout.root / retired).write_text("edited by hand")
+    outcome = verify.verify(layout, task, ["x"], before=before)
+    assert not outcome.ok and retired in outcome.detail, outcome.detail
+
+
+def test_a_changed_declaration_retires_the_old_file(layout):
+    """Declared paths used to accumulate: WEEKLY.md -> REPORT.md kept both excluded."""
+    from supervisor import render
+    decl = '''
+def setup(registry):
+    def weekly(layout):
+        p = layout.root / "%s"
+        p.write_text("# view")
+        return p
+    registry.projection(weekly, path="%s")
+'''
+    _configure(layout.root, ["weekly"], {"weekly": decl % ("WEEKLY.md", "WEEKLY.md")})
+    render.render_all(layout)
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+    _configure(layout.root, ["weekly"], {"weekly": decl % ("REPORT.md", "REPORT.md")})
+    assert extensions.load(layout).projection_paths >= {"REPORT.md"}
+    assert extensions.known_projection_paths(layout) == {"REPORT.md"}           # before any render
+    extensions.reset()
+    assert "WEEKLY.md" not in verify.excluded_files(layout)
+    _hand_edit_is_caught(layout, "WEEKLY.md")
+
+
+def test_a_removed_projection_of_a_configured_extension_stops_being_excluded(layout):
+    from supervisor import render
+    _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
+    render.render_all(layout)
+    assert extensions.known_projection_paths(layout) == {"WEEKLY.md"}
+    _configure(layout.root, ["weekly"], {"weekly": "def setup(registry):\n    pass\n"})   # still configured
+    assert extensions.load(layout).projection_paths == set()
+    assert extensions.known_projection_paths(layout) == set()
+    _hand_edit_is_caught(layout, "WEEKLY.md")
+
+
+def test_legacy_entries_go_when_no_projection_is_registered(layout):
+    import json
+    _configure(layout.root, ["noviews"], {"noviews": "def setup(registry):\n    pass\n"})
+    (layout.root / "OLD.md").write_text("# old view")
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    (layout.runtime / extensions.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["OLD.md"]}))
+    extensions.reset()
+    assert extensions.load(layout).projection_paths == set()
+    assert extensions.known_projection_paths(layout) == set()
+    _hand_edit_is_caught(layout, "OLD.md")
+
+
+def test_legacy_entries_stay_while_an_extension_fails_to_load(layout):
+    import json
+    _configure(layout.root, [{"name": "broken", "required": False}], {"broken": "def setup(registry):\n    raise RuntimeError('x')\n"})
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    (layout.runtime / extensions.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["OLD.md"]}))
+    extensions.reset()
+    assert "OLD.md" in extensions.load(layout).projection_paths    # its registrations are unknown: keep the exclusion
+
+
+def test_same_named_callbacks_get_distinct_records(layout):
+    """Two lambdas used to share one `<ext>:<lambda>` key: rendering B retired A's record."""
+    from supervisor import render
+    _configure(layout.root, ["views"], {"views": '''
+def _writer(name):
+    def view(layout):
+        p = layout.root / name
+        p.write_text("# " + name + str(len(list(layout.tasks.glob("*.yaml")))))
+        return p
+    return view
+
+def setup(registry):
+    registry.projection(lambda layout: (layout.root / "A.md").write_text("a") and layout.root / "A.md")
+    registry.projection(lambda layout: (layout.root / "B.md").write_text("b") and layout.root / "B.md")
+    registry.projection(_writer("C.md"))
+    registry.projection(_writer("D.md"))
+'''})
+    render.render_all(layout)
+    reg = extensions.load(layout)
+    assert reg._projection_keys == ["views:<lambda>", "views:<lambda>#2", "views:view", "views:view#2"]
+    assert extensions.known_projection_paths(layout) == {"A.md", "B.md", "C.md", "D.md"}
+    extensions.reset()
+    make_task(layout, "T")
+    task = tasks.load(layout, "T")
+    before = verify.snapshot(layout, task)
+    (layout.root / "x").write_text("artifact")
+    for name in "ABCD":
+        (layout.root / f"{name}.md").write_text("re-rendered")
+    outcome = verify.verify(layout, task, ["x"], before=before)
+    assert outcome.ok, outcome.detail
+
+
+def test_an_explicit_projection_name_is_the_identity_and_must_be_unique(layout):
+    _configure(layout.root, ["views"], {"views": '''
+def setup(registry):
+    registry.projection(lambda layout: layout.root / "A.md", path="A.md", name="alpha")
+    registry.projection(lambda layout: layout.root / "B.md", path="B.md", name="beta")
+'''})
+    assert extensions.load(layout)._projection_keys == ["views:alpha", "views:beta"]
+    _configure(layout.root, [{"name": "dup", "required": False}], {"dup": '''
+def setup(registry):
+    registry.projection(lambda layout: layout.root / "A.md", name="alpha")
+    registry.projection(lambda layout: layout.root / "B.md", name="alpha")
+'''})
+    assert any("registered twice" in e for e in extensions.load(layout).errors)

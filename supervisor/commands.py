@@ -64,11 +64,16 @@ def _set_priority(layout, payload, actor):
 @handler("task.note")
 def _note(layout, payload, actor):
     cid = payload.get("_id")
+    want_guidance = bool(payload.get("guidance"))
     t = tasks_mod.load(layout, payload["task_id"])
-    if cid and any(n.get("command_id") == cid for n in (t.model_extra or {}).get("notes", [])):
+    extra = t.model_extra or {}
+    noted = bool(cid) and any(n.get("command_id") == cid for n in extra.get("notes", []))
+    guided = bool(cid) and any(g.get("item") == f"note:{cid}" for g in (extra.get("guidance") or []) if isinstance(g, dict))
+    if noted and (guided or not want_guidance):
         return {"skipped": "already applied"}
-    tasks_mod.add_note(layout, payload["task_id"], payload["note"], actor, command_id=cid)
-    return {}
+    # note + guidance in one idempotent update: a replay after an interruption completes what is missing
+    tasks_mod.add_note(layout, payload["task_id"], payload["note"], actor, command_id=cid, guidance=want_guidance)
+    return {"repaired": "guidance"} if noted else {}
 
 
 @handler("task.approve")
@@ -114,6 +119,20 @@ def _inbox_reopen(layout, payload, actor):
 def _create(layout, payload, actor):
     """Add a task that is not in the seed (probes, owner-added work, Control Center conversions)."""
     return tasks_mod.create(layout, dict(payload["task"]), actor)
+
+
+@handler("task.import")
+def _task_import(layout, payload, actor):
+    """`supervisor task import` through the queue, so a corrected seed reaches a live supervisor. Before 1.4.0 the
+    CLI refused while state/.lock was held, and since every agent runs under the supervisor no agent could ever
+    apply a contract fix it had made in the seed."""
+    from ._vendor.contract import contained
+    seed = (layout.root / str(payload.get("seed") or "state/tasks_seed.yaml")).resolve()
+    if not contained(seed, [layout.root], root=layout.root) or not seed.is_file():
+        raise ValueError(f"seed {payload.get('seed')!r} is not a file inside the project")
+    ids = [str(i) for i in (payload.get("update_contracts") or [])]
+    r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
+    return {k: r[k] for k in ("created", "updated", "warnings") if k in r}
 
 
 @handler("task.set_job")
@@ -225,6 +244,75 @@ def _agent_terminate(layout, payload, actor):
     except tasks_mod.TaskError:
         pass  # task already in a terminal/unreachable state; the job record still reflects the termination
     return {"terminated": attempt_id}
+
+
+@handler("agent.extend")
+def _agent_extend(layout, payload, actor):
+    """Give a running job more time (Control Center **Extend**, 1.7.0): pushes its effective hard cap
+    (timeouts.effective_limits — for a job prepared before activity limits, the current policy's cap, not the old
+    hour still in its handle) back by `seconds` (default one hour, supervisor.timeouts.EXTEND_STEP_S). The idle limit
+    is unchanged — a job that stops working is still stopped. A pending time-limit handoff request is withdrawn when
+    the new cap is far enough away, so the session keeps working instead of wrapping up.
+
+    Idempotent by command id, and a replay repairs: the job record is written first, then status.json and the
+    handoff request. A crash between those writes leaves the hour recorded in the job but not in status.json (which
+    recover() re-adopts from) and the stop request still in place; replaying the command re-applies those two
+    effects from the job record without adding the hour again."""
+    from . import timeouts
+    attempt_id = payload["attempt_id"]
+    try:
+        rec = jobs_mod.read(layout, attempt_id)
+    except (OSError, ValueError):
+        return {"skipped": "no such job"}
+    if rec.get("phase") not in ("SUBMITTED", "RUNNING") or not rec.get("handle"):
+        return {"skipped": "not running", "phase": rec.get("phase")}
+    seconds = int(payload.get("seconds") or timeouts.EXTEND_STEP_S)
+    if seconds <= 0 or seconds > 24 * 3600:
+        raise ValueError("extend by 1 s to 24 h")
+    spec = rec.get("spec") or {}
+    base = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
+    handle, changed = timeouts.extend(rec["handle"], seconds, payload.get("_id"), actor, now_iso(), base=base)
+    if changed:
+        jobs_mod.set_phase(layout, attempt_id, rec["phase"], handle=handle)
+    deadline = timeouts.effective_limits(rec.get("adapter"), spec, handle)[0]
+    repaired = _sync_extension(spec, handle, deadline)
+    if not changed:
+        if repaired:
+            tasks_mod.log(layout, "job_extend_repaired", actor, task=rec.get("task_id"), attempt=attempt_id,
+                          repaired=repaired, deadline=deadline)
+        return {"skipped": "already applied", "deadline": deadline, "repaired": repaired}
+    tasks_mod.log(layout, "job_extended", actor, task=rec.get("task_id"), attempt=attempt_id, seconds=seconds,
+                  deadline=deadline)
+    return {"attempt_id": attempt_id, "extended_s": seconds, "deadline": deadline}
+
+
+def _sync_extension(spec: dict, handle: dict, deadline: float) -> list[str]:
+    """Bring the run dir in line with the job record after an Extend (first run or replay): status.json carries the
+    handle's deadline and extensions (recover() re-adopts from it after a loop restart), and a time-limit handoff
+    request is withdrawn while the effective cap is more than HANDOFF_WARN_S away. Returns what it changed."""
+    from . import timeouts
+    from ._vendor.contract import read_json
+    run_dir = spec.get("run_dir")
+    if not run_dir:
+        return []
+    repaired = []
+    status_path = Path(run_dir) / "status.json"
+    try:
+        st = read_json(status_path)
+        if (isinstance(st, dict) and st.get("status") == "RUNNING"
+                and (st.get("deadline") != handle.get("deadline") or st.get("extensions") != handle.get("extensions"))):
+            atomic_json(status_path, {**st, "deadline": handle.get("deadline"), "extensions": handle.get("extensions")})
+            repaired.append("status")
+    except (OSError, ValueError):
+        pass
+    req = Path(run_dir) / "HANDOFF_REQUEST.json"
+    try:
+        if read_json(req).get("reason") == "time limit" and deadline - time.time() > timeouts.HANDOFF_WARN_S:
+            req.unlink()
+            repaired.append("handoff_request")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return repaired
 
 
 @handler("agent.note")

@@ -118,6 +118,8 @@ claude:
   # executable: C:\Users\you\.local\bin\claude.exe   (auto-discovered when omitted)
   supports_effort: true             # pass --effort; set false if this CLI version lacks it
   bash_allow: []                    # extra Bash permission rules for agent runs, e.g. ["Bash(npm *)", "Bash(docker compose *)"]
+  add_dirs_by_cost: {}              # folders outside the repo a task's session may work in, per cost_category, e.g.
+                                    # {local: ["../tools/renderer"]} (relative = from the project root); a role can also set add_dirs
 codex:                              # executable auto-discovered (PATH, %LOCALAPPDATA%\Programs\OpenAI\Codex)
   model: gpt-5-codex                # verify with the app-server model/list; the setup skill records what the account accepts
   sandbox: workspace-write          # default for builder roles; review roles get read-only
@@ -136,11 +138,19 @@ escalation:                         # supervisor/diagnosis.py: when automatic re
   diagnosis: true                   # decides requeue (with guidance) / defer / architect / owner - only `owner` reaches the inbox
   manager_role: senior_pm
   architect_role: chief_architect
+  stall_grace_s: 600                # a FAILED/BLOCKED task nothing is routing is escalated after this long (also the
+                                    # back-off before a failed deterministic job is retried); idle alert after 2x
 checkpoint:                         # supervisor/checkpoint.py: commit exactly the accepted contents of a COMPLETE task
   enabled: true
   since: null                       # tasks completed before this timestamp are left alone (null = all)
 verification_job:                   # verification that must run commands becomes a tracked process job
   as_job: true                      # so PAUSE/DRAIN/STOP apply while tests run
+timeouts:                           # supervisor/timeouts.py: an agent session (claude_cli/codex_cli) is stopped only when it is
+  idle_s: 1200                      # idle - no new output and under idle_cpu_s of CPU work in its processes for this long -
+  idle_cpu_s: 5                     # or at the hard cap; Extend in the Control Center adds an hour to one running job. A
+  hard_cap_s: 21600                 # timed-out session is continued from its HANDOFF.md, not counted as a failed attempt.
+  by_cost: {}                       # per cost_category, e.g. {local: {hard_cap_s: 28800}}; also roles.<role>.timeouts and per
+                                    # task job.timeout_s (hard cap) / job.idle_timeout_s (idle limit; 0 = none)
 limits:
   max_agent_jobs: 2                 # concurrent model-lane jobs (deliveries + reviews + chat turns share this)
   max_resource_jobs: 1              # concurrent holders of the single heavy local resource (extension lanes with gpu=True)

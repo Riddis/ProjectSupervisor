@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from ... import jobs as jobs_mod
 from ... import tasks as tasks_mod
+from ... import timeouts as timeouts_mod
 from ...paths import Layout
 from ..auth import require_auth, require_csrf
 from ..deps import act, decode_flash, render
@@ -34,7 +35,15 @@ def _enrich(layout: Layout, rec: dict) -> dict:
     run_dir = _run_dir(layout, rec)
     from ... import conversations as conversations_mod
     note_status = conversations_mod.owner_note_status(run_dir) if run_dir else "none"
-    return {**rec, "elapsed_s": elapsed, "run_dir": str(run_dir) if run_dir else None,
+    handle = rec.get("handle") or {}
+    spec = rec.get("spec") or {}
+    deadline, idle_s = None, spec.get("idle_s")
+    if handle.get("deadline") is not None:          # the limits the loop enforces, not the raw handle (legacy jobs)
+        deadline, idle_s, _ = timeouts_mod.effective_limits(rec.get("adapter"), spec, handle)
+    cap_left = int(deadline - time.time()) if isinstance(deadline, (int, float)) and deadline != float("inf") else None
+    last = timeouts_mod.read_activity(spec["run_dir"]) if idle_s and spec.get("run_dir") else None
+    return {**rec, "elapsed_s": elapsed, "run_dir": str(run_dir) if run_dir else None, "cap_left_s": cap_left,
+            "idle_s": idle_s, "idle_for_s": max(0, int(time.time() - last)) if last else None,
            "is_agent": rec.get("adapter") in AGENT_ADAPTERS, "owner_note_status": note_status}
 
 
@@ -80,6 +89,13 @@ async def agent_stream(attempt_id: str, request: Request, layout: Layout = Depen
 def terminate(attempt_id: str, request: Request, csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
     require_csrf(request, csrf_token)
     return act(request, layout, "agent.terminate", {"attempt_id": attempt_id}, "/agents")
+
+
+@router.post("/agents/{attempt_id}/extend")
+def extend(attempt_id: str, request: Request, csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
+    """Raise a running job's hard cap by one hour (supervisor.timeouts.EXTEND_STEP_S); the idle limit still applies."""
+    require_csrf(request, csrf_token)
+    return act(request, layout, "agent.extend", {"attempt_id": attempt_id}, f"/agents/{attempt_id}")
 
 
 @router.post("/agents/{attempt_id}/note")

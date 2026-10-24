@@ -30,12 +30,10 @@ class HumanAdapter(Adapter):
 
     def prepare(self, layout: Layout, task, attempt_id: str) -> dict:
         job = job_spec(task)
-        summary = str(job.get("summary", task.objective))
-        if len(summary) > inbox_mod.MAX_SUMMARY_CHARS:
-            summary = summary[:inbox_mod.MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+        summary, detail = inbox_mod.fit(str(job.get("summary", task.objective)))
         return {"adapter": "human", "task_id": task.id, "attempt_id": attempt_id, "root": str(layout.root),
                 "for_role": job.get("for_role", "owner"), "kind": job.get("kind", "question"),
-                "subject": job.get("subject", f"{task.id}: {task.title}"), "summary": summary,
+                "subject": job.get("subject", f"{task.id}: {task.title}"), "summary": summary, "detail": detail,
                 "allowed_responses": job.get("allowed_responses"), "free_text": job.get("free_text", True)}
 
     def submit(self, spec: dict) -> dict:
@@ -44,7 +42,7 @@ class HumanAdapter(Adapter):
             item = inbox_mod.create(layout, for_role=spec["for_role"], subject=spec["subject"], summary=spec["summary"],
                                     kind=spec.get("kind", "question"), allowed_responses=spec.get("allowed_responses"),
                                     free_text=spec.get("free_text", True), from_="loop", task_id=spec["task_id"],
-                                    attempt_id=spec["attempt_id"])
+                                    attempt_id=spec["attempt_id"], detail=spec.get("detail"))
         except inbox_mod.InboxFull as exc:
             raise CapacityDeferred(time.time() + DEFER_SECONDS, str(exc)) from exc
         tasks_mod.set_status(layout, spec["task_id"], TaskStatus.WAITING_FOR_HUMAN, actor="loop",

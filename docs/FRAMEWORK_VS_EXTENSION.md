@@ -73,7 +73,7 @@ What the registry offers (`supervisor/extensions.py`):
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}`; a resource block on the Overview. |
 | `ui_router(router, label, path)` | a FastAPI `APIRouter` (use `supervisor.ui.deps.render` and `act` so your page looks and writes like the others) plus a sidebar entry. |
 | `packet_screen(fn)` | `fn(layout, text, where)` raising `policy.PolicyViolation` to refuse a brief — content that must not leave the machine, say. Runs after the credential screen on every packet. |
-| `projection(fn, path=None)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. Like the built-in views it is never an artifact and never an "undeclared write" in verification; pass `path="WEEKLY.md"` (root-relative) to declare the file before the first render, otherwise it is learned from the first render. |
+| `projection(fn, path=None, name=None)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. Like the built-in views it is never an artifact and never an "undeclared write" in verification; pass `path="WEEKLY.md"` (root-relative) to declare the file before the first render, otherwise it is learned from the first render. The exclusion follows the current registration: change the declared path, stop registering the projection, or remove the extension, and the old file is an ordinary file again. Each projection is recorded as `<extension>:<name>` — pass `name=` for a stable identity (two lambdas or two callbacks from one factory are otherwise told apart by registration order). |
 | `cli(typer_app, name)` | a `supervisor <name> ...` command group. |
 | `python_job(name, fn)` | a deterministic job for `job: {adapter: python, fn: name, params: {...}}`; `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}`. |
 
@@ -102,3 +102,4 @@ commits, not prototyped in the framework from inside a project session.
 - Phase labels, gates, what evidence a gate needs — project.
 - The allowed test commands (`verification.allowed_test_commands`) — project; the framework ships a Python default.
 - Extra Bash permissions an agent needs (`claude.bash_allow`) — project.
+- Extra folders an agent session may work in (role `add_dirs`, `claude.add_dirs_by_cost`) — project.

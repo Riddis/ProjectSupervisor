@@ -95,7 +95,7 @@ def test_requeue_diagnosis_puts_the_task_back_with_guidance_and_a_fresh_retry_bu
     guidance = (t.model_extra or {}).get("guidance")
     assert guidance and "declared path" in guidance[0]["text"] and guidance[0]["by"] == "senior_pm"
     from supervisor import packets
-    assert "Guidance from diagnosis" in packets.delivery_brief(layout, t)
+    assert packets.GUIDANCE_HEADING in packets.delivery_brief(layout, t)
     state = json.loads((layout.runtime / "escalation" / "T.json").read_text())
     assert state["resets"] == 1 and state["revisions"] <= 1          # fresh budget (the synchronous job may already be retrying)
     hist = [h for h in t.history if h["to"] == "READY" and "requeue" in h["note"]]

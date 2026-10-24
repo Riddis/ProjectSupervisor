@@ -17,7 +17,7 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `owner_role` | the role id (routing entry) that does the work |
 | `depends_on` | task ids that must be COMPLETE first (same or earlier phase) |
 | `actions` | the steps, as the worker should take them |
-| `artifacts` | repo-relative paths or globs the delivery must produce — **the floor**: a worker may add, never omit |
+| `artifacts` | repo-relative file paths or globs (`*?[`, `**`) the delivery must produce — **the floor**: a worker may add, never omit. Every entry must be able to match a file. `task import` and `task create` **refuse** an entry no file can ever satisfy, because the floor would fail every delivery forever: absolute or escaping paths, directories (`src/` — write `src/**/*.py`) and characters no file name can hold (`<id>`). They **warn** about, but accept, a legal name that reads like prose or a placeholder (`contact sheets`, `S1..S6`, `EXP-1xx`, `round_N`, `{x}`) — `Final Report.md` and `out/xx.json` are real file names; an entry that already matches a file raises no warning |
 | `tests` | prose: what must be true (for the worker and reviewers) |
 | `checks` | executable: `[{command, timeout_s?}]` the supervisor re-runs on every delivery, whatever the worker reports; commands must match `verification.allowed_test_commands` |
 | `owned_paths` | roots the worker may write; `["."]` = exclusive (whole tree, nothing else writes meanwhile). Required for every model-lane task |
@@ -29,11 +29,11 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `approval_note` | what the owner should look at when approving |
 | `cost_category` | `deterministic` / `local` / `claude` / `codex` / `human` / `mixed` / `paid` → default adapter via `routing.yaml cost_lanes` |
 | `priority` | higher first among eligible tasks |
-| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}`, `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?}`, `{adapter: human, subject, summary, allowed_responses?, free_text?}`, or an extension lane |
+| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}`, `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}`, or an extension lane |
 
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
 changes), `delivery` (`digest`, `verification`, `reviews[]`, `approvals[]`, all bound to the digest of the current
-artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis), `forced`, `rev`, `created`, `updated`.
+artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `forced`, `rev`, `created`, `updated`.
 
 ### Lifecycle
 
@@ -54,6 +54,20 @@ Retry budget: two automatic revisions per failure source (verification, review),
 `senior_model`; then one bounded diagnosis by the manager role (`routing.yaml escalation`) which can requeue with
 guidance, defer, hand to the architect, or open an owner inbox item. Capacity limits never spend an attempt: the job
 is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
+
+Nothing stops silently. A worker that ends **BLOCKED** goes straight to that diagnosis (no blind retry of the same
+brief). An agent run that ends FAILED/PARTIAL, crashes, times out or is lost gets the normal revision budget. A
+deterministic lane (process/python/extension adapters) that FAILED is retried by the stall sweep after the grace
+period, which doubles as its back-off. The failure detail always carries the worker's own notes and the head of its
+`HANDOFF.md`. An owner REJECT/MORE_LIKE on a `human` task stands and is never retried.
+
+The stall sweep (every loop iteration): a FAILED or BLOCKED task with nothing in flight and no open owner item, past
+`routing.yaml escalation.stall_grace_s` (default 600), is escalated once for that stop (FAILED → retry within budget,
+BLOCKED → diagnosis); if it is still unrouted a grace period later, one owner decision item is opened. Deliberate holds
+are left alone: a stop the owner made (Hold / set-status), an open or snoozed owner item, an owner answer after
+the stop, a failed `human` attempt (the owner's own REJECT/MORE_LIKE), or a diagnosis `defer`. When the whole pipeline is idle (nothing
+running, nothing eligible, nothing waiting on the owner, work remaining) for twice the grace period, one
+**Pipeline idle — nothing can run** item lists the stuck tasks and what each waits for (once per stuck set).
 
 ## Gates (`state/gates.yaml`)
 
@@ -89,11 +103,21 @@ them.
 
 ## Inbox (`state/inbox/H-nnn.yaml`)
 
-`kind: question|approval|gate|round|spend|policy`, `for` (role, normally `owner`), `from`, `subject`, `summary`
-(≤ 600 chars), `allowed_responses` (default `ACCEPT, REJECT, MODIFY, REDO`), `free_text`, `evidence[]` (repo-relative
-paths: images render as thumbnails, markdown inline), `items[]` (sub-options), `task_id`, `attempt_id`,
-`approval_digest`. At most 3 open items per role: the owner's attention is the scarce resource. A human gate never
-times out.
+`kind: question|decision|approval|gate|round|spend|policy`, `for` (role, normally `owner`), `from`, `subject`,
+`summary` (≤ 600 chars, what the owner must act on first), `detail` (optional, ≤ 8000 chars: the full text when the
+summary had to be cut — `inbox.fit()` makes the split; the Control Center shows it behind "Show full message"),
+`allowed_responses` (default `ACCEPT, REJECT, MODIFY, REDO`), `free_text`, `evidence[]` (repo-relative paths: images
+render as thumbnails, markdown inline), `items[]` (sub-options), `task_id`, `attempt_id`, `approval_digest`. At most 3
+open items per role: the owner's attention is the scarce resource. A human gate never times out.
+
+A `decision` item (`REQUEUE / CANCEL / DEFER`, plus `resume: review|delivery|task`) is opened for a task BLOCKED with
+"owner decision needed" and when a diagnosis hands a FAILED task to the owner. REQUEUE resets the budget that stopped
+the task — and the task's escalation budget (spent revisions, failure signatures), so the next failure gets the normal
+revisions again — and puts it back where it stopped, CANCEL cancels it, DEFER leaves it. Text typed with the button
+("REQUEUE use the cached outputs") is written to the task's `guidance`: the next delivery brief carries it (whatever
+the prompt source — the default brief, a job's own `prompt`/`prompt_file`), or, for a review resume, the next review
+brief of that digest. It is also kept as a note. The outcome is written to the item as `applied`; a re-applied item
+never adds the guidance or the reset twice.
 
 ## Owner tasks (`state/owner_tasks.yaml`)
 
@@ -111,7 +135,7 @@ tasks:
     owner_role: engineer
     depends_on: []
     actions: [...]
-    artifacts: [src/, tests/test_smoke.py]
+    artifacts: ["src/**/*.py", tests/test_smoke.py]
     tests: ["python -m pytest passes"]
     checks: ["python -m pytest -q"]
     owned_paths: ["."]
@@ -123,4 +147,6 @@ tasks:
 ```
 
 `supervisor task import` is idempotent: it creates what does not exist and leaves existing tasks alone unless
-`--update-contracts T0-01,T0-02` names them.
+`--update-contracts T0-01,T0-02` names them. It goes through the command queue (`task.import`), so a corrected seed
+also reaches a running supervisor — an agent that fixes a contract in the seed can have it applied without anyone
+stopping the loop.

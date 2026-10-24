@@ -1,0 +1,27 @@
+{% from "partials/icons.html" import icon %}{% from "partials/fmt.html" import duration %}
+<div id="supervisor-live"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="section-heading supervisor-heading"><h2>Supervisor</h2><div class="supervisor-signals"><span class="status-pill status-{{ runtime.get('status','STOPPED')|lower if live else 'stopped' }}"><i></i>{{ runtime.get('status','STOPPED') if live else 'STOPPED' }}</span><span class="heartbeat" title="{{ runtime.get('heartbeat','No heartbeat') }}">Heartbeat: {{ duration(heartbeat_age) }}{% if heartbeat_age is not none %} ago{% endif %}</span><span>Decision: <strong>{{ runtime.get('decision','RUN') }}</strong></span></div></div>
+  <div class="supervisor-details">
+    <div><span>Workspace</span><strong>Local workspace</strong><small>On this device</small></div>
+    <div><span>Process</span><strong>{{ ('PID ' ~ runtime.pid) if live and runtime.get('pid') else 'Not running' }}</strong><small>{{ 'Live heartbeat' if live else 'Start to begin processing' }}</small></div>
+    <div><span>Supervisor uptime</span><strong>{{ duration(uptime_seconds) if live else 'Offline' }}</strong><small>{{ ('Running since ' ~ started_local) if live and started_local else 'Since last start' if live else 'No live heartbeat' }}</small></div>
+    <div><span>Open jobs</span><strong>{{ open_jobs | length }}</strong><small><a href="/agents">View agents</a></small></div>
+  </div>
+  {% if draining %}<p class="supervisor-note note-warn">{{ icon('clock') }}<span><strong>Draining &mdash; {{ active_jobs | length }} job{{ "" if active_jobs | length == 1 else "s" }} running.</strong> {{ 'PC shuts down when they finish.' if shutdown_armed else 'Supervisor stops when they finish.' }}</span></p>
+  {% elif shutdown_pending_s %}<p class="supervisor-note note-warn">{{ icon('power') }}<span><strong>PC shutting down</strong> in {{ duration(shutdown_pending_s) }} &mdash; cancel below to stay on.</span></p>
+  {% elif paused %}<p class="supervisor-note">{{ icon('pause') }}<span><strong>Paused.</strong> Running jobs carry on; nothing new is dispatched until you resume.</span></p>{% endif %}
+  <div class="supervisor-actions">
+  {% set shutdown_cancel = (draining and shutdown_armed) or shutdown_pending_s %}
+  {% set shutdown_confirm = ('Shut the PC down once the ' ~ (active_jobs | length) ~ ' running job(s) finish? Nothing new will start.') if live else 'Nothing is running. Shut the PC down in 60 seconds?' %}
+  {% for c in controls %}
+    <form method="post" action="/overview/{{ c.action }}" hx-post="/overview/{{ c.action }}" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')"{% if c.action == 'stop' %} onsubmit="return confirm('Stop the supervisor?')"{% endif %}>
+      {% include "partials/csrf.html" %}<button type="submit" id="ctl-{{ c.action }}" title="{{ c.title }}"{% if not c.enabled %} disabled{% endif %}>{{ icon(c.icon) }}{{ c.label }}</button>
+    </form>
+  {% endfor %}
+  {% if shutdown_cancel %}
+    <form method="post" action="/overview/shutdown-cancel" hx-post="/overview/shutdown-cancel" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown-cancel" class="warn">{{ icon('power') }}Cancel shutdown</button></form>
+  {% else %}
+    <form method="post" action="/overview/shutdown" hx-post="/overview/shutdown" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')" onsubmit="return confirm('{{ shutdown_confirm }}')">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown" title="Let running work finish, then power the workstation off">{{ icon('power') }}Shut down PC when idle</button></form>
+  {% endif %}
+  </div>
+</div>

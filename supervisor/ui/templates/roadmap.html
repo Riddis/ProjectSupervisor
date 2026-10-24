@@ -8,7 +8,7 @@
   <h3>Gates</h3>
   <ul>
   {% for g in p.gates %}
-    <li>{{ g.id }}: {{ g.status }}
+    <li id="gate-{{ g.id }}">{{ g.id }}: {{ g.status }}
       {% if g.owner_ack_required %}<span class="muted">(owner gate)</span>{% endif %}
       {% if g.evidence_required %}<span class="muted">(evidence required)</span>{% endif %}
       {% if g.status != 'PASSED' %}

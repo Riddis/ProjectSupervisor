@@ -25,6 +25,7 @@ router = APIRouter()
 
 KIND_LABELS = {
     "gate": "Gate approvals",
+    "decision": "Stopped tasks — your decision",
     "approval": "Delivery approvals",
     "round": "Rounds",
     "spend": "Spend proposals",
@@ -98,6 +99,7 @@ def _item_view(layout: Layout, item: dict) -> dict:
     return {
         **item,
         "summary_html": render_md(item.get("summary", "")),
+        "detail_html": render_md(item["detail"]) if item.get("detail") else "",
         "evidence_views": [_evidence_view(layout, e) for e in (item.get("evidence") or [])],
         "score_items": [i for i in sub_items if _is_score_block(i)],
         "plain_items": [i for i in sub_items if not _is_score_block(i)],

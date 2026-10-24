@@ -4,7 +4,7 @@
 <section class="panel">
   <h2>Owner tasks</h2>
   {% for t in rows %}
-  <article class="owner-task owner-task-{{ t.status }}">
+  <article class="owner-task owner-task-{{ t.status }}" id="owner-task-{{ t.id }}">
     <h3>{{ t.id }} — {{ t.title }} <span class="badge">{{ t.status }}</span></h3>
     <pre class="guidance">{{ t.guidance }}</pre>
     {% if t.blocks %}<p>Blocks: {{ t.blocks | join(', ') }}</p>{% endif %}

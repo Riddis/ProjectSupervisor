@@ -11,12 +11,14 @@ from pathlib import Path
 
 from .. import capacity
 from .. import policy
+from .. import timeouts
 from .._vendor import usage_policy as up
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
 from .base import Result, register
-from .claude_cli import AUTH_FAILURE_RE, LIMIT_RE, classify_status, limit_result, prior_handoff, role_profile, routing
+from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits, prior_handoff,
+                         role_profile, routing)
 from .process import ProcessAdapter, job_spec, scrub_env
 
 CODEX_AUTH_RE = AUTH_FAILURE_RE
@@ -54,6 +56,8 @@ def executable(layout: Layout) -> str:
 class CodexCliAdapter(ProcessAdapter):
     name = "codex_cli"
     engine = "codex"
+    handoff_before_cap = True
+    limits = model_limits
 
     def prepare(self, layout, task, attempt_id):
         job = job_spec(task)
@@ -78,13 +82,16 @@ class CodexCliAdapter(ProcessAdapter):
             text = Path(layout.root / job["prompt_file"]).read_text(encoding="utf-8")
         else:
             text = job.get("prompt") or f"# Task {task.id}: {task.title}\n\n{task.objective}\n\nEnd with exactly one fenced JSON `{job.get('result_kind', 'delivery')}` object (schema_version 1)."
+        from .. import packets as packets_mod
+        text = packets_mod.worker_prompt(task, job, text)                    # owner/diagnosis guidance, any prompt source
         text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}")
         prompt_file.write_text(text, encoding="utf-8")
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),
                 "role": role, "model": prof.get("model"), "effort": prof.get("effort", "high"),
                 "sandbox": prof.get("sandbox", "read-only"), "images": job.get("images", []), "stdin_file": str(prompt_file),
-                "timeout_s": int(job.get("timeout_s", 3600)), "executable": job.get("executable") or executable(layout),
+                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
+                "executable": job.get("executable") or executable(layout),
                 "result_kind": job.get("result_kind", "delivery")}
 
     def command(self, spec):

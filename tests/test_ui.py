@@ -263,6 +263,77 @@ def test_shutdown_button_with_the_supervisor_offline_powers_off_after_the_grace_
     assert calls == [shutdown_mod.shutdown_argv()] and runtime.read(layout)["shutdown_issued"] is True
 
 
+def _buttons(page: str) -> dict[str, bool]:
+    """{action: enabled} for the Supervisor card's control row."""
+    out = {}
+    for m in re.finditer(r'<button type="submit" id="ctl-([a-z-]+)"[^>]*>', page):
+        out[m.group(1)] = " disabled" not in m.group(0)
+    return out
+
+
+def test_control_row_highlights_nothing_and_disables_what_does_not_apply(layout, auth_client):
+    """No button is lit as a "suggested action" (that read as the current state); each is enabled only when it
+    applies, and a pending decision already counts."""
+    from supervisor import runtime
+    page = auth_client.get("/overview").text
+    assert _buttons(page) == {"start": True, "pause": False, "resume": False, "stop": False, "reload": False,
+                              "doctor": True, "shutdown": True}
+    runtime.heartbeat(layout, "RUNNING")
+    page = auth_client.get("/overview").text
+    assert _buttons(page) == {"start": False, "pause": True, "resume": False, "stop": True, "reload": True,
+                              "doctor": True, "shutdown": True}
+    assert 'class="primary"' not in page.split('id="supervisor-live"')[1].split('id="ctrl-result"')[0]
+    runtime.set_decision(layout, "PAUSE")                       # clicked, not yet applied by the loop
+    page = auth_client.get("/overview").text
+    assert _buttons(page)["pause"] is False and _buttons(page)["resume"] is True and "Paused." in page
+    runtime.heartbeat(layout, "PAUSED")
+    assert _buttons(auth_client.get("/overview").text)["resume"] is True
+
+
+def test_supervisor_uptime_is_labelled_and_not_beside_the_task(layout, auth_client):
+    from supervisor import runtime
+    runtime.heartbeat(layout, "RUNNING", started="2026-01-01T00:00:00+00:00")
+    card = auth_client.get("/overview").text.split('id="supervisor-live"')[1].split('id="ctrl-result"')[0]
+    assert "Supervisor uptime" in card and "Running since" in card and "Current task" not in card
+
+
+def test_now_running_lists_every_open_job_with_what_it_is_doing(layout, auth_client):
+    from supervisor import runtime
+    from supervisor import tasks as tasks_mod
+    from supervisor.ui.routes.overview import now_running
+    make_task(layout, "T0-07")
+    make_task(layout, "T0-08")
+    tasks_mod._update(layout, "T0-07", lambda d: d.update(title="Bake-off A"))
+    runtime.heartbeat(layout, "RUNNING")
+    jobs_mod.write(layout, {"attempt_id": "T0-07.a4", "task_id": "T0-07", "adapter": "claude_cli", "phase": "RUNNING",
+                            "spec": {"kind": "delivery", "role": "image_engineer", "model": "sonnet", "effort": "high",
+                                     "timeout_s": 3600},
+                            "handle": {"started": "2026-01-01T00:00:00+00:00"}, "created": "2026-01-01T00:00:00+00:00"})
+    jobs_mod.write(layout, {"attempt_id": "T0-07.a5", "task_id": "T0-07", "adapter": "codex_cli", "phase": "SUBMITTED",
+                            "review_role": "code_review", "spec": {"kind": "review"}, "handle": {},
+                            "created": "2026-01-01T00:00:00+00:00"})
+    jobs_mod.write(layout, {"attempt_id": "T0-08.a1", "task_id": "T0-08", "adapter": "human", "phase": "SUBMITTED",
+                            "spec": {}, "handle": {}, "created": "2026-01-01T00:00:00+00:00"})
+    tasks = tasks_mod.load_all(layout)
+    rows = now_running(jobs_mod.open_records(layout), tasks, now=1767225600 + 600)   # 10 min after start
+    assert [(r["attempt_id"], r["activity"], r["state"]) for r in rows] == [
+        ("T0-07.a4", "Working", "running"), ("T0-07.a5", "Reviewing", "starting")]
+    assert rows[0]["elapsed_s"] == 600 and rows[0]["timeout_s"] == 3600 and rows[0]["attempt"] == 4
+    assert rows[0]["role"] == "image_engineer" and rows[1]["role"] == "code_review"
+    page = auth_client.get("/overview").text
+    assert 'id="now-running"' in page and "Bake-off A" in page and 'href="/agents/T0-07.a4"' in page
+    assert "1 waiting for you" in page                           # the human job is not listed as running
+
+
+def test_overview_live_fragment_refreshes_now_running_and_the_supervisor_card(layout, auth_client):
+    r = auth_client.get("/overview/live")
+    assert r.status_code == 200
+    assert r.text.count('id="now-running"') == 1 and 'hx-trigger="every 5s' in r.text
+    assert 'id="supervisor-live" hx-swap-oob="true"' in r.text
+    assert 'id="ctrl-result"' not in r.text                    # action results survive a refresh
+    assert 'hx-swap-oob' not in auth_client.get("/overview").text
+
+
 # --------------------------------------------------------------------- agents
 
 

@@ -1,0 +1,42 @@
+{% from "partials/icons.html" import icon %}{% from "partials/fmt.html" import duration %}
+<section id="now-running" class="panel now-panel" hx-get="/overview/live" hx-trigger="every 5s [document.visibilityState === 'visible'], refresh" hx-swap="outerHTML" aria-live="off">
+  <div class="section-heading"><h2>Now running</h2><span class="section-note">{% if now_running %}{{ now_running | length }} job{{ '' if now_running | length == 1 else 's' }}{% else %}Idle{% endif %}{% if human_jobs %} &middot; <a href="/inbox">{{ human_jobs }} waiting for you</a>{% endif %} &middot; updates every 5s</span></div>
+  <div class="now-columns">
+  <div class="now-list">
+  {% for j in now_running %}
+    <article class="now-job now-{{ j.state }}">
+      <span class="now-dot" aria-hidden="true"></span>
+      <div class="now-main">
+        <a class="now-title" href="{{ j.href }}">{{ j.title }}</a>
+        <div class="now-meta">
+          {% if not j.is_chat %}<span class="now-id">{{ j.task_id }}</span>{% endif %}
+          <span class="now-activity">{{ j.activity }}</span>
+          {% if j.role %}<span>{{ j.role | replace('_',' ') }}</span>{% endif %}
+          {% if j.model %}<span>{{ j.model }}{% if j.effort %} / {{ j.effort }}{% endif %}</span>{% else %}<span>{{ j.adapter | replace('_',' ') }}</span>{% endif %}
+          {% if j.attempt and not j.is_chat %}<span>attempt {{ j.attempt }}</span>{% endif %}
+          {% if j.gpu %}<span class="subtle-tag">GPU</span>{% endif %}
+        </div>
+      </div>
+      <div class="now-time">
+        {% if j.state == 'deferred' %}<strong>Deferred</strong><small title="{{ j.state_note }}">Retries in {{ duration(j.retry_in_s) }}</small>
+        {% elif j.elapsed_s is none %}<strong>{{ j.state | capitalize }}</strong><small>{{ j.state_note }}</small>
+        {% else %}<strong>{{ duration(j.elapsed_s) }}{% if j.timeout_s %}<small title="Hard cap{% if j.extended_s %}, extended by {{ duration(j.extended_s) }}{% endif %}"> of {{ duration(j.timeout_s) }} max</small>{% endif %}</strong>
+          {% if j.timeout_s %}<progress value="{{ [j.elapsed_s, j.timeout_s] | min }}" max="{{ j.timeout_s }}" aria-label="Time used of the job's hard cap"></progress>{% endif %}
+          {% if j.idle_s and j.idle_for_s is not none and j.idle_for_s >= 120 %}<small class="now-idle" title="Stopped and continued from its handoff after {{ duration(j.idle_s) }} with no output and no CPU work">Quiet for {{ duration(j.idle_for_s) }} of {{ duration(j.idle_s) }}</small>
+          {% elif j.state_note %}<small>{{ j.state_note }}</small>{% endif %}{% endif %}
+      </div>
+      <div class="now-actions">
+        <a class="now-log" href="/agents/{{ j.attempt_id }}" title="Live output of {{ j.attempt_id }}">Live log {{ icon('arrow') }}</a>
+        {% if j.can_extend %}<form method="post" action="/agents/{{ j.attempt_id }}/extend" hx-post="/agents/{{ j.attempt_id }}/extend" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')">{% include "partials/csrf.html" %}<button type="submit" class="now-extend" title="Raise this job's hard cap by one hour (it is still stopped if it goes quiet)">+1h</button></form>{% endif %}
+      </div>
+    </article>
+  {% else %}
+    <div class="empty-state">{{ icon('clock') }}<p>{{ 'Nothing running right now' if live else 'Supervisor is offline' }}</p><small>{{ ('Paused: resume to dispatch the next task.' if paused else 'The next eligible task starts on the next dispatch.') if live else 'Start the supervisor to begin processing.' }}</small></div>
+  {% endfor %}
+  </div>
+  <div class="now-next"><h3>Up next{% if eligible_count > up_next | length %} <small>{{ eligible_count }} eligible</small>{% endif %}</h3>
+    {% for t in up_next %}<a href="/tasks/{{ t.id }}"><span>{{ t.id }}<small>{{ t.title }}</small></span>{{ icon('arrow') }}</a>
+    {% else %}<p class="empty-copy">No tasks ready to dispatch. <a href="/roadmap">Roadmap</a> shows what they wait on.</p>{% endfor %}
+  </div>
+  </div>
+</section>

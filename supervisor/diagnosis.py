@@ -155,15 +155,20 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
 
 
 def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question: str, why: str) -> dict:
-    text = (f"{task.id} stopped after repeated failures and the {rec.get('diag_role', 'diagnosis')} could not resolve it ({why}). "
-            f"{summary} Question: {question or 'how do you want to proceed?'} Options: re-queue the task (optionally after "
-            f"editing it), cancel it, or answer here with instructions.")
-    if len(text) > inbox_mod.MAX_SUMMARY_CHARS:
-        text = text[:inbox_mod.MAX_SUMMARY_CHARS - 1].rstrip() + "…"
+    """Hand a stopped task to the owner as a `decision` item (inbox.apply_decision acts on the answer). The question
+    and the options lead the text: the inbox card shows the first MAX_SUMMARY_CHARS and keeps the full diagnosis
+    behind "Show full message" (before 1.4.0 the diagnosis came first and a long one cut the question off)."""
+    role = rec.get("diag_role", "diagnosis")
+    head = (f"{question.strip() if question and question.strip() else 'How do you want to proceed?'} "
+            f"REQUEUE = re-run the task (text you add is passed on as guidance); CANCEL = cancel it; "
+            f"DEFER = leave it stopped. ")
+    text, detail = inbox_mod.fit(
+        head + f"Why: {task.id} stopped after repeated failures and the {role} could not resolve it ({why}). {summary}")
     try:
         item = inbox_mod.create(layout, for_role="owner", subject=f"Decision needed: {task.id} — {task.title}", summary=text,
-                                kind="question", allowed_responses=["REQUEUE", "CANCEL", "DEFER"], free_text=True,
-                                from_="escalation", task_id=task.id)
+                                detail=detail, kind=inbox_mod.DECISION_KIND,
+                                allowed_responses=list(inbox_mod.DECISION_RESPONSES), free_text=True,
+                                from_="escalation", task_id=task.id, extra={"resume": "task"})
         return {"action": "owner", "inbox": item["id"]}
     except inbox_mod.InboxFull:
         tasks_mod.add_note(layout, task.id, f"owner decision needed ({why}); inbox full — see issue", actor="escalation")
@@ -178,7 +183,7 @@ def ingest(supervisor, rec: dict, result) -> dict:
     task = tasks_mod.load(layout, rec["task_id"])
     obj = (result.raw or {}) if isinstance(result.raw, dict) else {}
     action = str(obj.get("action") or "").lower()
-    summary = str(obj.get("summary") or "")[:1500]
+    summary = str(obj.get("summary") or "")[:4000]     # the owner route keeps all of it (inbox `detail`)
     level, role, issue_id = rec.get("diag_level", "manager"), rec.get("diag_role", "?"), rec.get("diag_issue")
     if result.status == "FAILED" or action not in ACTIONS or (level == "architect" and action == "architect"):
         why = result.error or (f"action {action!r} not allowed at {level} level" if action else "no structured diagnosis")

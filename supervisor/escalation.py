@@ -24,6 +24,14 @@ from .models.task import Task, TaskStatus
 from .paths import Layout
 
 REVISION_BUDGET = 2
+ISSUE_TITLES = {"worker_blocked": "worker reported BLOCKED", "worker_failed": "worker run failed repeatedly",
+                "stalled": "stopped with nothing routing it"}
+
+
+def last_decision_at(layout: Layout, task_id: str) -> str:
+    """ISO time of the most recent escalation decision for this task ('' when none, or recorded before decisions
+    carried a time)."""
+    return max((str(d.get("at") or "") for d in _load(layout, task_id)["events"].values()), default="")
 
 
 def normalize(text: str) -> str:
@@ -139,7 +147,7 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     issue = find_issue(layout, task.id, sig)
     if issue is None:
         note = decision.get("note", "")
-        issue = open_issue(layout, title=f"{task.id}: repeated {source} failure", severity="high",
+        issue = open_issue(layout, title=f"{task.id}: {ISSUE_TITLES.get(source, f'repeated {source} failure')}", severity="high",
                           owner_role=task.owner_role, signature=sig,
                           detail=f"{detail}\n\n{note}. Automatic retries stopped; diagnosis requested.",
                           resolution_task=task.id)
@@ -163,15 +171,20 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     return out
 
 
-def reset_retries(layout: Layout, task_id: str, reason: str = "") -> None:
-    """A diagnosis granted a fresh start: forget the failure signatures and the spent revisions (the decisions already
-    taken stay, so replays remain idempotent) and count the grant."""
+def reset_retries(layout: Layout, task_id: str, reason: str = "", key: str | None = None) -> bool:
+    """A diagnosis or an owner REQUEUE granted a fresh start: forget the failure signatures and the spent revisions
+    (the decisions already taken stay, so replays remain idempotent) and count the grant. With `key` (the inbox item
+    of an owner decision) the grant is made once: a replay of the same decision returns False and changes nothing."""
     state = _load(layout, task_id)
+    grants = state.setdefault("reset_log", [])
+    if key and any(e.get("key") == key for e in grants if isinstance(e, dict)):
+        return False
     state["signatures"] = []
     state["revisions"] = 0
     state["resets"] = state.get("resets", 0) + 1
-    state.setdefault("reset_log", []).append({"at": store.now_iso(), "reason": reason})
+    grants.append({"at": store.now_iso(), "reason": reason, **({"key": key} if key else {})})
     _save(layout, task_id, state)
+    return True
 
 
 def _replay(supervisor, task: Task, state: dict, event: str, source: str, detail: str) -> dict:
@@ -188,9 +201,14 @@ def _replay(supervisor, task: Task, state: dict, event: str, source: str, detail
     return _apply(supervisor, task, source, detail, prior)
 
 
-def record_failure(supervisor, task_id: str, source: str, detail: str, event: str | None = None) -> dict:
-    """A substantive failure (verification, or a REVISE/REJECT review). `event` is the attempt id that failed and
-    makes the decision idempotent across an interruption. Returns {"action": "retry"|"escalate", ...}."""
+def record_failure(supervisor, task_id: str, source: str, detail: str, event: str | None = None,
+                   retry: bool = True) -> dict:
+    """A failure that must not dead-end: failed verification, a REVISE/REJECT review, a worker that ended BLOCKED or
+    FAILED instead of COMPLETE, or a task the stall sweep found stopped with nothing routing it. `event` is the
+    attempt id (or stall key) that failed and makes the decision idempotent across an interruption. `retry=False`
+    skips the blind revision and goes straight to the exception route — used when the worker itself reported
+    BLOCKED: re-sending the same brief into the same environment reproduces the same block.
+    Returns {"action": "retry"|"escalate", ...}."""
     layout = supervisor.layout
     task = tasks_mod.load(layout, task_id)
     state = _load(layout, task_id)
@@ -200,13 +218,17 @@ def record_failure(supervisor, task_id: str, source: str, detail: str, event: st
     repeat = sig in state["signatures"]
     state["signatures"].append(sig)
     state["revisions"] += 1
-    if repeat or state["revisions"] > REVISION_BUDGET:
+    if not retry:
+        decision = {"action": "escalate", "signature": sig,
+                    "note": f"{source}: the worker reported it cannot proceed; retrying the same brief would repeat it"}
+    elif repeat or state["revisions"] > REVISION_BUDGET:
         decision = {"action": "escalate", "signature": sig,
                     "note": (f"{source} failed again with the same signature" if repeat else
                              f"{source} failed after {state['revisions']} revisions (budget {REVISION_BUDGET})")}
     else:
         decision = {"action": "retry", "revision": state["revisions"], "signature": sig,
                     "senior": state["revisions"] >= REVISION_BUDGET}      # the second automatic revision
+    decision["at"] = store.now_iso()                  # lets the stall sweep tell "escalated after this stop" apart
     if event:
         decision["event"] = event
         state["events"][event] = decision         # durable BEFORE the side effect, so a crash replays the decision

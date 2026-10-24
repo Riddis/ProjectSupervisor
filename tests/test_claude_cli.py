@@ -152,7 +152,7 @@ def test_review_verdict_and_login_prose(layout):
     tasks._update(layout, "C", fn)
     run_until_done(layout, "C")
     t = tasks.load(layout, "C")
-    rec = jobs.for_task(layout, "C")[-1]
+    rec = jobs.for_task(layout, "C")[0]          # [0]: a PARTIAL agent run is retried since 1.6.0
     assert rec["result"] == "PARTIAL" and t.status != TaskStatus.COMPLETE      # REVISE never completes; /login prose ignored
     assert "login" not in (t.delivery.verification.detail or "")
 

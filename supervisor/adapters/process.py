@@ -14,6 +14,8 @@ from typing import Optional
 import psutil   # hard dependency: a job is never launched without a verifiable {pid, create_time} handle
 
 from .. import policy
+from .. import timeouts
+from .._vendor import handoff
 from .._vendor.contract import atomic_json, read_json
 from ..store import now_iso
 from .base import Adapter, Result, register
@@ -71,6 +73,14 @@ def _ppid(p):
         return None
 
 
+def _started(handle: dict, now: float) -> float:
+    return timeouts._epoch(handle.get("started")) or float(handle.get("create_time") or now)
+
+
+def _minutes(seconds: float) -> int:
+    return max(0, int(round(seconds / 60)))
+
+
 class ProcessAdapter(Adapter):
     name = "process"
 
@@ -82,7 +92,8 @@ class ProcessAdapter(Adapter):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
-                "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]), "timeout_s": jobspec.get("timeout_s", 3600),
+                "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),
+                "timeout_s": jobspec.get("timeout_s", timeouts.PROCESS_CAP_S), "idle_s": jobspec.get("idle_timeout_s"),
                 "root": str(layout.root), "stdin_file": jobspec.get("stdin_file")}
 
     def submit(self, spec):
@@ -121,7 +132,10 @@ class ProcessAdapter(Adapter):
         except (OSError, ValueError):
             return None
         if st.get("status") == "RUNNING" and st.get("pid"):
-            return {k: st.get(k) for k in ("kind", "pid", "create_time", "started", "deadline")}   # alive → adopt; dead → lost
+            handle = {k: st.get(k) for k in ("kind", "pid", "create_time", "started", "deadline")}   # alive → adopt; dead → lost
+            if st.get("extensions"):
+                handle["extensions"] = st["extensions"]          # owner Extend clicks (agent.extend) survive a re-adoption
+            return handle
         if st.get("status") == "LAUNCHING":
             finished = {"kind": "process", "pid": None, "create_time": None, "started": st.get("at"), "deadline": float("inf")}
             if (run_dir / "result.json").exists():
@@ -171,12 +185,39 @@ class ProcessAdapter(Adapter):
                           notes=payload.get("notes", ""), error=payload.get("error"), raw=payload)
         return Result(status="FAILED", error="process exited without result.json")
 
+    handoff_before_cap = False   # model lanes: ask the session for its handoff shortly before the hard cap
+
+    def limits(self, spec, handle) -> tuple[float, Optional[int], float]:
+        """(hard-cap deadline, idle limit in seconds or None, idle CPU threshold) of a running job (supervisor.timeouts).
+        The deadline lives in the handle — Extend (`agent.extend`) moves it there."""
+        deadline = handle.get("deadline")
+        return (float("inf") if deadline is None else float(deadline), spec.get("idle_s"),
+                float(spec.get("idle_cpu_s") or timeouts.DEFAULTS["idle_cpu_s"]))
+
+    def _time_out(self, spec, handle, kind: str, error: str) -> Result:
+        self.terminate(handle)
+        self.on_timeout(spec, handle)
+        return Result(status="FAILED", error=error, raw={"timeout": kind})
+
     def collect(self, spec, handle) -> Optional[Result]:
+        """A job ends on time only when it is idle (no output, no CPU work in its process tree for `idle_s`) or past
+        its hard cap (supervisor.timeouts). Before 1.7.0 a fixed 3600 s wall clock killed sessions mid-work."""
         if self.alive(handle):
-            if time.time() > handle.get("deadline", float("inf")):
-                self.terminate(handle)
-                self.on_timeout(spec, handle)
-                return Result(status="FAILED", error="timeout")
+            now = time.time()
+            deadline, idle_s, idle_cpu_s = self.limits(spec, handle)
+            if now > deadline:
+                return self._time_out(spec, handle, "cap", f"timeout: hard cap reached ({_minutes(now - _started(handle, now))} min "
+                                      "after launch); still busy — Extend in the Control Center gives a running job more time")
+            run_dir = spec.get("run_dir")
+            if idle_s and run_dir:
+                last = timeouts.last_active(Path(run_dir), handle, idle_cpu_s, now)
+                if now - last > idle_s:
+                    return self._time_out(spec, handle, "idle", f"timeout: idle for {_minutes(now - last)} min (no new output and "
+                                          f"under {idle_cpu_s:g} s of CPU work in its processes)")
+            if (self.handoff_before_cap and run_dir and deadline - now <= timeouts.HANDOFF_WARN_S
+                    and int(spec.get("timeout_s") or 0) > 2 * timeouts.HANDOFF_WARN_S
+                    and not (Path(run_dir) / "HANDOFF_REQUEST.json").exists()):
+                handoff.request(Path(run_dir), reason="time limit")       # wrap up: the continuation picks up the handoff
             return None
         return self.parse_result(spec, handle)
 

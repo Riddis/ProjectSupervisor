@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
-{% macro duration(seconds) -%}{% if seconds is none %}Unknown{% elif seconds < 60 %}{{ seconds | int }}s{% elif seconds < 3600 %}{{ (seconds / 60) | int }}m{% elif seconds < 86400 %}{{ (seconds / 3600) | int }}h {{ ((seconds % 3600) / 60) | int }}m{% else %}{{ (seconds / 86400) | int }}d {{ ((seconds % 86400) / 3600) | int }}h{% endif %}{%- endmacro %}
+{% from "partials/fmt.html" import duration %}
 {% block title %}Overview &mdash; Control Center{% endblock %}
 {% block content %}
 {% if update and update.behind %}<section class="panel update-panel"><div class="section-heading"><h2>Framework update available</h2><span class="section-note">{{ update.behind }} commit{{ '' if update.behind == 1 else 's' }} on origin/{{ update.branch }}{% if update.remote_version and update.remote_version != update.installed_version %} &middot; {{ update.installed_version }} &rarr; {{ update.remote_version }}{% endif %}</span></div>
@@ -15,24 +15,11 @@
   <a class="metric-card" href="/inbox"><span class="metric-icon">{{ icon('bell') }}</span><div class="metric-body"><span class="metric-label">Needs your attention</span><strong>{{ needs_you }}</strong><span class="metric-caption">{{ open_inbox_count }} inbox &middot; {{ waiting_count }} waiting task{{ "" if waiting_count == 1 else "s" }}</span></div></a>
   <a class="metric-card" href="/roadmap"><span class="metric-icon">{{ icon('flag') }}</span><div class="metric-body"><span class="metric-label">Current phase</span><strong>{{ phase }}<small> / {{ phases_total - 1 }}</small></strong><progress value="{{ phase }}" max="{{ [1, phases_total - 1] | max }}" aria-label="Current phase"></progress><span class="metric-caption">{{ phases_passed | length }} gates passed</span></div></a>
 </div>
+{% include "partials/overview_now.html" %}
 <div class="dashboard-grid">
 <section class="panel supervisor-panel">
-  <div class="section-heading supervisor-heading"><h2>Supervisor</h2><div class="supervisor-signals"><span class="status-pill status-{{ runtime.get('status','STOPPED')|lower }}"><i></i>{{ runtime.get('status','STOPPED') }}</span><span class="heartbeat" title="{{ runtime.get('heartbeat','No heartbeat') }}">Heartbeat: {{ duration(heartbeat_age) }}{% if heartbeat_age is not none %} ago{% endif %}</span><span>Decision: <strong>{{ runtime.get('decision','RUN') }}</strong></span></div></div>
-  <div class="supervisor-details">
-    <div><span>Workspace</span><strong>Local workspace</strong><small>On this device</small></div>
-    <div><span>Open jobs</span><strong>{{ open_jobs | length }}</strong><small><a href="/agents">View agents</a></small></div>
-    <div><span>Current task</span>{% if draining %}<strong>Draining &mdash; {{ active_jobs | length }} job{{ "" if active_jobs | length == 1 else "s" }} running</strong><small>{{ 'PC shuts down when they finish' if shutdown_armed else 'Supervisor stops when they finish' }}</small>{% elif shutdown_pending_s %}<strong>PC shutting down</strong><small>In {{ duration(shutdown_pending_s) }} &mdash; cancel below to stay on</small>{% elif busy_task %}<strong><a href="/tasks/{{ busy_task.id }}">{{ busy_task.title }}</a></strong><small>{{ busy_task.id }}</small>{% else %}<strong>{{ 'Waiting for next dispatch' if live else 'Supervisor is offline' }}</strong><small>{{ 'Process ' ~ runtime.pid if runtime.get('pid') else 'Start to begin processing' }}</small>{% endif %}</div>
-    <div><span>Uptime</span><strong>{{ duration(uptime_seconds) if live else 'Offline' }}</strong><small>{{ 'Since last start' if live else 'No live heartbeat' }}</small></div>
-  </div>
-  <div class="supervisor-actions">
-  {% set shutdown_control = ('shutdown-cancel','Cancel shutdown','power') if (draining and shutdown_armed) or shutdown_pending_s else ('shutdown','Shut down PC when idle','power') %}
-  {% set shutdown_confirm = ('Shut the PC down once the ' ~ (active_jobs | length) ~ ' running job(s) finish? Nothing new will start.') if live else 'Nothing is running. Shut the PC down in 60 seconds?' %}
-  {% for action, label, symbol in [('start','Start','play'),('pause','Pause','pause'),('resume','Resume','play'),('stop','Stop','stop'),('reload','Reload','reload'),('doctor','Run doctor','doctor'), shutdown_control] %}
-    <form method="post" action="/overview/{{ action }}" hx-post="/overview/{{ action }}" hx-target="#ctrl-result" hx-swap="innerHTML"{% if action == 'stop' %} onsubmit="return confirm('Stop the supervisor?')"{% elif action == 'shutdown' %} onsubmit="return confirm('{{ shutdown_confirm }}')"{% endif %}>
-      {% include "partials/csrf.html" %}<button type="submit"{% if action == ('pause' if live and runtime.get('status') == 'RUNNING' else 'resume' if runtime.get('status') == 'PAUSED' else 'start') %} class="primary"{% elif action == 'shutdown-cancel' %} class="warn"{% endif %}{% if action == 'shutdown' %} title="Let running work finish, then power the workstation off"{% endif %}>{{ icon(symbol) }}{{ label }}</button>
-    </form>
-  {% endfor %}
-  </div><div id="ctrl-result" role="status" aria-live="polite"></div>
+  {% include "partials/overview_supervisor.html" %}
+  <div id="ctrl-result" role="status" aria-live="polite" data-live-keep></div>
 </section>
 <section class="panel resources-panel">
   <h2>Resources</h2>

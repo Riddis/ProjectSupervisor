@@ -20,6 +20,8 @@ class FakeCodex(REGISTRY["codex_cli"].__class__):
 @pytest.fixture(autouse=True)
 def fake(monkeypatch):
     monkeypatch.setitem(REGISTRY, "codex_cli", FakeCodex())
+    # a failing fake run is escalated since 1.6.0; its diagnosis lane is claude_cli, which is not faked here
+    monkeypatch.setattr("supervisor.diagnosis.dispatch", lambda *a, **k: None)
     yield
     os.environ.pop("FAKE_CODEX_MODE", None)
 
@@ -103,7 +105,7 @@ def test_poll_capacity_populates_usage_file(layout, monkeypatch):
 def test_revise_verdict_is_not_complete(layout):
     rtask(layout, "revise")
     run(layout)
-    assert jobs.for_task(layout, "R")[-1]["result"] == "PARTIAL" and tasks.load(layout, "R").status != TaskStatus.COMPLETE
+    assert jobs.for_task(layout, "R")[0]["result"] == "PARTIAL" and tasks.load(layout, "R").status != TaskStatus.COMPLETE
 
 
 @pytest.mark.parametrize("mode,needle", [("auth", "login_required"), ("fail", "turn failed"), ("nojson", "no structured")])

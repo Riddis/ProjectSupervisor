@@ -5,7 +5,15 @@
   <h2>{{ rec.attempt_id }}</h2>
   <p>Task: {% if task %}<a href="/tasks/{{ task.id }}">{{ task.id }} — {{ task.title }}</a>{% else %}{{ rec.task_id }}{% endif %}</p>
   <p>Adapter: {{ rec.adapter }} &middot; phase: {{ rec.phase }}
-     &middot; elapsed: {{ (rec.elapsed_s | round | int) ~ 's' if rec.elapsed_s is not none else '?' }}</p>
+     &middot; elapsed: {{ (rec.elapsed_s | round | int) ~ 's' if rec.elapsed_s is not none else '?' }}
+     {% if rec.cap_left_s is not none and rec.phase in ('SUBMITTED', 'RUNNING') %}&middot; hard cap in {{ ((rec.cap_left_s / 60) | round | int) ~ ' min' if rec.cap_left_s > 0 else 'now' }}{% endif %}
+     {% if rec.idle_s %}&middot; stopped after {{ (rec.idle_s / 60) | round | int }} min with no output and no CPU work{% if rec.idle_for_s is not none %} (quiet for {{ (rec.idle_for_s / 60) | round | int }} min){% endif %}{% endif %}</p>
+  {% if rec.phase in ('SUBMITTED', 'RUNNING') and rec.handle %}
+  <form method="post" action="/agents/{{ rec.attempt_id }}/extend" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <button type="submit" title="Raise the hard cap by one hour">Extend +1h</button>
+  </form>
+  {% endif %}
   {% if rec.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}
   <form method="post" action="/agents/{{ rec.attempt_id }}/terminate" onsubmit="return confirm('Terminate {{ rec.attempt_id }}?')">
     {% include "partials/csrf.html" %}

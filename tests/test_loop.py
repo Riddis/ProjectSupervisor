@@ -112,15 +112,16 @@ def test_overlapping_owned_paths_are_serialised(layout):
 
 
 def test_command_applied_exactly_once_and_acknowledged(layout):
-    make_task(layout, "A")
+    ptask(layout, "A")         # a fake (python) worker: the suite never launches a real model client
     p = commands.submit(layout, "task.note", {"task_id": "A", "note": "hello"}, actor="owner-ui")
     sup = Supervisor(layout, sleep_s=0)
     sup.once(); sup.once()
     assert not p.exists()
     applied = commands.status_of(layout, p.stem)
     assert applied["ok"] is True and applied["actor"] == "owner-ui"
-    assert tasks.load(layout, "A").model_extra["notes"] == [pytest.approx(tasks.load(layout, "A").model_extra["notes"][0])]
-    assert len(tasks.load(layout, "A").model_extra["notes"]) == 1
+    # only the owner's note counts: the task's own (unrunnable here) job may add escalation notes since every
+    # worker failure is routed (1.6.0)
+    assert len([n for n in tasks.load(layout, "A").model_extra["notes"] if n.get("note") == "hello"]) == 1
 
 
 def test_pause_stops_dispatch_and_resume_restarts(layout):
@@ -176,7 +177,7 @@ def test_crash_between_submit_and_submitted_record_adopts_not_duplicates(layout,
 
 
 def test_command_not_reapplied_after_crash_between_handler_and_ack(layout, monkeypatch):
-    make_task(layout, "A")
+    ptask(layout, "A")         # a fake (python) worker: the suite never launches a real model client
     p = commands.submit(layout, "task.note", {"task_id": "A", "note": "once"}, actor="owner")
     cid = p.stem
     tasks.add_note(layout, "A", "once", "owner", command_id=cid)      # handler ran, then crash before ack
@@ -209,25 +210,39 @@ def test_cli_mutation_queues_while_loop_holds_lock(layout):
         r = CliRunner().invoke(app, ["task", "note", "A", "hi"])
         assert r.exit_code == 0 and "queued" in r.output
         assert not (tasks.load(layout, "A").model_extra or {}).get("notes")
-        r2 = CliRunner().invoke(app, ["task", "import"])                    # direct-mutation commands still refuse
+        r2 = CliRunner().invoke(app, ["task", "migrate-ownership"])         # direct-mutation commands still refuse
         assert r2.exit_code != 0 and "supervisor holds" in (r2.output + str(r2.exception))
+        r3 = CliRunner().invoke(app, ["task", "import"])                    # import goes through the queue instead
+        assert r3.exit_code == 0 and "queued" in r3.output
     with FileLock(layout.lock, owner="supervisor"):
         commands.apply_all(layout)
     assert (tasks.load(layout, "A").model_extra or {})["notes"][0]["note"] == "hi"
 
 
 def test_recover_adopts_child_killed_before_running_write(layout):
-    proc_task(layout, "P", seconds=1.5)
+    """A live child whose RUNNING write was lost is adopted by pid. The child holds until the test releases it: a
+    fixed sleep raced the process scan on a loaded Windows host, and a child that finishes during the scan is
+    (correctly) adopted as finished instead — that case has its own deterministic test below."""
+    release = layout.root / "release.flag"
+    proc_task(layout, "P", seconds=0)
+    hold = (f"import time, pathlib; d = time.time() + 120\n"
+            f"while not pathlib.Path({str(release)!r}).exists() and time.time() < d: time.sleep(0.05)\n")
+    def fn(doc):
+        doc["job"]["argv"][2] = hold + doc["job"]["argv"][2]
+    tasks._update(layout, "P", fn)
     from supervisor.adapters import REGISTRY
     from supervisor._vendor.contract import atomic_json
     task = tasks.load(layout, "P")
     spec = REGISTRY["process"].prepare(layout, task, "P.a1")
     jobs.prepare(layout, "P", "P.a1", "process", spec)
     handle = REGISTRY["process"].submit(spec)
-    atomic_json(layout.runs / "P" / "P.a1" / "status.json", {"status": "LAUNCHING", "attempt_id": "P.a1"})   # simulate kill before RUNNING write
-    rec = REGISTRY["process"].recover(spec)
-    assert rec is not None and rec["pid"] == handle["pid"]
-    REGISTRY["process"].terminate(handle)
+    try:
+        atomic_json(layout.runs / "P" / "P.a1" / "status.json", {"status": "LAUNCHING", "attempt_id": "P.a1"})   # simulate kill before RUNNING write
+        rec = REGISTRY["process"].recover(spec)
+        assert rec is not None and rec["pid"] == handle["pid"]
+    finally:
+        release.write_text("go")
+        REGISTRY["process"].terminate(handle)
 
 
 def test_recover_does_not_relaunch_a_child_that_finished_during_the_scan(layout, monkeypatch):

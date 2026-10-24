@@ -13,6 +13,7 @@ from ... import shutdown as shutdown_mod
 from ... import inbox as inbox_mod
 from ... import jobs as jobs_mod
 from ... import tasks as tasks_mod
+from ... import timeouts as timeouts_mod
 from ... import extensions as extensions_mod
 from ... import project as project_mod
 from ... import updates as updates_mod
@@ -46,6 +47,99 @@ def _disk(layout: Layout) -> dict:
         return {}
 
 
+# What each kind of job is doing, in the owner's words (spec.kind; a missing kind is a delivery).
+JOB_ACTIVITY = {"delivery": "Working", "review": "Reviewing", "diagnosis": "Diagnosing a failure",
+                "conversation": "Answering chat", "verify": "Verifying"}
+
+
+def _iso_epoch(value) -> float | None:
+    try:
+        return datetime.fromisoformat(str(value)).timestamp() if value else None
+    except (ValueError, TypeError):
+        return None
+
+
+def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
+    """One row per open, non-human job for the Overview's "Now running" panel: which task, what the job is doing,
+    who is doing it, and how long it has been at it against its timeout."""
+    rows = []
+    for rec in open_jobs:
+        if rec.get("adapter") == "human":                    # owner work shows under "Needs your attention"
+            continue
+        spec = rec.get("spec") or {}
+        handle = rec.get("handle") or {}
+        kind = spec.get("kind") or "delivery"
+        task = tasks.get(rec.get("task_id"))
+        started = _iso_epoch(handle.get("started") or rec.get("submitted"))
+        elapsed = max(0, int(now - started)) if started and rec.get("phase") != "PREPARED" else None
+        timeout = spec.get("timeout_s")
+        deadline, idle_s = handle.get("deadline"), spec.get("idle_s")
+        if deadline is not None:                              # what the loop enforces (legacy jobs: current policy)
+            deadline, idle_s, _ = timeouts_mod.effective_limits(rec.get("adapter"), spec, handle)
+        if started and isinstance(deadline, (int, float)) and deadline != float("inf"):
+            timeout = max(0, int(deadline - started))         # the hard cap, including any Extend clicks
+        idle_for = None
+        if rec.get("phase") in ("SUBMITTED", "RUNNING") and idle_s and spec.get("run_dir"):
+            last = timeouts_mod.read_activity(spec["run_dir"])
+            idle_for = max(0, int(now - last)) if last else None
+        deferred = float(rec.get("deferred_until") or 0)
+        if rec.get("phase") == "PREPARED" and deferred > now:
+            state, state_note = "deferred", rec.get("deferred_reason") or "waiting to launch"
+        elif rec.get("phase") == "PREPARED":
+            state, state_note = "launching", "about to launch"
+        elif rec.get("phase") == "SUBMITTED":
+            state, state_note = "starting", "launched, no output yet"
+        else:
+            state, state_note = "running", ""
+        attempt_no = str(rec.get("attempt_id", "")).rpartition(".a")[2]
+        if kind == "conversation":
+            title, href = "Chat reply", f"/chat/{rec.get('conversation_thread')}" if rec.get("conversation_thread") else "/chat"
+        else:
+            title, href = (task.title if task else rec.get("task_id") or "Unknown task"), f"/tasks/{rec.get('task_id')}"
+        rows.append({
+            "attempt_id": rec.get("attempt_id"), "task_id": rec.get("task_id"), "title": title, "href": href,
+            "is_chat": kind == "conversation", "activity": JOB_ACTIVITY.get(kind, kind.replace("_", " ").capitalize()),
+            "role": rec.get("review_role") or spec.get("role"), "model": spec.get("model"), "effort": spec.get("effort"),
+            "adapter": rec.get("adapter"), "attempt": int(attempt_no) if attempt_no.isdigit() else None,
+            "state": state, "state_note": state_note, "elapsed_s": elapsed, "timeout_s": timeout,
+            "idle_s": idle_s, "idle_for_s": idle_for,
+            "extended_s": sum(int(e.get("seconds") or 0) for e in handle.get("extensions") or []),
+            "can_extend": rec.get("phase") in ("SUBMITTED", "RUNNING") and deadline is not None,
+            "retry_in_s": int(deferred - now) if state == "deferred" else None,
+            "gpu": bool(rec.get("gpu")),
+        })
+    order = {"running": 0, "starting": 1, "launching": 2, "deferred": 3}
+    return sorted(rows, key=lambda r: (order[r["state"]], -(r["elapsed_s"] or 0)))
+
+
+def controls(live: bool, rt: dict) -> list[dict]:
+    """The Supervisor card's control row. Nothing is highlighted: a button is enabled only when its action makes
+    sense in the current state, and a disabled one says why on hover. A decision the loop has not applied yet
+    (Pause clicked, status still RUNNING) already counts, so the button flips at once."""
+    status = rt.get("status") if live else "STOPPED"
+    decision = rt.get("decision") or "RUN"
+    paused = live and (status == "PAUSED" or decision == "PAUSE")
+    draining = live and (status == "DRAINING" or decision == "DRAIN")
+    stopping = live and decision in ("STOP", "RELOAD")
+    offline = "The supervisor is not running"
+    rows = [
+        ("start", "Start", "play", not live, "Start the supervisor", "Already running" if live else ""),
+        ("pause", "Pause", "pause", live and not paused and not draining and not stopping,
+         "Stop dispatching new work; running jobs finish", offline if not live else
+         "Already paused" if paused else "Draining: cancel the drain with Resume" if draining else "Stopping"),
+        ("resume", "Resume", "play", live and (paused or draining) and not stopping,
+         "Cancel the drain and keep dispatching" if draining else "Dispatch work again",
+         offline if not live else "Stopping" if stopping else "Already running"),
+        ("stop", "Stop", "stop", live and decision != "STOP", "Stop the supervisor",
+         offline if not live else "Stopping"),
+        ("reload", "Reload", "reload", live and not stopping, "Restart the supervisor on the current code",
+         offline if not live else "Stopping"),
+        ("doctor", "Run doctor", "doctor", True, "Check the installation and project state", ""),
+    ]
+    return [{"action": a, "label": label, "icon": ic, "enabled": bool(on), "title": hint if on else why}
+            for a, label, ic, on, hint, why in rows]
+
+
 def overview_context(layout: Layout) -> dict:
     tasks = tasks_mod.load_all(layout)
     gate_data = gates_mod.load(layout)
@@ -71,10 +165,12 @@ def overview_context(layout: Layout) -> dict:
         if e.get("event") in ("job_submitted", "job_done"):
             job_counts[e.get("adapter") or "?"] = job_counts.get(e.get("adapter") or "?", 0) + 1
     heartbeat_age = max(0, int(now - rt["heartbeat_epoch"])) if rt.get("heartbeat_epoch") else None
-    uptime_seconds = None
+    uptime_seconds, started_local = None, None
     if live and rt.get("started"):
         try:
-            uptime_seconds = max(0, int(now - datetime.fromisoformat(rt["started"]).timestamp()))
+            started_at = datetime.fromisoformat(rt["started"])
+            uptime_seconds = max(0, int(now - started_at.timestamp()))
+            started_local = started_at.astimezone().strftime("%H:%M" if uptime_seconds < 86400 else "%d %b %H:%M")
         except (ValueError, TypeError):
             pass
     labels = project_mod.phase_labels(layout)
@@ -87,7 +183,13 @@ def overview_context(layout: Layout) -> dict:
         update = updates_mod.check(layout, fetch=False)       # cached by the background checker; cheap otherwise
     except Exception:                                       # noqa: BLE001
         update = None
+    running_rows = now_running(open_jobs, tasks, now)
+    running_ids = {r["task_id"] for r in running_rows}
+    waiting_to_start = [t for t in elig if t.id not in running_ids]
     return {
+        "now_running": running_rows, "up_next": waiting_to_start[:3], "eligible_count": len(waiting_to_start),
+        "human_jobs": sum(1 for j in open_jobs if j.get("adapter") == "human"),
+        "controls": controls(live, rt), "paused": live and (rt.get("status") == "PAUSED" or rt.get("decision") == "PAUSE"),
         "update": update, "update_lines": updates_mod.describe(update) if update else [],
         "draining": draining, "active_jobs": active_jobs, "shutdown_armed": bool(rt.get("shutdown_on_drain")),
         "shutdown_pending_s": shutdown_mod.pending(layout),
@@ -95,7 +197,7 @@ def overview_context(layout: Layout) -> dict:
         "project_name": project_mod.name(layout), "panels": _panels(layout),
         "phases_total": phases_total, "phases_passed": phases_passed,
         "eligible": elig, "nearby_gates": nearby_gates, "heartbeat_age": heartbeat_age,
-        "uptime_seconds": uptime_seconds, "busy_task": busy_task, "runtime": rt, "live": live, "needs_you": needs_you,
+        "uptime_seconds": uptime_seconds, "started_local": started_local, "busy_task": busy_task, "runtime": rt, "live": live, "needs_you": needs_you,
         "open_inbox_count": len(open_inbox), "waiting_count": len(waiting),
         "capacity": cap, "now": now, "disk": _disk(layout),
         "open_jobs": open_jobs, "job_counts": job_counts, "last_events": logtail.tail(layout, 10),
@@ -108,6 +210,13 @@ def overview(request: Request, layout: Layout = Depends(require_auth)):
     ctx = overview_context(layout)
     ctx["flash"] = decode_flash(request)
     return render(request, "overview.html", ctx)
+
+
+@router.get("/overview/live")
+def overview_live(request: Request, layout: Layout = Depends(require_auth)):
+    """The Overview's self-refreshing parts (polled every few seconds): the "Now running" panel, plus the
+    Supervisor card's status, details and control row swapped out-of-band."""
+    return render(request, "partials/overview_live.html", overview_context(layout))
 
 
 def _control(kind: str):

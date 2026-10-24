@@ -90,7 +90,8 @@ def render_inbox(layout: Layout) -> Path:
         lines.append("No open items.")
     for i in open_items:
         lines += [f"## {i.get('id')} — {i.get('subject')}  ({i.get('kind', 'question')}, for {i.get('for', 'owner')})", "",
-                  i.get("summary", ""), "", "Allowed responses: " + " / ".join(i.get("allowed_responses", [])), ""]
+                  i.get("detail") or i.get("summary", ""), "",   # detail = the full text the summary was cut from
+                  "Allowed responses: " + " / ".join(i.get("allowed_responses", [])), ""]
     archived = [i for i in items if i.get("status") != "open"]
     if archived:
         lines += ["", "## Archive", ""] + [f"- {i.get('id')} — {i.get('subject')} — {i.get('status')} {i.get('answered_at') or ''}" for i in archived]
@@ -165,9 +166,34 @@ def render_state(layout: Layout, runtime: dict | None = None, capacity_lines: li
     return out
 
 
+# Last error per (project root, view), so a view that keeps failing is logged once, not on every loop iteration.
+_last_error: dict[tuple[str, str], str] = {}
+
+
+def _guarded(layout: Layout, fn, *args, **kw) -> Path | None:
+    """Render one view; a failure skips it instead of failing the loop iteration. The rendered views are read-only
+    projections, so skipping one only leaves its previous file in place, while an exception here used to count as a
+    loop error: an agent mid-way through writing a YAML record the view reads made five iterations in a row fail
+    and the supervisor stopped itself BLOCKED. The error is logged once per distinct message (`render_error`) and
+    the recovery once (`render_recovered`)."""
+    key = (str(layout.root), fn.__name__)
+    try:
+        out = fn(layout, *args, **kw)
+    except Exception as exc:                                # noqa: BLE001 - a view must never stop the loop
+        msg = f"{type(exc).__name__}: {exc}"[:300]
+        if _last_error.get(key) != msg:
+            _last_error[key] = msg
+            tasks_mod.log(layout, "render_error", "render", view=fn.__name__, error=msg)
+        return None
+    if _last_error.pop(key, None) is not None:
+        tasks_mod.log(layout, "render_recovered", "render", view=fn.__name__)
+    return out
+
+
 def render_all(layout: Layout, **kw) -> list[Path]:
-    out = [render_tasks(layout), render_issues(layout), render_decisions(layout), render_inbox(layout),
-           render_owner_tasks(layout), render_state(layout, **kw)]
+    out = [_guarded(layout, fn) for fn in (render_tasks, render_issues, render_decisions, render_inbox, render_owner_tasks)]
+    out.append(_guarded(layout, render_state, **kw))
+    out = [p for p in out if p is not None]
     for fn in extensions_mod.load(layout).projections:
         try:
             out.append(fn(layout))

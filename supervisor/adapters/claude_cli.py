@@ -17,6 +17,7 @@ import yaml
 
 from .. import capacity
 from .. import policy
+from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
@@ -93,6 +94,29 @@ def routing(layout: Layout) -> dict:
     return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {} if cfg.exists() else {}
 
 
+def cost_category(task) -> str:
+    cost = getattr(task, "cost_category", "")
+    return str(getattr(cost, "value", cost) or "")
+
+
+def model_limits(adapter, spec: dict, handle: dict):
+    """ProcessAdapter.limits for a model lane. A job prepared before 1.7.0 carries no `idle_s` and a fixed 3600 s
+    deadline: it is moved onto the current policy (routing.yaml `timeouts`) instead of being killed at the old
+    hour — unless its spec set a different cap on purpose (a chat turn's 600 s)."""
+    deadline, idle_s, idle_cpu_s = ProcessAdapter.limits(adapter, spec, handle)
+    if "idle_s" in spec:
+        return deadline, idle_s, idle_cpu_s
+    try:
+        layout = Layout(spec["root"])
+        lim = timeouts.resolve(routing(layout), None, role_profile(layout, spec.get("role") or ""), {})
+    except Exception:                                    # unreadable config must never kill a running job
+        lim = timeouts.resolve({})
+    if int(spec.get("timeout_s") or 3600) == 3600:
+        started = timeouts._epoch(handle.get("started")) or float(handle.get("create_time") or time.time())
+        deadline = max(deadline, started + lim["hard_cap_s"] + sum(int(e.get("seconds") or 0) for e in handle.get("extensions") or []))
+    return deadline, lim["idle_s"], lim["idle_cpu_s"]
+
+
 def role_profile(layout: Layout, role: str) -> dict:
     prof = dict((routing(layout).get("roles") or {}).get(role) or {})
     prof.setdefault("adapter", "claude_cli")
@@ -102,6 +126,26 @@ def role_profile(layout: Layout, role: str) -> dict:
     prof.setdefault("tools", "web" if role in ("research_strategist", "senior_pm") else
                     "reader" if role == "code_review" else "writer")
     return prof
+
+
+def extra_dirs(layout: Layout, task, prof: dict) -> list[str]:
+    """Directories the session may work in besides the repository (Claude Code `--add-dir`): the role's `add_dirs`
+    and routing.yaml `claude.add_dirs_by_cost.<cost_category>` — e.g. a tool installation outside the repo that a
+    GPU task must install into and start. Without them the CLI denies even `ls` there and the worker can only end
+    BLOCKED. Relative entries resolve against the project root; nothing is added by default."""
+    dirs = [str(layout.root)]
+    cost = getattr(task, "cost_category", "")
+    cost = str(getattr(cost, "value", cost) or "")
+    by_cost = ((routing(layout).get("claude") or {}).get("add_dirs_by_cost") or {}).get(cost) or []
+    for d in list(prof.get("add_dirs") or []) + list(by_cost):
+        d = str(d or "")
+        if not d:
+            continue
+        p = Path(d)
+        p = p if p.is_absolute() or (len(d) > 1 and d[1] == ":") else layout.root / p
+        if str(p) not in dirs:
+            dirs.append(str(p))
+    return dirs
 
 
 def write_scope(layout: Layout, run_dir: Path, requested) -> list[str] | None:
@@ -138,6 +182,8 @@ def executable(layout: Layout) -> str:
 class ClaudeCliAdapter(ProcessAdapter):
     name = "claude_cli"
     engine = "claude"
+    handoff_before_cap = True
+    limits = model_limits
 
     def prepare(self, layout, task, attempt_id):
         job = job_spec(task)
@@ -151,6 +197,8 @@ class ClaudeCliAdapter(ProcessAdapter):
             prompt_text = Path(layout.root / job["prompt_file"]).read_text(encoding="utf-8")
         else:
             prompt_text = job.get("prompt") or self.default_brief(layout, task, run_dir)
+        from .. import packets as packets_mod
+        prompt_text = packets_mod.worker_prompt(task, job, prompt_text)     # owner/diagnosis guidance, any prompt source
         prompt_text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
         if job.get("result_kind", "delivery") != "conversation":   # a one-shot chat turn has nothing to check between steps
             from .. import conversations as conversations_mod
@@ -164,9 +212,10 @@ class ClaudeCliAdapter(ProcessAdapter):
                 "role": role, "model": prof["model"], "effort": prof["effort"], "tools": tools,
                 "write_scope": write_scope(layout, run_dir, job.get("write_scope")),
                 "write_confined": bool(job.get("write_scope")),
-                "session_id": str(uuid.uuid4()), "stdin_file": str(prompt_file), "timeout_s": int(job.get("timeout_s", 3600)),
+                "session_id": str(uuid.uuid4()), "stdin_file": str(prompt_file),
+                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
                 "executable": job.get("executable") or executable(layout), "result_kind": job.get("result_kind", "delivery"),
-                "add_dirs": job.get("add_dirs", [str(layout.root)]),
+                "add_dirs": job.get("add_dirs") or extra_dirs(layout, task, prof),
                 "bash_allow": list((routing(layout).get("claude") or {}).get("bash_allow") or []),
                 "effort_flag": bool((routing(layout).get("claude") or {}).get("supports_effort", True))}
 

@@ -37,3 +37,77 @@ def layout(tmp_path, monkeypatch):
         "gates": {"G0": {"status": "OPEN", "phase": 0}, "G6": {"status": "OPEN", "phase": 6}}}), encoding="utf-8")
     (lay.state / "owner_tasks.yaml").write_text("owner_tasks: []\n", encoding="utf-8")
     return lay
+
+
+@pytest.fixture(autouse=True)
+def _no_real_capacity_rpc(request, monkeypatch):
+    """The suite never asks the workstation's real Codex CLI for its usage windows: Supervisor.poll_capacity() used to
+    reach the installed, authenticated CLI, and a nearly spent real window (93% used) gated the fake jobs of
+    test_codex_cli and failed them. The RPC is reported as unavailable (the same path as a machine without Codex);
+    tests that exercise polling patch `poll_codex` themselves, and `@pytest.mark.capacity_integration` opts a test
+    back into the real call."""
+    if request.node.get_closest_marker("capacity_integration"):
+        return
+    from supervisor._vendor import usage_policy as up
+
+    def unavailable(*_a, **_k):
+        raise RuntimeError("capacity RPC disabled in the test suite (mark the test capacity_integration to allow it)")
+    monkeypatch.setattr(up, "poll_codex", unavailable)
+
+
+# ---- no real model client, ever (independent review of 1.6.0, finding 2)
+
+_MODEL_CLIENTS = {"claude", "codex"}
+_HARMLESS_FLAGS = {"--version", "-v", "--help", "-h"}
+
+
+def _model_client_argv(args, kwargs):
+    argv = args[0] if args else kwargs.get("args")
+    if isinstance(argv, (str, bytes, os.PathLike)):
+        argv = [argv]
+    try:
+        argv = [os.fsdecode(a) if isinstance(a, (bytes, os.PathLike)) else str(a) for a in (argv or [])]
+    except TypeError:
+        return None
+    if not argv:
+        return None
+    head = pathlib.PurePath(argv[0].replace("\\", "/")).stem.lower()
+    scripted = any("claude-code" in a.replace("\\", "/").lower() and a.lower().endswith("cli.js") for a in argv[:3])
+    if (head in _MODEL_CLIENTS or scripted) and not (set(argv[1:]) & _HARMLESS_FLAGS):
+        return argv
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_model_client(request, monkeypatch):
+    """Every worker, reviewer and diagnosis lane in the suite must be a fake. A test that reaches the installed Claude
+    or Codex CLI (a real, possibly billable model session) fails: the launch is refused on the spot and the test is
+    failed at teardown with the command it tried. Version/help probes stay allowed. Opt out only with
+    `@pytest.mark.model_integration` (capacity_integration does NOT authorize model jobs)."""
+    if request.node.get_closest_marker("model_integration"):
+        yield
+        return
+    import subprocess
+    attempts = []
+    real_popen, real_run = subprocess.Popen, subprocess.run
+
+    class GuardedPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            argv = _model_client_argv(args, kwargs)
+            if argv:
+                attempts.append(argv[:6])
+                raise OSError("test suite refused to launch a real model client: " + " ".join(argv[:4]))
+            super().__init__(*args, **kwargs)
+
+    def guarded_run(*args, **kwargs):
+        argv = _model_client_argv(args, kwargs)
+        if argv:
+            attempts.append(argv[:6])
+            raise OSError("test suite refused to launch a real model client: " + " ".join(argv[:4]))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", GuardedPopen)
+    monkeypatch.setattr(subprocess, "run", guarded_run)
+    yield
+    if attempts:
+        pytest.fail(f"test tried to launch a real model client {len(attempts)}x: {attempts[0]}", pytrace=False)

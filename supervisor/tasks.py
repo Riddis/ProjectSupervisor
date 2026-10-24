@@ -10,6 +10,7 @@ Rules:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -91,6 +92,73 @@ def validate_graph(tasks: dict[str, Task]) -> list[str]:
     return errors
 
 
+# {name}, S1..S6, EXP-1xx, T10-xx, round_N: shorthand a person reads — usually, but not always, never a file that will
+# exist (`out/xx.json` and `round_N_results.txt` are legal names), so these are warnings, not refusals
+_PLACEHOLDER = re.compile(r"[{}]|\.\.(?!/)|(?<![A-Za-z])[0-9]*xx(?![A-Za-z])|_N(?![A-Za-z0-9])")
+# characters no file name can hold on Windows (`<id>` is the usual placeholder); `*?` are globs, `:` is checked as a drive
+_ILLEGAL = re.compile(r'[<>"|\x00-\x1f]')
+
+
+def _matches_on_disk(root: Path | None, a: str) -> bool:
+    if root is None:
+        return False
+    try:
+        if any(c in a for c in "*?["):
+            return any(p.is_file() for p in root.glob(a))
+        return (root / a).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for artifact entries. loop._expand_artifacts reads each entry as a file path relative to the
+    root, or a glob when it contains *?[.
+
+    Errors — structurally no file can ever satisfy the entry, so it would fail every delivery forever and a new or
+    re-imported contract carrying one is refused: empty or padded entries, absolute or escaping paths, directories
+    ("cycle_N/", or with `root` an existing directory) and characters no file name can hold ("<id>").
+
+    Warnings — the spelling looks like prose or a placeholder ("runs contact sheets", "S1..S6", "EXP-1xx",
+    "round_N") but is a legal file name, and real projects do name files "Final Report.md" or "out/xx.json". The
+    contract is accepted and the warning returned to the caller; an entry that already matches a file under `root`
+    raises none."""
+    errors, warnings = [], []
+    for t in tasks:
+        for a in t.artifacts:
+            why = None
+            if not a or a != a.strip():
+                why = "is empty or has leading/trailing whitespace"
+            elif a.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", a) or ".." in Path(a).parts:
+                why = "must be a path relative to the project root"
+            elif a.endswith(("/", "\\")) or (root is not None and not any(c in a for c in "*?[")
+                                                and (root / a).is_dir()):
+                why = "is a directory — list its files or a glob such as dir/*"
+            elif _ILLEGAL.search(a):
+                why = "has a placeholder or a character no file name can hold (<...>, \", |) — use a glob such as runs/*/summary.json"
+            if why:
+                errors.append(f"{t.id}: artifact {a!r} {why}")
+                continue
+            if _matches_on_disk(root, a):
+                continue
+            if any(ch.isspace() for ch in a):
+                warnings.append(f"{t.id}: artifact {a!r} contains spaces — fine for a real file name; if it is a "
+                                "description, name the file or a glob instead")
+            elif _PLACEHOLDER.search(a):
+                warnings.append(f"{t.id}: artifact {a!r} looks like a placeholder ({{...}}, a..b, xx, _N) — fine if "
+                                "that is the real file name; otherwise use a glob such as S[1-6].yaml")
+    return errors, warnings
+
+
+def artifact_errors(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
+    """Artifact entries no file can ever satisfy (artifact_problems errors)."""
+    return artifact_problems(tasks, root)[0]
+
+
+def artifact_warnings(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
+    """Artifact entries that look like prose or a placeholder but are legal file names (artifact_problems warnings)."""
+    return artifact_problems(tasks, root)[1]
+
+
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
     tasks = tasks or load_all(layout)
     gate_data = gates_mod.load(layout)
@@ -114,16 +182,22 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     Task.model_validate(doc)                              # fail before touching the graph or the disk
     combined = load_all(layout)
     combined[doc["id"]] = Task.model_validate(doc)
-    errors = validate_graph(combined) + ownership_errors([combined[doc["id"]]], layout)
+    art_errors, warnings = artifact_problems([combined[doc["id"]]], root=layout.root)
+    errors = validate_graph(combined) + ownership_errors([combined[doc["id"]]], layout) + art_errors
     if errors:
         raise TaskError("; ".join(errors))
     store.write_new(path, doc)
-    log(layout, "task_created", actor, task=doc["id"])
-    return {"id": doc["id"], "status": doc["status"]}
+    log(layout, "task_created", actor, task=doc["id"], **({"warnings": warnings} if warnings else {}))
+    out = {"id": doc["id"], "status": doc["status"]}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
-def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = ()) -> dict:
-    """Create tasks that do not exist yet; refresh only the named tasks' contract fields. Idempotent."""
+def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (), create: bool = True,
+                actor: str = "cli") -> dict:
+    """Create tasks that do not exist yet (unless `create` is False); refresh only the named tasks' contract fields.
+    Idempotent. Runs in-process for the CLI when no supervisor is live, and as the `task.import` command otherwise."""
     seed = yaml.safe_load(Path(seed_path).read_text(encoding="utf-8"))["tasks"]
     created, updated, untouched = [], [], []
     update_ids = set(update_ids)
@@ -131,12 +205,16 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = ())
     existing = set(combined)
     for t in seed:
         combined[t["id"]] = Task.model_validate(t)   # seed must be a valid contract
-    errors = validate_graph(combined) + ownership_errors([combined[t["id"]] for t in seed if t["id"] not in existing], layout)
+    art_errors, warnings = artifact_problems([combined[t["id"]] for t in seed], root=layout.root)
+    errors = (validate_graph(combined) + ownership_errors([combined[t["id"]] for t in seed if t["id"] not in existing], layout)
+              + art_errors)
     if errors:
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
     for t in seed:
         path = path_for(layout, t["id"])
         if not path.exists():
+            if not create:
+                continue
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
@@ -155,8 +233,11 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = ())
             updated.append(t["id"])
         else:
             untouched.append(t["id"])
-    log(layout, "task_import", "cli", created=created, updated=updated)
-    return {"created": created, "updated": updated, "untouched": untouched}
+    log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
+    out = {"created": created, "updated": updated, "untouched": untouched}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
@@ -295,12 +376,23 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", **e
     return _update(layout, task_id, fn)
 
 
-def add_note(layout: Layout, task_id: str, note: str, actor: str = "owner", command_id: str | None = None) -> Task:
+def add_note(layout: Layout, task_id: str, note: str, actor: str = "owner", command_id: str | None = None,
+             guidance: bool = False) -> Task:
+    """Append a note; with `guidance` also hand the text to the next delivery brief (packets.guidance_block). Both go
+    in ONE task update and each is idempotent per `command_id`, so a replayed command completes whatever an
+    interruption left missing instead of skipping it (independent review of 1.6.0, finding 4)."""
     def fn(doc):
-        entry = {"at": store.now_iso(), "by": actor, "note": note}
-        if command_id:
-            entry["command_id"] = command_id
-        doc.setdefault("notes", []).append(entry)
+        notes = doc.setdefault("notes", [])
+        if not command_id or not any(isinstance(n, dict) and n.get("command_id") == command_id for n in notes):
+            entry = {"at": store.now_iso(), "by": actor, "note": note}
+            if command_id:
+                entry["command_id"] = command_id
+            notes.append(entry)
+        if guidance:
+            items = doc.setdefault("guidance", [])
+            key = f"note:{command_id}" if command_id else f"note:{store.now_iso()}"
+            if not any(isinstance(g, dict) and g.get("item") == key for g in items):
+                items.append({"at": store.now_iso(), "by": "owner", "item": key, "text": note[:4000], "scope": "delivery"})
     return _update(layout, task_id, fn)
 
 

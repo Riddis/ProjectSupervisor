@@ -20,7 +20,13 @@
   `result.json` (the fenced `delivery`/`review` object). A missing JSON object triggers exactly one tool-less
   `--resume <session>` follow-up (`followup_stdout.jsonl`, 120 s cap).
 - Failure classes: `login_required` (owner runs `claude /login`), usage limit → DEFERRED with a synthetic or measured
-  window and a continuation pointed at the prior `HANDOFF.md` (max 3), timeout → child tree killed, `max turns`.
+  window and a continuation pointed at the prior `HANDOFF.md` (max 3), timeout → child tree killed and the work
+  continued the same way (no revision spent), `max turns`.
+- Time limits are activity-based (1.7.0, `supervisor/timeouts.py`): a session is stopped after `timeouts.idle_s`
+  (default 20 min) with no new output and under `timeouts.idle_cpu_s` CPU seconds of work in its processes, or at
+  `timeouts.hard_cap_s` (default 6 h; Extend in the Control Center adds an hour). Ten minutes before the cap the
+  session gets a `HANDOFF_REQUEST.json` (reason `time limit`). Overrides: `timeouts.by_cost.<cost_category>`,
+  `roles.<role>.timeouts`, and per task `job.timeout_s` (hard cap) / `job.idle_timeout_s` (idle limit, 0 = none).
 - Diagnostics are matched only against stderr, `system`/`error` events and an `is_error` result — never against the
   model's ordinary answer.
 - `--effort` is gated by `routing.yaml claude.supports_effort`.

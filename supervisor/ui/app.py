@@ -12,8 +12,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import extensions as extensions_mod
 from ..paths import Layout
+from . import live
 from .assets import STATIC_DIR, stylesheet
-from .auth import CSRF_COOKIE, check_host_origin
+from .auth import CSRF_COOKIE, check_host_origin, get_layout
 from .routes import router as routes_router
 
 DEFAULT_PORT = 8790
@@ -52,6 +53,13 @@ def create_app(layout: Layout | None = None, update_check: bool | None = None) -
         except HTTPException as exc:
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         request.state.csrf_token = request.cookies.get(CSRF_COOKIE) or secrets.token_urlsafe(24)
+        if request.method == "GET" and not live.skip_stamp(request.url.path):
+            # Taken before the route reads any state: a page is stamped with a fingerprint no newer than its data,
+            # so a change landing mid-render makes the open page refresh once more instead of never.
+            try:
+                request.state.live_version = live.fingerprint(get_layout(request))
+            except Exception:                               # noqa: BLE001 - the page renders; live.js just refreshes
+                request.state.live_version = ""
         response = await call_next(request)
         if "text/html" in response.headers.get("content-type", ""):
             response.headers["Cache-Control"] = "no-store"

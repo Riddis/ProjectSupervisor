@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supervisor-framework"
-version = "1.2.3"
+version = "1.7.1"
 description = "Run a project with AI agents under a deterministic Python supervisor and an owner-facing Control Center"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,6 +38,8 @@ supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "ui/templ
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider --basetemp=runs/pytest_tmp"
 pythonpath = ["."]
+markers = ["capacity_integration: may call the real Codex CLI usage RPC (off by default; see tests/conftest.py)",
+           "model_integration: may launch the real Claude/Codex CLI (off by default; see tests/conftest.py)"]
 
 [tool.ruff]
 line-length = 120

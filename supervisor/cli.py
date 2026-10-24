@@ -50,6 +50,8 @@ def _echo_cmd(outcome: dict, task_id: str) -> None:
     render.render_all(_layout())
     res = outcome.get("result") or {}
     typer.echo(f"{task_id}: {res.get('status', 'ok')}" + (f" ({res['skipped']})" if res.get("skipped") else ""))
+    for w in res.get("warnings") or []:
+        typer.echo(f"warning: {w}")
 
 
 def _writer() -> Layout:
@@ -161,10 +163,20 @@ def task_set_status(task_id: str, status: str, note: str = "", actor: str = "cli
 
 @task_app.command("import")
 def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = ""):
-    """Create tasks from the seed that do not exist yet; refresh only the named ids' contract fields. Idempotent."""
-    r = tasks_mod.import_seed(_writer(), _layout().root / seed, [s for s in update_contracts.split(",") if s])
+    """Create tasks from the seed that do not exist yet; refresh only the named ids' contract fields. Idempotent.
+    Goes through the command queue, so it also works while a supervisor is running (it applies it next iteration)."""
+    ids = [s for s in update_contracts.split(",") if s]
+    r = commands_mod.submit_or_apply(_layout(), "task.import", {"seed": seed, "update_contracts": ids}, "owner")
+    if r.get("queued"):
+        typer.echo(f"queued ({r['id']}) — the running supervisor applies it within one iteration")
+        return
+    if not r.get("ok", True):
+        raise typer.BadParameter(str(r.get("error")))
     render.render_all(_layout())
-    typer.echo(f"created {len(r['created'])}, updated {len(r['updated'])}, untouched {len(r['untouched'])}")
+    res = r.get("result") or {}
+    typer.echo(f"created {len(res.get('created', []))}, updated {len(res.get('updated', []))}")
+    for w in res.get("warnings") or []:
+        typer.echo(f"warning: {w}")
 
 
 @task_app.command("migrate-ownership")

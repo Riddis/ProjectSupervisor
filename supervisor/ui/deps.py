@@ -50,6 +50,23 @@ def _extension_nav(request: Request) -> list[tuple[str, str]]:
 templates.env.globals["extension_nav"] = _extension_nav
 
 
+def _live_meta(request: Request) -> dict:
+    """What base.html stamps into <meta> for static/live.js: the fingerprint taken when the request started (see
+    supervisor.ui.live) and the Control Center process id."""
+    from . import live
+    version = getattr(request.state, "live_version", None)
+    if version is None:
+        from . import auth as auth_mod
+        try:
+            version = live.fingerprint(auth_mod.get_layout(request))
+        except Exception:                                   # noqa: BLE001
+            version = ""
+    return {"version": version, "boot": live.BOOT_ID}
+
+
+templates.env.globals["live_meta"] = _live_meta
+
+
 def render(request: Request, name: str, context: dict):
     context = {"csrf_token": getattr(request.state, "csrf_token", request.cookies.get(CSRF_COOKIE, "")),
                "project_name": _project_name(request), **context}

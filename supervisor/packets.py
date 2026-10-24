@@ -62,13 +62,63 @@ def _ownership_block(task: Task) -> str:
             + "\n".join(f"- {p}" for p in task.owned_paths))
 
 
-def _guidance_block(task: Task) -> str:
-    """Guidance written by a diagnosis after automatic retries stopped: the next attempt must read it."""
-    items = (task.model_extra or {}).get("guidance") or []
+GUIDANCE_HEADING = "## Guidance (read before starting; earlier attempts failed or were stopped)"
+REVIEW_GUIDANCE_HEADING = "## Owner guidance for this review"
+
+
+def _guidance_items(task: Task, scope: str, digest: str | None = None) -> list[dict]:
+    """The task's `guidance` entries for one packet kind. A diagnosis requeue (no `scope`) and an owner REQUEUE of a
+    task or a delivery address the next delivery; an owner REQUEUE of a review addresses the review of the digest it
+    was given for (a new delivery makes it moot)."""
+    out = []
+    for g in (task.model_extra or {}).get("guidance") or []:
+        if not isinstance(g, dict) or not str(g.get("text") or "").strip():
+            continue
+        if (g.get("scope") or "delivery") != scope:
+            continue
+        if scope == "review" and g.get("digest") and g.get("digest") != digest:
+            continue
+        out.append(g)
+    return out[-3:]
+
+
+def _format_guidance(items: list[dict]) -> str:
+    return "\n\n".join(f"**{g.get('by', 'diagnosis')}** ({str(g.get('at', ''))[:10]}): {g.get('text', '')}" for g in items)
+
+
+def guidance_block(task: Task) -> str:
+    """Guidance for the next delivery attempt — written by a diagnosis requeue or by the owner's REQUEUE text after
+    automatic retries stopped: the next attempt must read it."""
+    items = _guidance_items(task, "delivery")
+    return f"\n\n{GUIDANCE_HEADING}\n" + _format_guidance(items) if items else ""
+
+
+_guidance_block = guidance_block                     # pre-1.4.1 name
+
+
+def with_guidance(task: Task, prompt: str) -> str:
+    """A delivery prompt that did not come from delivery_brief (a job's own `prompt`/`prompt_file`, an adapter's
+    fallback) still carries the guidance: appended unless the prompt already has the block."""
+    block = guidance_block(task)
+    return prompt if not block or GUIDANCE_HEADING in prompt else prompt + block
+
+
+NON_DELIVERY_KINDS = ("review", "diagnosis", "conversation")     # packets that never carry delivery guidance
+
+
+def worker_prompt(task: Task, job: dict, prompt: str) -> str:
+    """The prompt an adapter sends for this job: a delivery-kind job gets the task's guidance (with_guidance); a
+    review, diagnosis or chat turn is sent as built."""
+    return prompt if job.get("result_kind", "delivery") in NON_DELIVERY_KINDS else with_guidance(task, prompt)
+
+
+def review_guidance_block(task: Task, digest: str) -> str:
+    items = _guidance_items(task, "review", digest)
     if not items:
         return ""
-    return "\n\n## Guidance from diagnosis (read before starting; earlier attempts failed)\n" + "\n\n".join(
-        f"**{g.get('by', 'diagnosis')}** ({str(g.get('at', ''))[:10]}): {g.get('text', '')}" for g in items[-3:])
+    return (f"\n\n{REVIEW_GUIDANCE_HEADING}\nThe owner re-queued this review after its retry budget was spent and "
+            "added the instructions below. Apply them when judging the delivery against the contract.\n"
+            + _format_guidance(items))
 
 
 def delivery_brief(layout: Layout, task: Task) -> str:
@@ -130,7 +180,7 @@ def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], 
         + contract_block(task) +
         "\n## Delivered artifacts (frozen inputs — read these, not the producer's notes)\n"
         + "\n".join(f"- {a}" for a in artifacts) +
-        _verification_summary(layout, task, digest) +
+        _verification_summary(layout, task, digest) + review_guidance_block(task, digest) +
         "\n\n## Result contract\nEnd your answer with exactly one fenced JSON block:\n```json\n" + example + "\n```\n"),
         layout, f"review packet {task.id}")
 

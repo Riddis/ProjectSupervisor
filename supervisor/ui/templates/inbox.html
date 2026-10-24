@@ -15,12 +15,18 @@
 <section class="panel">
   <h3>{{ kind_labels[kind] }} <span class="badge">{{ items | length }}</span></h3>
   {% for item in items %}
-  <article class="inbox-item inbox-item-{{ item.status }}">
+  <article class="inbox-item inbox-item-{{ item.status }}" id="inbox-item-{{ item.id }}">
     <h4>{{ item.id }} — {{ item.subject }} <span class="badge">{{ item.status }}</span>
         <span class="age">{{ item.age_display }} old</span></h4>
     <p>For: {{ item.get('for', 'owner') }} &middot; from: {{ item.get('from', '?') }}
        {% if item.task_id %}&middot; task: <a href="/tasks/{{ item.task_id }}">{{ item.task_id }}</a>{% endif %}</p>
     <div class="evidence-text">{{ item.summary_html | safe }}</div>
+    {% if item.detail_html %}
+    <details class="inbox-detail">
+      <summary>Show full message</summary>
+      <div class="evidence-text">{{ item.detail_html | safe }}</div>
+    </details>
+    {% endif %}
 
     {% if item.evidence_views %}
     <div class="evidence">

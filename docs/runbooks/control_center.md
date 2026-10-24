@@ -9,13 +9,34 @@
 
 ## Screens
 
-Overview (supervisor controls Start/Pause/Resume/Stop/Reload/Doctor/Shut down PC when idle, capacity, disk,
+Overview (a "Now running" panel refreshed every 5 s — one row per open job with task, activity, role/model, attempt,
+running time against the hard cap, how long a job has been quiet, **+1h** to extend one running job's hard cap
+and a live-log link, plus the next eligible tasks; supervisor controls
+Start/Pause/Resume/Stop/Reload/Doctor/Shut down PC when idle, enabled only when they apply; capacity, disk,
 extension panels, phase & gates, recent activity), Roadmap (phases, gates, tasks per phase), Tasks (list + detail:
 attempts, artifacts, notes, re-queue/cancel/hold/priority), Agents (live jobs, SSE transcript tail, terminate, drop a
 note the agent reads between steps), Inbox (answer/snooze/reopen, gate acknowledgement, file upload to
 `uploads/<item>/`), Chat (threads with a role, grounded in the live state; convert a reply into a task / decision /
 issue / owner task), Log (SSE tail of `state/log.jsonl`), Owner tasks, Settings (the few numeric routing knobs).
 Extensions can add sidebar pages (`registry.ui_router`) and overview panels (`registry.overview_panel`).
+
+## Live pages
+
+Every page updates itself while it is open — no F5. It polls `GET /live/version` every 2 s while the tab is visible
+(a cheap fingerprint of `state/`, `config/` and `project.yaml`; loop heartbeats alone do not count) and, when the
+project changed, morphs the new page into place; it also refreshes every 30 s for ages and timers. The **Live** badge
+in the top bar shows the state:
+
+- **Live** — up to date. Click to pause updates in this browser (remembered); click **Live updates paused** to resume.
+- **Updates waiting — apply** — held back because a form on the page has unsent input or text is selected. Clear the
+  field (or send it) and the update applies by itself; click the badge to apply now (typed text is kept).
+- **Reconnecting…** — the Control Center is not answering. When it is back as a new process, open pages reload.
+- **Live off on this page** — the page keeps its own client-side state (it carries `data-live-off`); reload it to
+  see changes.
+
+Scroll position, opened sections, the Overview's action result and the log/transcript tails are kept across
+updates. Implementation: `supervisor/ui/live.py`, `supervisor/ui/static/live.js` (vendored idiomorph). Template
+authors: give repeated items with forms a stable `id`, and mark elements filled client-side with `data-live-keep`.
 
 ## Framework updates
 
@@ -57,3 +78,18 @@ supervisor offline the same button powers off after the grace period, cancellabl
 - Start does nothing: `state/runtime/supervisor_ui_launch.log` has the child's output; the usual cause is a
   framework version mismatch (run `supervisor doctor`).
 - Disk panel shows "Unavailable": the drive could not be queried; the page still renders.
+
+## Job time limits (1.7.0)
+
+A running job is stopped only when it goes **quiet** (no new output and under `idle_cpu_s` CPU seconds of work in its
+processes for `idle_s`, default 20 min) or reaches its **hard cap** (default 6 h for agent sessions) — see
+`supervisor/timeouts.py` and `config/routing.yaml: timeouts`. **+1h** on a *Now running* row (or **Extend +1h** on
+the agent page) is the `agent.extend` command: it raises that one job's cap by an hour, idempotently per command id;
+the quiet limit still applies. Ten minutes before the cap an agent session is asked to write its handoff; a
+timed-out agent session is continued from its HANDOFF.md by a fresh session (`job_requeued`, reason *time limit*),
+not counted as a failed attempt.
+
+Quiet time is measured from the first time the loop looks at a job, not from its launch, so a session that was
+already running when the loop was updated gets a full quiet window before it can be stopped. The cap shown, the cap
+Extend raises and the cap enforced are the same number (`timeouts.effective_limits`): a session started before
+1.7.0 shows and extends the current policy's cap, not the old one-hour deadline.

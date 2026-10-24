@@ -3,6 +3,234 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.7.1 — 2026-10-24
+
+Review round on 1.7.0 (verdict REVISE): three time-limit edges around upgraded and interrupted jobs.
+
+- **The first activity sample no longer kills a busy job.** `timeouts.last_active` dated a job's first record back
+  to its launch, so a session adopted after the upgrade (no `activity.json` yet) that had already run longer than
+  the idle limit was stopped as idle on its very first look, while its output was still growing — and so was any
+  job whose first collection came late. The first sample now opens the observation window at that moment; idleness
+  is judged only from two samples. A quiet job is still stopped one full idle window later.
+- **One authoritative deadline.** `timeouts.effective_limits` returns what the adapter enforces (for a job prepared
+  before 1.7.0, `claude_cli.model_limits` moves it onto the current policy). `agent.extend`, `status.json`, the
+  time-limit handoff withdrawal, the *Now running* row and the agent page all use it; before, Extend added its hour
+  to the obsolete one-hour deadline still in the handle, so the effective cap moved but the recorded one stayed in
+  the past and the session was still told to stop and hand off. Extend now writes the effective deadline + 1 h to
+  the handle, so the recorded and effective caps agree from then on.
+- **Replaying Extend repairs an interrupted update.** The job record is written first, then `status.json` and the
+  handoff request. A crash between those writes made the replay skip the rest (*already applied*): the hour was
+  in the job, not in the `status.json` that `recover()` re-adopts from, and the stop request survived. A replay
+  now re-applies both from the job record without adding the hour again, reports `repaired`, and logs
+  `job_extend_repaired`.
+- Tests: a busy legacy session through the real `ProcessAdapter` subprocess path with the real `model_limits`
+  survives its first collect, a quiet one is still stopped after a full window; Extend on a session 5h55m into a
+  pre-1.7.0 run; fault injection between the job write and the status write, then replay.
+
+## 1.7.0 — 2026-10-24
+
+Agent sessions are no longer killed at one hour while they are still working.
+
+- **Activity-based time limits** (`supervisor/timeouts.py`). A `claude_cli`/`codex_cli` job used to get one fixed
+  deadline, 3600 s after launch, and long sessions were killed mid-work. Now a job is stopped only when it is
+  **idle** — its `stdout.jsonl`/`stderr.txt` have not grown and its process tree has used less than `idle_cpu_s`
+  CPU seconds for `idle_s` (default 20 min; Claude Code's 30 s tool heartbeats and any child process doing work count
+  as activity) — or when it reaches its **hard cap** (default 6 h). Measured per run dir in `activity.json`, so a
+  restarted loop keeps measuring where the last one stopped.
+- **Configurable** in `routing.yaml` `timeouts` (`idle_s`, `idle_cpu_s`, `hard_cap_s`, `by_cost.<cost_category>`),
+  per role (`roles.<role>.timeouts`) and per task (`job.timeout_s` = hard cap, `job.idle_timeout_s` = idle limit,
+  0 = none). Plain `process` jobs keep `job.timeout_s` (default 3600) and get an idle limit only when they ask.
+- **Extend.** `agent.extend` (Control Center **+1h** on a *Now running* row, **Extend +1h** on the agent page)
+  raises one running job's hard cap by an hour; idempotent per command id, written to the job record and
+  `status.json` (so a re-adopted child keeps it), and it withdraws a pending time-limit handoff request. The row
+  shows elapsed time against the cap and, after two quiet minutes, how long the job has been quiet.
+- **A timeout is a continuation, not a failure.** A model-lane job stopped on time is requeued like a capacity
+  limit (`Supervisor.requeue`, reason *time limit (idle)* / *time limit (hard cap)*): a fresh session picks up the
+  `HANDOFF.md`, no revision is spent, the usual continuation cap (3, then an owner decision) applies. Ten minutes
+  before the cap the session gets `HANDOFF_REQUEST.json` with reason `time limit`; a handoff written in answer is
+  requeued as *time limit handoff*.
+- Jobs already running when the loop is updated carry no idle limit in their spec: model lanes move them onto the
+  current policy (`claude_cli.model_limits`) instead of killing them at the old hour; a deliberate cap (a chat
+  turn's 600 s) is kept.
+- No migration. Add a `timeouts:` block to `config/routing.yaml` only to change the defaults (the template shows it).
+
+## 1.6.1 — 2026-10-23
+
+Review round on 1.6.0 (verdict REVISE): owner intent wins over the stall sweep, the live refresh keeps the page
+structure, and the suite can no longer start a real model session.
+
+- **Stall sweep respects deliberate holds.** A stop the owner made (Control Center **Hold**, `set-status` by an
+  `owner*` actor), a **snoozed** decision item, and a task whose latest delivery attempt is on the `human` lane (the
+  owner's REJECT/MORE_LIKE) are never retried or diagnosed. The human case is linked through the attempt, not by
+  comparing timestamps: the loop collects an answer after it was given, so the answer always predates the stop.
+- **Live refresh no longer nests `<main>`/`<nav>`.** `live.js` handed idiomorph the parsed wrapper element; even with
+  `morphStyle: "innerHTML"` that element *is* the new content, so every refresh inserted a second `<main>` (and
+  `<nav>`) inside the first and shifted the page. The child nodes are now passed as an array. Checked in Chromium
+  against a scratch project: before the fix 2 `<main>`/2 `<nav>` after one refresh; after it 1/1 through an automatic
+  refresh, a held-then-applied refresh (draft kept in its own form) and three more in a row, with no layout shift.
+- **`task.note {guidance: true}` is one idempotent write.** Note and guidance go in a single task update
+  (`tasks.add_note(guidance=True)`), each keyed by the command id; a replay of a command whose note exists but whose
+  guidance is missing completes the guidance (`{"repaired": "guidance"}`) instead of answering "already applied".
+- **No real model client in the test suite.** An autouse guard (`tests/conftest.py`) refuses any launch of the
+  installed `claude`/`codex` CLI (version/help probes allowed) and fails the test with the command it tried;
+  `@pytest.mark.model_integration` opts out (`capacity_integration` does not). The tests that reached a real client
+  now use fake lanes: the two loop-command tests run a python worker, and the Codex failure tests stub the diagnosis
+  dispatch.
+- `loop.py`: removed the duplicated `_epoch`/`scheduler_routing` helpers (`ruff check --select F supervisor` clean).
+
+## 1.6.0 — 2026-10-23
+
+Nothing stops silently: every failure is retried or escalated; the owner hears about it only when an action is theirs.
+
+- A worker that ended **BLOCKED**, FAILED or PARTIAL (or crashed, timed out, was lost) used to leave its task FAILED
+  with no retry, no diagnosis and no owner item — only "the worker claimed COMPLETE and verification disagreed"
+  reached escalation. Now: BLOCKED → straight to the manager diagnosis (`escalation.record_failure(retry=False)`;
+  re-sending the same brief reproduces the same block); a model-lane FAILED/PARTIAL → the normal revision budget,
+  then diagnosis; an owner REJECT/MORE_LIKE on a `human` task stands. Issues are titled by cause (*worker reported
+  BLOCKED*, *worker run failed repeatedly*, *stopped with nothing routing it*).
+- The failure detail carries the worker's notes and the head of its `HANDOFF.md` (`loop.worker_report`), so revision
+  briefs, diagnosis briefs, issues and owner items say *why*, not just `status BLOCKED; missing:`.
+- **Stall sweep** (`Supervisor.sweep_stalled`, every iteration): a FAILED/BLOCKED task with nothing in flight and no
+  open owner item, past `routing.yaml escalation.stall_grace_s` (default 600 s), is escalated once per stop (FAILED →
+  retry within budget, BLOCKED → diagnosis); still unrouted a grace period later → one owner decision item.
+  Deterministic lanes (process/python/extensions) are retried this way, so the grace period is their back-off.
+  Owner answers and diagnosis `defer` after the stop are respected as deliberate holds.
+- **Idle alert** (`Supervisor.alert_if_idle`): nothing running, nothing eligible, nothing waiting on the owner, work
+  remaining, for twice the grace period → one *Pipeline idle — nothing can run* owner item listing the stuck tasks
+  and their last note; once per stuck set (`state/runtime/idle_alert.json`).
+- Agent sessions can be given folders outside the repository: role `add_dirs` and
+  `claude.add_dirs_by_cost.<cost_category>` in `routing.yaml` (Claude Code `--add-dir`; relative entries resolve
+  against the project root). Without them the CLI denies even `ls` there and the worker can only end BLOCKED.
+- `task.note` with `"guidance": true` also hands the text to the next delivery brief.
+- Escalation decisions carry `at` (used by the sweep). No migration; existing escalation state files are read as
+  before.
+
+## 1.5.0 — 2026-10-23
+
+Live Control Center: open pages keep themselves current; no more F5.
+
+- Every page polls `GET /live/version` every 2 s (only while its tab is visible). The value is a stat-only
+  fingerprint of `state/` (minus applied commands, lock/temp/log files and the update-check cache), `config/` and
+  `project.yaml`, cached for 1 s so many tabs cost one scan (`supervisor/ui/live.py`). `state/runtime/supervisor.json`
+  counts by content without its heartbeat fields: a loop tick is not a change, a status or decision change is.
+- When it moves, `static/live.js` re-fetches the page and morphs `<main>` and the sidebar (inbox badge) into place
+  with the vendored idiomorph 0.7.4 (0BSD, `static/idiomorph.min.js`). Scroll position, focus and opened
+  `<details>` survive. Pages also refresh every 30 s regardless, so ages and timers stay current.
+- Nothing the owner is doing is lost: while a form field has been changed, a file is chosen or text is selected,
+  the update is held back and the new **Live** badge in the top bar says **Updates waiting — apply**; clicking it
+  applies the update and keeps typed values in their own form (matched by form action and field name). Elements
+  marked `data-live-keep` (the Overview's action result) and SSE streams (log and transcript tails) are never
+  touched. Inbox items, owner tasks and roadmap gates carry stable ids so a morph never pairs one item's form with
+  another's.
+- Clicking **Live** pauses updates in that browser (remembered); clicking again resumes. **Reconnecting…** shows
+  while the Control Center does not answer; when it comes back as a new process (an update, a restart) or its
+  stylesheet changed, open pages reload fully onto the new templates.
+- A page that keeps its own client-side state opts out with any element carrying `data-live-off`: it is never
+  refreshed and the badge reads **Live off on this page**.
+- Each page is stamped (`<meta name="live-version">`) with the fingerprint taken in middleware before the route reads
+  any state, so a change landing mid-render refreshes the page once more instead of being missed.
+
+**Upgrade note.** No migration. Extension pages get the same behaviour; an extension page that renders from files
+outside `state/` and `config/` refreshes on the 30 s fallback (or when project state changes). Mark any element an
+extension fills in client-side with `data-live-keep`.
+
+## 1.4.1 — 2026-10-23
+
+Fixes from the independent review of 1.4.0.
+
+- Fix: the owner's REQUEUE text never reached the next worker. It was saved only as a task note, which no packet
+  reads, so the item was applied and the task went READY while the agent got none of the correction. It is now
+  written to the task's `guidance` (as the diagnosis requeue already was), and the delivery brief carries it under
+  "Guidance". Adapters also append it to a delivery prompt that did not come from the default brief (a job's own
+  `prompt`/`prompt_file`, the codex fallback prompt). A review resume scopes the text to the review of that digest
+  ("Owner guidance for this review"); it never reaches a delivery brief. Re-applying an item never adds it twice.
+- Fix: REQUEUE did not reset an exhausted escalation budget. The spent revisions and failure signatures survived, so
+  the next failure escalated at once. Every owner REQUEUE now resets them (`escalation.reset_retries`, keyed by the
+  inbox item so a replay after a crash never grants a second reset).
+- Fix: valid artifact paths were refused. Spaces and placeholder-like spellings (`Final Report.md`, `out/xx.json`,
+  `round_N_results.txt`) are legal file names that verify fine, but `task create` and `task import` rejected them.
+  `tasks.artifact_problems()` now splits **errors** (no file can ever match: absolute/escaping paths, directories,
+  `<>"|` and control characters, padded or empty entries) from **warnings** (prose- or placeholder-like but legal;
+  none when the entry already matches a file). Warnings are returned as `warnings`, logged, and printed by the CLI.
+- Fix: projection exclusions outlived their registration. Declared paths accumulated, so changing `path=` from
+  WEEKLY.md to REPORT.md kept both excluded; a projection removed from a still-configured extension stayed excluded;
+  and with no projection registered, 1.2.1 legacy entries were never dropped. `extensions.load()` now reconciles the
+  record with what each successfully loaded extension registers: unregistered keys go, declared paths are replaced
+  (a rendered path learned from the old declaration goes with it), and legacy entries go when nothing is registered.
+  Entries of an extension that failed to load, or that is not configured, are kept (re-adding one restores them).
+- Fix: distinct projections with the same `__name__` (two lambdas, two closures from one factory) shared one record
+  key, so rendering the second retired the first. Keys are now unique (`<lambda>`, `<lambda>#2`, ...);
+  `registry.projection(fn, path=None, name=None)` takes an explicit `name` for an identity that survives reordering
+  (a duplicate `name` within one extension is a setup error).
+- Tests: the Windows recovery adoption test holds its child on a release flag instead of a 1.5 s sleep (a child that
+  finished during the process scan was correctly adopted as finished, and the test failed). The suite no longer calls
+  the workstation's real Codex usage RPC: a nearly spent real window gated the fake jobs of `test_codex_cli`. An
+  autouse fixture reports the RPC unavailable; `@pytest.mark.capacity_integration` opts a test back in.
+
+**Upgrade note.** No migration. Existing `guidance` entries (diagnosis) are read as before. A seed entry 1.4.0
+refused for its spelling alone now imports with a warning.
+
+## 1.4.0 — 2026-10-23
+
+Owner decisions that actually reach the owner and take effect; inbox text that is never cut short; contract fixes
+that reach a running loop.
+
+- Inbox items keep their full text. `inbox.fit()` splits long prose into a `summary` (≤ 600 chars, cut on a word
+  boundary) and a `detail` (≤ 8000 chars); `create(detail=...)` stores it, the Control Center shows it behind
+  **Show full message** and `HUMAN_INBOX.md` renders the full text. Before, every writer hard-cut at 600 characters
+  and whatever came last was lost — for an escalation that was the question and the options. Diagnosis owner route,
+  delivery approvals and the human adapter all use it; a diagnosis summary is kept up to 4000 characters (was 1500).
+- New `decision` inbox kind (`REQUEUE / CANCEL / DEFER`, "Stopped tasks — your decision" in the inbox). The loop
+  opens one per block for a task BLOCKED with "owner decision needed" (review budget spent, continuations
+  exhausted, review invalidated) — before, such a task only had an issue and a note and nothing reached the owner.
+  The diagnosis owner route opens one for the FAILED task, with the question and the options first.
+  `inbox.apply_decision` acts on the answer: REQUEUE resets the budget that stopped the task and resumes it
+  (`resume: review | delivery | task`), CANCEL cancels, DEFER annotates; the outcome is recorded as `applied`, and
+  the loop re-applies an answered item whose effect never landed.
+- Fix: REQUEUE/CANCEL on a diagnosis escalation did nothing — it was a `question` item, so the answer was recorded
+  and ignored. Such items written by earlier versions are recognised (from `escalation`, REQUEUE/CANCEL/DEFER) and
+  acted on when answered.
+- Fix: text typed next to a button ("REQUEUE use the cached outputs", the Control Center sends both as one
+  response) was dropped; it is now added to the task as owner guidance.
+- `supervisor task import [--update-contracts ...]` goes through the command queue (`task.import`, payload
+  `{seed?, update_contracts?, create?}`), so it works while a supervisor runs. Before, it refused while
+  `state/.lock` was held — and since every agent works under the loop, no agent could ever apply a contract fix it
+  had made in the seed. The seed must be a file inside the project.
+- Task contracts: artifact entries the floor can never satisfy are refused by `task import` and `task create`
+  (`tasks.artifact_errors`): prose ("contact sheets"), placeholders (`<id>`, `{x}`, `S1..S6`, `EXP-1xx`, `round_N`),
+  directories (`src/`, or an existing directory named without a glob) and absolute or escaping paths. Such an entry
+  failed every delivery with "missing: …" forever. A non-glob entry that names a directory now says so in the
+  verification detail instead of plain "missing". `docs/TASK_CONTRACT.md` documents the rule; its seed example
+  (`src/`) is now `src/**/*.py`.
+
+**Upgrade note.** No migration. A project whose seed still contains such an entry gets a clear error from
+`task import` naming each one — fix the seed (glob or file path) and import again. Stored contracts are not
+re-checked; run `supervisor task import --update-contracts <ids>` after fixing the seed to refresh live tasks.
+
+## 1.3.0 — 2026-10-23
+
+Control Center Overview: clearer controls and a live view of current work.
+
+- Control row: no button is highlighted any more. The purple "suggested next action" (Pause while running) read as
+  the current state. Each button is now enabled only when it applies (Start only while offline, Pause only while
+  running, Resume only while paused or draining, Stop/Reload only while live) and a disabled one says why on hover.
+  A decision the loop has not applied yet already counts, so Pause greys out the moment it is clicked.
+- Supervisor card: the "Current task" cell is gone, so the uptime no longer sits beside a task and reads as the
+  task's age. The card shows Workspace, Process (PID), **Supervisor uptime** (with "Running since HH:MM") and Open
+  jobs; draining, a pending power-off and pause show as a note under the details.
+- New **Now running** panel under the metric cards: every open agent/process job (owner jobs excepted; they are
+  counted as "waiting for you") with task title and ID, what it is doing (Working / Reviewing / Diagnosing a
+  failure / Answering chat / Verifying), role, model and effort, attempt number, running time against the job
+  timeout, and a link to the live transcript; deferred jobs show when they retry. An **Up next** column lists the
+  next eligible tasks.
+- The panel and the Supervisor card refresh themselves every 5 s (`GET /overview/live`, card swapped out-of-band;
+  polling pauses while the tab is hidden) and right after any control is clicked. Action results are kept.
+- Fix: a view that cannot render no longer fails the loop iteration. A YAML record caught half-written (an agent
+  editing it) made `render_all` raise on every pass; five in ten minutes stopped the supervisor BLOCKED with the
+  agent's delivery still uncollected. Each built-in view is now rendered on its own: a failure skips that view
+  (its previous file stays), logs `render_error` once per distinct message and `render_recovered` when it renders
+  again. Extension projections already behaved this way.
+
 ## 1.2.3 — 2026-10-23
 
 Fourth review round (on 1.2.2, commit 52c639e).
