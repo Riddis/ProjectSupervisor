@@ -243,9 +243,13 @@ def task_verify(task_id: str, digest: str, ok: bool = True, report: str = "", de
 
 @task_app.command("review")
 def task_review(task_id: str, digest: str, role: str, verdict: str, vendor: str = "", report: str = ""):
-    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.review", {"task_id": task_id, "digest": digest, "role": role,
+    from . import tasks as tasks_mod
+    layout = _layout()
+    sha = tasks_mod.report_file_sha256(layout, report) if report else None     # the report as submitted, not as applied
+    _echo_cmd(commands_mod.submit_or_apply(layout, "task.review", {"task_id": task_id, "digest": digest, "role": role,
                                                                    "verdict": verdict, "vendor": vendor or None,
-                                                                   "report": report or None}, "review"), task_id)
+                                                                   "report": report or None, "report_sha256": sha},
+                                           "review"), task_id)
 
 
 @task_app.command("approve")

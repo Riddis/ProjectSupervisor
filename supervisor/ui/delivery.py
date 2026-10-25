@@ -12,7 +12,6 @@ reviews. A review's summary and findings come from its report file only while th
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import html
 import json
 from pathlib import Path
@@ -53,10 +52,7 @@ def read_frozen(layout: Layout, rel: str, entries: dict) -> bytes | None:
     return read_verified(layout, rel, entry.get("sha256"), MAX_FILE_BYTES)
 
 
-def read_verified(layout: Layout, rel: str, sha256: str | None, limit: int) -> bytes | None:
-    """The bytes of `rel`, read once through a link-free path (tasks.read_linkfree), only when they hash to `sha256`."""
-    data = tasks_mod.read_linkfree(layout, rel, limit) if sha256 else None
-    return data if data is not None and hashlib.sha256(data).hexdigest() == sha256 else None
+read_verified = tasks_mod.read_verified
 
 
 def file_view(layout: Layout, task_id: str, index: int, rel: str, entries: dict, digest: str,
@@ -84,23 +80,15 @@ def uncovered(task: Task) -> list[str]:
             if not any(p == a or fnmatch.fnmatchcase(p, a) for p in paths)]
 
 
-def _review_report(layout: Layout, ref: str | None, sha256: str | None) -> dict:
-    """The reviewer's summary and findings, from the report file exactly as it was when the review was recorded
-    (`ReviewRecord.report_sha256`). `report_state` says why they are missing: `unverified` (no hash was recorded,
-    e.g. a review recorded before 1.10.0) or `changed` (the file no longer hashes to it, is gone, or is a link)."""
-    if not ref:
+def _review_report(layout: Layout, review) -> dict:
+    """The reviewer's summary and findings from tasks.review_report (verified against the hash recorded with the
+    review). `report_state` says why they are missing: `unverified` (no hash recorded, e.g. a review from before
+    1.10.0) or `changed` (the file no longer hashes to it, is gone, or is a link)."""
+    doc, state = tasks_mod.review_report(layout, review)
+    if state == "none":
         return {}
-    if not sha256:
-        return {"report_state": "unverified"}
-    data = read_verified(layout, ref, sha256, tasks_mod.MAX_REPORT_BYTES)
-    if data is None:
-        return {"report_state": "changed"}
-    try:
-        doc = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return {"report_state": "changed"}
-    if not isinstance(doc, dict):
-        return {}
+    if doc is None:
+        return {"report_state": state}
     findings = [{"category": str(f.get("category") or ""), "blocking": bool(f.get("blocking")),
                  "message": str(f.get("message") or "")[:REVIEW_TEXT_LIMIT]}
                 for f in (doc.get("findings") or []) if isinstance(f, dict)]
@@ -134,5 +122,5 @@ def view(layout: Layout, task: Task, digest: str | None = None) -> dict:
         out["verification"] = {"ok": d.verification.ok, "detail": d.verification.detail}
     for r in d.reviews:
         if r.digest == digest and not r.superseded:
-            out["reviews"].append({"role": r.role, "verdict": r.verdict.value, **_review_report(layout, r.report, r.report_sha256)})
+            out["reviews"].append({"role": r.role, "verdict": r.verdict.value, **_review_report(layout, r)})
     return out

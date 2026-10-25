@@ -191,7 +191,7 @@ def _review(layout, payload, actor):
                           for r in t.delivery.reviews):
         return {"skipped": "already reviewed", "status": t.status.value}
     tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
-                            payload.get("vendor"), payload.get("report"))
+                            payload.get("vendor"), payload.get("report"), report_sha256=payload.get("report_sha256"))
     t = tasks_mod.advance(layout, payload["task_id"])
     return {"status": t.status.value}
 

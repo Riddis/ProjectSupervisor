@@ -333,5 +333,17 @@ def test_a_report_that_is_a_link_when_recorded_gets_no_hash(layout):
         os.symlink(layout.root / "real.json", layout.root / "link.json")
     except OSError:
         pytest.skip("creating symlinks needs privileges here")
-    assert tasks.report_sha256(layout, "link.json") is None
-    assert tasks.report_sha256(layout, "real.json") is not None
+    assert tasks.report_file_sha256(layout, "link.json") is None
+    assert tasks.report_file_sha256(layout, "real.json") is not None
+
+
+def test_an_api_lane_report_envelope_is_unwrapped_after_verification(layout, client):
+    """Review 1.10.0 round 4 (P3): a report stored in the claude_api envelope ({"status", ..., "result": {...}})
+    shows its summary and findings on both pages once its bytes are verified."""
+    envelope = {"status": "COMPLETE", "notes": "n", "usage": {}, "model": "m",
+                "result": {"kind": "review", "verdict": "ACCEPT", "summary": "API SUMMARY",
+                           "findings": [{"category": "quality", "blocking": False, "message": "API FINDING",
+                                         "evidence": "e"}]}}
+    delivered(layout, review=envelope)
+    for page in (client.get("/inbox").text, client.get("/tasks/T").text):
+        assert "API SUMMARY" in page and "API FINDING" in page

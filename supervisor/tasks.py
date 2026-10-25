@@ -543,15 +543,60 @@ def read_linkfree(layout: Layout, rel: str, limit: int) -> bytes | None:
     return data if len(data) <= limit else None
 
 
-def report_sha256(layout: Layout, rel: str | None) -> str | None:
+def report_file_sha256(layout: Layout, rel: str | None) -> str | None:
     data = read_linkfree(layout, rel, MAX_REPORT_BYTES) if rel else None
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
+def read_verified(layout: Layout, rel: str, sha256: str | None, limit: int) -> bytes | None:
+    """The bytes of `rel`, read once through a link-free path, only when they hash to `sha256`."""
+    data = read_linkfree(layout, rel, limit) if sha256 else None
+    return data if data is not None and hashlib.sha256(data).hexdigest() == sha256 else None
+
+
+def review_report(layout: Layout, review: ReviewRecord) -> tuple[dict | None, str]:
+    """A recorded review's own report, exactly as recorded: (review object, state). `state` is "ok", "none" (the
+    review names no report), "unverified" (no hash was recorded: a review from before 1.10.0) or "changed" (the file
+    no longer hashes to `report_sha256`, is gone, is a link or does not parse). Never the file's current content
+    otherwise. The one reader for everything that shows or quotes a reviewer's rationale (the approval view,
+    escalation). A lane's envelope around the review object (`{"status", ..., "result": {...}}`) is unwrapped."""
+    if not review.report:
+        return None, "none"
+    if not review.report_sha256:
+        return None, "unverified"
+    data = read_verified(layout, review.report, review.report_sha256, MAX_REPORT_BYTES)
+    if data is None:
+        return None, "changed"
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "changed"
+    if isinstance(doc, dict) and "verdict" not in doc and isinstance(doc.get("result"), dict):
+        doc = doc["result"]
+    return (doc, "ok") if isinstance(doc, dict) else (None, "changed")
+
+
+def review_snapshot(layout: Layout, run_dir, review: dict) -> tuple[str, str]:
+    """Freeze the structured review a job returned (the object its verdict was read from) as `review_report.json` in
+    its run dir: the bytes are serialized once, written, and hashed in memory, so the recorded verdict and the
+    report that speaks for it come from the same input, whatever happens to the file afterwards. Returns
+    (root-relative path, sha256)."""
+    from ._vendor.contract import atomic_write_text
+    # Compact ASCII JSON: every newline and non-ASCII character is escaped, so text-mode writing (newline translation
+    # on Windows) cannot make the bytes on disk differ from the bytes hashed here.
+    text = json.dumps(review, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    path = Path(run_dir) / "review_report.json"
+    atomic_write_text(path, text)
+    return path.relative_to(layout.root).as_posix(), hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
-                  report: str | None = None, actor: str = "review") -> Task:
+                  report: str | None = None, actor: str = "review", report_sha256: str | None = None) -> Task:
+    """`report_sha256`: the hash of the report as the reviewer produced it, when the caller holds those bytes (the
+    loop's snapshot of the job's result, a CLI review hashed at submission). Without it the file is hashed now, at
+    record time — which says what the file held then, not what the reviewer wrote."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
-    sha = report_sha256(layout, report)             # the report as reviewed, so a later edit cannot speak for the reviewer
+    sha = report_sha256 or report_file_sha256(layout, report)
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")

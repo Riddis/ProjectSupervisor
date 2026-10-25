@@ -35,10 +35,14 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   to the digest and each file's bytes are checked against their manifest entry before they are shown, thumbnailed or
   served (`/tasks/<id>/files/<n>?digest=`); otherwise the card says the files changed and shows none. An approval's
   own `evidence` list never reads files: references outside the delivery are listed by name only. A review's summary
-  and findings come from its report only while that file still hashes to the `report_sha256` now recorded with each
-  review (`tasks.record_review`); a changed or linked report, or a review recorded before 1.10.0, shows the verdict
-  with a note instead. The verification shown is the recorded outcome and detail. The task page's artifact list is
-  replaced by the same view (`supervisor/ui/delivery.py`, `partials/delivery.html`).
+  and findings come from the review job's own structured result — the object its verdict was read from, frozen when
+  the review is ingested (`review_report.json` in the run dir, hashed from the bytes written;
+  `ReviewRecord.report_sha256`); a `supervisor task review` report is hashed when the command is submitted. They are
+  shown, and quoted to escalation's revision brief, only while that file still hashes to it (`tasks.review_report`,
+  which also unwraps the `claude_api` result envelope); a changed or linked report, or a review recorded before
+  1.10.0, keeps its verdict and says the rationale is unavailable. The verification shown is the recorded outcome and
+  detail. The task page's artifact list is replaced by the same view (`supervisor/ui/delivery.py`,
+  `partials/delivery.html`).
 - **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
   store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and
   approved without its decision record in the digest. `state/decisions/` is now authored state
