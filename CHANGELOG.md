@@ -41,8 +41,9 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   flight right after launch, but the fake manager could answer, and the same loop iteration ingest its diagnosis,
   before the assertion ran (reproducible on 1.9.0 and 1.10.0 by holding `submit()` until the fake exits). The fake
   (`tests/fixtures/fake_diagnosis.py`) now waits for a release file when `FAKE_DIAGNOSIS_HOLD` is set; the test checks
-  the launch state while it is held, then releases it and waits for the job to finish. Test-only: no framework code
-  changes.
+  the launch state while it is held, then releases it and waits for the job to finish. The same race, and the same
+  hold, in `test_exhausted_retries_dispatch_one_manager_diagnosis_not_an_owner_item`, whose fake manager could requeue
+  the task before it was checked as stopped. Test-only: no framework code changes.
 
 ## 1.10.0 — 2026-10-25
 

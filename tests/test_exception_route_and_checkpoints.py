@@ -72,19 +72,31 @@ def diag_records(layout, tid):
 
 # ------------------------------------------------------------------ §1 exception route
 
-def test_exhausted_retries_dispatch_one_manager_diagnosis_not_an_owner_item(layout, fake_claude):
+def test_exhausted_retries_dispatch_one_manager_diagnosis_not_an_owner_item(layout, fake_claude, monkeypatch, tmp_path):
+    """The fake manager is held while the stopped task is checked: without the hold it could answer, and the same
+    loop iteration ingest its requeue (the task READY again), before the assertions ran (review 1.10.1 F4)."""
+    release = tmp_path / "release-diagnosis"
+    monkeypatch.setenv("FAKE_DIAGNOSIS_HOLD", str(release))
     failing_task(layout, "T")
-    sup = run_until(layout, lambda: diag_records(layout, "T"))
-    recs = diag_records(layout, "T")
-    assert len(recs) == 1 and recs[0]["diag_level"] == "manager" and recs[0]["diag_role"] == "senior_pm"
-    assert tasks.load(layout, "T").status in (TaskStatus.FAILED, TaskStatus.BLOCKED)   # stopped, not re-dispatched
-    assert inbox.open_items(layout, "owner") == []                      # the owner is not bothered yet
-    assert (layout.issues / "I-001.yaml").exists()
-    # the diagnosis job reads only: review lane confinement, no ownership, no snapshot
-    assert gate.owned_for(tasks.load(layout, "T"), "claude_cli", "diagnosis") == []
-    # a replayed escalation (same signature, same level) spends no second diagnosis
-    assert diagnosis.dispatch(sup, tasks.load(layout, "T"), "verification", "x", recs[0]["diag_signature"], "manager", "I-001") is None
-    assert len(diag_records(layout, "T")) == 1
+    try:
+        sup = run_until(layout, lambda: diag_records(layout, "T"))
+        recs = diag_records(layout, "T")
+        assert len(recs) == 1 and recs[0]["diag_level"] == "manager" and recs[0]["diag_role"] == "senior_pm"
+        assert tasks.load(layout, "T").status in (TaskStatus.FAILED, TaskStatus.BLOCKED)   # stopped, not re-dispatched
+        assert inbox.open_items(layout, "owner") == []                      # the owner is not bothered yet
+        assert (layout.issues / "I-001.yaml").exists()
+        # the diagnosis job reads only: review lane confinement, no ownership, no snapshot
+        assert gate.owned_for(tasks.load(layout, "T"), "claude_cli", "diagnosis") == []
+        # a replayed escalation (same signature, same level) spends no second diagnosis
+        assert diagnosis.dispatch(sup, tasks.load(layout, "T"), "verification", "x", recs[0]["diag_signature"], "manager", "I-001") is None
+        assert len(diag_records(layout, "T")) == 1
+    finally:
+        release.write_text("go", encoding="utf-8")
+    deadline = time.time() + 25
+    while time.time() < deadline and jobs.read(layout, recs[0]["attempt_id"])["phase"] != "DONE":
+        sup.once()
+        time.sleep(0.1)
+    assert jobs.read(layout, recs[0]["attempt_id"])["phase"] == "DONE"                 # released, then ingested
 
 
 def test_requeue_diagnosis_puts_the_task_back_with_guidance_and_a_fresh_retry_budget(layout, fake_claude):
