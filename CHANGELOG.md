@@ -3,11 +3,17 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.10.0 — 2026-10-25
 
-No state or config shape change that needs a migration: a job record gains the optional `progress_stage` (and
-`rerouted_to` on a rerouted one), log lines written by a command gain `command`, `routing.yaml` gains the optional
-`claude_api.exhausted_recheck_hours`, and `state/runtime/claude_api_credit.json` exists only after a credit refusal.
+Approval evidence, one log line per owner action, progress reports from long jobs, and a `claude_api` lane that
+reroutes work when the prepaid credit is spent. A feature release ahead of phase 2 of the boundary plan, so the
+public extension API and gate G2 move to 1.11.0 and extension packages (G5) to 1.12.0 (`docs/BOUNDARY.md`, the
+framework skills). No extension hook added or changed; extensions need no change.
+
+**Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one:
+a job record gains the optional `progress_stage` (and `rerouted_to` on a rerouted one), log lines written by a
+command gain `command`, `routing.yaml` gains the optional `claude_api.exhausted_recheck_hours`, and
+`state/runtime/claude_api_credit.json` exists only after a credit refusal. Rollback: check out `v1.9.0` again.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
   the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record

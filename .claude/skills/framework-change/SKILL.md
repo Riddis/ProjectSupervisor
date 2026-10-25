@@ -14,7 +14,7 @@ the framework never names a project. Read `docs/BOUNDARY.md` and `docs/FRAMEWORK
 Answer before writing code, and keep the answer for the pull request (G7):
 
 - **Rule 1:** would a project about something completely different want this? Yes → framework, continue here.
-  Some projects → an extension package (from 1.11.0; until then the project's `extensions/`). Only this project →
+  Some projects → an extension package (from 1.12.0; until then the project's `extensions/`). Only this project →
   the project's `extensions/`, `config/` or `agents/`: stop here and do it there.
 - **Rule 3, for a new or changed hook:** name its second user — a generic use beyond the project asking. With
   only one user the project solves it in its extension.
@@ -56,7 +56,7 @@ All three, and say in the pull request which ran (the gate table in `docs/BOUNDA
 - **G1** `python -m supervisor.boundary` from the framework root: OK, no notes. Read the supporting evidence
   (registered domain words) and say why each hit is generic.
 - **G3** `python -m pytest -q` green on Windows (`tools\test_windows.ps1`) and on Linux (CI runs both).
-- **G7** the written answers from step 1, plus: public API impact (from 1.10.0), migration impact, docs updated.
+- **G7** the written answers from step 1, plus: public API impact (from 1.11.0), migration impact, docs updated.
 
 Then `CHANGELOG.md` under `## Unreleased` (what changed and why, for owners and extension authors), and the
 commit naming the module or hook. Never commit framework changes from a project repo; never put project files in

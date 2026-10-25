@@ -50,7 +50,7 @@ to the restored state or explicitly discarded by the owner (rollback A, before a
 
 ## Extension and project migrations
 
-The same contract applies to an extension's migration of its own identifiers and config section (from 1.11.0
+The same contract applies to an extension's migration of its own identifiers and config section (from 1.12.0
 through the extension standard) and to a project's own state changes. The extension that owns an identifier owns
 its migration and its rollback path; a project migration runs inside the project's maintenance window with a
 snapshot taken first.
