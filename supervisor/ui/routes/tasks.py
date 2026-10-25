@@ -6,6 +6,7 @@ from ... import jobs as jobs_mod
 from ... import tasks as tasks_mod
 from ...models.task import TaskStatus
 from ...paths import Layout
+from .. import delivery as delivery_view
 from .. import thumbs
 from ..auth import require_auth, require_csrf
 from ..deps import act, decode_flash, render
@@ -35,13 +36,26 @@ def task_detail(task_id: str, request: Request, layout: Layout = Depends(require
     t = _get_task(layout, task_id)
     jobs_by_id = {r["attempt_id"]: r for r in jobs_mod.for_task(layout, task_id)}
     attempts = [{"attempt": a, "job": jobs_by_id.get(a.id)} for a in t.attempts]
-    thumb_keys = {}
-    for rel in t.paths:
-        key = thumbs.ensure(layout, layout.root / rel)
-        if key:
-            thumb_keys[rel] = key
-    return render(request, "task_detail.html", {"t": t, "attempts": attempts, "thumb_keys": thumb_keys,
+    dv = delivery_view.view(layout, t) if t.delivery.digest else None
+    return render(request, "task_detail.html", {"t": t, "attempts": attempts, "dv": dv,
                                                 "flash": decode_flash(request)})
+
+
+@router.get("/tasks/{task_id}/files/{index}")
+def task_file(task_id: str, index: int, layout: Layout = Depends(require_auth)):
+    """One file of the task's current delivery, by its position in the task's `paths` — the browser names an index,
+    never a path. Text is served as plain text (never rendered as a page from the project's own origin)."""
+    t = _get_task(layout, task_id)
+    if not 0 <= index < len(t.paths):
+        raise HTTPException(status_code=404, detail="no such delivered file")
+    path = delivery_view.resolve(layout, t.paths[index])
+    if path is None:
+        raise HTTPException(status_code=404, detail="file is no longer on disk")
+    from fastapi.responses import FileResponse
+    if thumbs.is_image(path):
+        return FileResponse(path)
+    return FileResponse(path, media_type="text/plain; charset=utf-8",
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.post("/tasks/{task_id}/attempts/{attempt_id}/open-run-dir")

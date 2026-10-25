@@ -1,0 +1,6 @@
+{# A running job's own report, `p` = supervisor.progress.read() plus age_s. #}{% from "partials/fmt.html" import duration %}
+<div class="job-progress" title="Reported by the job itself (PROGRESS.json in its run directory)">
+  <span class="job-stage">{{ p.stage | capitalize }}</span>{% if p.detail %} <span class="job-stage-detail">{{ p.detail }}</span>{% endif %}
+  {% if p.percent is not none %}<progress value="{{ p.percent }}" max="100" aria-label="{{ p.stage }} progress"></progress> <small>{{ p.percent | round | int }}%{% if p.total and p.total != 100 %} ({{ p.done | int }} of {{ p.total | int }}){% endif %}</small>{% endif %}
+  <small class="job-stage-age">updated {{ duration(p.age_s) }} ago</small>
+</div>

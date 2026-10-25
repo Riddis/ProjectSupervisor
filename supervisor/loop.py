@@ -12,6 +12,7 @@ from pathlib import Path
 from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, conversations as conversations_mod
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
+from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, tasks as tasks_mod, verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
@@ -76,7 +77,6 @@ def scheduler_routing(layout: Layout) -> dict:
 
 
 RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
-
 
 class Supervisor:
     def __init__(self, layout: Layout, sleep_s: float = 5.0, render_every: int = 1, unattended: bool = False):
@@ -380,7 +380,7 @@ class Supervisor:
             patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
             files, missing = self._expand_artifacts(patterns)
             rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and extension views
-            volatile = [f for f in files if f.startswith("state/") or f in rendered]
+            volatile = [f for f in files if tasks_mod.volatile_state(f) or f in rendered]
             if volatile:                                           # the store/projections change on every tick: never an
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
                 tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=volatile,
@@ -784,7 +784,8 @@ class Supervisor:
                 result = ad.collect(rec["spec"], handle)
                 if result is None:
                     if rec["phase"] == "SUBMITTED":
-                        jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
+                        rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
+                    progress_mod.observe(self.layout, rec)     # one log line per reported stage
                     continue
                 if result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
                     result.error = f"lost: {result.error}"

@@ -419,15 +419,19 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
             continue
         fn = HANDLERS.get(cmd.get("kind"))
         payload = dict(cmd.get("payload") or {}, _kind=cmd.get("kind"), _id=cmd.get("id"))
-        try:
-            if fn is None:
-                raise KeyError(f"unknown command {cmd.get('kind')!r}")
-            result = fn(layout, payload, actor_override or cmd.get("actor", "cli"))
-            cmd.update({"applied": now_iso(), "ok": True, "result": result})
-        except Exception as exc:  # noqa: BLE001 - a bad command must not kill the loop
-            cmd.update({"applied": now_iso(), "ok": False, "error": f"{type(exc).__name__}: {exc}"})
-        tasks_mod.log(layout, "command", cmd.get("actor", "cli"), kind=cmd.get("kind"), id=cmd.get("id"), ok=cmd["ok"],
-                      error=cmd.get("error"))
+        with tasks_mod.command_scope(cmd.get("id")) as scope:
+            try:
+                if fn is None:
+                    raise KeyError(f"unknown command {cmd.get('kind')!r}")
+                result = fn(layout, payload, actor_override or cmd.get("actor", "cli"))
+                cmd.update({"applied": now_iso(), "ok": True, "result": result})
+            except Exception as exc:  # noqa: BLE001 - a bad command must not kill the loop
+                cmd.update({"applied": now_iso(), "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        # One line per action: a handler that logged its own event (job_extended, status, ...) already wrote it,
+        # tagged with this command's id. The generic line remains for failures and for handlers that log nothing.
+        if not cmd["ok"] or not scope["logged"]:
+            tasks_mod.log(layout, "command", cmd.get("actor", "cli"), kind=cmd.get("kind"), id=cmd.get("id"),
+                          ok=cmd["ok"], error=cmd.get("error"))
         atomic_json(layout.commands_applied / p.name, cmd)
         try:
             p.unlink()

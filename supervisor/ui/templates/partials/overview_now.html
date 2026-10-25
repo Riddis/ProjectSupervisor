@@ -16,6 +16,7 @@
           {% if j.attempt and not j.is_chat %}<span>attempt {{ j.attempt }}</span>{% endif %}
           {% if j.gpu %}<span class="subtle-tag">GPU</span>{% endif %}
         </div>
+        {% if j.progress %}{% with p = j.progress %}{% include "partials/job_progress.html" %}{% endwith %}{% endif %}
       </div>
       <div class="now-time">
         {% if j.state == 'deferred' %}<strong>Deferred</strong><small title="{{ j.state_note }}">Retries in {{ duration(j.retry_in_s) }}</small>

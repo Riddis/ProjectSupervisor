@@ -17,6 +17,7 @@ from .. import policy
 from .. import timeouts
 from .._vendor import handoff
 from .._vendor.contract import atomic_json, read_json
+from ..progress import env as progress_env
 from ..store import now_iso
 from .base import Adapter, Result, register
 
@@ -154,7 +155,8 @@ class ProcessAdapter(Adapter):
         return None
 
     def env(self, spec):
-        return {**os.environ, "SUPERVISOR_ATTEMPT": str(spec.get("attempt_id", ""))}   # lets recover() find an untracked child
+        return {**os.environ, "SUPERVISOR_ATTEMPT": str(spec.get("attempt_id", "")),   # lets recover() find an untracked child
+                **progress_env(spec)}
 
     def on_timeout(self, spec, handle) -> None:
         """Hook: adapters may salvage partial output (e.g. rate-limit events) before the timeout Result."""

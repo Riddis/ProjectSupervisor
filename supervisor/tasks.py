@@ -9,6 +9,8 @@ Rules:
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import re
 from pathlib import Path
@@ -280,6 +282,21 @@ def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
 
 # ------------------------------------------------------------------ logging
 
+_COMMAND: contextvars.ContextVar[dict | None] = contextvars.ContextVar("supervisor_command", default=None)
+
+
+@contextlib.contextmanager
+def command_scope(command_id: str | None):
+    """While a queued command's handler runs (commands.apply_all), every log line it writes carries the command's
+    id, and the yielded dict counts them: a handler that logged its own event needs no separate generic line."""
+    scope = {"id": command_id, "logged": 0}
+    token = _COMMAND.set(scope)
+    try:
+        yield scope
+    finally:
+        _COMMAND.reset(token)
+
+
 def log(layout: Layout, event: str, actor: str = "system", **fields):
     """The single append path to state/log.jsonl. Everything a caller supplies is screened here: the log is read
     by the Control Center, quoted into revision packets and committed in projections, so a credential that
@@ -293,6 +310,10 @@ def log(layout: Layout, event: str, actor: str = "system", **fields):
     reads it from a queued `state/commands/*.json` file. `ts` is this machine's clock and is the one value no
     caller supplies."""
     layout.log.parent.mkdir(parents=True, exist_ok=True)
+    cmd = _COMMAND.get()
+    if cmd is not None:                       # written while a command runs: carry its id (see command_scope)
+        fields.setdefault("command", cmd["id"])
+        cmd["logged"] += 1
     record = {"ts": store.now_iso(),
               "actor": policy_mod.screen_log_identity(actor, layout),
               "event": policy_mod.screen_log_identity(event, layout),
@@ -438,6 +459,16 @@ def set_priority(layout: Layout, task_id: str, priority: int, actor: str = "owne
 VOLATILE_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
 
 
+# Authored records under state/: written by an agent or the owner as a deliverable and never rewritten by the loop,
+# so they can be frozen in a delivery digest. Everything else under state/ is the store and changes every tick.
+AUTHORED_STATE = ("state/decisions/",)
+
+
+def volatile_state(rel: str) -> bool:
+    """True for a store file under state/ — never a deliverable, never a frozen review input."""
+    return rel.startswith("state/") and not rel.startswith(AUTHORED_STATE)
+
+
 def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "system", result: str | None = None,
                     paths: Iterable[str] = ()) -> Task:
     """A new artifact digest: earlier verification/reviews/approvals are superseded (kept in history). A task that was
@@ -465,7 +496,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
             # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never
             # count — the built-in views and every projection an extension registered (verify.excluded_files), so
             # a rendered file is never frozen as a review input.
-            doc["paths"] = sorted({str(x) for x in paths if not str(x).startswith("state/")
+            doc["paths"] = sorted({str(x) for x in paths if not volatile_state(str(x))
                                    and str(x) not in volatile})
     from . import verify as verify_mod                   # local: verify imports this module
     volatile = VOLATILE_PROJECTIONS | verify_mod.excluded_files(layout)
