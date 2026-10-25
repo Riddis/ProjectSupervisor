@@ -567,3 +567,27 @@ def test_lane_reset_of_an_unknown_lane_fails_the_command(layout):
 def test_credit_refusal_matches_only_the_exact_shape(status, body, expected):
     text = body if isinstance(body, str) else json.dumps(body)
     assert claude_api.credit_refusal(status, text) is expected
+
+
+# ------------------------------------------------------------------ review 1.10.0 #5: a downgrade needs no pending reroute
+
+def test_doctor_reports_an_interrupted_reroute_until_the_loop_requeues_it(layout, monkeypatch):
+    from supervisor import doctor, runtime
+    write_key(layout)
+    plain_claude_task(layout, "CT")
+    tasks.set_status(layout, "CT", "IN_PROGRESS")
+    jobs.write(layout, {"attempt_id": "CT.a1", "task_id": "CT", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    assert not doctor.check_jobs(layout).ok and "CT.a1" in doctor.check_jobs(layout).detail
+    runtime.set_decision(layout, "DRAIN", "owner")                   # the rollback procedure's drain
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    recs = jobs.for_task(layout, "CT")
+    assert recs[-1]["adapter"] == "claude_cli" and recs[-1]["phase"] == "PREPARED"   # queued, held by the drain
+    assert recs[-1]["rerouted_from"] == "CT.a1"
+    assert doctor.check_jobs(layout).ok
+
+
+def test_doctor_jobs_check_is_ok_without_reroutes(layout):
+    from supervisor import doctor
+    assert doctor.check_jobs(layout).ok

@@ -15,7 +15,14 @@ two optional methods with defaults, below).
 a job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a
 reroute; log lines written by a command gain `command`; `routing.yaml` gains the optional
 `claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json` exists only after a credit refusal.
-Rollback: check out `v1.9.0` again.
+
+**Rollback** to v1.9.0, in a maintenance window: (1) with 1.10.0 still checked out, drain (`supervisor drain`)
+until no job is running — every iteration 1.10.0 re-queues a reroute a crash interrupted, which v1.9.0 cannot do;
+(2) `supervisor doctor` must show `jobs` OK (no task's newest record is an un-requeued `REROUTED`); (3) stop, check
+out `v1.9.0`, `supervisor migrate` (records `framework_version` 1.9.0 again), `supervisor doctor`, start. What
+1.10.0 wrote stays readable by 1.9.0: the extra job-record fields are ignored, a closed `REROUTED` record is a
+finished attempt, a successor it queued is an ordinary PREPARED record, and a record waiting on a spent lane
+waits for its time. Or restore the snapshot taken before the upgrade.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
   the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record
