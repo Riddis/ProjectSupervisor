@@ -183,12 +183,24 @@ def test_diagnosis_route_can_be_disabled_in_routing(layout, fake_claude):
     assert diag_records(layout, "T") == []
 
 
-def test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress(layout, fake_claude):
+def test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress(layout, fake_claude, monkeypatch, tmp_path):
+    """The fake manager is held until the launch state has been checked: without the hold it could answer, and the
+    same loop iteration ingest its diagnosis, before the assertions ran (a test race, not a loop defect)."""
+    release = tmp_path / "release-diagnosis"
+    monkeypatch.setenv("FAKE_DIAGNOSIS_HOLD", str(release))
     failing_task(layout, "T")
-    run_until(layout, lambda: diag_records(layout, "T"))
-    rec = diag_records(layout, "T")[0]
-    assert rec["phase"] in ("SUBMITTED", "RUNNING")
-    assert tasks.load(layout, "T").status in (TaskStatus.FAILED, TaskStatus.BLOCKED)   # never IN_PROGRESS
+    try:
+        sup = run_until(layout, lambda: diag_records(layout, "T"))
+        rec = diag_records(layout, "T")[0]
+        assert rec["phase"] in ("SUBMITTED", "RUNNING")
+        assert tasks.load(layout, "T").status in (TaskStatus.FAILED, TaskStatus.BLOCKED)   # never IN_PROGRESS
+    finally:
+        release.write_text("go", encoding="utf-8")
+    deadline = time.time() + 25
+    while time.time() < deadline and jobs.read(layout, rec["attempt_id"])["phase"] != "DONE":
+        sup.once()
+        time.sleep(0.1)
+    assert jobs.read(layout, rec["attempt_id"])["phase"] == "DONE"                     # released, then ingested
 
 
 # ------------------------------------------------------------------ §2 checkpoints

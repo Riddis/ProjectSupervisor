@@ -3,6 +3,16 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **Tests: the diagnosis launch test no longer races its fake agent.**
+  `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in
+  flight right after launch, but the fake manager could answer, and the same loop iteration ingest its diagnosis,
+  before the assertion ran (reproducible on 1.9.0 and 1.10.0 by holding `submit()` until the fake exits). The fake
+  (`tests/fixtures/fake_diagnosis.py`) now waits for a release file when `FAKE_DIAGNOSIS_HOLD` is set; the test checks
+  the launch state while it is held, then releases it and waits for the job to finish. Test-only: no framework code
+  changes.
+
 ## 1.10.0 — 2026-10-25
 
 Approval evidence, one log line per owner action, progress reports from long jobs, a `claude_api` lane that reroutes
