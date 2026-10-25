@@ -105,48 +105,51 @@ DYNAMIC = {"import_module": True, "__import__": True, "run_module": True,
 _DYNAMIC_SOURCES = {"importlib", "importlib.util", "builtins", "runpy"}
 
 
-def _dynamic_name(expr: ast.AST, aliases: dict[str, str]) -> str | None:
-    """The loader function `expr` evaluates to — `importlib.import_module`, a name bound to one (`from importlib
+def _dynamic_names(expr: ast.AST, aliases: dict[str, set[str]]) -> set[str]:
+    """The loader functions `expr` may evaluate to — `importlib.import_module`, a name bound to one (`from importlib
     import import_module as load`, `load = importlib.import_module`), `getattr(importlib, "import_module")` or a
-    `functools.partial` of one — else None."""
+    `functools.partial` of one. A name rebound to different loaders may be any of them. Empty when none."""
     if isinstance(expr, ast.Attribute) and expr.attr in DYNAMIC:
-        return expr.attr
+        return {expr.attr}
     if isinstance(expr, ast.Name):
-        return aliases.get(expr.id) or ("__import__" if expr.id == "__import__" else None)
+        return set(aliases.get(expr.id, ())) | ({"__import__"} if expr.id == "__import__" else set())
     if isinstance(expr, ast.Call):
         fn = expr.func
         fname = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else ""
         if (fname == "getattr" and len(expr.args) >= 2 and isinstance(expr.args[1], ast.Constant)
                 and expr.args[1].value in DYNAMIC):
-            return expr.args[1].value
+            return {expr.args[1].value}
         if fname == "partial" and expr.args:
-            return _dynamic_name(expr.args[0], aliases)
-    return None
+            return _dynamic_names(expr.args[0], aliases)
+    return set()
 
 
-def _dynamic_aliases(tree: ast.AST) -> dict[str, str]:
-    """Names the module binds to a loader function, through imports and (chains of) assignments."""
-    aliases: dict[str, str] = {}
+def _dynamic_aliases(tree: ast.AST) -> dict[str, set[str]]:
+    """Names the module binds to a loader function, through imports and (chains of) assignments. Flow-insensitive
+    and only growing: a name keeps every loader any binding gives it, so a rebinding (`load = import_module`, later
+    `load = run_path`) or a cycle (`a = b`, `b = a`) adds to the sets until nothing new appears — the loop ends
+    because the sets are bounded by the loader names."""
+    aliases: dict[str, set[str]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in _DYNAMIC_SOURCES:
             for a in node.names:
                 if a.name in DYNAMIC:
-                    aliases[a.asname or a.name] = a.name
+                    aliases.setdefault(a.asname or a.name, set()).add(a.name)
+    bindings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            bindings += [(t.id, node.value) for t in node.targets if isinstance(t, ast.Name)]
+        elif (isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None
+              and isinstance(node.target, ast.Name)):
+            bindings.append((node.target.id, node.value))
     changed = True
     while changed:
         changed = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                targets, value = node.targets, node.value
-            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
-                targets, value = [node.target], node.value
-            else:
-                continue
-            name = _dynamic_name(value, aliases)
-            for t in targets:
-                if name and isinstance(t, ast.Name) and aliases.get(t.id) != name:
-                    aliases[t.id] = name
-                    changed = True
+        for target, value in bindings:
+            names = _dynamic_names(value, aliases)
+            if names - aliases.get(target, set()):
+                aliases.setdefault(target, set()).update(names)
+                changed = True
     return aliases
 
 
@@ -171,13 +174,14 @@ def _import_targets(tree: ast.AST, loaders_ok: bool):
             continue
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
             continue
-        name = _dynamic_name(node, aliases)
-        if not name:
+        names = _dynamic_names(node, aliases)
+        if not names:
             continue
+        name = "/".join(sorted(names))
         parent = getattr(node, "_boundary_parent", None)
         if isinstance(parent, ast.Call) and parent.func is node:
             arg = parent.args[0] if parent.args else None
-            if DYNAMIC[name] and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            if all(DYNAMIC[n] for n in names) and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 found = (parent.lineno, arg.value, "dynamic import")
             elif loaders_ok:
                 continue

@@ -18,6 +18,8 @@ No state or config shape change; `supervisor migrate` only records the new versi
   referenced, however it is named (`import_module as load`, assigned, `getattr`, `functools.partial`, passed to
   `map`, `runpy`); `.local` (multicast DNS: a real machine) is no longer a reserved name, the schemas' `$id` host
   `supervisor.local` is listed explicitly; a root without the `supervisor/` package exits 2 instead of passing.
+  Second round (REVISE, one P2 here): the alias analysis only grows (a name keeps every loader any binding gives
+  it), so a rebinding or a cycle can no longer keep it from ending; a name that may be a path loader is judged as one.
 - **CI** (`.github/workflows/ci.yml`): G1, and the suite on Linux and Windows (G3), on every push to `main` and
   every pull request; meant as required checks under branch protection on `main`.
 - **Template smoke test** (`tests/test_template_smoke.py`): `supervisor init` → `supervisor doctor` → one task on the

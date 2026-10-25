@@ -74,6 +74,24 @@ def test_g1a_sees_dynamic_imports_however_the_loader_is_named(tmp_path, code):
     assert any(r == "G1a" and p == "supervisor/mod.py" for r, p, _ in found), found
 
 
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("code,expected", [
+    # rebinding to two different loaders made the old fixpoint flip between them forever
+    ("import importlib, runpy\nload = importlib.import_module\nload = runpy.run_path\nload('plugin.py')\n",
+     "dynamic import_module/run_path() outside the listed loaders"),
+    ("import importlib, runpy\nload = runpy.run_path\nload = importlib.import_module\nload('extensions.bench')\n",
+     "dynamic import_module/run_path() outside the listed loaders"),
+    ("import importlib\na = importlib.import_module\nb = a\na = b\nb('extensions.bench')\n", "dynamic import"),
+])
+def test_g1a_alias_analysis_ends_on_rebinding_and_cycles(tmp_path, code, expected):
+    """Review of 1.9.0, second round (P2): a name rebound to different loaders never let the alias fixpoint settle.
+    A name that may be any of several loaders is judged as all of them: a path loader among them means a literal
+    argument proves nothing, so the call is allowed only in a listed loader file."""
+    report = boundary.check(framework(tmp_path, {"supervisor/mod.py": code}), user_names=[])
+    details = [f.detail for f in report.violations if f.rule == "G1a"]
+    assert any(expected in d for d in details), details
+
+
 def test_g1a_an_aliased_loader_with_a_framework_or_stdlib_name_passes(tmp_path):
     code = ("from importlib import import_module as load\nload('json')\nload('supervisor.adapters')\n"
             "socket = __import__('socket')\n")
