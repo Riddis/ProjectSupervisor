@@ -106,6 +106,22 @@ def _evidence_view(layout: Layout, ref: str) -> dict:
     return {"ref": ref, "kind": "link"}
 
 
+def is_approval(item: dict) -> bool:
+    return item.get("kind") == inbox_mod.APPROVAL_KIND or bool(item.get("approval_digest"))
+
+
+def _approval_evidence(layout: Layout, item: dict) -> list[dict]:
+    """An approval never shows a file through the generic live-file reader above: what it approves is shown only by
+    the verified delivery view (supervisor.ui.delivery), from the bytes frozen in its digest. An evidence reference
+    that is one of the task's delivered paths is left to that view; any other is listed by name only, marked as not
+    part of the frozen delivery — no content, no thumbnail."""
+    try:
+        delivered = set(tasks_mod.load(layout, item["task_id"]).paths) if item.get("task_id") else set()
+    except tasks_mod.TaskError:
+        delivered = set()
+    return [{"ref": e, "kind": "unverified"} for e in (item.get("evidence") or []) if str(e) not in delivered]
+
+
 def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None) -> dict:
     """`info` is the extension's InboxKind for the item's kind, if claimed. An extension page owns the detail of its
     items: `show_evidence=False` keeps the per-option rows (and their scores) off this card — the owner sees a count
@@ -119,7 +135,8 @@ def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None
         **item,
         "summary_html": render_md(item.get("summary", "")),
         "detail_html": render_md(item["detail"]) if item.get("detail") else "",
-        "evidence_views": [_evidence_view(layout, e) for e in (item.get("evidence") or [])],
+        "evidence_views": (_approval_evidence(layout, item) if is_approval(item)
+                           else [_evidence_view(layout, e) for e in (item.get("evidence") or [])]),
         "score_items": [] if blind else [i for i in sub_items if _is_score_block(i, keys)],
         "plain_items": [] if blind else [i for i in sub_items if not _is_score_block(i, keys)],
         "item_count": len(sub_items),

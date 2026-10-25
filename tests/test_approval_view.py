@@ -34,7 +34,7 @@ def client(layout):
     return c
 
 
-def delivered(layout, artifacts=("state/decisions/D-1.md", "config/p/*.yaml"), paths=None, review=None):
+def delivered(layout, artifacts=("state/decisions/D-1.md", "config/p/*.yaml"), paths=None, review=None, evidence=None):
     """T delivered, verified and reviewed on the real digest of its files, waiting for the owner, with an approval
     item open. Returns (item, digest)."""
     make_task(layout, "T", human="required", reviewer=["senior_pm"])
@@ -57,7 +57,8 @@ def delivered(layout, artifacts=("state/decisions/D-1.md", "config/p/*.yaml"), p
     tasks.record_review(layout, "T", dg, "senior_pm", "ACCEPT", report="runs/T/T.a2/result.json")
     item = inbox_mod.create(layout, for_role="owner", subject="Approve delivery: T", summary="T needs approval",
                             kind=inbox_mod.APPROVAL_KIND, allowed_responses=inbox_mod.APPROVAL_RESPONSES,
-                            from_="loop", task_id="T", approval_digest=dg)
+                            from_="loop", task_id="T", approval_digest=dg,
+                            extra={"evidence": list(evidence)} if evidence else None)
     return item, dg
 
 
@@ -203,3 +204,74 @@ def test_record_delivery_keeps_authored_state_and_drops_the_store(layout):
     t = tasks.record_delivery(layout, "T", DIGEST, actor="test",
                               paths=["state/decisions/D-1.md", "state/inbox/H-001.yaml", "a.txt"])
     assert t.paths == ["a.txt", "state/decisions/D-1.md"]
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 2: the inbox's own evidence list
+
+OUTSIDE = "notes/extra.md"
+
+
+def with_outside_note(layout):
+    (layout.root / "notes").mkdir(exist_ok=True)
+    (layout.root / OUTSIDE).write_text("OUTSIDE note body\n", encoding="utf-8")
+
+
+def test_approval_evidence_never_goes_through_the_live_file_reader(layout, client):
+    """An approval's evidence list names a delivered file and a file outside the digest: the delivered one is shown
+    only by the verified delivery view, the other only by name — and after an edit, neither shows its bytes."""
+    with_outside_note(layout)
+    delivered(layout, evidence=["config/p/one.yaml", OUTSIDE])
+    page = client.get("/inbox").text
+    assert "role: primary" in page                                      # once, from the verified view
+    assert page.count("role: primary") == 1
+    assert OUTSIDE in page and "OUTSIDE note body" not in page and "not part of the frozen delivery" in page
+    (layout.root / "config" / "p" / "one.yaml").write_text("EDITED after the delivery\n", encoding="utf-8")
+    (layout.root / OUTSIDE).write_text("OUTSIDE edited too\n", encoding="utf-8")
+    page = client.get("/inbox").text
+    assert "no longer match digest" in page
+    assert "EDITED after the delivery" not in page and "OUTSIDE" + " edited too" not in page
+    assert "role: primary" not in page
+
+
+def test_changed_image_evidence_on_an_approval_shows_no_thumbnail(layout, client):
+    from PIL import Image
+    (layout.root / "out").mkdir()
+    Image.new("RGB", (8, 8), "red").save(layout.root / "out" / "a.png")
+    Image.new("RGB", (8, 8), "blue").save(layout.root / "out" / "extra.png")
+    delivered(layout, artifacts=("out/a.png",), paths=["out/a.png"], evidence=["out/a.png", "out/extra.png"])
+    page = client.get("/inbox").text
+    assert page.count('src="/thumb/') == 1                             # the delivered image, verified; not extra.png
+    Image.new("RGB", (8, 8), "green").save(layout.root / "out" / "a.png")
+    page = client.get("/inbox").text
+    assert 'src="/thumb/' not in page and "no longer match digest" in page
+
+
+def test_a_stale_approval_with_evidence_shows_no_file(layout, client):
+    with_outside_note(layout)
+    delivered(layout, evidence=["config/p/one.yaml", OUTSIDE])
+    (layout.root / "config" / "p" / "two.yaml").write_text("role: newer\n", encoding="utf-8")
+    tasks.record_delivery(layout, "T", real_digest(layout, ["config/p/two.yaml"]), actor="test",
+                          paths=["config/p/two.yaml"])
+    page = client.get("/inbox").text
+    assert "no longer the task" in page
+    for text in ("role: primary", "role: newer", "OUTSIDE note body"):
+        assert text not in page
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_linked_evidence_on_an_approval_is_not_read(layout, client):
+    (layout.root / "secret.md").write_text("LINK TARGET body\n", encoding="utf-8")
+    try:
+        os.symlink(layout.root / "secret.md", layout.root / "linked.md")
+    except OSError:
+        pytest.skip("creating symlinks needs privileges here")
+    delivered(layout, evidence=["linked.md"])
+    page = client.get("/inbox").text
+    assert "linked.md" in page and "LINK TARGET body" not in page
+
+
+def test_other_items_still_show_their_evidence(layout, client):
+    with_outside_note(layout)
+    inbox_mod.create(layout, for_role="owner", subject="A question", summary="see the note", kind="question",
+                     from_="loop", extra={"evidence": [OUTSIDE]})
+    assert "OUTSIDE note body" in client.get("/inbox").text

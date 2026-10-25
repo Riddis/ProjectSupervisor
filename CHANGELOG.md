@@ -30,7 +30,11 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   thumbnails, each openable by index at `/tasks/<id>/files/<n>`, never by a browser-supplied path), the verification,
   and each live review's verdict, summary and findings. A declared artifact the digest does not cover is named in a
   warning, since a later change to it would not invalidate the approval. An approval whose digest is no longer the
-  task's current one says so and shows no files. The task page's artifact list is replaced by the same view
+  task's current one says so and shows no files. What is shown is what was frozen: the delivered paths must still hash
+  to the digest and each file's bytes are checked against their manifest entry before they are shown, thumbnailed or
+  served (`/tasks/<id>/files/<n>?digest=`); otherwise the card says the files changed and shows none. An approval's
+  own `evidence` list never reads files: references outside the delivery are listed by name only. The task page's
+  artifact list is replaced by the same view
   (`supervisor/ui/delivery.py`, `partials/delivery.html`).
 - **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
   store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and

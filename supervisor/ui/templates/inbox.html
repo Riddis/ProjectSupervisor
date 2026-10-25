@@ -34,6 +34,7 @@
         {% if ev.kind == 'image' %}<img class="thumb" src="/thumb/{{ ev.thumb_key }}" alt="{{ ev.ref }}">
         {% elif ev.kind == 'text' %}<div class="evidence-doc"><p class="evidence-ref">{{ ev.ref }}</p>{{ ev.html | safe }}</div>
         {% elif ev.kind == 'link' %}<p class="evidence-ref">{{ ev.ref }}</p>
+        {% elif ev.kind == 'unverified' %}<p class="evidence-ref">{{ ev.ref }} <small class="muted">(reference only: not part of the frozen delivery this approval covers)</small></p>
         {% else %}<p class="evidence-ref evidence-missing">{{ ev.ref }} (not found)</p>{% endif %}
       {% endfor %}
     </div>
