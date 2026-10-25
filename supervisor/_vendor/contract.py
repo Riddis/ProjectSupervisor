@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -31,13 +32,99 @@ def _transient_replace_error(exc, temporary):
     return isinstance(exc, PermissionError) or code in (5, 32, 33) or (code == 2 and temporary.exists())
 
 
-def atomic_write_text(path, text, newline=None):
+class CannotKeep(PermissionError):
+    """atomic_write_text(keep=True) could not give the new file what the old one had (owner, group, permissions,
+    links). Nothing was replaced: the old file is exactly as it was."""
+
+
+def _windows_keep_access(source, target):
+    """Give `target` the DACL of `source`, its protection from inheritance included, and its owner and group where they
+    differ (setting an owner other than oneself needs a privilege, so that fails and the caller refuses)."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security = advapi32.GetFileSecurityW
+    get_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD)]
+    get_security.restype = wintypes.BOOL
+    set_security = advapi32.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    get_control = advapi32.GetSecurityDescriptorControl
+    get_control.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+    get_control.restype = wintypes.BOOL
+    sid_getters = (advapi32.GetSecurityDescriptorOwner, advapi32.GetSecurityDescriptorGroup)
+    for getter in sid_getters:
+        getter.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+        getter.restype = wintypes.BOOL
+    equal_sid = advapi32.EqualSid
+    equal_sid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    equal_sid.restype = wintypes.BOOL
+    set_control = advapi32.SetSecurityDescriptorControl
+    set_control.argtypes = [ctypes.c_void_p, wintypes.WORD, wintypes.WORD]
+    set_control.restype = wintypes.BOOL
+    OWNER, GROUP, DACL = 0x1, 0x2, 0x4
+    PROTECTED_DACL, UNPROTECTED_DACL, SE_DACL_PROTECTED = 0x80000000, 0x20000000, 0x1000
+    SE_DACL_AUTO_INHERITED, SE_DACL_AUTO_INHERIT_REQ = 0x0400, 0x0100
+
+    def check(ok):
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def descriptor(path):
+        needed = wintypes.DWORD(0)
+        get_security(str(path), OWNER | GROUP | DACL, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(needed.value)
+        check(get_security(str(path), OWNER | GROUP | DACL, buffer, needed, ctypes.byref(needed)))
+        return buffer
+
+    def sid(buffer, getter):
+        value, defaulted = ctypes.c_void_p(), wintypes.BOOL()
+        check(getter(buffer, ctypes.byref(value), ctypes.byref(defaulted)))
+        return value
+
+    old, new = descriptor(source), descriptor(target)
+    control, revision = wintypes.WORD(), wintypes.DWORD()
+    check(get_control(old, ctypes.byref(control), ctypes.byref(revision)))
+    info = DACL | (PROTECTED_DACL if control.value & SE_DACL_PROTECTED else UNPROTECTED_DACL)
+    if control.value & SE_DACL_AUTO_INHERITED:              # SetFileSecurity keeps that bit only when asked to
+        check(set_control(old, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ))
+    for flag, getter in zip((OWNER, GROUP), sid_getters):
+        if not equal_sid(sid(old, getter), sid(new, getter)):
+            info |= flag                                   # an unchanged owner or group is not rewritten
+    check(set_security(str(target), info, old))
+
+
+def _keep_access(source, target):
+    """Give `target` the owner, group and permissions of `source`: on POSIX its uid, gid and mode bits; on Windows its
+    DACL (protection included), owner and group. Raises OSError when any of it cannot be set."""
+    if os.name == "nt":
+        _windows_keep_access(source, target)
+        return
+    st = os.stat(source)
+    os.chown(target, st.st_uid, st.st_gid)                 # a different owner, or a group one is not in: EPERM
+    os.chmod(target, stat.S_IMODE(st.st_mode))             # after chown, which may clear set-id bits
+
+
+def atomic_write_text(path, text, newline=None, keep=False):
     """Write via a unique temporary file and an atomic replace, retrying lock conflicts.
 
     Prevents torn files. It does NOT prevent lost updates — that is the store's job (rev + lock).
     `newline` is open()'s: None writes "\\n" as the platform's line ending, "" writes `text` exactly as given.
+    `keep=True` makes the new file keep what an existing one had: its owner, group and permissions are carried onto
+    the temporary file before it replaces the old one, a symlink is followed (its target is replaced, the link stays),
+    and a file with several hard links is not replaced. When any of that is impossible it raises CannotKeep and the
+    old file stays exactly as it was. The default leaves the new file with the directory's defaults, as before.
     """
     path = Path(path)
+    if keep and path.is_symlink():
+        path = Path(os.path.realpath(path))
+    if keep and path.exists() and os.stat(path).st_nlink > 1:
+        raise CannotKeep(f"{path}: has {os.stat(path).st_nlink} hard links, which replacing it would split; "
+                         f"remove the extra links or rewrite it in place by hand")
     path.parent.mkdir(parents=True, exist_ok=True)
     # mkstemp: the OS guarantees a fresh name (O_EXCL). A PID + clock name is not unique on Windows, where the clock
     # ticks coarsely enough for two threads to pick the same name and one to hit the other's open handle.
@@ -46,6 +133,12 @@ def atomic_write_text(path, text, newline=None):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:
             handle.write(text)
+        if keep and path.exists():
+            try:
+                _keep_access(path, temporary)
+            except OSError as exc:
+                raise CannotKeep(f"{path}: the rewritten file could not keep its owner, group and permissions "
+                                 f"({exc}); nothing was replaced. Rewrite it as the account that owns it") from exc
     except BaseException:
         try:
             temporary.unlink()
@@ -64,6 +157,8 @@ def atomic_write_text(path, text, newline=None):
                     # both leave an untorn file, which is all this function promises (lost updates are the store's job).
                     if path.exists():
                         return
+                    if keep:                               # the old file, and what it had, are gone: nothing to keep
+                        raise CannotKeep(f"{path}: replaced or removed by another writer during the rewrite")
                     temporary.write_text(text, encoding="utf-8", newline=newline)  # target vanished too: rewrite, retry
                 elif attempt == _REPLACE_ATTEMPTS - 1 or not _transient_replace_error(exc, temporary):
                     raise

@@ -33,8 +33,14 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   it, so a process stopped in between left an empty file. A rerun then read it as an empty document and had nothing
   to migrate, so the content was lost (since 1.8.4). It now writes a temporary file and replaces the original
   atomically, like every store write, keeping the file's LF or CRLF; an interruption leaves the old file whole, and
-  the rerun finishes the job. Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes an optional
-  `newline` (as `open()`'s; default unchanged).
+  the rerun finishes the job. The rewritten file keeps what the old one had, as the in-place write did: its owner,
+  group and permissions (POSIX mode bits; on Windows the DACL, including protection from inheritance), and its links
+  (a symlink's target is rewritten and the link stays). When that cannot be kept — a file owned by another account,
+  a group the writer is not in, a file with several hard links — the file is not rewritten: `supervisor migrate`
+  stops with an error naming it, the file is left exactly as it was, and a rerun after fixing it finishes the job.
+  Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes two optional arguments, `newline` (as
+  `open()`'s) and `keep` (keep the existing file's access and links, or raise the new `CannotKeep`); both default to
+  the old behaviour.
 
 - **Tests: the diagnosis launch test no longer races its fake agent.**
   `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in

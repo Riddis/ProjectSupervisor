@@ -133,20 +133,25 @@ MIGRATIONS: list[Migration] = [_routing_limits_rename, _tasks_cost_category, _ap
 
 def run(layout: Layout, dry_run: bool = False) -> list[str]:
     """Apply every migration, then record the installed version in project.yaml. Raises MigrationError when there
-    is no project.yaml to record it in, or the file is malformed — never reports success without a usable file."""
+    is no project.yaml to record it in, or the file is malformed — never reports success without a usable file —
+    and when a file could not be rewritten with its owner, permissions and links kept (that file is left as it was;
+    files already migrated stay migrated, and a rerun after the fix finishes the job)."""
     if not project.exists(layout):
         raise MigrationError(f"no project.yaml at {layout.root}; run `supervisor init {layout.root}` first")
     note = project.problem(layout)
     if note and "framework_version" not in note:
         raise MigrationError(f"cannot migrate: {note}; fix the file first")
     notes: list[str] = []
-    for m in MIGRATIONS:
-        notes += m(layout, dry_run)
-    raw = project.raw(layout)
-    recorded = str(raw.get("framework_version") or "")
-    if recorded != __version__:
-        notes.append(f"project.yaml: framework_version {recorded or 'unset'} → {__version__}")
-        if not dry_run:
-            raw["framework_version"] = __version__
-            project.write(layout, raw)
+    try:
+        for m in MIGRATIONS:
+            notes += m(layout, dry_run)
+        raw = project.raw(layout)
+        recorded = str(raw.get("framework_version") or "")
+        if recorded != __version__:
+            notes.append(f"project.yaml: framework_version {recorded or 'unset'} → {__version__}")
+            if not dry_run:
+                raw["framework_version"] = __version__
+                project.write(layout, raw)
+    except store.CannotKeep as exc:
+        raise MigrationError(f"cannot migrate: {exc}") from exc
     return notes
