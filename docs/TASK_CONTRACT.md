@@ -149,4 +149,5 @@ tasks:
 `supervisor task import` is idempotent: it creates what does not exist and leaves existing tasks alone unless
 `--update-contracts T0-01,T0-02` names them. It goes through the command queue (`task.import`), so a corrected seed
 also reaches a running supervisor — an agent that fixes a contract in the seed can have it applied without anyone
-stopping the loop.
+stopping the loop. `--dry-run` runs the same validation and prints what would be created and refreshed, writing
+nothing (safe while the loop runs; use it before an import into a live project).

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from . import gate, jobs as jobs_mod, tasks as tasks_mod
 from .adapters import REGISTRY
-from .models.task import CostCategory, Task
+from .models.task import TERMINAL, CostCategory, Task
 from .paths import Layout
 
 DEFAULT_LIMITS = gate.DEFAULT_LIMITS
@@ -75,6 +75,29 @@ def adapter_name(task: Task, layout: Layout | None = None) -> str:
     if role_adapter and lane in MODEL_LANES:
         return str(role_adapter)           # the role says which provider its agent work runs on
     return lane                            # deterministic / local / human work is not agent work for the role
+
+
+def lane_in_use(layout: Layout, lane: str) -> bool:
+    """True when anything could send work to `lane`: an active role's `adapter` or `fallback.adapter`, a `cost_lanes`
+    override, a live task that resolves to it (`adapter_name`), or an open job record on it. The loop's token-free
+    Codex capacity poll runs only then: a lane being registered says nothing about the project using it, and a
+    project or rehearsal copy whose config names no Codex lane must not reach the installed CLI every iteration."""
+    doc = routing_doc(layout)
+    roles = doc.get("roles") or {}
+    for entry in (roles.values() if isinstance(roles, dict) else ()):
+        if not isinstance(entry, dict) or entry.get("active", True) is False:
+            continue
+        fallback = entry.get("fallback")
+        if entry.get("adapter") == lane or (isinstance(fallback, dict) and fallback.get("adapter") == lane):
+            return True
+    overrides = doc.get("cost_lanes") or {}
+    if isinstance(overrides, dict) and lane in {str(v) for v in overrides.values()}:
+        return True
+    if any((rec.get("adapter") or (rec.get("spec") or {}).get("adapter")) == lane
+           for rec in jobs_mod.open_records(layout)):
+        return True
+    return any(t.status not in TERMINAL and adapter_name(t, layout) == lane
+               for t in tasks_mod.load_all(layout).values())
 
 
 def writing_lane(task: Task, layout: Layout | None = None) -> bool:

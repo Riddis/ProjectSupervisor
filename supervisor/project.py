@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from ruamel.yaml import YAML
 
-from . import __version__
+from . import __version__, store
 from .paths import Layout
 
 # Round-trip YAML for `write`: project.yaml is born from the commented template, and the comments are the
@@ -173,7 +173,7 @@ def write(layout: Layout, doc: dict) -> Path:
         out = dict(doc)
     buf = io.StringIO()
     _rt_yaml.dump(out, buf)
-    p.write_text(buf.getvalue(), encoding="utf-8")
+    store.rewrite_text(p, buf.getvalue())                  # keeps the file's LF/CRLF style
     _load_cached.cache_clear()
     return p
 

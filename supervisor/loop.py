@@ -808,10 +808,11 @@ class Supervisor:
         return "STOP"
 
     def poll_capacity(self) -> None:
-        """Token-free codex window refresh (app-server RPC) when the observation is stale; claude windows arrive via streams."""
+        """Token-free codex window refresh (app-server RPC) when the observation is stale and something could send work
+        to the Codex lane (scheduler.lane_in_use); claude windows arrive via streams."""
         try:
             from .adapters import codex_cli
-            if "codex_cli" in REGISTRY:
+            if "codex_cli" in REGISTRY and scheduler.lane_in_use(self.layout, "codex_cli"):
                 codex_cli.poll_capacity(self.layout, max_age_s=codex_cli.POLL_MAX_AGE_S)
         except Exception as exc:                         # never let a usage probe kill the loop
             tasks_mod.log(self.layout, "capacity_poll_error", "loop", error=str(exc)[:200])

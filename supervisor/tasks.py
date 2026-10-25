@@ -195,9 +195,11 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
 
 
 def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (), create: bool = True,
-                actor: str = "cli") -> dict:
+                actor: str = "cli", dry_run: bool = False) -> dict:
     """Create tasks that do not exist yet (unless `create` is False); refresh only the named tasks' contract fields.
-    Idempotent. Runs in-process for the CLI when no supervisor is live, and as the `task.import` command otherwise."""
+    Idempotent. Runs in-process for the CLI when no supervisor is live, and as the `task.import` command otherwise.
+    `dry_run` runs the same validation (seed contracts, graph, ownership, artifacts, each refreshed contract) and
+    reports what would be created and updated, writing and logging nothing — safe while a supervisor runs."""
     seed = yaml.safe_load(Path(seed_path).read_text(encoding="utf-8"))["tasks"]
     created, updated, untouched = [], [], []
     update_ids = set(update_ids)
@@ -212,6 +214,16 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
     for t in seed:
         path = path_for(layout, t["id"])
+        if dry_run:
+            if not path.exists():
+                if create:
+                    created.append(t["id"])
+            elif t["id"] in update_ids:
+                _refresh_contract(store.read(path), t)               # validates the refreshed contract, in memory
+                updated.append(t["id"])
+            else:
+                untouched.append(t["id"])
+            continue
         if not path.exists():
             if not create:
                 continue
@@ -221,23 +233,29 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             store.write_new(path, doc)
             created.append(t["id"])
         elif t["id"] in update_ids:
-            def fn(doc, t=t):
-                for k in CONTRACT_FIELDS:
-                    if k in t:
-                        doc[k] = t[k]
-                    elif k not in ("owned_paths", "checks"):   # ownership/checks set in the store outlive a seed that lacks them
-                        doc.pop(k, None)
-                Task.model_validate(doc)
-                return doc
-            store.update(path, fn, lock_path=layout.state / ".tasks.lock")
+            store.update(path, lambda doc, t=t: _refresh_contract(doc, t), lock_path=layout.state / ".tasks.lock")
             updated.append(t["id"])
         else:
             untouched.append(t["id"])
-    log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
+    if not dry_run:
+        log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
     out = {"created": created, "updated": updated, "untouched": untouched}
+    if dry_run:
+        out["dry_run"] = True
     if warnings:
         out["warnings"] = warnings
     return out
+
+
+def _refresh_contract(doc: dict, t: dict) -> dict:
+    """Copy the seed's contract fields onto a stored task document and validate the result."""
+    for k in CONTRACT_FIELDS:
+        if k in t:
+            doc[k] = t[k]
+        elif k not in ("owned_paths", "checks"):   # ownership/checks set in the store outlive a seed that lacks them
+            doc.pop(k, None)
+    Task.model_validate(doc)
+    return doc
 
 
 def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:

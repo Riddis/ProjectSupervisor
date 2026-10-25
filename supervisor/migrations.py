@@ -2,6 +2,7 @@
 `framework_version` in project.yaml. `supervisor doctor` reports a mismatch; `supervisor migrate` applies these."""
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from . import __version__, project, store
@@ -25,24 +26,30 @@ def _routing_limits_rename(layout: Layout, dry_run: bool) -> list[str]:
     if not cfg.exists():
         return []
     text = cfg.read_text(encoding="utf-8")
-    if "max_gpu_jobs" not in text:
+    new = text.replace("max_gpu_jobs", "max_resource_jobs")
+    if new == text:
         return []
     if not dry_run:
-        cfg.write_text(text.replace("max_gpu_jobs", "max_resource_jobs"), encoding="utf-8")
+        store.rewrite_text(cfg, new)
     return ["config/routing.yaml: limits.max_gpu_jobs renamed to max_resource_jobs"]
 
 
+_LOCAL_GPU = re.compile(r"""^(\s*(?:-\s+)?cost_category:\s*)(["']?)local_gpu\2(?=[ \t]*(?:#|$))""", re.MULTILINE)
+
+
 def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
-    """cost_category local_gpu → local (1.0.0)."""
+    """cost_category local_gpu → local (1.0.0). Only the field's value is rewritten, so a file that mentions local_gpu
+    in a note or comment is neither changed nor reported, and a second run reports nothing."""
     notes = []
     for p in sorted(layout.tasks.glob("*.yaml")) + [layout.root / "state" / "tasks_seed.yaml"]:
         if not p.exists():
             continue
         text = p.read_text(encoding="utf-8")
-        if "local_gpu" not in text:
+        new = _LOCAL_GPU.sub(r"\1\2local\2", text)
+        if new == text:
             continue
         if not dry_run:
-            p.write_text(text.replace("cost_category: local_gpu", "cost_category: local"), encoding="utf-8")
+            store.rewrite_text(p, new)
         notes.append(f"{p.relative_to(layout.root).as_posix()}: cost_category local_gpu → local")
     return notes
 
@@ -75,7 +82,7 @@ def _approval_responses(layout: Layout, dry_run: bool) -> list[str]:
         if not changed:
             continue
         if not dry_run:
-            p.write_text(store.dump(doc), encoding="utf-8")
+            store.rewrite_text(p, store.dump(doc))
         notes.append(f"{p.relative_to(layout.root).as_posix()}: response {', '.join(changed)}")
     return notes
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supervisor-framework"
-version = "1.8.3"
+version = "1.8.4"
 description = "Run a project with AI agents under a deterministic Python supervisor and an owner-facing Control Center"
 readme = "README.md"
 license = {file = "LICENSE"}

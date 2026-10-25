@@ -3,8 +3,29 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.8.4 — 2026-10-25
 
+Fixes from the Studio migration's phase-4 rehearsal (its record PHASE4.md, findings F2–F5), plus the licence.
+No state or config shape change; `supervisor migrate` only records the new version.
+
+- **The loop polls Codex capacity only when something can use the Codex lane** (F2). `codex_cli` is always
+  registered, so every iteration asked the installed CLI for its usage windows (an app-server RPC) whatever the
+  project's config said — a rehearsal copy with only fake lanes still reached it. `scheduler.lane_in_use()` now
+  decides: an active role whose `adapter` or `fallback.adapter` is the lane, a `cost_lanes` override naming it, a
+  live task that resolves to it, or an open job record on it. The adapters' own capacity checks before a launch are
+  unchanged.
+- **`supervisor doctor` names the project root** in the `project` check (F3), so a rehearsal can show which tree it
+  examined.
+- **`supervisor task import --dry-run`** (F4): the import's full validation (seed contracts, graph, ownership,
+  artifacts, and each `--update-contracts` refresh), then what would be created and updated; writes nothing and
+  logs nothing, so it is safe while a supervisor runs. `commands.seed_path()` is the one seed-path check for both.
+- **Migrations change and report only what they change, and keep line endings** (F5). The 1.0.0 `local_gpu → local`
+  migration reported (and rewrote) any file that mentioned `local_gpu` anywhere, so a second `migrate` reported the
+  same files again; it now rewrites only a `cost_category` value. Every migration write, and `project.write()`,
+  goes through `store.rewrite_text()`, which writes only when the content changes and keeps the file's LF or CRLF
+  style (`Path.write_text` turned LF files into CRLF on Windows).
+- Tests: `test_capacity_poll.py`; the owner decision-item tests the Studio carried (REQUEUE salvage, DEFER, CANCEL on
+  a review-blocked task) moved here as `test_owner_decision_items.py`.
 - **Licence.** The framework is licensed under Apache License 2.0 with the Commons Clause (`LICENSE`): free to use,
   modify and share; not to be sold, nor offered as a product or service whose value derives substantially from it.
   `pyproject.toml` declares it; the README explains it. No code change.

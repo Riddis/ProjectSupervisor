@@ -121,15 +121,22 @@ def _create(layout, payload, actor):
     return tasks_mod.create(layout, dict(payload["task"]), actor)
 
 
+def seed_path(layout, seed: str | None) -> Path:
+    """The seed file a `task.import` names, resolved against the project root; ValueError unless it is a file
+    inside the project."""
+    from ._vendor.contract import contained
+    path = (layout.root / str(seed or "state/tasks_seed.yaml")).resolve()
+    if not contained(path, [layout.root], root=layout.root) or not path.is_file():
+        raise ValueError(f"seed {seed!r} is not a file inside the project")
+    return path
+
+
 @handler("task.import")
 def _task_import(layout, payload, actor):
     """`supervisor task import` through the queue, so a corrected seed reaches a live supervisor. Before 1.4.0 the
     CLI refused while state/.lock was held, and since every agent runs under the supervisor no agent could ever
     apply a contract fix it had made in the seed."""
-    from ._vendor.contract import contained
-    seed = (layout.root / str(payload.get("seed") or "state/tasks_seed.yaml")).resolve()
-    if not contained(seed, [layout.root], root=layout.root) or not seed.is_file():
-        raise ValueError(f"seed {payload.get('seed')!r} is not a file inside the project")
+    seed = seed_path(layout, payload.get("seed"))
     ids = [str(i) for i in (payload.get("update_contracts") or [])]
     r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
     return {k: r[k] for k in ("created", "updated", "warnings") if k in r}

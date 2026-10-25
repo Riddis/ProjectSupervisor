@@ -22,6 +22,21 @@ class StaleRevision(RuntimeError):
     pass
 
 
+def rewrite_text(path: Path, text: str) -> bool:
+    """Replace a text file's content with `text` (newlines as `read_text` returns them) in the file's own line-ending
+    style, and only when the content changes: True when it was written. Migrations use this so a second run reports
+    nothing and a file keeps LF or CRLF as it had it (Path.write_text turns LF files into CRLF on Windows)."""
+    path = Path(path)
+    raw = path.read_bytes() if path.exists() else b""
+    text = text.replace("\r\n", "\n")
+    if path.exists() and raw.decode("utf-8").replace("\r\n", "\n") == text:
+        return False
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(text.replace("\n", newline))
+    return True
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 

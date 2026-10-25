@@ -163,10 +163,23 @@ def task_set_status(task_id: str, status: str, note: str = "", actor: str = "cli
 
 
 @task_app.command("import")
-def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = ""):
+def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
+                dry_run: bool = typer.Option(False, "--dry-run", help="validate and report what would change; "
+                                             "writes nothing, works while a supervisor runs")):
     """Create tasks from the seed that do not exist yet; refresh only the named ids' contract fields. Idempotent.
     Goes through the command queue, so it also works while a supervisor is running (it applies it next iteration)."""
     ids = [s for s in update_contracts.split(",") if s]
+    if dry_run:
+        layout = _layout()
+        try:
+            res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
+        except (ValueError, tasks_mod.TaskError) as exc:
+            raise typer.BadParameter(str(exc))
+        typer.echo(f"dry run: would create {len(res['created'])} ({', '.join(res['created']) or '-'}), "
+                   f"update {len(res['updated'])} ({', '.join(res['updated']) or '-'}); nothing written")
+        for w in res.get("warnings") or []:
+            typer.echo(f"warning: {w}")
+        return
     r = commands_mod.submit_or_apply(_layout(), "task.import", {"seed": seed, "update_contracts": ids}, "owner")
     if r.get("queued"):
         typer.echo(f"queued ({r['id']}) — the running supervisor applies it within one iteration")

@@ -241,6 +241,7 @@ def test_cost_lane_local_can_be_routed_to_an_extension_lane(fresh):
 def test_doctor_on_a_fresh_project_reports_project_state_and_routing(fresh):
     checks = {c.name: c for c in doctor.run(Layout(fresh))}
     assert checks["project"].ok and "Demo Project" in checks["project"].detail
+    assert str(Layout(fresh).root) in checks["project"].detail       # which tree doctor examined (PHASE4 F3)
     assert checks["state"].ok and checks["routing"].ok and checks["python"].ok
     assert checks["git"].ok is False                                  # not a repo yet: says so, does not crash
 
@@ -398,3 +399,68 @@ def test_framework_gitignore_blocks_project_shapes_at_the_root():
     for rel in ("project.yaml", "state/x.yaml", "config/routing.yaml", "secrets/k.txt", "agents/x.md", "uploads/f.bin"):
         out = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", rel], capture_output=True, text=True)
         assert out.returncode == 0, f"{rel} is not git-ignored at the framework root: rc={out.returncode} {out.stderr}"
+
+
+def _seed_task(tid, title):
+    return {"id": tid, "phase": 0, "title": title, "objective": "o", "owner_role": "engineer", "actions": ["a"],
+            "artifacts": ["out.txt"], "tests": ["t"], "acceptance": "ok", "escalation": "none",
+            "human_approval": "none", "cost_category": "deterministic"}
+
+
+def test_task_import_dry_run_validates_and_writes_nothing(fresh, monkeypatch):
+    """PHASE4 F4: `task import --dry-run` reports what an import would create and refresh, runs the same validation,
+    and touches neither the task store nor the log, so it is safe while a supervisor runs."""
+    monkeypatch.chdir(fresh)
+    seed = fresh / "state" / "tasks_seed.yaml"
+    seed.write_text(yaml.safe_dump({"tasks": [_seed_task("A", "first")]}), encoding="utf-8")
+    assert runner.invoke(app, ["task", "import"]).exit_code == 0
+    log_before = (fresh / "state" / "log.jsonl").read_text(encoding="utf-8")
+    store_before = (fresh / "state" / "tasks" / "A.yaml").read_text(encoding="utf-8")
+    seed.write_text(yaml.safe_dump({"tasks": [_seed_task("A", "renamed"), _seed_task("B", "second")]}), encoding="utf-8")
+
+    r = runner.invoke(app, ["task", "import", "--update-contracts", "A", "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "would create 1 (B), update 1 (A); nothing written" in r.output
+    assert not (fresh / "state" / "tasks" / "B.yaml").exists()
+    assert (fresh / "state" / "tasks" / "A.yaml").read_text(encoding="utf-8") == store_before
+    assert (fresh / "state" / "log.jsonl").read_text(encoding="utf-8") == log_before
+
+    seed.write_text(yaml.safe_dump({"tasks": [{**_seed_task("C", "bad"), "depends_on": ["NOPE"]}]}), encoding="utf-8")
+    r = runner.invoke(app, ["task", "import", "--dry-run"])
+    assert r.exit_code != 0 and "seed invalid" in r.output
+    r = runner.invoke(app, ["task", "import", "--seed", "../elsewhere.yaml", "--dry-run"])
+    assert r.exit_code != 0 and "inside the project" in r.output
+
+
+def test_local_gpu_migration_rewrites_only_the_field_and_keeps_line_endings(fresh):
+    """PHASE4 F5: the 1.0.0 migration reported every file that mentions local_gpu (a note, the seed's header comment)
+    on every run while writing identical text, and its write_text turned LF files into CRLF on Windows."""
+    layout = Layout(fresh)
+    make_task(layout, "G", status="IN_PROGRESS")
+    make_task(layout, "N", status="IN_PROGRESS")
+    g, n = layout.tasks / "G.yaml", layout.tasks / "N.yaml"
+    g.write_bytes(g.read_bytes().replace(b"\r\n", b"\n").replace(b"cost_category: claude",
+                                                                   b"cost_category: local_gpu"))      # LF file
+    n_text = n.read_text(encoding="utf-8") + "notes:\n- moved off local_gpu last week\n"
+    n.write_bytes(n_text.replace("\n", "\r\n").encode("utf-8"))                                       # CRLF file
+    seed = layout.root / "state" / "tasks_seed.yaml"
+    seed.write_bytes(b"# tasks once ran on local_gpu\r\ntasks:\r\n- id: S\r\n  cost_category: 'local_gpu'  # gpu\r\n")
+    n_before = n.read_bytes()
+
+    notes = [x for x in migrations.run(layout) if "local_gpu" in x]
+    assert sorted(notes) == ["state/tasks/G.yaml: cost_category local_gpu → local",
+                             "state/tasks_seed.yaml: cost_category local_gpu → local"]
+    assert b"cost_category: local\n" in g.read_bytes() and b"\r\n" not in g.read_bytes()
+    assert seed.read_bytes() == b"# tasks once ran on local_gpu\r\ntasks:\r\n- id: S\r\n  cost_category: 'local'  # gpu\r\n"
+    assert n.read_bytes() == n_before                               # a mention in a note is not the field
+    assert migrations.run(layout) == []                             # the repeat run reports nothing
+
+
+def test_project_write_keeps_a_crlf_project_yaml_crlf(fresh):
+    layout = Layout(fresh)
+    layout.project_file.write_bytes(layout.project_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
+    raw["framework_version"] = "0.9.0"
+    project.write(layout, raw)
+    data = layout.project_file.read_bytes()
+    assert b"0.9.0" in data and data.count(b"\n") == data.count(b"\r\n")

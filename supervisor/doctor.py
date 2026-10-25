@@ -37,8 +37,9 @@ def check_project(layout: Layout) -> Check:
     doc = project.load(layout)
     note = project.version_mismatch(layout)
     if note:
-        return Check("project", False, note)
-    return Check("project", True, f"{doc.get('name')} (framework {__version__})")
+        return Check("project", False, f"{note}; root {layout.root}")
+    # the root is part of the detail: a rehearsal on a copy must be able to show which tree doctor examined
+    return Check("project", True, f"{doc.get('name')} at {layout.root} (framework {__version__})")
 
 
 def check_framework(layout: Layout) -> Check:
