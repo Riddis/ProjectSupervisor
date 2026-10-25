@@ -93,7 +93,9 @@ non-adjacent phase.
 
 Markdown with YAML front matter (`id`, `date`, `title`, `status: proposed|accepted|superseded`, `decided_by`,
 `supersedes?`) and sections *Context*, *Decision*, *Consequences*. Written by agents inside their owned paths, by the
-owner, or from a Control Center chat reply ("convert to decision"). Rendered index: `DECISIONS.md`.
+owner, or from a Control Center chat reply ("convert to decision"). Rendered index: `DECISIONS.md`. A decision record
+is the one kind of file under `state/` a task can deliver: listed in `artifacts`, it is frozen in the delivery digest
+like any other file, so reviews and the owner's approval cover it (earlier versions dropped it as a store file).
 
 ## Issues (`state/issues/I-nnn.yaml`)
 

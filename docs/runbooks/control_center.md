@@ -10,13 +10,16 @@
 ## Screens
 
 Overview (a "Now running" panel refreshed every 5 s — one row per open job with task, activity, role/model, attempt,
-running time against the hard cap, how long a job has been quiet, **+1h** to extend one running job's hard cap
+running time against the hard cap, how long a job has been quiet, the stage the job reports about itself
+(*downloading*, *training*, … with a bar when it gives numbers; see below), **+1h** to extend one running job's hard cap
 and a live-log link, plus the next eligible tasks; supervisor controls
 Start/Pause/Resume/Stop/Reload/Doctor/Shut down PC when idle, enabled only when they apply; capacity, disk,
 extension panels, phase & gates, recent activity), Roadmap (phases, gates, tasks per phase), Tasks (list + detail:
 attempts, artifacts, notes, re-queue/cancel/hold/priority), Agents (live jobs, SSE transcript tail, terminate, drop a
 note the agent reads between steps), Inbox (answer/snooze/reopen, gate acknowledgement, file upload to
-`uploads/<item>/`), Chat (threads with a role, grounded in the live state; convert a reply into a task / decision /
+`uploads/<item>/`; a delivery approval shows what it approves — every file frozen in the digest, readable in place or
+opened from `/tasks/<id>/files/<n>`, the verification and each live review's verdict, summary and findings, and a
+warning naming any declared artifact the digest does not cover; the task page shows the same), Chat (threads with a role, grounded in the live state; convert a reply into a task / decision /
 issue / owner task), Log (SSE tail of `state/log.jsonl`), Owner tasks, Settings (the few numeric routing knobs).
 Extensions can add sidebar pages (`registry.ui_router`) and overview panels (`registry.overview_panel`).
 
@@ -93,3 +96,16 @@ Quiet time is measured from the first time the loop looks at a job, not from its
 already running when the loop was updated gets a full quiet window before it can be stopped. The cap shown, the cap
 Extend raises and the cap enforced are the same number (`timeouts.effective_limits`): a session started before
 1.7.0 shows and extends the current policy's cap, not the old one-hour deadline.
+
+Each owner action writes one log line: a command whose handler logs its own event (`job_extended`, a status change,
+…) adds no generic `command` line; the event carries the command's id in `command`. The generic line remains for a
+failed command and for one whose handler logs nothing.
+
+**Progress reports** (`supervisor/progress.py`). A running job may say what it is doing in
+`<run dir>/PROGRESS.json` — `{"stage": "training", "detail": "step 300 of 500", "done": 300, "total": 500}`,
+overwritten at each step. Delivery briefs ask agent sessions to write it before any step longer than a few minutes;
+every launched job and the scripts it starts inherit `SUPERVISOR_PROGRESS_FILE`, and
+`from supervisor.progress import report` writes it from Python (a no-op outside the supervisor). The *Now running*
+row and the agent page show the stage, the detail, a bar when `done`/`total` are given and when it was last updated;
+the log gets one `job_progress` line per stage change, not per step. It is advisory: never evidence, never trusted
+for verification, and a missing or malformed file shows nothing.

@@ -209,6 +209,13 @@ code,pre { font-family:Consolas,monospace; }pre { max-width:100%; overflow:auto;
 .evidence-doc { background: #14161a; border: 1px solid #2a2f37; border-radius: 6px; padding: 0.5rem; max-width: 500px; font-size: 0.85rem; }
 .evidence-ref { font-size: 0.75rem; color: #9aa4b2; margin: 0; }
 .evidence-missing { color: #e38f8f; }
+.job-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.3rem; font-size: 0.85rem; }
+.job-progress progress { width: 140px; }
+.job-stage { font-weight: 600; }
+.job-stage-detail, .job-stage-age { color: #9aa4b2; }
+.delivery-view h5 { margin: 0.8rem 0 0.3rem; }
+.delivery-file > summary a { margin-left: 0.5rem; font-size: 0.8rem; }
+.delivery-text { white-space: pre-wrap; font-size: 0.8rem; max-height: 480px; overflow-y: auto; background: #14161a; border: 1px solid #2a2f37; border-radius: 6px; padding: 0.6rem; }
 .score-block { margin: 0.4rem 0; font-size: 0.85rem; }
 .plain-items { font-size: 0.85rem; }
 .drop-zone { display: flex; gap: 0.4rem; align-items: center; }

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ... import jobs as jobs_mod
+from ... import progress as progress_mod
 from ... import tasks as tasks_mod
 from ... import timeouts as timeouts_mod
 from ...paths import Layout
@@ -42,7 +43,9 @@ def _enrich(layout: Layout, rec: dict) -> dict:
         deadline, idle_s, _ = timeouts_mod.effective_limits(rec.get("adapter"), spec, handle)
     cap_left = int(deadline - time.time()) if isinstance(deadline, (int, float)) and deadline != float("inf") else None
     last = timeouts_mod.read_activity(spec["run_dir"]) if idle_s and spec.get("run_dir") else None
-    return {**rec, "elapsed_s": elapsed, "run_dir": str(run_dir) if run_dir else None, "cap_left_s": cap_left,
+    report = progress_mod.read(run_dir) if run_dir and rec.get("phase") in ("SUBMITTED", "RUNNING") else None
+    progress = {**report, "age_s": max(0, int(time.time() - report["updated"]))} if report else None
+    return {**rec, "elapsed_s": elapsed, "progress": progress, "run_dir": str(run_dir) if run_dir else None, "cap_left_s": cap_left,
             "idle_s": idle_s, "idle_for_s": max(0, int(time.time() - last)) if last else None,
            "is_agent": rec.get("adapter") in AGENT_ADAPTERS, "owner_note_status": note_status}
 

@@ -69,12 +69,8 @@
 </section>
 
 <section class="panel">
-  <h2>Artifacts</h2>
-  <ul>
-  {% for p in t.paths %}
-    <li>{{ p }}{% if p in thumb_keys %}<br><img class="thumb" src="/thumb/{{ thumb_keys[p] }}" alt="{{ p }}">{% endif %}</li>
-  {% else %}<li>none recorded yet</li>{% endfor %}
-  </ul>
+  <h2>Current delivery</h2>
+  {% if dv %}{% include "partials/delivery.html" %}{% else %}<p>No delivery recorded yet.</p>{% endif %}
 </section>
 
 <section class="panel">

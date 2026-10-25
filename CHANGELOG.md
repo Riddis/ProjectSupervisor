@@ -3,6 +3,33 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+No state or config shape change (a job record gains the optional `progress_stage`; log lines written by a command
+gain `command`); nothing to migrate.
+
+- **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
+  the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record
+  at view time (so items already open show it too): every file frozen in the digest (text in place, images as
+  thumbnails, each openable by index at `/tasks/<id>/files/<n>`, never by a browser-supplied path), the verification,
+  and each live review's verdict, summary and findings. A declared artifact the digest does not cover is named in a
+  warning, since a later change to it would not invalidate the approval. An approval whose digest is no longer the
+  task's current one says so and shows no files. The task page's artifact list is replaced by the same view
+  (`supervisor/ui/delivery.py`, `partials/delivery.html`).
+- **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
+  store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and
+  approved without its decision record in the digest. `state/decisions/` is now authored state
+  (`tasks.AUTHORED_STATE`, used by both the loop and `record_delivery`); the rest of `state/` is still dropped.
+- **One log line per owner action.** Every command wrote a generic `command` line next to the handler's own event,
+  so one **+1h** click logged twice (`job_extended` + `command`). Lines written while a command runs now carry its
+  id (`tasks.command_scope`), and the generic line is written only for a failed command or a handler that logged
+  nothing.
+- **Progress reports from long jobs** (`supervisor/progress.py`). A job writes `<run dir>/PROGRESS.json`
+  (`stage`, `detail`, optional `done`/`total`); delivery briefs for `claude_cli` and `codex_cli` ask for it before
+  any step longer than a few minutes, and every launched job (and what it starts) inherits
+  `SUPERVISOR_PROGRESS_FILE` for `progress.report()`. The *Now running* row and the agent page show the stage and a
+  bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification.
+
 ## 1.9.0 — 2026-10-25
 
 Boundary baseline: phase 1 of the boundary plan (`docs/BOUNDARY.md`), reviewed in three rounds and accepted.
