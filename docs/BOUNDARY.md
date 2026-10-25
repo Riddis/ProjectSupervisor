@@ -52,7 +52,7 @@ walk contributors through them; no gate depends on a skill being used.
 | Phase or skill | Gates that apply | Excluded, and why |
 |---|---|---|
 | 1.9.0 | G1, G3 without the extension part, G4 through `framework-release`, G6 as today's doctor, G7 | G2 and G5: built in 1.11.0 and 1.12.0 |
-| 1.10.0 | as 1.9.0: a feature release ahead of phase 2, which moved to 1.11.0 (extension packages to 1.12.0) | G2 and G5: built in 1.11.0 and 1.12.0 |
+| 1.10.0, 1.10.1 | as 1.9.0: a feature release (and its patch) ahead of phase 2, which moved to 1.11.0 (extension packages to 1.12.0) | G2 and G5: built in 1.11.0 and 1.12.0 |
 | 1.11.0 | G1, G2 (introduced: this release records the first contract), G3, G4, G6 with the internal-import warning, G7 | G5: built in 1.12.0 |
 | 1.12.0 onward | all seven | — |
 | `framework-change`, `framework-release` | G1, G2 (from 1.11.0), G3, G7; G4 for a release | G5 and G6 apply only through the reference extensions G3 loads |

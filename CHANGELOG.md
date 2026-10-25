@@ -3,7 +3,15 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.10.1 — 2026-10-25
+
+Fixes only: a migration that rewrote current approval items on every run, and a racy test.
+
+**Migration:** none added. `supervisor migrate` records the new version and, unlike 1.10.0, leaves approval items
+the loop opened alone. Its dry run on a project at 1.10.0 lists only `project.yaml: framework_version 1.10.0 →
+1.10.1` (plus any pre-1.0.0 response it would still map). **Rollback** to v1.10.0, in a maintenance window: drain,
+stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewrites `APPROVE` in approval items as
+1.10.0 always did), `supervisor doctor`, start; nothing 1.10.1 writes is new to 1.10.0.
 
 - **Fixed: `supervisor migrate` no longer rewrites the approvals the framework opens.** The 1.1.1 migration
   (`migrations._approval_responses`) mapped `APPROVE` → `ACCEPT` in every inbox item's `allowed_responses`, but
