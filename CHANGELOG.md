@@ -5,8 +5,9 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
-No state or config shape change (a job record gains the optional `progress_stage`; log lines written by a command
-gain `command`); nothing to migrate.
+No state or config shape change that needs a migration: a job record gains the optional `progress_stage` (and
+`rerouted_to` on a rerouted one), log lines written by a command gain `command`, `routing.yaml` gains the optional
+`claude_api.exhausted_recheck_hours`, and `state/runtime/claude_api_credit.json` exists only after a credit refusal.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
   the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record
@@ -29,6 +30,18 @@ gain `command`); nothing to migrate.
   any step longer than a few minutes, and every launched job (and what it starts) inherits
   `SUPERVISOR_PROGRESS_FILE` for `progress.report()`. The *Now running* row and the agent page show the stage and a
   bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification.
+- **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
+  low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
+  Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model
+  ran, no attempt consumed) and marks the lane spent in `state/runtime/claude_api_credit.json` until
+  `claude_api.exhausted_recheck_hours` (default 24, new optional key) have passed; a served request clears it.
+  While spent, `credits_remaining()` is false, so `--unattended` stops switching `claude_cli` picks onto credits.
+  The loop (`Supervisor.launch`) handles `LaneUnavailable` for a delivery whose own lane differs (the switch had
+  moved it): the record is closed `DONE`/`REROUTED` with `rerouted_to`, the task is dispatched on that lane, and
+  `repair_continuations()` finishes a reroute a crash interrupted. Anything else (a task pinned to `claude_api`, a
+  review) waits PREPARED until the recheck, as for any capacity deferral. A reached `monthly_budget_usd` is the same
+  gate (lifts next calendar month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane.
+  No migration: the new key is optional and the state file is absent until a refusal.
 
 ## 1.9.0 — 2026-10-25
 

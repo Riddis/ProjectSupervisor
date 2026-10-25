@@ -294,6 +294,12 @@ class CapacityDeferred(RuntimeError):
         self.reset_epoch = reset_epoch
 
 
+class LaneUnavailable(CapacityDeferred):
+    """No model was launched: this lane cannot serve any job until `reset_epoch` (its prepaid balance is spent, say).
+    A delivery the scheduler moved here may run on the lane it came from instead; anything else waits, as for
+    CapacityDeferred, which every handler of that keeps doing for this subclass."""
+
+
 def terminate_owned(process):
     """Terminate a child process tree; never report quiescence unless termination and wait both succeed."""
     if process.poll() is not None:

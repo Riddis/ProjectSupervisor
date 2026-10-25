@@ -11,6 +11,9 @@ why the unattended switch only moves a task here when `unattended_eligible()` sa
 Disabled
 (a clear FAILED result, never raised) while `secrets/.env` carries no `ANTHROPIC_API_KEY` — see
 docs/runbooks/claude_api.md and secrets/README.md for how the owner places the key and approves a budget.
+A spent prepaid balance is not a failure: the Console refuses the request without billing it, submit() raises
+LaneUnavailable and marks the lane spent (`state/runtime/claude_api_credit.json`) until a recheck, the scheduler
+stops moving work here, and the loop runs a delivery it had moved on the lane it came from.
 
 Runs synchronously inside submit() like the `python` adapter (one bounded call, not a long-lived child). One
 attempt makes at most one paid POST: the response body is persisted before anything is derived from it, and a
@@ -18,6 +21,7 @@ re-entered submit() finishes from `response.json` (ledger included, idempotently
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 UTC = timezone.utc
 from pathlib import Path
@@ -25,7 +29,7 @@ from pathlib import Path
 import requests
 
 from .. import policy
-from .._vendor.contract import atomic_json, structured_result
+from .._vendor.contract import LaneUnavailable, atomic_json, read_json, structured_result
 from ..paths import Layout
 from ..store import now_iso
 from .base import Adapter, Result, register
@@ -36,6 +40,9 @@ API_VERSION = "2023-06-01"
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_TIMEOUT_S = 600
 DEFAULT_BUDGET_USD = 100.0           # fallback when routing.yaml claude_api.monthly_budget_usd is absent (the template sets 0 = lane off)
+DEFAULT_RECHECK_HOURS = 24.0         # how long a spent balance keeps the lane off before one request tries again
+# The Console's refusal once the org's credit balance is spent (HTTP 400, invalid_request_error); nothing is billed.
+CREDIT_REFUSAL = "credit balance is too low"
 LEDGER_CATEGORY = "api_credits"
 # Model ids the Messages API accepts; routing.yaml roles.<role>.model uses the CLI's short aliases.
 MODEL_ALIASES = {"sonnet": "claude-sonnet-5", "opus": "claude-opus-5", "haiku": "claude-haiku-4-5-20251001"}
@@ -81,6 +88,7 @@ def api_config(layout: Layout) -> dict:
     cfg.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
     cfg.setdefault("timeout_s", DEFAULT_TIMEOUT_S)
     cfg.setdefault("eligible_roles", [])
+    cfg.setdefault("exhausted_recheck_hours", DEFAULT_RECHECK_HOURS)
     return cfg
 
 
@@ -153,6 +161,48 @@ def spent_this_month(layout: Layout) -> float:
     return total
 
 
+def _next_month_epoch() -> float:
+    now = datetime.now(UTC)
+    year, month = (now.year + 1, 1) if now.month == 12 else (now.year, now.month + 1)
+    return datetime(year, month, 1, tzinfo=UTC).timestamp()
+
+
+# ------------------------------------------------------------------ spent prepaid balance (state/runtime/claude_api_credit.json)
+
+def credit_state_path(layout: Layout) -> Path:
+    return layout.runtime / "claude_api_credit.json"
+
+
+def credit_refusal(status_code: int, text: str) -> bool:
+    """The Console refused the request because the org's credit balance is spent — not a fault of the job."""
+    return 400 <= status_code < 500 and CREDIT_REFUSAL in (text or "").lower()
+
+
+def mark_credit_exhausted(layout: Layout, message: str) -> float:
+    """Record the spent balance; returns the recheck epoch. When credit refreshes is the Console's business (the
+    plan's billing cycle, a top-up), so after `exhausted_recheck_hours` one request simply tries again — a refused
+    request costs nothing."""
+    recheck = time.time() + float(api_config(layout)["exhausted_recheck_hours"]) * 3600
+    layout.runtime.mkdir(parents=True, exist_ok=True)
+    atomic_json(credit_state_path(layout), {"exhausted_at": now_iso(), "recheck_epoch": recheck,
+                                            "message": str(message)[:500]})
+    return recheck
+
+
+def credit_exhausted(layout: Layout) -> bool:
+    path = credit_state_path(layout)
+    if not path.exists():
+        return False
+    try:
+        return float(read_json(path).get("recheck_epoch") or 0) > time.time()
+    except (ValueError, TypeError, OSError):
+        return True                      # an unreadable mark keeps the lane off; a successful call removes it
+
+
+def clear_credit_exhausted(layout: Layout) -> None:
+    credit_state_path(layout).unlink(missing_ok=True)
+
+
 def available(layout: Layout) -> bool:
     """False while the owner has not placed a key in secrets/.env: the adapter
     is disabled, not gated-and-waiting, since no amount of time fixes a missing key."""
@@ -160,7 +210,8 @@ def available(layout: Layout) -> bool:
 
 
 def credits_remaining(layout: Layout) -> bool:
-    return available(layout) and spent_this_month(layout) < api_config(layout)["monthly_budget_usd"]
+    return (available(layout) and not credit_exhausted(layout)
+            and spent_this_month(layout) < api_config(layout)["monthly_budget_usd"])
 
 
 # ------------------------------------------------------------------ what may be moved onto credits unattended
@@ -234,10 +285,15 @@ class ClaudeApiAdapter(Adapter):
             atomic_json(result_path, {"status": "FAILED", "error": "claude_api disabled: no ANTHROPIC_API_KEY in "
                         "secrets/.env (docs/runbooks/claude_api.md)"})
             return {"kind": "claude_api", "result_path": str(result_path)}
-        if not credits_remaining(layout):
-            atomic_json(result_path, {"status": "FAILED",
-                        "error": "claude_api disabled: monthly API credit budget exhausted"})
+        if credit_exhausted(layout):
+            recheck = float(read_json(credit_state_path(layout)).get("recheck_epoch") or 0)
+            raise LaneUnavailable(recheck, "claude_api: credit balance spent; next try after the recheck")
+        if float(api_config(layout)["monthly_budget_usd"]) <= 0:
+            atomic_json(result_path, {"status": "FAILED", "error": "claude_api disabled: routing.yaml "
+                        "claude_api.monthly_budget_usd is 0"})
             return {"kind": "claude_api", "result_path": str(result_path)}
+        if not credits_remaining(layout):
+            raise LaneUnavailable(_next_month_epoch(), "claude_api: monthly budget (routing.yaml) reached")
         request = json.loads((run_dir / "request.json").read_text(encoding="utf-8"))
         headers = {"x-api-key": key, "anthropic-version": API_VERSION, "content-type": "application/json"}
         try:
@@ -245,11 +301,16 @@ class ClaudeApiAdapter(Adapter):
         except requests.RequestException as exc:
             atomic_json(result_path, {"status": "FAILED", "error": f"claude_api request failed: {exc}"})
             return {"kind": "claude_api", "result_path": str(result_path)}
+        if credit_refusal(resp.status_code, resp.text):
+            # Nothing was billed and nothing is wrong with the job: no result (recover() finds none, so nothing is
+            # collected or escalated), the lane marked spent, the launch deferred or rerouted by the loop.
+            raise LaneUnavailable(mark_credit_exhausted(layout, resp.text), f"claude_api: {resp.text[:300]}")
         if resp.status_code >= 400:
             atomic_json(result_path, {"status": "FAILED", "error": f"claude_api http {resp.status_code}: {resp.text[:500]}"})
             return {"kind": "claude_api", "result_path": str(result_path)}
         body = resp.json()
         atomic_json(saved, body)          # durable BEFORE the ledger and the result: one POST per attempt, ever
+        clear_credit_exhausted(layout)    # a served request: credit is back
         return self._finish(spec, layout, request, body)
 
     def _finish(self, spec: dict, layout: Layout, request: dict, body: dict) -> dict:
