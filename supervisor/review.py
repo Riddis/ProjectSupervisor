@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import gate, jobs as jobs_mod
 from . import tasks as tasks_mod
-from ._vendor.contract import CapacityDeferred, digest as digest_of, read_json
+from ._vendor.contract import CapacityDeferred, digest as digest_of
 from .adapters import REGISTRY
 from .models.task import ReviewVerdict, Task, TaskStatus
 
@@ -232,9 +232,12 @@ def ingest(supervisor, rec: dict, result) -> None:
     adapter_name = (rec.get("spec") or {}).get("adapter")
     vendor = VENDOR_OF_ADAPTER.get(adapter_name, adapter_name)
     run_dir = (rec.get("spec") or {}).get("run_dir")
-    report = str((Path(run_dir) / "result.json").relative_to(layout.root).as_posix()) if run_dir else None
+    # The report is the review object this verdict came from, frozen and hashed here — not whatever result.json
+    # holds by now (an external writer could have replaced it since the job ended).
+    report, report_hash = tasks_mod.review_snapshot(layout, run_dir, obj) if run_dir else (None, None)
     try:
-        tasks_mod.record_review(layout, task_id, digest, role, verdict, vendor=vendor, report=report, actor="loop")
+        tasks_mod.record_review(layout, task_id, digest, role, verdict, vendor=vendor, report=report, actor="loop",
+                                report_sha256=report_hash)
     except tasks_mod.TaskError:
         # the digest moved on in the instant between our check above and the lock-protected write: discard, same
         # as the ordinary invalidation path above.
@@ -258,23 +261,25 @@ def ingest(supervisor, rec: dict, result) -> None:
     bad = [r for r in live.values() if r.verdict in (ReviewVerdict.REVISE, ReviewVerdict.REJECT)]
     if not bad:
         return                                             # the round completed clean; advance() already applied it
-    combined = "\n\n".join(f"{r.role} ({r.verdict.value}): {_findings_text(layout, r.report) or r.role + ' verdict ' + r.verdict.value}"
-                           for r in bad)
+    combined = "\n\n".join(f"{r.role} ({r.verdict.value}): {_findings_text(layout, r)}" for r in bad)
     escalation_mod.record_failure(supervisor, task_id, "review", combined, event=rec["attempt_id"])
 
 
-def _findings_text(layout, report_path: str | None) -> str:
-    """Findings (or the summary) of a recorded review's own result.json, verbatim — reused so a revision brief
-    quotes every required reviewer's evidence, not just the one that happened to complete the round."""
-    if not report_path:
-        return ""
-    try:
-        obj = read_json(layout.root / report_path)
-    except (OSError, ValueError):
-        return ""
+UNAVAILABLE = {"none": "no review report was recorded",
+               "unverified": "the review report was recorded without a hash (before 1.10.0), so it is not quoted",
+               "changed": "the review report changed (or became a link) after it was recorded, so it is not quoted"}
+
+
+def _findings_text(layout, review) -> str:
+    """Findings (or the summary) of a recorded review's own report, verbatim and verified (tasks.review_report) —
+    reused so a revision brief quotes every required reviewer's evidence, not just the one that happened to complete
+    the round. A report that cannot be verified is never quoted: the brief says the rationale is unavailable."""
+    obj, state = tasks_mod.review_report(layout, review)
+    if obj is None:
+        return f"verdict {review.verdict.value}; rationale unavailable: {UNAVAILABLE.get(state, state)}"
     findings = "; ".join(f"[{f.get('category')}] {f.get('message')} ({f.get('evidence')})"
-                         for f in obj.get("findings") or [])
-    return findings or str(obj.get("summary") or "")
+                         for f in obj.get("findings") or [] if isinstance(f, dict))
+    return findings or str(obj.get("summary") or "") or f"verdict {review.verdict.value} (the report gives no text)"
 
 
 def salvage(supervisor, task: Task, role: str) -> bool:

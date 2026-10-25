@@ -190,8 +190,11 @@ def _review(layout, payload, actor):
     if t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"] and r.verdict.value == payload["verdict"]
                           for r in t.delivery.reviews):
         return {"skipped": "already reviewed", "status": t.status.value}
+    # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report that
+    # could not be hashed when it was submitted is never authenticated by whatever the file holds when this applies.
+    provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
     tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
-                            payload.get("vendor"), payload.get("report"))
+                            payload.get("vendor"), payload.get("report"), **provenance)
     t = tasks_mod.advance(layout, payload["task_id"])
     return {"status": t.status.value}
 
@@ -213,6 +216,17 @@ def _capacity_reset(layout, payload, actor):
     from . import capacity
     cleared = capacity.owner_reset(layout, payload["engine"], payload.get("message", f"reset by {actor}"))
     return {"cleared": len(cleared)}
+
+
+@handler("lane.reset")
+def _lane_reset(layout, payload, actor):
+    """Forget a lane-level unavailability (a spent credit balance, say): jobs that lane deferred are released on the
+    loop's next launch of them when the lane reports itself ready (Adapter.lane_ready)."""
+    from .adapters import REGISTRY
+    lane = str(payload["lane"])
+    if lane not in REGISTRY:
+        raise ValueError(f"unknown lane {lane!r}")
+    return {"cleared": bool(REGISTRY[lane].reset_lane(layout))}
 
 
 @handler("settings.update_routing")

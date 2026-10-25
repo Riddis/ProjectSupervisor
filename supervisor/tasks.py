@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -524,14 +525,89 @@ def record_verification(layout: Layout, task_id: str, digest: str, ok: bool, rep
     return t
 
 
+MAX_REPORT_BYTES = 4 * 1024 * 1024
+
+
+def read_linkfree(layout: Layout, rel: str, limit: int) -> bytes | None:
+    """Up to `limit` bytes of the project file `rel`, or None when it is missing, larger, outside the root or reached
+    through a link (checked before it is opened). One read: a caller that hashes the result hashes what it uses."""
+    from ._vendor.contract import contained, resolve as resolve_linkfree
+    try:
+        path = resolve_linkfree(layout.root / str(rel))
+        if not contained(path, [layout.root], root=layout.root) or not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except (OSError, ValueError):
+        return None
+    return data if len(data) <= limit else None
+
+
+def report_file_sha256(layout: Layout, rel: str | None) -> str | None:
+    data = read_linkfree(layout, rel, MAX_REPORT_BYTES) if rel else None
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def read_verified(layout: Layout, rel: str, sha256: str | None, limit: int) -> bytes | None:
+    """The bytes of `rel`, read once through a link-free path, only when they hash to `sha256`."""
+    data = read_linkfree(layout, rel, limit) if sha256 else None
+    return data if data is not None and hashlib.sha256(data).hexdigest() == sha256 else None
+
+
+def review_report(layout: Layout, review: ReviewRecord) -> tuple[dict | None, str]:
+    """A recorded review's own report, exactly as recorded: (review object, state). `state` is "ok", "none" (the
+    review names no report), "unverified" (no hash was recorded: a review from before 1.10.0) or "changed" (the file
+    no longer hashes to `report_sha256`, is gone, is a link or does not parse). Never the file's current content
+    otherwise. The one reader for everything that shows or quotes a reviewer's rationale (the approval view,
+    escalation). A lane's envelope around the review object (`{"status", ..., "result": {...}}`) is unwrapped."""
+    if not review.report:
+        return None, "none"
+    if not review.report_sha256:
+        return None, "unverified"
+    data = read_verified(layout, review.report, review.report_sha256, MAX_REPORT_BYTES)
+    if data is None:
+        return None, "changed"
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, "changed"
+    if isinstance(doc, dict) and "verdict" not in doc and isinstance(doc.get("result"), dict):
+        doc = doc["result"]
+    return (doc, "ok") if isinstance(doc, dict) else (None, "changed")
+
+
+def review_snapshot(layout: Layout, run_dir, review: dict) -> tuple[str, str]:
+    """Freeze the structured review a job returned (the object its verdict was read from) as `review_report.json` in
+    its run dir: the bytes are serialized once, written, and hashed in memory, so the recorded verdict and the
+    report that speaks for it come from the same input, whatever happens to the file afterwards. Returns
+    (root-relative path, sha256)."""
+    from ._vendor.contract import atomic_write_text
+    # Compact ASCII JSON: every newline and non-ASCII character is escaped, so text-mode writing (newline translation
+    # on Windows) cannot make the bytes on disk differ from the bytes hashed here.
+    text = json.dumps(review, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    path = Path(run_dir) / "review_report.json"
+    atomic_write_text(path, text)
+    return path.relative_to(layout.root).as_posix(), hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+HASH_AT_RECORD = object()        # record_review(report_sha256=...) default: no provenance supplied, hash the file now
+
+
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
-                  report: str | None = None, actor: str = "review") -> Task:
+                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD) -> Task:
+    """`report_sha256`: the hash of the report as the reviewer produced it, when the caller holds those bytes (the
+    loop's snapshot of the job's result, a CLI review hashed at submission). An explicit None means the caller had no
+    verifiable bytes: it is kept as None (the report is never shown as the reviewer's) and the file is NOT hashed
+    later in its place. Omitted, the file is hashed now, at record time — which says what the file held then, not
+    what the reviewer wrote."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
+    sha = report_file_sha256(layout, report) if report_sha256 is HASH_AT_RECORD else report_sha256
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")
         d.setdefault("reviews", []).append(ReviewRecord(digest=digest, role=role, verdict=verdict_e, at=store.now_iso(),
-                                                        vendor=vendor, report=report).model_dump(mode="json"))
+                                                        vendor=vendor, report=report,
+                                                        report_sha256=sha).model_dump(mode="json"))
     t = _update(layout, task_id, fn)
     log(layout, "review", actor, task=task_id, role=role, verdict=verdict_e.value, digest=digest)
     return t

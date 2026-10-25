@@ -17,7 +17,11 @@ A single Messages API call per attempt, billed to an API key the owner put in `s
   costs nothing) and a served request deletes the file. While it is spent the unattended switch keeps work on
   `claude_cli`, and a delivery the switch had already moved here is closed as `REROUTED` (`rerouted_to`) and
   queued on its own lane — no escalation. Work pinned to this lane (`job.adapter`, `cost_category: paid`) and
-  reviews wait PREPARED until the recheck instead. Delete the file to retry sooner (credit topped up, new cycle).
+  reviews wait PREPARED until the recheck instead. To retry sooner (credit topped up, a new billing cycle):
+  `supervisor cmd lane.reset '{"lane":"claude_api"}'` — the waiting records are released on the loop's next
+  iteration, as they are when the owner raises a reached `monthly_budget_usd`.
+- Detection is exact: HTTP 400 with a JSON `error.type` of `invalid_request_error` and the "credit balance is too
+  low" message. Any other response, whatever it contains, stays an ordinary FAILED attempt.
 - Ledger: `state/runtime/cost_ledger.jsonl`, one line per call, priced from `claude_api.pricing_usd_per_mtok`
   (fill in current rates or the dollar figures are 0). `spent_this_month` vs `monthly_budget_usd` decides
   `credits_remaining`. The template ships `monthly_budget_usd: 0` (lane off); if the key is deleted from

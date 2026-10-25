@@ -14,7 +14,7 @@ accepted this exact commit. Never tag before the review accepts; never move or r
 From the changes since the last tag (`git log --oneline <last-tag>..main`, `CHANGELOG.md ## Unreleased`):
 
 - **major**: a change that needs `supervisor migrate` before the loop may start, a changed or removed extension
-  hook, a breaking change to the public extension API (from 1.10.0: only after one minor release of deprecation
+  hook, a breaking change to the public extension API (from 1.11.0: only after one minor release of deprecation
   warnings);
 - **minor**: a feature, a new hook, an addition to the public API;
 - **patch**: fixes only.
@@ -27,7 +27,7 @@ Rename `## Unreleased` to `## X.Y.Z — <date>` and make it complete for two rea
 changes for me, what must I do) and the extension author (hooks, API). Every state or config shape change has a
 migration in `supervisor/migrations.py` written with **migration-author**, and a **Migration** line saying what
 `supervisor migrate` does and how to roll back. "No state or config shape change" is said explicitly when true.
-From 1.10.0: an "Extension API" line for every addition or deprecation (G2 compares the contract with the last
+From 1.11.0: an "Extension API" line for every addition or deprecation (G2 compares the contract with the last
 tag's).
 
 ## 3. Gates on the release commit
@@ -35,7 +35,7 @@ tag's).
 On the exact commit to be tagged (a clean checkout, nothing uncommitted — check `git status`):
 
 - **G1** `python -m supervisor.boundary`: OK, no notes;
-- **G2** (from 1.10.0) the API contract check against the last tag;
+- **G2** (from 1.11.0) the API contract check against the last tag;
 - **G3** CI green on Linux and Windows for this commit; on the workstation also `tools\test_windows.ps1`, and keep
   `runs/pytest_windows.txt` for the review;
 - `supervisor migrate --dry-run` and `supervisor migrate` on a copy of a project at the previous version: the

@@ -100,6 +100,8 @@ class ReviewRecord(BaseModel):
     at: str
     vendor: Optional[str] = None
     report: Optional[str] = None
+    report_sha256: Optional[str] = None    # the report's bytes when the review was recorded (1.10.0); the approval view
+                                           # shows its summary/findings only while the file still hashes to this
     superseded: bool = False
 
 

@@ -174,8 +174,18 @@ def credit_state_path(layout: Layout) -> Path:
 
 
 def credit_refusal(status_code: int, text: str) -> bool:
-    """The Console refused the request because the org's credit balance is spent — not a fault of the job."""
-    return 400 <= status_code < 500 and CREDIT_REFUSAL in (text or "").lower()
+    """The Console refused the request because the org's credit balance is spent — not a fault of the job. Only
+    its exact shape counts: HTTP 400 with a JSON body whose `error.type` is `invalid_request_error` and whose
+    `error.message` says so; the phrase anywhere else (another status, an echoed prompt, another error type) is an
+    ordinary failure."""
+    if status_code != 400:
+        return False
+    try:
+        error = json.loads(text or "").get("error")
+    except (ValueError, AttributeError):
+        return False
+    return (isinstance(error, dict) and error.get("type") == "invalid_request_error"
+            and CREDIT_REFUSAL in str(error.get("message") or "").lower())
 
 
 def mark_credit_exhausted(layout: Layout, message: str) -> float:
@@ -332,6 +342,17 @@ class ClaudeApiAdapter(Adapter):
         atomic_json(result_path, {"status": status, "artifacts": list(obj.get("artifacts") or []), "notes": notes,
                     "usage": usage, "model": request["model"], "result": obj})
         return {"kind": "claude_api", "result_path": str(result_path)}
+
+    def lane_ready(self, layout: Layout) -> bool:
+        """A job deferred for spent credit or a reached budget may go now: the spent mark is gone (`lane.reset`, a
+        served request) and the month's spend is under a budget the owner may have raised meanwhile."""
+        return credits_remaining(layout) and float(api_config(layout)["monthly_budget_usd"]) > 0
+
+    def reset_lane(self, layout: Layout) -> bool:
+        """`lane.reset {"lane": "claude_api"}` after a top-up or a new billing cycle: forget the spent mark."""
+        existed = credit_state_path(layout).exists()
+        clear_credit_exhausted(layout)
+        return existed
 
     def recover(self, spec: dict) -> dict | None:
         """A finished result is adopted; a half-finished attempt (response persisted, result not) is deliberately

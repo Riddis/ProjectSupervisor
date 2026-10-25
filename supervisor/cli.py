@@ -7,6 +7,7 @@ from pathlib import Path
 
 import typer
 import yaml
+from typer.core import TyperGroup
 
 from . import __version__
 from . import commands as commands_mod
@@ -19,8 +20,22 @@ from . import render, runtime
 from . import tasks as tasks_mod
 from .paths import Layout, NoProject, find_root
 
+class _Commands(TyperGroup):
+    """The top-level command group. Extension command groups (`registry.cli`) are looked up only when a name is not a
+    built-in command, or when the whole list is wanted (`--help`), however the CLI is invoked (a process, `app(...)`,
+    a test runner): resolving a built-in command — `status` above all, which must change nothing — never sets up an
+    extension. Before 1.10.0 they were attached when this module was imported."""
+
+    def get_command(self, ctx, name):
+        return super().get_command(ctx, name) or _extension_group().get_command(ctx, name)
+
+    def list_commands(self, ctx):
+        own = super().list_commands(ctx)
+        return own + [n for n in _extension_group().list_commands(ctx) if n not in own]
+
+
 app = typer.Typer(help="Supervisor: run a project with AI agents under a deterministic supervisor and a Control Center.",
-                  no_args_is_help=True, pretty_exceptions_enable=False)
+                  no_args_is_help=True, pretty_exceptions_enable=False, cls=_Commands)
 task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
@@ -41,6 +56,16 @@ def _layout() -> Layout:
     layout = Layout(root).ensure()
     extensions_mod.load(layout)
     return layout
+
+
+def _reader() -> Layout:
+    """For read-only commands (`status`): the project as it is — no directories created (`Layout.ensure`), no extension
+    set up (setup is project code and may write; loading also reconciles state/runtime/projection_paths.json)."""
+    root = find_root()
+    if root is None:
+        raise typer.BadParameter(str(NoProject("no project.yaml found here or above; run `supervisor init <dir>` "
+                                               "or set SUPERVISOR_ROOT")))
+    return Layout(root)
 
 
 def _echo_cmd(outcome: dict, task_id: str) -> None:
@@ -115,10 +140,11 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
 
 @app.command()
 def status():
-    """Render STATE.md and print the summary."""
-    layout = _layout()
-    out = render.render_state(layout)
-    typer.echo(out.read_text(encoding="utf-8"))
+    """Print the live state summary: reads the store and `state/runtime/supervisor.json`, writes nothing (STATE.md is
+    `supervisor render`'s job). Before 1.10.0 this rendered STATE.md, so a read command rewrote a file while the loop
+    held `state/.lock`, and with no runtime record passed it always reported the loop as not running."""
+    layout = _reader()
+    typer.echo("\n".join(render.state_lines(layout, runtime=runtime.read(layout))).rstrip())
 
 
 @app.command("render")
@@ -243,9 +269,16 @@ def task_verify(task_id: str, digest: str, ok: bool = True, report: str = "", de
 
 @task_app.command("review")
 def task_review(task_id: str, digest: str, role: str, verdict: str, vendor: str = "", report: str = ""):
-    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.review", {"task_id": task_id, "digest": digest, "role": role,
+    from . import tasks as tasks_mod
+    layout = _layout()
+    sha = tasks_mod.report_file_sha256(layout, report) if report else None     # the report as submitted, not as applied
+    if report and sha is None:
+        raise typer.BadParameter(f"--report {report}: missing, a link, outside the project or larger than "
+                                 f"{tasks_mod.MAX_REPORT_BYTES // (1024 * 1024)} MiB; it cannot be bound to this review")
+    _echo_cmd(commands_mod.submit_or_apply(layout, "task.review", {"task_id": task_id, "digest": digest, "role": role,
                                                                    "verdict": verdict, "vendor": vendor or None,
-                                                                   "report": report or None}, "review"), task_id)
+                                                                   "report": report or None, "report_sha256": sha},
+                                           "review"), task_id)
 
 
 @task_app.command("approve")
@@ -470,27 +503,41 @@ def main():
     app()
 
 
-if __name__ == "__main__":
-    main()
+_extensions_cli: dict[str, tuple[object, TyperGroup]] = {}    # project root -> (its registry, its command groups)
 
 
-# Extension command groups are attached at import time so `supervisor <name>` works from any project directory.
-def _attach_extension_clis() -> None:
+def _extension_group():
+    """The current project's extension command groups as one click group, built on first use (see _Commands). Kept
+    per project root and only while that root's extension registry is the one they were built from: another project
+    (SUPERVISOR_ROOT or the working directory changed) or a reloaded registry (extensions.reset) builds them again.
+    Each is mounted exactly as `app.add_typer(ext_app, name=name)` would mount it."""
     root = find_root()
-    if root is None:
-        return
-    try:
-        reg = extensions_mod.load(Layout(root))
-    except Exception as exc:                                # noqa: BLE001 - a broken extension must not break the CLI
-        print(f"warning: extensions not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
-        return
-    for err in reg.errors:                                  # a failed extension's `supervisor <name>` group is absent: say so
-        print(f"warning: extension not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
-    for ext_app, name in reg.cli_apps:
+    key = str(Layout(root).root) if root is not None else ""
+    cached = _extensions_cli.get(key)
+    if cached is not None and (root is None or extensions_mod.loaded(root) is cached[0]):
+        return cached[1]
+    holder = typer.Typer()
+    reg = None
+    if root is not None:
         try:
-            app.add_typer(ext_app, name=name)
-        except Exception as exc:                            # noqa: BLE001
-            print(f"warning: command group {name!r} could not be attached: {exc}", file=sys.stderr)
+            reg = extensions_mod.load(Layout(root))
+        except Exception as exc:                            # noqa: BLE001 - a broken extension must not break the CLI
+            print(f"warning: extensions not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
+        for err in (reg.errors if reg else []):             # a failed extension's `supervisor <name>` group is absent: say so
+            print(f"warning: extension not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
+        for ext_app, name in (reg.cli_apps if reg else []):
+            try:
+                holder.add_typer(ext_app, name=name)
+            except Exception as exc:                        # noqa: BLE001
+                print(f"warning: command group {name!r} could not be attached: {exc}", file=sys.stderr)
+    try:
+        group = typer.main.get_group(holder) if holder.registered_groups else TyperGroup(name=None)
+    except Exception as exc:                                # noqa: BLE001
+        print(f"warning: extension command groups could not be built: {exc}", file=sys.stderr)
+        group = TyperGroup(name=None)
+    _extensions_cli[key] = (reg, group)
+    return group
 
 
-_attach_extension_clis()
+if __name__ == "__main__":                                  # last: everything main() can reach is defined above
+    main()

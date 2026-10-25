@@ -3,11 +3,28 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.10.0 — 2026-10-25
 
-No state or config shape change that needs a migration: a job record gains the optional `progress_stage` (and
-`rerouted_to` on a rerouted one), log lines written by a command gain `command`, `routing.yaml` gains the optional
-`claude_api.exhausted_recheck_hours`, and `state/runtime/claude_api_credit.json` exists only after a credit refusal.
+Approval evidence, one log line per owner action, progress reports from long jobs, a `claude_api` lane that reroutes
+work when the prepaid credit is spent, and two status/render fixes first prepared as 1.9.1. A feature release ahead
+of phase 2 of the boundary plan, so the public extension API and gate G2 move to 1.11.0 and extension packages (G5)
+to 1.12.0 (`docs/BOUNDARY.md`, the framework skills). No extension hook added or changed; extensions need no change
+(the `Adapter` base class gains two optional methods with defaults, below).
+
+**Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one: a
+job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a reroute; a
+task's review record gains the optional `report_sha256`; log lines written by a command gain `command`;
+`routing.yaml` gains the optional `claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json`
+exists only after a credit refusal; renders take the new lock file `state/.render.lock` (covered by the template's
+`state/.*.lock` ignore rule).
+
+**Rollback** to v1.9.0, in a maintenance window: (1) with 1.10.0 still checked out, drain (`supervisor drain`) until
+no job is running — every iteration 1.10.0 re-queues a reroute a crash interrupted, which v1.9.0 cannot do; (2)
+`supervisor doctor` must show `jobs` OK (no task's newest record is an un-requeued `REROUTED`); (3) stop, check out
+`v1.9.0`, `supervisor migrate` (records `framework_version` 1.9.0 again), `supervisor doctor`, start. What 1.10.0
+wrote stays readable by 1.9.0: the extra job-record and review-record fields are ignored, a closed `REROUTED` record
+is a finished attempt, a successor it queued is an ordinary PREPARED record, and a record waiting on a spent lane
+waits for its time. Or restore the snapshot taken before the upgrade.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
   the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record
@@ -15,7 +32,18 @@ No state or config shape change that needs a migration: a job record gains the o
   thumbnails, each openable by index at `/tasks/<id>/files/<n>`, never by a browser-supplied path), the verification,
   and each live review's verdict, summary and findings. A declared artifact the digest does not cover is named in a
   warning, since a later change to it would not invalidate the approval. An approval whose digest is no longer the
-  task's current one says so and shows no files. The task page's artifact list is replaced by the same view
+  task's current one says so and shows no files. What is shown is what was frozen: the delivered paths must still hash
+  to the digest and each file's bytes are checked against their manifest entry before they are shown, thumbnailed or
+  served (`/tasks/<id>/files/<n>?digest=`); otherwise the card says the files changed and shows none. An approval's
+  own `evidence` list never reads files: references outside the delivery are listed by name only. A review's summary
+  and findings come from the review job's own structured result — the object its verdict was read from, frozen when
+  the review is ingested (`review_report.json` in the run dir, hashed from the bytes written;
+  `ReviewRecord.report_sha256`); a `supervisor task review` report is hashed when the command is submitted, and a
+  report it cannot hash (missing, a link, over 4 MiB) is refused; a command carrying an explicit null hash is recorded
+  without one. They are shown, and quoted to escalation's revision brief, only while that file still hashes to it
+  (`tasks.review_report`, which also unwraps the `claude_api` result envelope); a changed or linked report, or a
+  review recorded before 1.10.0, keeps its verdict and says the rationale is unavailable. The verification shown is
+  the recorded outcome and detail. The task page's artifact list is replaced by the same view
   (`supervisor/ui/delivery.py`, `partials/delivery.html`).
 - **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
   store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and
@@ -27,9 +55,31 @@ No state or config shape change that needs a migration: a job record gains the o
   nothing.
 - **Progress reports from long jobs** (`supervisor/progress.py`). A job writes `<run dir>/PROGRESS.json`
   (`stage`, `detail`, optional `done`/`total`); delivery briefs for `claude_cli` and `codex_cli` ask for it before
-  any step longer than a few minutes, and every launched job (and what it starts) inherits
-  `SUPERVISOR_PROGRESS_FILE` for `progress.report()`. The *Now running* row and the agent page show the stage and a
-  bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification.
+  any step longer than a few minutes, and every subprocess job (the `process`, `claude_cli` and `codex_cli` lanes,
+  and what it starts) inherits `SUPERVISOR_PROGRESS_FILE` for `progress.report()`; an in-process `python` job can
+  pass its run dir's file to `report(file=...)`. The *Now running* row and the agent page show the stage and a
+  bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification, and a
+  malformed or oversized report (it is the job's file) shows nothing and never fails the job or a page.
+- **Fixed: `supervisor status` is a read.** It rendered STATE.md and printed the result, so asking for the status
+  rewrote a file while the loop held `state/.lock`, and since no runtime record was passed it always reported the loop
+  as not running. It now prints the same lines (`render.state_lines`, with the live `state/runtime/supervisor.json`)
+  and changes nothing in the project: it creates no directory and sets up no extension (setup is project code, and
+  loading reconciles `state/runtime/projection_paths.json`), and extension command groups (`registry.cli`) are now
+  looked up when a command name is not a built-in one, or when the whole command list is wanted (`supervisor --help`,
+  top-level shell completion), however the CLI is invoked (a process, `app(...)`, a test runner) — before, every
+  import of the CLI set the extensions up. Resolving a built-in command never sets an extension up; running one may (a
+  writing command loads the project's extensions, `status` does not). The groups are kept per project root and rebuilt
+  when that root's extension registry is reloaded. `supervisor render` still re-renders the files.
+- **Fixed: a slower render can no longer overwrite a fresher one.** Every projection — the six built-in views and each
+  one an extension registers (`registry.projection`) — reads and writes under `state/.render.lock`
+  (`render.render_lock`), so two renderers (the loop and an owner command, say) are ordered: the one that enters
+  second reads only after the first has written. It is a separate lock from `state/.lock`, which the loop holds while
+  it renders, and it is reentrant within a thread, so a registered projection may call a built-in `render_*` function.
+  A projection that cannot get the lock within 30 s (a wait for the lock, not a budget for the render) is skipped and
+  logged (`render_error`, `projection_error`) and its previous file stays; `render_all` goes on with the next one. The
+  lock orders each projection's own read and write; it does not make the set of files one snapshot.
+  `render.phase_and_gates_passed()` is an internal helper (STATE.md's phase and passed gates, used by `state_lines`),
+  not part of the extension API that 1.11.0 defines.
 - **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
   low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
   Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model
@@ -39,8 +89,13 @@ No state or config shape change that needs a migration: a job record gains the o
   The loop (`Supervisor.launch`) handles `LaneUnavailable` for a delivery whose own lane differs (the switch had
   moved it): the record is closed `DONE`/`REROUTED` with `rerouted_to`, the task is dispatched on that lane, and
   `repair_continuations()` finishes a reroute a crash interrupted. Anything else (a task pinned to `claude_api`, a
-  review) waits PREPARED until the recheck, as for any capacity deferral. A reached `monthly_budget_usd` is the same
-  gate (lifts next calendar month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane.
+  review) waits PREPARED until the recheck. A reached `monthly_budget_usd` is the same gate (lifts next calendar
+  month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane. Such a wait ends early once
+  the lane reports itself ready: the new owner command `lane.reset {"lane": "claude_api"}` (after a top-up or a
+  new billing cycle) or a raised budget releases the waiting records on the next iteration. Extension authors: two
+  optional `Adapter` methods back this, `lane_ready(layout)` and `reset_lane(layout)`, both defaulting to "no".
+  The refusal is matched exactly (HTTP 400, JSON `error.type` `invalid_request_error`, the credit message);
+  anything else stays an ordinary FAILED attempt.
   No migration: the new key is optional and the state file is absent until a refusal.
 
 ## 1.9.0 — 2026-10-25

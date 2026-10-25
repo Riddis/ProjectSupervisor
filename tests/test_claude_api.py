@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from supervisor import loop as loop_mod
-from supervisor import jobs, scheduler, tasks
+from supervisor import commands, jobs, scheduler, tasks
 from supervisor import verify as verify_mod
 from supervisor._vendor.contract import LaneUnavailable
 from supervisor.adapters import REGISTRY, claude_api
@@ -436,3 +436,158 @@ def test_a_task_pinned_to_claude_api_waits_for_credit(layout, ad, monkeypatch):
     assert rec["phase"] == "PREPARED" and float(rec["deferred_until"]) > time.time()
     assert len(jobs.for_task(layout, "CA")) == 1
     assert tasks.load(layout, "CA").status.value == "IN_PROGRESS"
+
+
+def _history(layout, tid, upto):
+    """Attempts 1..upto-1 of `tid` already finished, so the next record is attempt `upto`."""
+    for n in range(1, upto):
+        jobs.write(layout, {"attempt_id": f"{tid}.a{n}", "task_id": tid, "adapter": "claude_cli", "phase": "DONE",
+                            "result": "FAILED", "spec": {"kind": "delivery"}})
+
+
+def test_job_records_are_ordered_by_attempt_number(layout):
+    _history(layout, "CQ", 12)
+    assert [r["attempt_id"] for r in jobs.for_task(layout, "CQ")][-3:] == ["CQ.a9", "CQ.a10", "CQ.a11"]
+
+
+@pytest.mark.parametrize("refused", [9, 10])
+def test_a_reroute_interrupted_before_its_successor_is_repaired_at_any_attempt_number(layout, monkeypatch, refused):
+    """Review 1.10.0 #1: attempt 10 sorts before attempt 9 by file name; repair must still find the newest."""
+    write_key(layout)
+    plain_claude_task(layout, "CR")
+    tasks.set_status(layout, "CR", "IN_PROGRESS")
+    _history(layout, "CR", refused)
+    jobs.write(layout, {"attempt_id": f"CR.a{refused}", "task_id": "CR", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "submit", lambda spec: {"kind": "fake"})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "recover", lambda spec: None)
+    sup = Supervisor(layout, sleep_s=0)
+    sup.repair_continuations()
+    recs = jobs.for_task(layout, "CR")
+    new = recs[-1]
+    assert new["attempt_id"] == f"CR.a{refused + 1}" and new["adapter"] == "claude_cli"
+    assert new["rerouted_from"] == f"CR.a{refused}" and new["phase"] == "SUBMITTED"
+    assert jobs.read(layout, f"CR.a{refused}")["continued"] is True
+    sup.repair_continuations()                                       # idempotent
+    assert len(jobs.for_task(layout, "CR")) == refused + 1
+
+
+@pytest.mark.parametrize("refused", [9, 10])
+def test_a_reroute_interrupted_after_its_successor_queues_nothing_more(layout, monkeypatch, refused):
+    """The successor was written but the refused record not yet marked: repair marks it and dispatches nothing."""
+    write_key(layout)
+    plain_claude_task(layout, "CS")
+    tasks.set_status(layout, "CS", "IN_PROGRESS")
+    _history(layout, "CS", refused)
+    jobs.write(layout, {"attempt_id": f"CS.a{refused}", "task_id": "CS", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    jobs.write(layout, {"attempt_id": f"CS.a{refused + 1}", "task_id": "CS", "adapter": "claude_cli",
+                        "phase": "PREPARED", "rerouted_from": f"CS.a{refused}", "spec": {"kind": "delivery"}})
+    dispatched = []
+    sup = Supervisor(layout, sleep_s=0)
+    monkeypatch.setattr(sup, "dispatch", lambda *a, **kw: dispatched.append(a))
+    sup.repair_continuations()
+    assert not dispatched and len(jobs.for_task(layout, "CS")) == refused + 1
+    assert jobs.read(layout, f"CS.a{refused}")["continued"] is True
+
+
+# ------------------------------------------------------------------ review 1.10.0 #4: early release of lane deferrals
+
+def _pinned_and_deferred(layout, ad, monkeypatch):
+    write_key(layout)
+    api_task(layout)
+    calls = []
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or refuse_credit())
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
+    assert rec["phase"] == "PREPARED" and rec["deferred_lane"] is True and len(calls) == 1
+    return sup, calls
+
+
+def test_lane_reset_releases_a_job_waiting_for_credit(layout, ad, monkeypatch):
+    sup, calls = _pinned_and_deferred(layout, ad, monkeypatch)
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert len(calls) == 1                                           # still spent: no request, still waiting
+    text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body(text)))
+    commands.submit(layout, "lane.reset", {"lane": "claude_api"}, actor="owner")
+    commands.apply_all(layout)
+    assert not claude_api.credit_state_path(layout).exists()
+    rec = sup.launch(jobs.read(layout, "CA.a1"))                    # long before the 24 h recheck
+    assert len(calls) == 2 and rec["phase"] == "SUBMITTED"
+
+
+def test_raising_a_reached_budget_releases_a_waiting_job(layout, ad, monkeypatch):
+    write_key(layout)
+    write_routing(layout, monthly_budget_usd=1, pricing_usd_per_mtok={"claude-sonnet-5": {"input": 1000, "output": 0}})
+    api_task(layout)
+    claude_api.record_usage(layout, "X", "X.a1", "claude-sonnet-5", {"input_tokens": 2000, "output_tokens": 0}, "msg_x")
+    calls = []
+    text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body(text)))
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
+    assert rec["phase"] == "PREPARED" and rec["deferred_lane"] and not calls     # budget reached: no request
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert not calls
+    write_routing(layout, monthly_budget_usd=10, pricing_usd_per_mtok={"claude-sonnet-5": {"input": 1000, "output": 0}})
+    rec = sup.launch(jobs.read(layout, "CA.a1"))
+    assert calls == [1] and rec["phase"] == "SUBMITTED"
+
+
+def test_a_timed_deferral_is_not_released_by_lane_readiness(layout, ad, monkeypatch):
+    """Only records the lane deferred (deferred_lane) may go early; an ordinary timed wait keeps its time."""
+    write_key(layout)
+    api_task(layout)
+    calls = []
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body("x")))
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api", deferred_until=time.time() + 3600, note="wait")
+    assert ad.lane_ready(layout) and rec["phase"] == "PREPARED"
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert not calls and jobs.read(layout, "CA.a1")["phase"] == "PREPARED"
+
+
+def test_lane_reset_of_an_unknown_lane_fails_the_command(layout):
+    commands.submit(layout, "lane.reset", {"lane": "nope"}, actor="owner")
+    commands.apply_all(layout)
+    assert not list(layout.commands.glob("*.json"))                 # applied (as failed), not left queued
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (400, CREDIT_REFUSAL, True),
+    (429, CREDIT_REFUSAL, False),                                    # the phrase under another status
+    (400, {"type": "error", "error": {"type": "authentication_error",
+                                      "message": "Your credit balance is too low"}}, False),
+    (400, {"type": "error", "error": {"type": "invalid_request_error",
+                                      "message": "prompt echoed: credit balance is too low"}}, True),
+    (400, "Your credit balance is too low (plain text)", False),       # not the JSON shape
+    (400, ["error"], False),
+])
+def test_credit_refusal_matches_only_the_exact_shape(status, body, expected):
+    text = body if isinstance(body, str) else json.dumps(body)
+    assert claude_api.credit_refusal(status, text) is expected
+
+
+# ------------------------------------------------------------------ review 1.10.0 #5: a downgrade needs no pending reroute
+
+def test_doctor_reports_an_interrupted_reroute_until_the_loop_requeues_it(layout, monkeypatch):
+    from supervisor import doctor, runtime
+    write_key(layout)
+    plain_claude_task(layout, "CT")
+    tasks.set_status(layout, "CT", "IN_PROGRESS")
+    jobs.write(layout, {"attempt_id": "CT.a1", "task_id": "CT", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    assert not doctor.check_jobs(layout).ok and "CT.a1" in doctor.check_jobs(layout).detail
+    runtime.set_decision(layout, "DRAIN", "owner")                   # the rollback procedure's drain
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    recs = jobs.for_task(layout, "CT")
+    assert recs[-1]["adapter"] == "claude_cli" and recs[-1]["phase"] == "PREPARED"   # queued, held by the drain
+    assert recs[-1]["rerouted_from"] == "CT.a1"
+    assert doctor.check_jobs(layout).ok
+
+
+def test_doctor_jobs_check_is_ok_without_reroutes(layout):
+    from supervisor import doctor
+    assert doctor.check_jobs(layout).ok

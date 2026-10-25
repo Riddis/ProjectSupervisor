@@ -17,7 +17,7 @@
   them directly.
 - Any other owner action is also a command: `supervisor cmd task.note '{"task_id":"T0-01","note":"..."}'`,
   `task.set_priority`, `task.set_status`, `task.approve`, `gate.ack`, `gate.set`, `capacity.reset`,
-  `owner_task.set_status`, `agent.terminate`, `agent.note`, `conversation.*`, `system.shutdown[_cancel]`.
+  `lane.reset` (`{"lane": "<adapter>"}`), `owner_task.set_status`, `agent.terminate`, `agent.note`, `conversation.*`, `system.shutdown[_cancel]`.
 - Jobs: every attempt has `state/runtime/jobs/<task>.a<n>.json` (PREPARED → SUBMITTED → RUNNING → DONE/FAILED). On
   start the loop reconciles these before dispatching: PREPARED is launched under the same id, live children are
   adopted, finished ones ingested, dead ones marked lost. Never delete these files while a job may be running.
@@ -34,6 +34,7 @@
   `routing.yaml capacity.unattended_prefers_api_credits` is true (needs a key; see `claude_api.md`). With the
   preference off the pick stays on `claude_cli` and waits on its capacity gate. Interactive runs never take this
   branch.
-- Observability: `supervisor status` (STATE.md), `supervisor supervisor` (runtime JSON), `state/log.jsonl` (events,
-  redacted), `runs/<task>/<attempt>/` (prompt, stdout, result.json, verification.json, HANDOFF.md).
+- Observability: `supervisor status` (STATE.md's summary with the live runtime record; writes nothing), `supervisor
+  supervisor` (runtime JSON), `state/log.jsonl` (events, redacted), `runs/<task>/<attempt>/` (prompt, stdout,
+  result.json, verification.json, HANDOFF.md).
 - Loop error budget: five exceptions in ten minutes → status BLOCKED, exit 1; read the `loop_error` events.

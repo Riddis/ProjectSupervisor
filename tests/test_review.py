@@ -324,3 +324,156 @@ def test_verification_failure_dispatches_a_revision_despite_its_own_attempt_stil
     # to IN_PROGRESS for the new attempt instead of sitting FAILED with nothing queued
     assert "revision after verification failure" in t.attempts[-1].note
     assert t.status == TaskStatus.IN_PROGRESS
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 4: one input for verdict and report
+
+def _review_job(layout, sup, attempt_id, role, digest):
+    run_dir = layout.runs / "T" / attempt_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    jobs_mod.prepare(layout, "T", attempt_id, "claude_cli", {"kind": "review", "run_dir": str(run_dir)},
+                     review_role=role, review_digest=digest)
+    jobs_mod.set_phase(layout, attempt_id, "RUNNING")
+    return jobs_mod.read(layout, attempt_id), run_dir
+
+
+def test_the_recorded_report_is_the_jobs_own_result_not_a_later_file(layout):
+    """Review 1.10.0 round 4: result.json replaced between the job's end and ingestion. The verdict and the report
+    that speaks for it both come from the collected result; the replacement is never recorded as the rationale."""
+    import json
+    review_task(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    digest = tasks.load(layout, "T").delivery.digest
+    rec, run_dir = _review_job(layout, sup, "T.a2", "code_review", digest)
+    original = {"verdict": "ACCEPT", "summary": "ORIGINAL summary", "findings": []}
+    (run_dir / "result.json").write_text(json.dumps(original), encoding="utf-8")
+    (run_dir / "result.json").write_text(json.dumps({"verdict": "REJECT", "summary": "WINDOW FORGED"}), encoding="utf-8")
+    review.ingest(sup, rec, Result(status="COMPLETE", raw=original))
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.verdict.value == "ACCEPT" and r.report.endswith("review_report.json")
+    doc, state = tasks.review_report(layout, r)
+    assert state == "ok" and doc["summary"] == "ORIGINAL summary"
+    (layout.root / r.report).write_text(json.dumps({"verdict": "ACCEPT", "summary": "LATER FORGED"}), encoding="utf-8")
+    assert tasks.review_report(layout, r) == (None, "changed")
+
+
+@pytest.mark.parametrize("mode", ["edited", "link", "unhashed"])
+def test_escalation_never_quotes_an_unverifiable_earlier_report(layout, monkeypatch, mode):
+    """Review 1.10.0 round 4: reviewer A's report changes while B works; when B's verdict completes the round the
+    revision brief quotes B verbatim and says A's rationale is unavailable — never the substituted text."""
+    import json
+    review_task(layout, "T", reviewer=("code_review", "senior_pm"))
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    digest = tasks.load(layout, "T").delivery.digest
+    rec_a, _ = _review_job(layout, sup, "T.a2", "code_review", digest)
+    a = {"verdict": "REVISE", "summary": "s", "findings": [{"category": "correctness", "blocking": True,
+                                                             "message": "A REAL finding", "evidence": "x:1"}]}
+    review.ingest(sup, rec_a, Result(status="COMPLETE", raw=a))
+    jobs_mod.set_phase(layout, "T.a2", "DONE", result="COMPLETE")
+    [ra] = tasks.load(layout, "T").delivery.reviews
+    report = layout.root / ra.report
+    forged = json.dumps({"verdict": "REVISE", "findings": [{"category": "x", "message": "FORGED finding",
+                                                            "evidence": "y"}]})
+    if mode == "edited":
+        report.write_text(forged, encoding="utf-8")
+    elif mode == "link":
+        (layout.root / "forged.json").write_text(forged, encoding="utf-8")
+        report.unlink()
+        try:
+            os.symlink(layout.root / "forged.json", report)
+        except (OSError, AttributeError):
+            pytest.skip("creating symlinks needs privileges here")
+    else:
+        report.write_text(forged, encoding="utf-8")
+        def drop(doc):
+            for r in doc["delivery"]["reviews"]:
+                r.pop("report_sha256", None)
+        tasks._update(layout, "T", drop)
+    seen = []
+    monkeypatch.setattr(escalation, "record_failure", lambda sup_, tid, kind, text, **kw: seen.append(text))
+    rec_b, _ = _review_job(layout, sup, "T.a3", "senior_pm", digest)
+    b = {"verdict": "REVISE", "summary": "s", "findings": [{"category": "quality", "blocking": True,
+                                                             "message": "B REAL finding", "evidence": "z:2"}]}
+    review.ingest(sup, rec_b, Result(status="COMPLETE", raw=b))
+    [text] = seen
+    assert "B REAL finding" in text and "FORGED" not in text and "A REAL finding" not in text
+    assert "code_review (REVISE): verdict REVISE; rationale unavailable" in text
+
+
+def test_a_queued_cli_review_is_bound_to_the_report_as_submitted(layout):
+    """Review 1.10.0 round 4: the CLI hashes the report when the command is submitted; a replacement before the
+    loop applies it shows as changed, not as the reviewer's text."""
+    import json
+    from supervisor import commands
+    review_task(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    digest = tasks.load(layout, "T").delivery.digest
+    (layout.root / "manual.json").write_text(json.dumps({"verdict": "ACCEPT", "summary": "AS SUBMITTED"}),
+                                             encoding="utf-8")
+    sha = tasks.report_file_sha256(layout, "manual.json")
+    commands.submit(layout, "task.review", {"task_id": "T", "digest": digest, "role": "code_review",
+                                            "verdict": "ACCEPT", "report": "manual.json", "report_sha256": sha},
+                    actor="review")
+    (layout.root / "manual.json").write_text(json.dumps({"verdict": "ACCEPT", "summary": "SWAPPED"}), encoding="utf-8")
+    commands.apply_all(layout)
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report_sha256 == sha and tasks.review_report(layout, r) == (None, "changed")
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 5: no hash means no provenance
+
+def _delivered_for_review(layout):
+    review_task(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    return tasks.load(layout, "T").delivery.digest
+
+
+@pytest.mark.parametrize("case", ["missing", "link", "oversized"])
+def test_the_cli_refuses_a_report_it_cannot_bind(layout, case):
+    """Review 1.10.0 round 5: a report that cannot be hashed at submission is refused, so nothing is queued that a
+    later file could be passed off as."""
+    from typer.testing import CliRunner
+    from supervisor.cli import app
+    digest = _delivered_for_review(layout)
+    rel = "report.json"
+    if case == "link":
+        (layout.root / "real.json").write_text('{"verdict": "ACCEPT"}', encoding="utf-8")
+        try:
+            os.symlink(layout.root / "real.json", layout.root / rel)
+        except (OSError, AttributeError):
+            pytest.skip("creating symlinks needs privileges here")
+    elif case == "oversized":
+        (layout.root / rel).write_bytes(b" " * (tasks.MAX_REPORT_BYTES + 1))
+    result = CliRunner().invoke(app, ["task", "review", "T", digest, "code_review", "ACCEPT", "--report", rel])
+    assert result.exit_code != 0 and "cannot be bound" in result.output
+    assert not list(layout.commands.glob("*.json")) and not tasks.load(layout, "T").delivery.reviews
+
+
+def test_an_explicit_null_hash_is_kept_and_never_replaced_by_a_later_file(layout):
+    """A queued payload saying "no verifiable hash" stays unverified: a file that appears before the loop applies the
+    command is not hashed in its place."""
+    import json
+    from supervisor import commands
+    digest = _delivered_for_review(layout)
+    commands.submit(layout, "task.review", {"task_id": "T", "digest": digest, "role": "code_review",
+                                            "verdict": "ACCEPT", "report": "late.json", "report_sha256": None},
+                    actor="review")
+    (layout.root / "late.json").write_text(json.dumps({"verdict": "REJECT", "summary": "QUEUED FORGED"}),
+                                           encoding="utf-8")
+    commands.apply_all(layout)
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report == "late.json" and r.report_sha256 is None
+    assert tasks.review_report(layout, r) == (None, "unverified")
+
+
+def test_record_review_without_provenance_still_hashes_the_file_now(layout):
+    import hashlib
+    digest = _delivered_for_review(layout)
+    (layout.root / "r.json").write_text('{"verdict": "ACCEPT", "summary": "s"}', encoding="utf-8")
+    tasks.record_review(layout, "T", digest, "code_review", "ACCEPT", report="r.json")
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report_sha256 == hashlib.sha256((layout.root / "r.json").read_bytes()).hexdigest()

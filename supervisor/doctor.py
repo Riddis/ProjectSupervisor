@@ -90,6 +90,27 @@ def check_state(layout: Layout) -> Check:
     return Check("state", True, f"{len(tasks)} task(s), graph valid")
 
 
+def check_jobs(layout: Layout) -> Check:
+    """No task's newest job record is a reroute whose successor was never queued (a crash between closing the
+    refused record and dispatching the new one). The loop repairs that on its next iteration; a framework older
+    than 1.10.0 cannot, so this must be OK before a downgrade (CHANGELOG 1.10.0, Rollback)."""
+    from . import jobs as jobs_mod
+    try:
+        task_ids = {r.get("task_id") for r in jobs_mod.all_records(layout) if r.get("result") == "REROUTED"}
+        pending = []
+        for task_id in sorted(t for t in task_ids if t):
+            recs = jobs_mod.for_task(layout, task_id)
+            last = recs[-1] if recs else {}
+            if last.get("result") == "REROUTED" and not last.get("continued"):
+                pending.append(last.get("attempt_id", task_id))
+    except (OSError, ValueError) as exc:
+        return Check("jobs", False, f"job records unreadable: {exc}"[:300])
+    if pending:
+        return Check("jobs", False, "reroute not yet re-queued: " + ", ".join(pending)[:200]
+                     + "; run the loop once (a drain will do) so it queues them")
+    return Check("jobs", True, "no interrupted reroute")
+
+
 def check_routing(layout: Layout) -> Check:
     cfg = layout.config / "routing.yaml"
     if not cfg.exists():
@@ -170,8 +191,8 @@ def check_policy(layout: Layout) -> Check:
     return Check("policy", True, f"{policy.CONFIG_NAME} ok (built-in floor" + (" + project values)" if (layout.config / policy.CONFIG_NAME).exists() else " only)"))
 
 
-CHECKS = [check_project, check_framework, check_python, check_state, check_routing, check_policy, check_git,
-          check_claude_cli, check_codex_cli, check_extensions]
+CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
+          check_git, check_claude_cli, check_codex_cli, check_extensions]
 
 
 def run(layout: Layout) -> list[Check]:

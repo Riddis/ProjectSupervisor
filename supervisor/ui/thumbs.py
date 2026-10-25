@@ -6,6 +6,7 @@ route only ever opens files inside the cache directory, by key, never by a path 
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 
 from PIL import Image
@@ -51,6 +52,23 @@ def ensure(layout: Layout, source: Path, size: tuple[int, int] = (256, 256)) -> 
             im.thumbnail(size)
             im.save(out, "JPEG", quality=85)
     except (OSError, ValueError):
+        return None
+    return key
+
+
+def ensure_bytes(layout: Layout, data: bytes, size: tuple[int, int] = (256, 256)) -> str | None:
+    """Like ensure(), for bytes already read and verified by the caller (supervisor.ui.delivery): the key is the
+    content hash, so the thumbnail always shows exactly those bytes, whatever the file on disk holds by then."""
+    key = f"{hashlib.sha256(data).hexdigest()}-{size[0]}x{size[1]}.jpg"
+    out = cache_dir(layout) / key
+    if out.exists():
+        return key
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = im.convert("RGB")
+            im.thumbnail(size)
+            im.save(out, "JPEG", quality=85)
+    except (OSError, ValueError, Image.DecompressionBombError):
         return None
     return key
 
