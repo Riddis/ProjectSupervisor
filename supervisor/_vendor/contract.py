@@ -31,10 +31,11 @@ def _transient_replace_error(exc, temporary):
     return isinstance(exc, PermissionError) or code in (5, 32, 33) or (code == 2 and temporary.exists())
 
 
-def atomic_write_text(path, text):
+def atomic_write_text(path, text, newline=None):
     """Write via a unique temporary file and an atomic replace, retrying lock conflicts.
 
     Prevents torn files. It does NOT prevent lost updates — that is the store's job (rev + lock).
+    `newline` is open()'s: None writes "\\n" as the platform's line ending, "" writes `text` exactly as given.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +44,7 @@ def atomic_write_text(path, text):
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:
             handle.write(text)
     except BaseException:
         try:
@@ -63,7 +64,7 @@ def atomic_write_text(path, text):
                     # both leave an untorn file, which is all this function promises (lost updates are the store's job).
                     if path.exists():
                         return
-                    temporary.write_text(text, encoding="utf-8")       # target vanished too: rewrite and retry
+                    temporary.write_text(text, encoding="utf-8", newline=newline)  # target vanished too: rewrite, retry
                 elif attempt == _REPLACE_ATTEMPTS - 1 or not _transient_replace_error(exc, temporary):
                     raise
                 time.sleep(min(0.4, 0.02 * (attempt + 1)))

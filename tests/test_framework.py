@@ -335,6 +335,58 @@ def test_migrate_leaves_the_approvals_the_framework_opens_unchanged(fresh):
         assert {p.name: p.read_bytes() for p in files} == before
 
 
+@pytest.fixture
+def interrupted_writes(monkeypatch):
+    """`interrupted_writes(True)`: from then on every file opened for writing is interrupted right after the open,
+    before a byte is written (Path.open and os.fdopen both open through io.open); `interrupted_writes(False)` ends it."""
+    import io
+    real_open = io.open
+
+    def open_(file, mode="r", *args, **kwargs):
+        stream = real_open(file, mode, *args, **kwargs)
+        if "w" in mode:
+            stream.close()
+            raise OSError("interrupted after the open")
+        return stream
+
+    return lambda on: monkeypatch.setattr(io, "open", open_ if on else real_open)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_an_interrupted_rewrite_keeps_the_old_file(tmp_path, interrupted_writes, newline):
+    """Review 1.10.1 F2: rewrite_text truncated the file in place, so an interruption left it empty."""
+    from supervisor import store
+    p = tmp_path / "doc.yaml"
+    old = f"id: H-01{newline}summary: keep me{newline}".encode()
+    p.write_bytes(old)
+    interrupted_writes(True)
+    with pytest.raises(OSError, match="interrupted"):
+        store.rewrite_text(p, "id: H-01\nsummary: changed\n")
+    interrupted_writes(False)
+    assert p.read_bytes() == old
+    assert [q.name for q in tmp_path.iterdir()] == ["doc.yaml"]           # no temporary file left behind
+    assert store.rewrite_text(p, "id: H-01\nsummary: changed\n")
+    assert p.read_bytes() == f"id: H-01{newline}summary: changed{newline}".encode()
+
+
+def test_migrate_interrupted_mid_write_resumes_without_losing_the_item(fresh, interrupted_writes):
+    """Review 1.10.1 F2: an interruption while migrate rewrote an item erased it, and the rerun saw nothing left to do."""
+    layout = Layout(fresh)
+    item = layout.inbox / "H-01.yaml"
+    item.write_text(yaml.safe_dump({"id": "H-01", "status": "open", "for": "owner", "summary": "keep me",
+                                    "allowed_responses": ["MORE_LIKE"]}), encoding="utf-8")
+    old = item.read_bytes()
+    interrupted_writes(True)
+    with pytest.raises(OSError, match="interrupted"):
+        migrations.run(layout)
+    interrupted_writes(False)
+    assert item.read_bytes() == old
+    assert any("H-01.yaml" in n for n in migrations.run(layout))
+    doc = yaml.safe_load(item.read_text(encoding="utf-8"))
+    assert (doc["summary"], doc["allowed_responses"]) == ("keep me", ["REDO"])
+    assert migrations.run(layout) == []
+
+
 def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
     layout = Layout(fresh)
     before = layout.project_file.read_text(encoding="utf-8")

@@ -5,7 +5,8 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## 1.10.1 — 2026-10-25
 
-Fixes only: a migration that rewrote current approval items on every run, and a racy test.
+Fixes only: a migration that rewrote current approval items on every run, a human job failing on `APPROVE`, an
+interrupted migrate able to empty a file, and a racy test.
 
 **Migration:** none added. `supervisor migrate` records the new version and, unlike 1.10.0, leaves approval items
 the loop opened alone. Its dry run on a project at 1.10.0 lists only `project.yaml: framework_version 1.10.0 →
@@ -27,6 +28,13 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   migrate hid this by turning such a list into `ACCEPT`; with that rewrite gone the adapter now reads `APPROVE` as
   `ACCEPT` itself (`adapters/human.py`). Other custom words keep their meaning: anything but `ACCEPT`, `APPROVE` or
   free text still fails the job, with the answer as the note.
+- **Fixed: an interrupted `supervisor migrate` can no longer empty a file.** `store.rewrite_text`, which migrations and
+  `project.write` use (the `framework_version` update, `supervisor extension new`), truncated the file and then wrote
+  it, so a process stopped in between left an empty file. A rerun then read it as an empty document and had nothing
+  to migrate, so the content was lost (since 1.8.4). It now writes a temporary file and replaces the original
+  atomically, like every store write, keeping the file's LF or CRLF; an interruption leaves the old file whole, and
+  the rerun finishes the job. Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes an optional
+  `newline` (as `open()`'s; default unchanged).
 
 - **Tests: the diagnosis launch test no longer races its fake agent.**
   `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in
