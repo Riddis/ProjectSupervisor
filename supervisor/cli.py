@@ -115,10 +115,13 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
 
 @app.command()
 def status():
-    """Render STATE.md and print the summary."""
+    """Print the live supervisor state summary: reads the store and `state/runtime/supervisor.json`, writes
+    nothing. Use `supervisor render` to re-render STATE.md itself; `status` used to call render_state() directly,
+    which both lied about the loop (no runtime record was ever passed, so it always printed "not running") and
+    rewrote STATE.md as a side effect of a read command — overwriting the loop's own line while it held
+    `state/.lock` (docs/runbooks/resume.md, trap #1)."""
     layout = _layout()
-    out = render.render_state(layout)
-    typer.echo(out.read_text(encoding="utf-8"))
+    typer.echo("\n".join(render.state_lines(layout, runtime=runtime.read(layout))).rstrip())
 
 
 @app.command("render")

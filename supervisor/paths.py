@@ -58,6 +58,7 @@ class Layout:
         self.owner_tasks = self.state / "owner_tasks.yaml"
         self.log = self.state / "log.jsonl"
         self.lock = self.state / ".lock"
+        self.render_lock = self.state / ".render.lock"
         self.wake = self.runtime / "wake"
         self.config = self.root / "config"
         self.runs = self.root / "runs"
