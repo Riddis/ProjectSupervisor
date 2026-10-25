@@ -460,6 +460,22 @@ def test_local_gpu_migration_rewrites_only_the_field_and_keeps_line_endings(fres
     assert migrations.run(layout) == []                             # the repeat run reports nothing
 
 
+def test_local_gpu_migration_applies_each_span_once_in_file_order(fresh):
+    """Review of 1.8.4, second round (P2): a YAML alias returns its anchor's span twice, and the root mapping's field
+    is listed before the seed's tasks although it stands after them; applying those spans as listed rewrote text the
+    previous replacement had shifted."""
+    layout = Layout(fresh)
+    seed = layout.root / "state" / "tasks_seed.yaml"
+    seed.write_bytes(b"tasks:\n- id: A\n  cost_category: &gpu local_gpu\n- id: B\n  cost_category: *gpu\n"
+                     b"- id: C\n  cost_category: local_gpu\ncost_category: local_gpu  # root, after the tasks\n")
+    migrations.run(layout)
+    assert seed.read_bytes() == (b"tasks:\n- id: A\n  cost_category: &gpu local\n- id: B\n  cost_category: *gpu\n"
+                                 b"- id: C\n  cost_category: local\ncost_category: local  # root, after the tasks\n")
+    doc = yaml.safe_load(seed.read_text(encoding="utf-8"))
+    assert [t["cost_category"] for t in doc["tasks"]] == ["local", "local", "local"]
+    assert migrations.run(layout) == []
+
+
 def test_project_write_keeps_a_crlf_project_yaml_crlf(fresh):
     layout = Layout(fresh)
     layout.project_file.write_bytes(layout.project_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))

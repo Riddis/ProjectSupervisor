@@ -65,7 +65,10 @@ def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
             continue
         text = p.read_text(encoding="utf-8")
         new = text
-        for start, end in reversed(_task_field_values(text, "cost_category", "local_gpu")):
+        # Each span once, last first: a YAML alias (`*gpu`) shares its anchor's node, so the same span can come back
+        # twice, and the root mapping's fields are listed before the seed's tasks wherever they stand in the file. A
+        # span applied twice, or an earlier one before a later one, would rewrite text the shift has moved.
+        for start, end in sorted(set(_task_field_values(text, "cost_category", "local_gpu")), reverse=True):
             new = new[:start] + new[start:end].replace("local_gpu", "local") + new[end:]
         if new == text:
             continue

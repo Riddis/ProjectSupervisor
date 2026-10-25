@@ -22,7 +22,8 @@ No state or config shape change; `supervisor migrate` only records the new versi
 - **Migrations change and report only what they change, and keep line endings** (F5). The 1.0.0 `local_gpu → local`
   migration reported (and rewrote) any file that mentioned `local_gpu` anywhere, so a second `migrate` reported the
   same files again; it now rewrites only a task's own `cost_category` field, found through the YAML node tree, so
-  an example of the old value inside a note or a quoted string stays as written. Every migration write, and `project.write()`,
+  an example of the old value inside a note or a quoted string stays as written. Each field is rewritten once, in file order
+  (a YAML alias shares its anchor's span). Every migration write, and `project.write()`,
   goes through `store.rewrite_text()`, which writes only when the content changes and keeps the file's LF or CRLF
   style (`Path.write_text` turned LF files into CRLF on Windows).
 - Tests: `test_capacity_poll.py`; the owner decision-item tests the Studio carried (REQUEUE salvage, DEFER, CANCEL on
