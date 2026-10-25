@@ -1,0 +1,15 @@
+#!/bin/sh
+# Pre-commit hook: the framework boundary check (gate G1, docs/BOUNDARY.md). A local convenience; CI is the
+# enforcement. Git does not version hooks, so a clone opts in once (the framework-change skill does this):
+#   git config core.hooksPath .githooks
+# Standard library only: runs from the checkout without an install. Skip once with `git commit --no-verify`
+# only when you know why; CI runs the same check on the pull request.
+root=$(git rev-parse --show-toplevel) || exit 1
+cd "$root" || exit 1
+for py in python3 python "py -3"; do
+    if $py -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" >/dev/null 2>&1; then
+        exec $py -B -m supervisor.boundary
+    fi
+done
+echo "pre-commit: no Python 3.11+ found for the boundary check (python3, python or py -3)" >&2
+exit 1

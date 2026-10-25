@@ -3,6 +3,37 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.9.0 — 2026-10-25
+
+Boundary baseline: phase 1 of the boundary plan (`docs/BOUNDARY.md`), reviewed in three rounds and accepted.
+
+No state or config shape change; `supervisor migrate` only records the new version.
+
+- **Gate G1, the boundary check.** `supervisor boundary check` / `python -m supervisor.boundary` (standard library
+  only, so it runs from a bare checkout) over `supervisor/`: (a) no static import of a project or extension module
+  and dynamic loading only in the extension loader; (b) no drive-letter or home-directory path, non-loopback host,
+  e-mail address or registered user name; (c) model and vendor names only in the files `boundary.toml` lists (the
+  baseline recorded by this first run: 33 files). Every exception is an explicit, commented entry in
+  `boundary.toml`; registered projects' domain words are reported as supporting evidence, never as a failure.
+  Exit 0 clean, 1 violations, 2 when it cannot run. `tests/test_boundary.py` holds a prohibited and a legitimate
+  example for every rule. Review round (REVISE, three P2 on G1): a loader function is judged wherever it is
+  referenced, however it is named (`import_module as load`, assigned, `getattr`, `functools.partial`, passed to
+  `map`, `runpy`); `.local` (multicast DNS: a real machine) is no longer a reserved name, the schemas' `$id` host
+  `supervisor.local` is listed explicitly; a root without the `supervisor/` package exits 2 instead of passing.
+  Second round (REVISE, one P2 here): the alias analysis only grows (a name keeps every loader any binding gives
+  it), so a rebinding or a cycle can no longer keep it from ending; a name that may be a path loader is judged as one.
+- **CI** (`.github/workflows/ci.yml`): G1, and the suite on Linux and Windows (G3), on every push to `main` and
+  every pull request; meant as required checks under branch protection on `main`.
+- **Template smoke test** (`tests/test_template_smoke.py`): `supervisor init` → `supervisor doctor` → one task on the
+  `process` lane through the loop to COMPLETE.
+- **Pre-commit hook** `.githooks/pre-commit` runs G1; a clone opts in with `git config core.hooksPath .githooks`.
+- **Skills:** `framework-change` replaces `supervisor-update` (whose rollout step, `git pull` in the framework clone,
+  contradicted the tag-only rule doctor enforces since 1.8.0); `framework-release` (G4: version rule, changelog,
+  gates on the release commit, review checklist, tag after ACCEPT) and `migration-author` (dry run, idempotent,
+  changes only what it names, line endings kept, interruption-safe, stated rollback) arrive with it.
+- **Docs:** `docs/BOUNDARY.md` (layers, rules, gates and which apply when); `UPDATING.md` gains "Pinned checkouts",
+  the maintenance-window path for a project on a tagged worktree.
+
 ## 1.8.4 — 2026-10-25
 
 Fixes from the Studio migration's phase-4 rehearsal (its record PHASE4.md, findings F2–F5), plus the licence.

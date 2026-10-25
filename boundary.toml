@@ -1,0 +1,96 @@
+# Boundary check configuration (gate G1, docs/BOUNDARY.md; run `python -m supervisor.boundary`).
+# Every entry here is an exception to a rule, so changing this file is a boundary decision: the commit says why,
+# and the review (G7) checks it. The check fails on a violation; it never edits this file.
+
+[imports]
+# G1a: third-party top-level modules supervisor/ may import, i.e. the distributions pyproject.toml declares
+# (dependencies and the ui extra), by import name. The standard library and `supervisor` itself are always allowed.
+allowed = [
+  "pydantic", "typer", "ruamel", "yaml", "psutil", "portalocker", "ulid", "PIL", "requests", "jsonschema",
+  "fastapi", "starlette", "uvicorn", "jinja2", "multipart", "sse_starlette",
+]
+# Files that may load code dynamically (import_module / __import__ / spec_from_file_location with a computed name).
+# The extension loader is the one sanctioned path from the framework to project code.
+dynamic_loaders = ["supervisor/extensions.py"]
+
+[literals]
+# G1b. Loopback, bind-all, the reserved example/test names (RFC 2606, RFC 6761) and templated hosts always pass.
+# Public services every project reaches the same way:
+allowed_url_hosts = [
+  "api.anthropic.com",   # the metered claude_api lane's endpoint (adapters/claude_api.py)
+  "github.com",          # links in the template README, a comment example, vendored-asset licences
+  "json-schema.org",     # $schema of the template's result schemas
+  "supervisor.local",    # $id namespace of the template's result schemas (an identifier, never resolved)
+  "scripts.sil.org",     # the Inter font's OFL licence text
+]
+allowed_mail_domains = []
+# Names that must never appear in the package (besides the login name of the machine running the hook).
+user_names = []
+not_user_names = []
+
+# Placeholder paths in the template's examples: not anyone's real folder.
+[[literals.allowed]]
+file = "supervisor/template/agents/schemas/samples/delivery.invalid.json"
+text = 'D:\\Projects\\demo\\config\\routing.yaml'   # the sample shows an absolute path the schema must reject
+
+[[literals.allowed]]
+file = "supervisor/template/config/routing.yaml"
+text = 'C:\Users\you\.local\bin\claude.exe'          # a commented example of the CLI's default install location
+
+[[literals.allowed]]
+file = "supervisor/template/config/routing.yaml"
+text = '\Users\you'
+
+[[literals.allowed]]
+file = "supervisor/template/tools/setup_env.ps1"
+text = 'D:\path\to\Supervisor'
+
+[vendor]
+# G1c: model and vendor names. Only the files below may carry them; the list was recorded by the first run (1.9.0)
+# and is the agent adapters, the capacity and usage code, the doctor's CLI checks, the lane-aware core (routing,
+# review cross-vendor rule, cost categories), the Control Center's lane styling and the template config and docs.
+# A new file on the list is a reviewed change; a listed file that stops naming any is reported for removal.
+terms = [
+  "anthropic", "openai", "claude", "codex", "chatgpt", "gpt", "sonnet", "opus", "haiku",
+  "gemini", "llama", "ollama", "mistral", "qwen", "deepseek",
+]
+files = [
+  "supervisor/_vendor/contract.py",
+  "supervisor/_vendor/handoff.py",
+  "supervisor/_vendor/usage_policy.py",
+  "supervisor/adapters/__init__.py",
+  "supervisor/adapters/claude_api.py",
+  "supervisor/adapters/claude_cli.py",
+  "supervisor/adapters/codex_cli.py",
+  "supervisor/adapters/process.py",
+  "supervisor/capacity.py",
+  "supervisor/conversations.py",
+  "supervisor/diagnosis.py",
+  "supervisor/doctor.py",
+  "supervisor/escalation.py",
+  "supervisor/gate.py",
+  "supervisor/loop.py",
+  "supervisor/models/task.py",
+  "supervisor/packets.py",
+  "supervisor/policy.py",
+  "supervisor/review.py",
+  "supervisor/scheduler.py",
+  "supervisor/settings.py",
+  "supervisor/template/CLAUDE.md",
+  "supervisor/template/_dot_claude/skills/supervisor-setup/SKILL.md",
+  "supervisor/template/agents/schemas/delivery.json",
+  "supervisor/template/config/policy.yaml",
+  "supervisor/template/config/routing.yaml",
+  "supervisor/template/docs/runbooks/README.md",
+  "supervisor/template/secrets/README.md",
+  "supervisor/timeouts.py",
+  "supervisor/ui/routes/agents.py",
+  "supervisor/ui/static/style.css",
+  "supervisor/ui/templates/overview.html",
+  "supervisor/ui/templates/partials/icons.html",
+]
+
+# Supporting evidence, never a failure: each registered project's domain words. The setup skill adds a project's
+# terms here when it is set up; a hit is a question for the reviewer, not a verdict.
+[projects.studio]
+terms = ["persona", "influencer", "comfy", "comfyui", "lora", "instantid", "bakeoff", "bake-off", "instagram"]

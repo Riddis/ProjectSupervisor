@@ -49,9 +49,12 @@ loop started from the UI comes back on the new code too.
 
 ## As the framework author
 
-See `.claude/skills/supervisor-update/SKILL.md` for the step list. The rules:
+The skills hold the step lists: `.claude/skills/framework-change` (where a change goes, test first, gates G1/G3/G7
+before review), `framework-release` (version, CHANGELOG, review, tag: gate G4) and `migration-author` (any state or
+config format change). `docs/BOUNDARY.md` describes the gates. The rules:
 
-- Every change has a test. `python -m pytest -q` is green on Linux and Windows before a version bump.
+- Every change has a test. `python -m pytest -q` is green on Linux and Windows before a version bump; CI runs it,
+  and `python -m supervisor.boundary` (G1), on every pull request.
 - `supervisor/__init__.py` `__version__` and `pyproject.toml` `version` move together.
 - A change to the shape of anything under a project's `state/` or `config/` gets a migration in
   `supervisor/migrations.py` (idempotent, honours `dry_run`) and a **Migration** line in `CHANGELOG.md`.
@@ -65,3 +68,14 @@ See `.claude/skills/supervisor-update/SKILL.md` for the step list. The rules:
 Clone the framework, create the project venv, install editable, done — the project folder carries no framework
 code. If two machines run the same project (shared via git), both must run the same framework version; the
 doctor check names the mismatch. Pin with a git tag when that matters: `git -C Supervisor checkout v1.1.0`.
+
+## Pinned checkouts (the recommended setup since 1.8.0)
+
+Since 1.8.0 `supervisor doctor` FAILs unless the framework checkout a project runs is clean and exactly at a tag, so
+the updater above (which pulls a branch, normally onto an untagged commit) suits a development clone, not a live
+project. A live project runs a separate worktree of the framework clone, detached at a release tag
+(`git -C <Supervisor> worktree add <Supervisor-runtime> vX.Y.Z`), installed editable from there. It takes a new
+release in a maintenance window: drain until no job record is open and no command is queued, stop the loop and
+the Control Center, `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall only if the dependencies changed,
+`supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start. Answer no to the updater's
+prompt on such a project.

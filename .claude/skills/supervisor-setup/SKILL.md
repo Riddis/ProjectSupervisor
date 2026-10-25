@@ -61,6 +61,10 @@ it stamps generic defaults that the following steps adapt. Steps 1–4 and 7–9
   becomes a `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance.
 - Decision records: `D-001-project-setup.md` plus one per numbered decision in plan §7; front matter
   `id/date/title/status: accepted/decided_by: owner`.
+- Project code stays in the project. If the interview shows the owner also needs a framework change (a generic
+  hook, a fix), that is separate work through the framework's `framework-change` skill, never an edit made during
+  setup; if they will change the framework from this machine, run `git config core.hooksPath .githooks` in the
+  framework clone once so its boundary check (G1, `docs/BOUNDARY.md`) runs before every commit there.
 - Finish with `supervisor doctor`, `supervisor check`, `supervisor render`, and the single setup commit. Report the
   doctor output verbatim; a FAIL you cannot fix becomes an owner task.
 
