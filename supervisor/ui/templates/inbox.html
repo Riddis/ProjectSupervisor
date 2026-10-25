@@ -39,6 +39,8 @@
     </div>
     {% endif %}
 
+    {% if item.delivery %}{% with dv = item.delivery %}{% include "partials/delivery.html" %}{% endwith %}{% endif %}
+
     {% if item.score_items %}
     <table class="tasks-table score-block">
       <thead><tr>{% for k in item.score_items[0].keys() %}<th>{{ k }}</th>{% endfor %}</tr></thead>

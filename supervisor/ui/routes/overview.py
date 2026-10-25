@@ -12,6 +12,7 @@ from ... import gates as gates_mod
 from ... import shutdown as shutdown_mod
 from ... import inbox as inbox_mod
 from ... import jobs as jobs_mod
+from ... import progress as progress_mod
 from ... import tasks as tasks_mod
 from ... import timeouts as timeouts_mod
 from ... import extensions as extensions_mod
@@ -57,6 +58,14 @@ def _iso_epoch(value) -> float | None:
         return datetime.fromisoformat(str(value)).timestamp() if value else None
     except (ValueError, TypeError):
         return None
+
+
+def _progress_view(report: dict | None, now: float) -> dict | None:
+    """A job's own progress report (supervisor.progress) for display: stage, detail, an optional bar and how long
+    ago the job last updated it."""
+    if not report:
+        return None
+    return {**report, "age_s": max(0, int(now - report["updated"]))}
 
 
 def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
@@ -107,6 +116,8 @@ def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
             "can_extend": rec.get("phase") in ("SUBMITTED", "RUNNING") and deadline is not None,
             "retry_in_s": int(deferred - now) if state == "deferred" else None,
             "gpu": bool(rec.get("gpu")),
+            "progress": _progress_view(progress_mod.read(spec.get("run_dir")), now)
+                        if rec.get("phase") in ("SUBMITTED", "RUNNING") else None,
         })
     order = {"running": 0, "starting": 1, "launching": 2, "deferred": 3}
     return sorted(rows, key=lambda r: (order[r["state"]], -(r["elapsed_s"] or 0)))

@@ -1,0 +1,31 @@
+{# What an approval covers: `dv` is supervisor.ui.delivery.view(). #}
+{% if not dv.current %}
+<p class="flash flash-error">This approval is for digest <code>{{ (dv.digest or '')[:12] }}</code>, which is no longer the task's current delivery; the files on disk belong to a newer one.</p>
+{% else %}
+<div class="delivery-view">
+  {% if dv.uncovered %}
+  <p class="flash flash-error"><strong>Not covered by this approval:</strong> {{ dv.uncovered | join(', ') }}: declared in the task contract, but not among the files frozen in this digest. A later change to them will not invalidate your approval.</p>
+  {% endif %}
+  {% if dv.verification %}<p>Verification: <strong>{{ 'OK' if dv.verification.ok else 'FAILED' }}</strong>{% if dv.verification.detail %}: {{ dv.verification.detail }}{% endif %}</p>{% endif %}
+  {% for r in dv.reviews %}
+  <details class="inbox-detail" open>
+    <summary>Review by {{ r.role | replace('_', ' ') }}: <strong>{{ r.verdict }}</strong>{% if r.findings %} &middot; {{ r.findings | length }} finding{{ '' if r.findings | length == 1 else 's' }}{% endif %}</summary>
+    {% if r.summary %}<p class="evidence-text">{{ r.summary }}</p>{% endif %}
+    {% if r.findings %}<ul class="plain-items">{% for f in r.findings %}<li><strong>{{ f.category or 'finding' }}{{ ', blocking' if f.blocking else '' }}:</strong> {{ f.message }}</li>{% endfor %}</ul>{% endif %}
+  </details>
+  {% endfor %}
+  <h5>Delivered files ({{ dv.files | length }})</h5>
+  {% set images = dv.files | selectattr('kind', 'equalto', 'image') | list %}
+  {% if images %}<div class="evidence">{% for f in images %}<a href="{{ f.href }}" target="_blank" rel="noopener" title="{{ f.ref }}"><img class="thumb" src="/thumb/{{ f.thumb_key }}" alt="{{ f.ref }}"></a>{% endfor %}</div>{% endif %}
+  {% for f in dv.files if f.kind != 'image' %}
+    {% if f.kind == 'text' %}
+    <details class="inbox-detail delivery-file">
+      <summary><code>{{ f.ref }}</code> <small>{{ f.lines }} lines</small> <a href="{{ f.href }}" target="_blank" rel="noopener">open</a></summary>
+      <pre class="delivery-text">{{ f.html | safe }}</pre>
+      {% if f.truncated %}<p class="muted">Truncated; open the file for the rest.</p>{% endif %}
+    </details>
+    {% elif f.kind == 'missing' %}<p class="evidence-ref evidence-missing">{{ f.ref }} (no longer on disk)</p>
+    {% else %}<p class="evidence-ref"><a href="{{ f.href }}" target="_blank" rel="noopener">{{ f.ref }}</a></p>{% endif %}
+  {% endfor %}
+</div>
+{% endif %}

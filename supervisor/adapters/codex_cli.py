@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .. import capacity
 from .. import policy
+from .. import progress as progress_mod
 from .. import timeouts
 from .._vendor import usage_policy as up
 from .._vendor.contract import atomic_json, structured_result
@@ -85,6 +86,8 @@ class CodexCliAdapter(ProcessAdapter):
         from .. import packets as packets_mod
         text = packets_mod.worker_prompt(task, job, text)                    # owner/diagnosis guidance, any prompt source
         text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
+        if job.get("result_kind", "delivery") == "delivery":     # only work that can run long reports progress
+            text += "\n\n" + progress_mod.instructions(run_dir)
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(text, encoding="utf-8")
@@ -108,6 +111,7 @@ class CodexCliAdapter(ProcessAdapter):
     def env(self, spec):
         env = codex_env()
         env["SUPERVISOR_ATTEMPT"] = str(spec.get("attempt_id", ""))
+        env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 
     def submit(self, spec):

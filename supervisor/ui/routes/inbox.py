@@ -16,6 +16,7 @@ from ... import tasks as tasks_mod
 from ..._vendor.contract import atomic_json, contained
 from ...paths import Layout
 from ...store import now_iso
+from .. import delivery as delivery_view
 from .. import thumbs
 from ..auth import require_auth, require_csrf
 from ..deps import act, decode_flash, render
@@ -126,7 +127,21 @@ def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None
         "ext_answerable": (info.answerable if info is not None else True) and not unknown,
         "ownership_unknown": unknown,
         "age_display": _age_display(_age_seconds(item)),
+        "delivery": _delivery(layout, item),
     }
+
+
+def _delivery(layout: Layout, item: dict) -> dict | None:
+    """An approval item shows what it approves: the delivery its digest names (supervisor.ui.delivery), read from
+    the task record when the page renders — so items opened before this view existed show it too. Only open
+    items: an answered one is history, and its files may since belong to a newer delivery."""
+    if item.get("status") != "open" or not item.get("approval_digest") or not item.get("task_id"):
+        return None
+    try:
+        task = tasks_mod.load(layout, item["task_id"])
+    except tasks_mod.TaskError:
+        return None
+    return delivery_view.view(layout, task, item["approval_digest"])
 
 
 def inbox_badge_count(layout: Layout) -> int:
