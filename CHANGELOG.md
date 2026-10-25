@@ -3,7 +3,9 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased (1.9.0, boundary baseline — phase 1 of the boundary plan, docs/BOUNDARY.md)
+## 1.9.0 — 2026-10-25
+
+Boundary baseline: phase 1 of the boundary plan (`docs/BOUNDARY.md`), reviewed in three rounds and accepted.
 
 No state or config shape change; `supervisor migrate` only records the new version.
 
