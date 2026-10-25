@@ -21,6 +21,12 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   there; `APPROVE` → `ACCEPT` in a recorded approval response (`ApprovalResponse` has no `APPROVE`) is unchanged.
   Items an earlier run already rewrote are left as they are: their buttons read `ACCEPT`, which answers an approval
   the same way (`inbox.APPROVAL_ALIASES`), and answered items are history. No state or config shape change.
+- **Fixed: a human job that offers `APPROVE` completes on it.** A `human` job may offer the approval list
+  (`job.allowed_responses: [APPROVE, REJECT, MODIFY]`). Its inbox item belongs to the attempt, so the approval aliases
+  never applied, and the adapter completed only on `ACCEPT` or free text: answering `APPROVE` failed the job. 1.10.0's
+  migrate hid this by turning such a list into `ACCEPT`; with that rewrite gone the adapter now reads `APPROVE` as
+  `ACCEPT` itself (`adapters/human.py`). Other custom words keep their meaning: anything but `ACCEPT`, `APPROVE` or
+  free text still fails the job, with the answer as the note.
 
 - **Tests: the diagnosis launch test no longer races its fake agent.**
   `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in

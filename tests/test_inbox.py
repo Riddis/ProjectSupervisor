@@ -134,6 +134,27 @@ def test_human_task_fails_on_reject(layout):
     assert tasks.load(layout, "H").status == TaskStatus.FAILED
 
 
+@pytest.mark.parametrize("answer, status", [("first", TaskStatus.COMPLETE), ("REJECT", TaskStatus.FAILED)])
+def test_a_human_job_offering_approve_completes_on_it_after_migrate(layout, answer, status):
+    """Review 1.10.1 F1: a human job may offer the approval list (APPROVE/REJECT/MODIFY). Its item is attempt-backed,
+    so the approval bridge (inbox.apply_approval) never sees it; the adapter itself must read APPROVE as ACCEPT.
+    `supervisor migrate` keeps APPROVE in the list (1.10.1), so the owner's first button is APPROVE."""
+    from supervisor import migrations
+    human_task(layout, "H", allowed=list(inbox.APPROVAL_RESPONSES))
+    tasks._update(layout, "H", lambda doc: doc["job"].update(free_text=False))
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    item = inbox.open_items(layout, "owner")[0]
+    assert item["attempt_id"] == "H.a1"
+    migrations._approval_responses(layout, dry_run=False)
+    offered = inbox.load(layout, item["id"])["allowed_responses"]
+    assert offered == ["APPROVE", "REJECT", "MODIFY"]
+    inbox.answer(layout, item["id"], offered[0] if answer == "first" else answer)
+    sup.once()
+    assert tasks.load(layout, "H").status == status
+    assert jobs.read(layout, "H.a1")["result"] == status.value
+
+
 def test_crash_before_submit_redispatches_same_attempt(layout):
     human_task(layout, "H")
     task = tasks.load(layout, "H")
