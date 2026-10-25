@@ -215,6 +215,17 @@ def _capacity_reset(layout, payload, actor):
     return {"cleared": len(cleared)}
 
 
+@handler("lane.reset")
+def _lane_reset(layout, payload, actor):
+    """Forget a lane-level unavailability (a spent credit balance, say): jobs that lane deferred are released on the
+    loop's next launch of them when the lane reports itself ready (Adapter.lane_ready)."""
+    from .adapters import REGISTRY
+    lane = str(payload["lane"])
+    if lane not in REGISTRY:
+        raise ValueError(f"unknown lane {lane!r}")
+    return {"cleared": bool(REGISTRY[lane].reset_lane(layout))}
+
+
 @handler("settings.update_routing")
 def _settings_update_routing(layout, payload, actor):
     from . import settings as settings_mod

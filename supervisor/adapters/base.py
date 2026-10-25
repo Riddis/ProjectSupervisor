@@ -43,6 +43,17 @@ class Adapter:
     def terminate(self, handle: dict) -> None:
         pass
 
+    def lane_ready(self, layout) -> bool:
+        """For a job this lane deferred with LaneUnavailable: whether the lane could serve it now, before the saved
+        deferral time (the owner topped up a balance, raised a budget, ran `lane.reset`). Checked by the loop on
+        each launch of such a record; it must be cheap and side-effect free. Default: wait for the time."""
+        return False
+
+    def reset_lane(self, layout) -> bool:
+        """The owner command `lane.reset {"lane": <name>}`: forget the lane-level unavailability this adapter
+        recorded. Returns whether there was any; the default keeps none."""
+        return False
+
 
 REGISTRY: dict[str, Adapter] = {}
 

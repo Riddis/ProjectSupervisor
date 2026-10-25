@@ -8,12 +8,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 Approval evidence, one log line per owner action, progress reports from long jobs, and a `claude_api` lane that
 reroutes work when the prepaid credit is spent. A feature release ahead of phase 2 of the boundary plan, so the
 public extension API and gate G2 move to 1.11.0 and extension packages (G5) to 1.12.0 (`docs/BOUNDARY.md`, the
-framework skills). No extension hook added or changed; extensions need no change.
+framework skills). No extension hook added or changed; extensions need no change (the `Adapter` base class gains
+two optional methods with defaults, below).
 
 **Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one:
-a job record gains the optional `progress_stage` (and `rerouted_to` on a rerouted one), log lines written by a
-command gain `command`, `routing.yaml` gains the optional `claude_api.exhausted_recheck_hours`, and
-`state/runtime/claude_api_credit.json` exists only after a credit refusal. Rollback: check out `v1.9.0` again.
+a job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a
+reroute; log lines written by a command gain `command`; `routing.yaml` gains the optional
+`claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json` exists only after a credit refusal.
+Rollback: check out `v1.9.0` again.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
   the artifact patterns, so the owner approved without seeing the result. The card now renders, from the task record
@@ -47,8 +49,13 @@ command gain `command`, `routing.yaml` gains the optional `claude_api.exhausted_
   The loop (`Supervisor.launch`) handles `LaneUnavailable` for a delivery whose own lane differs (the switch had
   moved it): the record is closed `DONE`/`REROUTED` with `rerouted_to`, the task is dispatched on that lane, and
   `repair_continuations()` finishes a reroute a crash interrupted. Anything else (a task pinned to `claude_api`, a
-  review) waits PREPARED until the recheck, as for any capacity deferral. A reached `monthly_budget_usd` is the same
-  gate (lifts next calendar month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane.
+  review) waits PREPARED until the recheck. A reached `monthly_budget_usd` is the same gate (lifts next calendar
+  month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane. Such a wait ends early once
+  the lane reports itself ready: the new owner command `lane.reset {"lane": "claude_api"}` (after a top-up or a
+  new billing cycle) or a raised budget releases the waiting records on the next iteration. Extension authors: two
+  optional `Adapter` methods back this, `lane_ready(layout)` and `reset_lane(layout)`, both defaulting to "no".
+  The refusal is matched exactly (HTTP 400, JSON `error.type` `invalid_request_error`, the credit message);
+  anything else stays an ordinary FAILED attempt.
   No migration: the new key is optional and the state file is absent until a refusal.
 
 ## 1.9.0 — 2026-10-25

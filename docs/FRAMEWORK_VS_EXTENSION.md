@@ -39,6 +39,10 @@ extensions:
   `supervisor doctor` (`extensions`). Unless the entry says `required: false`, it also blocks: `supervisor run`
   exits 1 with runtime status `BLOCKED` and a reason naming the extension, and `policy.assert_packet_clean()` refuses
   every packet — a missing packet screen or lane is a missing protection, not a degraded mode.
+- **Lane availability (adapters).** Two optional methods (1.10.0) let a lane that can be out of service as a whole say so: `submit()`
+  raises `LaneUnavailable` (no attempt is spent; a delivery the scheduler moved there goes back to its own lane),
+  `lane_ready(layout)` releases the records it deferred early, and `reset_lane(layout)` backs the owner command
+  `lane.reset`. Both default to "no", so existing adapters are unaffected.
 - **Adapters.** An exception from an extension adapter's `prepare()`, `recover()`, `submit()` or `collect()` fails
   that one attempt (job record `FAILED` with the exception text, event `adapter_error`, the task's verification
   detail carries it) and the loop goes on; it does not count against the loop's own error budget.

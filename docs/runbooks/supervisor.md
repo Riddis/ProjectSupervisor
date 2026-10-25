@@ -17,7 +17,7 @@
   them directly.
 - Any other owner action is also a command: `supervisor cmd task.note '{"task_id":"T0-01","note":"..."}'`,
   `task.set_priority`, `task.set_status`, `task.approve`, `gate.ack`, `gate.set`, `capacity.reset`,
-  `owner_task.set_status`, `agent.terminate`, `agent.note`, `conversation.*`, `system.shutdown[_cancel]`.
+  `lane.reset` (`{"lane": "<adapter>"}`), `owner_task.set_status`, `agent.terminate`, `agent.note`, `conversation.*`, `system.shutdown[_cancel]`.
 - Jobs: every attempt has `state/runtime/jobs/<task>.a<n>.json` (PREPARED → SUBMITTED → RUNNING → DONE/FAILED). On
   start the loop reconciles these before dispatching: PREPARED is launched under the same id, live children are
   adopted, finished ones ingested, dead ones marked lost. Never delete these files while a job may be running.

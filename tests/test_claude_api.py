@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from supervisor import loop as loop_mod
-from supervisor import jobs, scheduler, tasks
+from supervisor import commands, jobs, scheduler, tasks
 from supervisor import verify as verify_mod
 from supervisor._vendor.contract import LaneUnavailable
 from supervisor.adapters import REGISTRY, claude_api
@@ -489,3 +489,81 @@ def test_a_reroute_interrupted_after_its_successor_queues_nothing_more(layout, m
     sup.repair_continuations()
     assert not dispatched and len(jobs.for_task(layout, "CS")) == refused + 1
     assert jobs.read(layout, f"CS.a{refused}")["continued"] is True
+
+
+# ------------------------------------------------------------------ review 1.10.0 #4: early release of lane deferrals
+
+def _pinned_and_deferred(layout, ad, monkeypatch):
+    write_key(layout)
+    api_task(layout)
+    calls = []
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or refuse_credit())
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
+    assert rec["phase"] == "PREPARED" and rec["deferred_lane"] is True and len(calls) == 1
+    return sup, calls
+
+
+def test_lane_reset_releases_a_job_waiting_for_credit(layout, ad, monkeypatch):
+    sup, calls = _pinned_and_deferred(layout, ad, monkeypatch)
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert len(calls) == 1                                           # still spent: no request, still waiting
+    text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body(text)))
+    commands.submit(layout, "lane.reset", {"lane": "claude_api"}, actor="owner")
+    commands.apply_all(layout)
+    assert not claude_api.credit_state_path(layout).exists()
+    rec = sup.launch(jobs.read(layout, "CA.a1"))                    # long before the 24 h recheck
+    assert len(calls) == 2 and rec["phase"] == "SUBMITTED"
+
+
+def test_raising_a_reached_budget_releases_a_waiting_job(layout, ad, monkeypatch):
+    write_key(layout)
+    write_routing(layout, monthly_budget_usd=1, pricing_usd_per_mtok={"claude-sonnet-5": {"input": 1000, "output": 0}})
+    api_task(layout)
+    claude_api.record_usage(layout, "X", "X.a1", "claude-sonnet-5", {"input_tokens": 2000, "output_tokens": 0}, "msg_x")
+    calls = []
+    text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body(text)))
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
+    assert rec["phase"] == "PREPARED" and rec["deferred_lane"] and not calls     # budget reached: no request
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert not calls
+    write_routing(layout, monthly_budget_usd=10, pricing_usd_per_mtok={"claude-sonnet-5": {"input": 1000, "output": 0}})
+    rec = sup.launch(jobs.read(layout, "CA.a1"))
+    assert calls == [1] and rec["phase"] == "SUBMITTED"
+
+
+def test_a_timed_deferral_is_not_released_by_lane_readiness(layout, ad, monkeypatch):
+    """Only records the lane deferred (deferred_lane) may go early; an ordinary timed wait keeps its time."""
+    write_key(layout)
+    api_task(layout)
+    calls = []
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body("x")))
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api", deferred_until=time.time() + 3600, note="wait")
+    assert ad.lane_ready(layout) and rec["phase"] == "PREPARED"
+    sup.launch(jobs.read(layout, "CA.a1"))
+    assert not calls and jobs.read(layout, "CA.a1")["phase"] == "PREPARED"
+
+
+def test_lane_reset_of_an_unknown_lane_fails_the_command(layout):
+    commands.submit(layout, "lane.reset", {"lane": "nope"}, actor="owner")
+    commands.apply_all(layout)
+    assert not list(layout.commands.glob("*.json"))                 # applied (as failed), not left queued
+
+
+@pytest.mark.parametrize("status,body,expected", [
+    (400, CREDIT_REFUSAL, True),
+    (429, CREDIT_REFUSAL, False),                                    # the phrase under another status
+    (400, {"type": "error", "error": {"type": "authentication_error",
+                                      "message": "Your credit balance is too low"}}, False),
+    (400, {"type": "error", "error": {"type": "invalid_request_error",
+                                      "message": "prompt echoed: credit balance is too low"}}, True),
+    (400, "Your credit balance is too low (plain text)", False),       # not the JSON shape
+    (400, ["error"], False),
+])
+def test_credit_refusal_matches_only_the_exact_shape(status, body, expected):
+    text = body if isinstance(body, str) else json.dumps(body)
+    assert claude_api.credit_refusal(status, text) is expected

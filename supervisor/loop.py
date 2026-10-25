@@ -252,11 +252,13 @@ class Supervisor:
             try:
                 if engine:
                     capacity.require(self.layout, engine)     # measured/owner state is authoritative over the hint
-                else:
-                    return rec
+                elif not (rec.get("deferred_lane") and ad.lane_ready(self.layout)):
+                    return rec                                # a timed wait, or the lane still unavailable
             except CapacityDeferred:
                 return rec                                    # still gated: wait, costs nothing
-            jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", deferred_until=0)
+            except Exception:                                 # noqa: BLE001 - a broken readiness check means wait
+                return rec
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", deferred_until=0, deferred_lane=None)
         # The one gate: decision, capacity, limits and ownership — for every launch path alike. A refused
         # record stays PREPARED and is retried by reconcile() each iteration; the reason is recorded once per change.
         kind = (rec.get("spec") or {}).get("kind", "delivery")
@@ -290,8 +292,10 @@ class Supervisor:
             lane = self.home_lane(rec) if isinstance(exc, LaneUnavailable) else None
             if lane:
                 return self.reroute(rec, lane, str(exc))
+            # deferred_lane: the lane, not the clock, gates this record, so lane_ready() may release it early.
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts - 1,
-                                     deferred_until=exc.reset_epoch, deferred_reason=str(exc))
+                                     deferred_until=exc.reset_epoch, deferred_reason=str(exc),
+                                     deferred_lane=isinstance(exc, LaneUnavailable) or None)
             tasks_mod.log(self.layout, "capacity_deferred", "loop", task=rec["task_id"], attempt=rec["attempt_id"], until=exc.reset_epoch)
             return rec
         except Exception as exc:                              # noqa: BLE001 - nothing launched: the attempt fails here
