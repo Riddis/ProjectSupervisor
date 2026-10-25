@@ -99,24 +99,97 @@ def _stdlib() -> set[str]:
     return set(sys.stdlib_module_names) | {"__future__"}
 
 
+# Functions that load code by name or path; True when their first argument is a module name a literal can show.
+DYNAMIC = {"import_module": True, "__import__": True, "run_module": True,
+           "spec_from_file_location": False, "run_path": False}
+_DYNAMIC_SOURCES = {"importlib", "importlib.util", "builtins", "runpy"}
+
+
+def _dynamic_name(expr: ast.AST, aliases: dict[str, str]) -> str | None:
+    """The loader function `expr` evaluates to — `importlib.import_module`, a name bound to one (`from importlib
+    import import_module as load`, `load = importlib.import_module`), `getattr(importlib, "import_module")` or a
+    `functools.partial` of one — else None."""
+    if isinstance(expr, ast.Attribute) and expr.attr in DYNAMIC:
+        return expr.attr
+    if isinstance(expr, ast.Name):
+        return aliases.get(expr.id) or ("__import__" if expr.id == "__import__" else None)
+    if isinstance(expr, ast.Call):
+        fn = expr.func
+        fname = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else ""
+        if (fname == "getattr" and len(expr.args) >= 2 and isinstance(expr.args[1], ast.Constant)
+                and expr.args[1].value in DYNAMIC):
+            return expr.args[1].value
+        if fname == "partial" and expr.args:
+            return _dynamic_name(expr.args[0], aliases)
+    return None
+
+
+def _dynamic_aliases(tree: ast.AST) -> dict[str, str]:
+    """Names the module binds to a loader function, through imports and (chains of) assignments."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _DYNAMIC_SOURCES:
+            for a in node.names:
+                if a.name in DYNAMIC:
+                    aliases[a.asname or a.name] = a.name
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                targets, value = [node.target], node.value
+            else:
+                continue
+            name = _dynamic_name(value, aliases)
+            for t in targets:
+                if name and isinstance(t, ast.Name) and aliases.get(t.id) != name:
+                    aliases[t.id] = name
+                    changed = True
+    return aliases
+
+
 def _import_targets(tree: ast.AST, loaders_ok: bool):
-    """(line, module, how) for every absolute import and every dynamic import in the module."""
+    """(line, module, how) for every absolute import and every dynamic import in the module. A loader function is
+    judged wherever it is referenced, however it is named: called with a literal module name, that name is checked
+    like a static import; any other use (a computed name, a path, passing the function on, binding it to another
+    name) is allowed only in the listed loader files."""
+    aliases = _dynamic_aliases(tree)
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._boundary_parent = parent                       # local annotation for this walk only
+    seen = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 yield node.lineno, alias.name, "import"
-        elif isinstance(node, ast.ImportFrom):
+            continue
+        if isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module:
                 yield node.lineno, node.module, "import"
-        elif isinstance(node, ast.Call):
-            fn = node.func
-            name = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else ""
-            if name in ("import_module", "__import__", "spec_from_file_location"):
-                arg = node.args[0] if node.args else None
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and name != "spec_from_file_location":
-                    yield node.lineno, arg.value, "dynamic import"
-                elif not loaders_ok:
-                    yield node.lineno, "", f"dynamic {name}() outside the listed loaders"
+            continue
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            continue
+        name = _dynamic_name(node, aliases)
+        if not name:
+            continue
+        parent = getattr(node, "_boundary_parent", None)
+        if isinstance(parent, ast.Call) and parent.func is node:
+            arg = parent.args[0] if parent.args else None
+            if DYNAMIC[name] and isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                found = (parent.lineno, arg.value, "dynamic import")
+            elif loaders_ok:
+                continue
+            else:
+                found = (parent.lineno, "", f"dynamic {name}() outside the listed loaders")
+        elif loaders_ok:
+            continue
+        else:
+            found = (node.lineno, "", f"reference to {name} outside the listed loaders")
+        if found not in seen:
+            seen.add(found)
+            yield found
 
 
 def check_imports(root: Path, files: list[Path], cfg: dict) -> list[Finding]:
@@ -151,7 +224,9 @@ def _allowed_literal(cfg: dict, rel: str, text: str) -> bool:
     return False
 
 
-RESERVED_SUFFIXES = (".test", ".example", ".invalid", ".localhost", ".local")       # RFC 2606 / RFC 6761
+# RFC 2606 / RFC 6761 names no real host can have. Not `.local`: that is multicast DNS, where a machine on someone's
+# network answers to it (`render-box.local`), so it is exactly the kind of project-specific host G1b refuses.
+RESERVED_SUFFIXES = (".test", ".example", ".invalid", ".localhost")
 RESERVED_HOSTS = {"localhost", "::1", "0.0.0.0", "example.com", "example.net", "example.org"}
 
 
@@ -272,6 +347,8 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
+    if not any(p.suffix == ".py" for p in files):          # a wrong --root must not pass as "nothing to report"
+        raise ConfigError(f"no {PACKAGE}/ package with Python files under {root}: nothing to check")
     names = default_user_names(cfg) if user_names is None else user_names
     report = Report()
     report.violations += check_imports(root, files, cfg)

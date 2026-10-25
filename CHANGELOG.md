@@ -14,7 +14,10 @@ No state or config shape change; `supervisor migrate` only records the new versi
   baseline recorded by this first run: 33 files). Every exception is an explicit, commented entry in
   `boundary.toml`; registered projects' domain words are reported as supporting evidence, never as a failure.
   Exit 0 clean, 1 violations, 2 when it cannot run. `tests/test_boundary.py` holds a prohibited and a legitimate
-  example for every rule.
+  example for every rule. Review round (REVISE, three P2 on G1): a loader function is judged wherever it is
+  referenced, however it is named (`import_module as load`, assigned, `getattr`, `functools.partial`, passed to
+  `map`, `runpy`); `.local` (multicast DNS: a real machine) is no longer a reserved name, the schemas' `$id` host
+  `supervisor.local` is listed explicitly; a root without the `supervisor/` package exits 2 instead of passing.
 - **CI** (`.github/workflows/ci.yml`): G1, and the suite on Linux and Windows (G3), on every push to `main` and
   every pull request; meant as required checks under branch protection on `main`.
 - **Template smoke test** (`tests/test_template_smoke.py`): `supervisor init` → `supervisor doctor` → one task on the

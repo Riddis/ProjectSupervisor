@@ -57,6 +57,30 @@ def test_g1a_refuses_imports_of_project_or_extension_code(tmp_path, code, module
     assert ("G1a", "supervisor/mod.py", module) in found
 
 
+@pytest.mark.parametrize("code", [
+    "from importlib import import_module as load\nload('extensions.bench')\n",
+    "from importlib import import_module as load\nname = 'x'\nload(name)\n",
+    "import importlib\nload = importlib.import_module\nagain = load\nagain('extensions.bench')\n",
+    "import importlib\ngetattr(importlib, 'import_module')('extensions.bench')\n",
+    "import functools, importlib\nf = functools.partial(importlib.import_module, 'extensions.bench')\n",
+    "import importlib\nmods = list(map(importlib.import_module, ['extensions.bench']))\n",
+    "from importlib.util import spec_from_file_location as locate\nlocate('m', 'p.py')\n",
+    "import runpy\nrunpy.run_path('plugin.py')\n",
+    "from builtins import __import__ as imp\nimp('extensions.bench')\n",
+])
+def test_g1a_sees_dynamic_imports_however_the_loader_is_named(tmp_path, code):
+    """Review of 1.9.0 (P2): an alias of import_module (`as load`, an assignment, getattr, partial) escaped G1a."""
+    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code}))
+    assert any(r == "G1a" and p == "supervisor/mod.py" for r, p, _ in found), found
+
+
+def test_g1a_an_aliased_loader_with_a_framework_or_stdlib_name_passes(tmp_path):
+    code = ("from importlib import import_module as load\nload('json')\nload('supervisor.adapters')\n"
+            "socket = __import__('socket')\n")
+    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code}))
+    assert found == []
+
+
 def test_g1a_refuses_a_computed_dynamic_import_outside_the_loader(tmp_path):
     code = "import importlib\nname = 'x'\nimportlib.import_module(name)\n"
     found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code, "supervisor/extensions.py": code}))
@@ -94,6 +118,7 @@ def test_g1a_allowed_list_covers_every_declared_dependency():
     ("# see /home/alice/projects\n", "/home/alice"),
     ("cache = r'C:\\Users\\bob\\AppData'\n", "C:\\Users\\bob\\AppData"),
     ('URL = "https://render.mycompany.io/api"\n', "render.mycompany.io"),
+    ('COMFY = "http://render-box.local:8188/"\n', "render-box.local"),        # mDNS: a real machine (review P2)
     ('HOST = "10.0.4.17"\n', "10.0.4.17"),
     ("# ask jane.doe@acme-corp.com\n", "jane.doe@acme-corp.com"),
     ("# written by jdoe\n", "jdoe"),
@@ -153,7 +178,7 @@ def test_domain_words_are_evidence_not_failures(tmp_path):
 def test_module_entry_point_exit_codes(tmp_path):
     clean = framework(tmp_path, {"supervisor/mod.py": "x = 1\n"})
     run = lambda root: subprocess.run([sys.executable, "-m", "supervisor.boundary", "--root", str(root), "--json"],
-                                      cwd=REPO, capture_output=True, text=True, env={"CI": "1", "PATH": ""})
+                                      cwd=REPO, capture_output=True, text=True, env={"CI": "1", "PATH": ""}, check=False)
     ok = run(clean)
     assert ok.returncode == 0 and json.loads(ok.stdout)["ok"] is True
     (clean / "supervisor" / "bad.py").write_text("import extensions\n", encoding="utf-8")
@@ -161,6 +186,18 @@ def test_module_entry_point_exit_codes(tmp_path):
     assert bad.returncode == 1 and json.loads(bad.stdout)["violations"][0]["rule"] == "G1a"
     (clean / "boundary.toml").unlink()
     assert run(clean).returncode == 2
+
+
+def test_a_root_without_the_package_cannot_pass(tmp_path):
+    """Review of 1.9.0 (P2): `--root` at a folder with boundary.toml but no supervisor/ scanned nothing and said OK."""
+    empty = tmp_path / "elsewhere"
+    empty.mkdir()
+    (empty / "boundary.toml").write_text(BASE_CONFIG, encoding="utf-8")
+    with pytest.raises(boundary.ConfigError, match="nothing to check"):
+        boundary.check(empty, user_names=[])
+    (empty / "supervisor").mkdir()
+    (empty / "supervisor" / "README.md").write_text("no code here\n", encoding="utf-8")
+    assert boundary.run(empty, echo=lambda *_: None) == 2
 
 
 def test_the_framework_package_passes_its_own_boundary_check():

@@ -20,6 +20,7 @@ allowed_url_hosts = [
   "api.anthropic.com",   # the metered claude_api lane's endpoint (adapters/claude_api.py)
   "github.com",          # links in the template README, a comment example, vendored-asset licences
   "json-schema.org",     # $schema of the template's result schemas
+  "supervisor.local",    # $id namespace of the template's result schemas (an identifier, never resolved)
   "scripts.sil.org",     # the Inter font's OFL licence text
 ]
 allowed_mail_domains = []
