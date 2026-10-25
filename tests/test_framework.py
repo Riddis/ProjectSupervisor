@@ -440,7 +440,9 @@ def test_local_gpu_migration_rewrites_only_the_field_and_keeps_line_endings(fres
     make_task(layout, "N", status="IN_PROGRESS")
     g, n = layout.tasks / "G.yaml", layout.tasks / "N.yaml"
     g.write_bytes(g.read_bytes().replace(b"\r\n", b"\n").replace(b"cost_category: claude",
-                                                                   b"cost_category: local_gpu"))      # LF file
+                                                                   b"cost_category: local_gpu")       # LF file
+                  + b"review_note: |\n  the old contract read\n  cost_category: local_gpu\n"     # an example in a note
+                  + b"acceptance_example: \"line one\n  cost_category: local_gpu\"\n")           # in a quoted string
     n_text = n.read_text(encoding="utf-8") + "notes:\n- moved off local_gpu last week\n"
     n.write_bytes(n_text.replace("\n", "\r\n").encode("utf-8"))                                       # CRLF file
     seed = layout.root / "state" / "tasks_seed.yaml"
@@ -451,6 +453,8 @@ def test_local_gpu_migration_rewrites_only_the_field_and_keeps_line_endings(fres
     assert sorted(notes) == ["state/tasks/G.yaml: cost_category local_gpu → local",
                              "state/tasks_seed.yaml: cost_category local_gpu → local"]
     assert b"cost_category: local\n" in g.read_bytes() and b"\r\n" not in g.read_bytes()
+    assert g.read_bytes().count(b"cost_category: local_gpu") == 2      # both examples kept as written (review P2)
+    assert yaml.safe_load(g.read_text(encoding="utf-8"))["cost_category"] == "local"
     assert seed.read_bytes() == b"# tasks once ran on local_gpu\r\ntasks:\r\n- id: S\r\n  cost_category: 'local'  # gpu\r\n"
     assert n.read_bytes() == n_before                               # a mention in a note is not the field
     assert migrations.run(layout) == []                             # the repeat run reports nothing

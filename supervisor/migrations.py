@@ -2,8 +2,9 @@
 `framework_version` in project.yaml. `supervisor doctor` reports a mismatch; `supervisor migrate` applies these."""
 from __future__ import annotations
 
-import re
 from typing import Callable
+
+import yaml
 
 from . import __version__, project, store
 from .paths import Layout
@@ -34,18 +35,38 @@ def _routing_limits_rename(layout: Layout, dry_run: bool) -> list[str]:
     return ["config/routing.yaml: limits.max_gpu_jobs renamed to max_resource_jobs"]
 
 
-_LOCAL_GPU = re.compile(r"""^(\s*(?:-\s+)?cost_category:\s*)(["']?)local_gpu\2(?=[ \t]*(?:#|$))""", re.MULTILINE)
+def _task_field_values(text: str, field: str, value: str) -> list[tuple[int, int]]:
+    """Character spans of every task-level `field: value` in a task file (its top-level mapping) or a seed (each item
+    of its top-level `tasks` list), located through the YAML node tree. Anything else that merely looks like the
+    field — a line inside a block-scalar note, a quoted example, a comment — is not a task's field and is not
+    returned. An unparsable file yields nothing (the doctor reports it)."""
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(root, yaml.MappingNode):
+        return []
+    mappings = [root]
+    for key, node in root.value:
+        if isinstance(key, yaml.ScalarNode) and key.value == "tasks" and isinstance(node, yaml.SequenceNode):
+            mappings += [item for item in node.value if isinstance(item, yaml.MappingNode)]
+    return [(node.start_mark.index, node.end_mark.index) for mapping in mappings for key, node in mapping.value
+            if isinstance(key, yaml.ScalarNode) and key.value == field
+            and isinstance(node, yaml.ScalarNode) and node.value == value]
 
 
 def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
-    """cost_category local_gpu → local (1.0.0). Only the field's value is rewritten, so a file that mentions local_gpu
-    in a note or comment is neither changed nor reported, and a second run reports nothing."""
+    """cost_category local_gpu → local (1.0.0). Only a task's own field is rewritten (in place, keeping its quoting
+    and any trailing comment), so a file that mentions local_gpu in a note, an example or a comment is neither
+    changed nor reported, and a second run reports nothing."""
     notes = []
     for p in sorted(layout.tasks.glob("*.yaml")) + [layout.root / "state" / "tasks_seed.yaml"]:
         if not p.exists():
             continue
         text = p.read_text(encoding="utf-8")
-        new = _LOCAL_GPU.sub(r"\1\2local\2", text)
+        new = text
+        for start, end in reversed(_task_field_values(text, "cost_category", "local_gpu")):
+            new = new[:start] + new[start:end].replace("local_gpu", "local") + new[end:]
         if new == text:
             continue
         if not dry_run:
