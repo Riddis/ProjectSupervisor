@@ -38,12 +38,13 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   own `evidence` list never reads files: references outside the delivery are listed by name only. A review's summary
   and findings come from the review job's own structured result — the object its verdict was read from, frozen when
   the review is ingested (`review_report.json` in the run dir, hashed from the bytes written;
-  `ReviewRecord.report_sha256`); a `supervisor task review` report is hashed when the command is submitted. They are
-  shown, and quoted to escalation's revision brief, only while that file still hashes to it (`tasks.review_report`,
-  which also unwraps the `claude_api` result envelope); a changed or linked report, or a review recorded before
-  1.10.0, keeps its verdict and says the rationale is unavailable. The verification shown is the recorded outcome and
-  detail. The task page's artifact list is replaced by the same view (`supervisor/ui/delivery.py`,
-  `partials/delivery.html`).
+  `ReviewRecord.report_sha256`); a `supervisor task review` report is hashed when the command is submitted, and a
+  report it cannot hash (missing, a link, over 4 MiB) is refused; a command carrying an explicit null hash is recorded
+  without one. They are shown, and quoted to escalation's revision brief, only while that file still hashes to it
+  (`tasks.review_report`, which also unwraps the `claude_api` result envelope); a changed or linked report, or a
+  review recorded before 1.10.0, keeps its verdict and says the rationale is unavailable. The verification shown is
+  the recorded outcome and detail. The task page's artifact list is replaced by the same view
+  (`supervisor/ui/delivery.py`, `partials/delivery.html`).
 - **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
   store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and
   approved without its decision record in the digest. `state/decisions/` is now authored state
@@ -62,12 +63,19 @@ waits for its time. Or restore the snapshot taken before the upgrade.
 - **Fixed: `supervisor status` is a read.** It rendered STATE.md and printed the result, so asking for the status
   rewrote a file while the loop held `state/.lock`, and since no runtime record was passed it always reported the loop
   as not running. It now prints the same lines (`render.state_lines`, with the live `state/runtime/supervisor.json`)
-  and writes nothing; `supervisor render` still re-renders the files.
-- **Fixed: a slower render can no longer overwrite a fresher one.** Each projection's store read and file write now
-  happen under `state/.render.lock` (`render._render_write`), so two renderers (the loop and an owner command, say)
-  are ordered: the one that enters second reads only after the first has written. It is a separate lock from
-  `state/.lock`, which the loop holds while it renders. `render.phase_and_gates_passed()` returns STATE.md's phase and
-  passed gates, for anything that must agree with that line.
+  and changes nothing in the project: it creates no directory and sets up no extension (setup is project code, and
+  loading reconciles `state/runtime/projection_paths.json`), which also means a read-only command attaches no
+  extension command group. `supervisor render` still re-renders the files.
+- **Fixed: a slower render can no longer overwrite a fresher one.** Every projection — the six built-in views and each
+  one an extension registers (`registry.projection`) — reads and writes under `state/.render.lock`
+  (`render.render_lock`), so two renderers (the loop and an owner command, say) are ordered: the one that enters
+  second reads only after the first has written. It is a separate lock from `state/.lock`, which the loop holds while
+  it renders, and it is reentrant within a thread, so a registered projection may call a built-in `render_*` function.
+  A projection that cannot get the lock within 30 s (a wait for the lock, not a budget for the render) is skipped and
+  logged (`render_error`, `projection_error`) and its previous file stays; `render_all` goes on with the next one. The
+  lock orders each projection's own read and write; it does not make the set of files one snapshot.
+  `render.phase_and_gates_passed()` is an internal helper (STATE.md's phase and passed gates, used by `state_lines`),
+  not part of the extension API that 1.11.0 defines.
 - **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
   low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
   Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model

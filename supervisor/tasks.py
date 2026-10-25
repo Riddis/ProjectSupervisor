@@ -590,13 +590,18 @@ def review_snapshot(layout: Layout, run_dir, review: dict) -> tuple[str, str]:
     return path.relative_to(layout.root).as_posix(), hashlib.sha256(text.encode("ascii")).hexdigest()
 
 
+HASH_AT_RECORD = object()        # record_review(report_sha256=...) default: no provenance supplied, hash the file now
+
+
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
-                  report: str | None = None, actor: str = "review", report_sha256: str | None = None) -> Task:
+                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD) -> Task:
     """`report_sha256`: the hash of the report as the reviewer produced it, when the caller holds those bytes (the
-    loop's snapshot of the job's result, a CLI review hashed at submission). Without it the file is hashed now, at
-    record time — which says what the file held then, not what the reviewer wrote."""
+    loop's snapshot of the job's result, a CLI review hashed at submission). An explicit None means the caller had no
+    verifiable bytes: it is kept as None (the report is never shown as the reviewer's) and the file is NOT hashed
+    later in its place. Omitted, the file is hashed now, at record time — which says what the file held then, not
+    what the reviewer wrote."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
-    sha = report_sha256 or report_file_sha256(layout, report)
+    sha = report_file_sha256(layout, report) if report_sha256 is HASH_AT_RECORD else report_sha256
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")

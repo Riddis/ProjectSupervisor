@@ -113,3 +113,122 @@ def test_phase_and_gates_passed_matches_the_state_md_phase_line(store):
     phase, passed = render.phase_and_gates_passed(store, tasks_mod.load_all(store))
     line = next(ln for ln in (store.root / "STATE.md").read_text(encoding="utf-8").splitlines() if "**Phase:**" in ln)
     assert line.startswith(f"- **Phase:** {phase} ") and line.endswith(f"gates passed: {', '.join(passed) or 'none'}")
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 5
+
+EXTRA = """
+def setup(registry):
+    def extra(layout):
+        p = layout.root / "EXTRA.md"
+        p.write_text("# extra " + (layout.root / "source.txt").read_text(encoding="utf-8"), encoding="utf-8")
+        return p
+    registry.projection(extra, path="EXTRA.md")
+"""
+
+
+def _with_extension(layout, code, name="extra"):
+    from supervisor import extensions, project
+    (layout.root / "extensions").mkdir(parents=True, exist_ok=True)
+    (layout.root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
+    doc = dict(project.load(layout))
+    doc["name"] = doc.get("name") or "proj"
+    doc["extensions"] = [name]
+    project.write(layout, doc)
+    extensions.reset()
+
+
+def _tree(root):
+    """Every file under the project: its bytes, or its size for a file locked against reading (the held state/.lock)."""
+    out = {}
+    for p in sorted(root.rglob("*")):
+        if p.is_file():
+            try:
+                out[p.relative_to(root).as_posix()] = p.read_bytes()
+            except PermissionError:
+                out[p.relative_to(root).as_posix()] = ("locked", p.stat().st_size)
+    return out
+
+
+def test_a_cold_status_process_leaves_the_whole_project_unchanged(store):
+    """Review 1.10.0 round 5: `supervisor status` in a fresh process, with an extension that declares a projection
+    not yet recorded and with state/.lock held by another process, changes no file anywhere in the project."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    (store.root / "source.txt").write_text("v1", encoding="utf-8")
+    _with_extension(store, EXTRA)
+    assert not (store.runtime / "projection_paths.json").exists()
+    store.runtime.mkdir(parents=True, exist_ok=True)
+    (store.runtime / "supervisor.json").write_text(json.dumps({"status": "RUNNING", "pid": 4242}), encoding="utf-8")
+    lock = FileLock(store.lock, owner="loop").acquire()
+    try:
+        before = _tree(store.root)
+        env = {**os.environ, "SUPERVISOR_ROOT": str(store.root), "PYTHONDONTWRITEBYTECODE": "1",
+               "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+        out = subprocess.run([sys.executable, "-m", "supervisor", "status"], cwd=str(store.root), env=env,
+                             capture_output=True, text=True, timeout=120)
+        after = _tree(store.root)
+    finally:
+        lock.release()
+    assert out.returncode == 0, out.stderr
+    assert "**Supervisor:** RUNNING (pid 4242" in out.stdout
+    assert sorted(after) == sorted(before), set(after) ^ set(before)
+    assert [k for k in before if before[k] != after[k]] == []
+
+
+def test_a_registered_projection_is_serialized_like_the_built_in_ones(store, monkeypatch):
+    """Review 1.10.0 round 5: two render_all calls overlap on an extension projection; the one that started first
+    and read the old source cannot land after the one that read the new source."""
+    from supervisor import extensions
+    (store.root / "source.txt").write_text("OLD", encoding="utf-8")
+    _with_extension(store, EXTRA)
+    reg = extensions.load(store)
+    [real] = reg.projections
+    stalled, release, second_done = threading.Event(), threading.Event(), threading.Event()
+
+    def stalling(layout):
+        text = (layout.root / "source.txt").read_text(encoding="utf-8")
+        if not stalled.is_set():
+            stalled.set()
+            assert release.wait(timeout=20)
+        p = layout.root / "EXTRA.md"
+        p.write_text("# extra " + text, encoding="utf-8")
+        return p
+    monkeypatch.setattr(reg, "projections", [stalling])
+    first = threading.Thread(target=lambda: render.render_all(store), daemon=True)
+    first.start()
+    assert stalled.wait(timeout=20)
+    (store.root / "source.txt").write_text("NEW", encoding="utf-8")
+
+    def second():
+        render.render_all(store)
+        second_done.set()
+    t2 = threading.Thread(target=second, daemon=True)
+    t2.start()
+    assert not second_done.wait(1.5), "a second render finished while the first projection held an older read"
+    release.set()
+    assert second_done.wait(timeout=60)
+    first.join(timeout=60)
+    assert (store.root / "EXTRA.md").read_text(encoding="utf-8") == "# extra NEW"
+    assert callable(real)
+
+
+def test_a_projection_may_call_a_built_in_renderer_without_waiting_on_itself(store):
+    """The render lock is reentrant within a thread: a projection that renders STATE.md itself does not block on
+    the lock its own call already holds."""
+    import time
+    _with_extension(store, """
+def setup(registry):
+    def combined(layout):
+        from supervisor import render
+        return render.render_state(layout)
+    registry.projection(combined, path="STATE.md")
+""", name="combined")
+    started = time.monotonic()
+    out = render.render_all(store)
+    assert time.monotonic() - started < 10                                   # well under the 30 s lock wait
+    assert sum(1 for p in out if p.name == "STATE.md") == 2
+    log = store.log.read_text(encoding="utf-8") if store.log.exists() else ""
+    assert '"projection_error"' not in log

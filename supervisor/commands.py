@@ -190,8 +190,11 @@ def _review(layout, payload, actor):
     if t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"] and r.verdict.value == payload["verdict"]
                           for r in t.delivery.reviews):
         return {"skipped": "already reviewed", "status": t.status.value}
+    # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report that
+    # could not be hashed when it was submitted is never authenticated by whatever the file holds when this applies.
+    provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
     tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
-                            payload.get("vendor"), payload.get("report"), report_sha256=payload.get("report_sha256"))
+                            payload.get("vendor"), payload.get("report"), **provenance)
     t = tasks_mod.advance(layout, payload["task_id"])
     return {"status": t.status.value}
 

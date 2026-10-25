@@ -421,3 +421,59 @@ def test_a_queued_cli_review_is_bound_to_the_report_as_submitted(layout):
     commands.apply_all(layout)
     [r] = tasks.load(layout, "T").delivery.reviews
     assert r.report_sha256 == sha and tasks.review_report(layout, r) == (None, "changed")
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 5: no hash means no provenance
+
+def _delivered_for_review(layout):
+    review_task(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    return tasks.load(layout, "T").delivery.digest
+
+
+@pytest.mark.parametrize("case", ["missing", "link", "oversized"])
+def test_the_cli_refuses_a_report_it_cannot_bind(layout, case):
+    """Review 1.10.0 round 5: a report that cannot be hashed at submission is refused, so nothing is queued that a
+    later file could be passed off as."""
+    from typer.testing import CliRunner
+    from supervisor.cli import app
+    digest = _delivered_for_review(layout)
+    rel = "report.json"
+    if case == "link":
+        (layout.root / "real.json").write_text('{"verdict": "ACCEPT"}', encoding="utf-8")
+        try:
+            os.symlink(layout.root / "real.json", layout.root / rel)
+        except (OSError, AttributeError):
+            pytest.skip("creating symlinks needs privileges here")
+    elif case == "oversized":
+        (layout.root / rel).write_bytes(b" " * (tasks.MAX_REPORT_BYTES + 1))
+    result = CliRunner().invoke(app, ["task", "review", "T", digest, "code_review", "ACCEPT", "--report", rel])
+    assert result.exit_code != 0 and "cannot be bound" in result.output
+    assert not list(layout.commands.glob("*.json")) and not tasks.load(layout, "T").delivery.reviews
+
+
+def test_an_explicit_null_hash_is_kept_and_never_replaced_by_a_later_file(layout):
+    """A queued payload saying "no verifiable hash" stays unverified: a file that appears before the loop applies the
+    command is not hashed in its place."""
+    import json
+    from supervisor import commands
+    digest = _delivered_for_review(layout)
+    commands.submit(layout, "task.review", {"task_id": "T", "digest": digest, "role": "code_review",
+                                            "verdict": "ACCEPT", "report": "late.json", "report_sha256": None},
+                    actor="review")
+    (layout.root / "late.json").write_text(json.dumps({"verdict": "REJECT", "summary": "QUEUED FORGED"}),
+                                           encoding="utf-8")
+    commands.apply_all(layout)
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report == "late.json" and r.report_sha256 is None
+    assert tasks.review_report(layout, r) == (None, "unverified")
+
+
+def test_record_review_without_provenance_still_hashes_the_file_now(layout):
+    import hashlib
+    digest = _delivered_for_review(layout)
+    (layout.root / "r.json").write_text('{"verdict": "ACCEPT", "summary": "s"}', encoding="utf-8")
+    tasks.record_review(layout, "T", digest, "code_review", "ACCEPT", report="r.json")
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report_sha256 == hashlib.sha256((layout.root / "r.json").read_bytes()).hexdigest()

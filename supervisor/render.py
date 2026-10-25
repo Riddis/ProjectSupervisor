@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -21,6 +23,28 @@ def _write(path: Path, lines: list[str]):
     atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
 
 
+_held = threading.local()        # render-lock paths this thread holds: the lock is reentrant within a thread
+
+
+@contextmanager
+def render_lock(layout: Layout):
+    """`state/.render.lock`, held for one projection's read and write. Reentrant within a thread, so an extension
+    projection that itself calls a built-in render_* function does not wait on its own lock; across threads and
+    processes it orders renders. Waits up to 30 s, then raises LockHeld (render_all logs that view and goes on)."""
+    from .locks import FileLock
+    held = _held.__dict__.setdefault("paths", set())
+    key = str(layout.render_lock)
+    if key in held:
+        yield
+        return
+    with FileLock(layout.render_lock, owner="render", timeout=30.0):
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
+
+
 def _render_write(layout: Layout, path: Path, build) -> Path:
     """Write one projection under `state/.render.lock`: `build()` (the store read plus the view's computation) and
     the write happen inside the same held lock, so two renderers racing each other (the loop and an owner command,
@@ -29,8 +53,7 @@ def _render_write(layout: Layout, path: Path, build) -> Path:
     is never older than the file it is about to replace; before 1.10.0 a slower render holding an older snapshot
     could land after a faster, fresher one. Not the same lock as `state/.lock`: the loop holds that one for its
     whole run and calls render_all() from inside it, so reusing it here would make that call reject itself."""
-    from .locks import FileLock
-    with FileLock(layout.render_lock, owner="render", timeout=30.0):
+    with render_lock(layout):
         lines = build()
         _write(path, lines)
     return path
@@ -224,7 +247,8 @@ def render_all(layout: Layout, **kw) -> list[Path]:
     out = [p for p in out if p is not None]
     for fn in extensions_mod.load(layout).projections:
         try:
-            out.append(fn(layout))
+            with render_lock(layout):                       # a registered projection reads and writes under it too
+                out.append(fn(layout))
         except Exception as exc:                            # noqa: BLE001 - a projection must never stop the loop
             tasks_mod.log(layout, "projection_error", "render", projection=getattr(fn, "__name__", "?"), error=str(exc)[:200])
     return out

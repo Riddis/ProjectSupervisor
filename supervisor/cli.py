@@ -43,6 +43,24 @@ def _layout() -> Layout:
     return layout
 
 
+READ_ONLY_COMMANDS = {"status"}        # leave the project byte-for-byte as they found it, lock held or not
+
+
+def _reader() -> Layout:
+    """For READ_ONLY_COMMANDS: the project as it is — no directories created (`Layout.ensure`), no extension set up
+    (setup is project code and may write; loading also reconciles state/runtime/projection_paths.json)."""
+    root = find_root()
+    if root is None:
+        raise typer.BadParameter(str(NoProject("no project.yaml found here or above; run `supervisor init <dir>` "
+                                               "or set SUPERVISOR_ROOT")))
+    return Layout(root)
+
+
+def _invoked_command() -> str | None:
+    """The subcommand this process was started for (the first non-option argument), if any."""
+    return next((a for a in sys.argv[1:] if not a.startswith("-")), None)
+
+
 def _echo_cmd(outcome: dict, task_id: str) -> None:
     """Print a command outcome; render projections when we applied it ourselves (a running loop renders on its own)."""
     if outcome.get("queued"):
@@ -118,7 +136,7 @@ def status():
     """Print the live state summary: reads the store and `state/runtime/supervisor.json`, writes nothing (STATE.md is
     `supervisor render`'s job). Before 1.10.0 this rendered STATE.md, so a read command rewrote a file while the loop
     held `state/.lock`, and with no runtime record passed it always reported the loop as not running."""
-    layout = _layout()
+    layout = _reader()
     typer.echo("\n".join(render.state_lines(layout, runtime=runtime.read(layout))).rstrip())
 
 
@@ -247,6 +265,9 @@ def task_review(task_id: str, digest: str, role: str, verdict: str, vendor: str 
     from . import tasks as tasks_mod
     layout = _layout()
     sha = tasks_mod.report_file_sha256(layout, report) if report else None     # the report as submitted, not as applied
+    if report and sha is None:
+        raise typer.BadParameter(f"--report {report}: missing, a link, outside the project or larger than "
+                                 f"{tasks_mod.MAX_REPORT_BYTES // (1024 * 1024)} MiB; it cannot be bound to this review")
     _echo_cmd(commands_mod.submit_or_apply(layout, "task.review", {"task_id": task_id, "digest": digest, "role": role,
                                                                    "verdict": verdict, "vendor": vendor or None,
                                                                    "report": report or None, "report_sha256": sha},
@@ -482,8 +503,8 @@ if __name__ == "__main__":
 # Extension command groups are attached at import time so `supervisor <name>` works from any project directory.
 def _attach_extension_clis() -> None:
     root = find_root()
-    if root is None:
-        return
+    if root is None or _invoked_command() in READ_ONLY_COMMANDS:
+        return                                              # a read-only command sets up no extension (_reader)
     try:
         reg = extensions_mod.load(Layout(root))
     except Exception as exc:                                # noqa: BLE001 - a broken extension must not break the CLI
