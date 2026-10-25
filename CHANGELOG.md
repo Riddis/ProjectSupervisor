@@ -5,17 +5,18 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## 1.10.0 — 2026-10-25
 
-Approval evidence, one log line per owner action, progress reports from long jobs, and a `claude_api` lane that
-reroutes work when the prepaid credit is spent. A feature release ahead of phase 2 of the boundary plan, so the
-public extension API and gate G2 move to 1.11.0 and extension packages (G5) to 1.12.0 (`docs/BOUNDARY.md`, the
-framework skills). No extension hook added or changed; extensions need no change (the `Adapter` base class gains
-two optional methods with defaults, below).
+Approval evidence, one log line per owner action, progress reports from long jobs, a `claude_api` lane that reroutes
+work when the prepaid credit is spent, and two status/render fixes first prepared as 1.9.1. A feature release ahead
+of phase 2 of the boundary plan, so the public extension API and gate G2 move to 1.11.0 and extension packages (G5)
+to 1.12.0 (`docs/BOUNDARY.md`, the framework skills). No extension hook added or changed; extensions need no change
+(the `Adapter` base class gains two optional methods with defaults, below).
 
 **Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one: a
 job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a reroute; a
 task's review record gains the optional `report_sha256`; log lines written by a command gain `command`;
 `routing.yaml` gains the optional `claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json`
-exists only after a credit refusal.
+exists only after a credit refusal; renders take the new lock file `state/.render.lock` (covered by the template's
+`state/.*.lock` ignore rule).
 
 **Rollback** to v1.9.0, in a maintenance window: (1) with 1.10.0 still checked out, drain (`supervisor drain`) until
 no job is running — every iteration 1.10.0 re-queues a reroute a crash interrupted, which v1.9.0 cannot do; (2)
@@ -58,6 +59,15 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   pass its run dir's file to `report(file=...)`. The *Now running* row and the agent page show the stage and a
   bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification, and a
   malformed or oversized report (it is the job's file) shows nothing and never fails the job or a page.
+- **Fixed: `supervisor status` is a read.** It rendered STATE.md and printed the result, so asking for the status
+  rewrote a file while the loop held `state/.lock`, and since no runtime record was passed it always reported the loop
+  as not running. It now prints the same lines (`render.state_lines`, with the live `state/runtime/supervisor.json`)
+  and writes nothing; `supervisor render` still re-renders the files.
+- **Fixed: a slower render can no longer overwrite a fresher one.** Each projection's store read and file write now
+  happen under `state/.render.lock` (`render._render_write`), so two renderers (the loop and an owner command, say)
+  are ordered: the one that enters second reads only after the first has written. It is a separate lock from
+  `state/.lock`, which the loop holds while it renders. `render.phase_and_gates_passed()` returns STATE.md's phase and
+  passed gates, for anything that must agree with that line.
 - **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
   low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
   Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model

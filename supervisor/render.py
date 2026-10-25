@@ -23,12 +23,11 @@ def _write(path: Path, lines: list[str]):
 
 def _render_write(layout: Layout, path: Path, build) -> Path:
     """Write one projection under `state/.render.lock`: `build()` (the store read plus the view's computation) and
-    the write happen inside the same held lock, so two renderers racing each other (the loop and an owner-UI
-    command, say) are strictly ordered rather than merely atomic-replacing in whatever order they finish. Whichever
-    call enters the lock second cannot start its own read until the first one has both read and written, so its
-    snapshot is never older than the file it is about to replace — the opposite of 2026-10-25's STATE.md, written
-    at 12:58:52Z carrying the store as of 12:57:46Z because a slower, staler render landed after a faster, fresher
-    one (docs/runbooks/resume.md, trap #2). Not the same lock as `state/.lock`: the loop holds that one for its
+    the write happen inside the same held lock, so two renderers racing each other (the loop and an owner command,
+    say) are strictly ordered rather than merely atomic-replacing in whatever order they finish. Whichever call
+    enters the lock second cannot start its own read until the first one has both read and written, so its snapshot
+    is never older than the file it is about to replace; before 1.10.0 a slower render holding an older snapshot
+    could land after a faster, fresher one. Not the same lock as `state/.lock`: the loop holds that one for its
     whole run and calls render_all() from inside it, so reusing it here would make that call reject itself."""
     from .locks import FileLock
     with FileLock(layout.render_lock, owner="render", timeout=30.0):
@@ -143,9 +142,9 @@ def _tail_log(layout: Layout, n=10) -> list[dict]:
 
 
 def phase_and_gates_passed(layout: Layout, tasks: dict) -> tuple[int, list[str]]:
-    """(current phase, gate ids passed) exactly as `state_lines` renders them into STATE.md's "Phase:" line —
-    exported so a caller that must agree with STATE.md (`tools/resume_check.py`) uses this formula instead of a
-    second derivation of the same idea that can silently drift from it."""
+    """(current phase, gate ids passed) exactly as `state_lines` renders them into STATE.md's "Phase:" line. Shared
+    so anything that must agree with STATE.md (a project's resume or orientation check, say) uses this formula
+    instead of a second derivation that can silently drift from it."""
     gate_data = gates_mod.load(layout)
     phases_done = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
     current_phase = min((t.phase for t in tasks.values() if t.status != TaskStatus.COMPLETE), default=0)
