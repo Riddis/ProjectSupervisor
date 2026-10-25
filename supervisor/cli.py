@@ -25,10 +25,12 @@ task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
 extension_app = typer.Typer(help="project extensions (extensions/*.py, listed in project.yaml)")
+boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(extension_app, name="extension")
+app.add_typer(boundary_app, name="boundary")
 
 
 def _layout() -> Layout:
@@ -307,6 +309,15 @@ def gate_ack(gate_id: str, note: str = "", actor: str = "owner"):
     except gates_mod.GateError as exc:
         raise typer.BadParameter(str(exc))
     typer.echo(f"{gate_id}: acknowledged by {actor}")
+
+
+@boundary_app.command("check")
+def boundary_check(root: str = typer.Option("", help="framework checkout (default: the one running)"),
+                   as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
+    """G1: no project or extension import, no project-specific literal, no vendor name outside the listed files in
+    supervisor/ (docs/BOUNDARY.md). Exit 0 clean, 1 violations, 2 when it cannot run. Needs no project."""
+    from . import boundary
+    raise typer.Exit(boundary.run(Path(root) if root else None, as_json=as_json, echo=typer.echo))
 
 
 @extension_app.command("list")

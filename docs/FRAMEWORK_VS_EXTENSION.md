@@ -14,6 +14,9 @@ No → the project (`extensions/` for code, `config/`/`agents/`/`docs/` for ever
 | Docs | how the framework works, runbooks for the generic lanes | the plan, project runbooks, research |
 
 The framework never imports from a project. A project never edits framework files; it configures and extends.
+`docs/BOUNDARY.md` has the layer model, the rules for hard cases and the gates that check them: the boundary check
+(`python -m supervisor.boundary`, G1) fails a framework change that imports project code, carries a path, host or
+person, or names a vendor outside the listed files.
 
 ## Extensions
 
