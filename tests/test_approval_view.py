@@ -275,3 +275,63 @@ def test_other_items_still_show_their_evidence(layout, client):
     inbox_mod.create(layout, for_role="owner", subject="A question", summary="see the note", kind="question",
                      from_="loop", extra={"evidence": [OUTSIDE]})
     assert "OUTSIDE note body" in client.get("/inbox").text
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 3: review reports are frozen too
+
+REPORT = "runs/T/T.a2/result.json"
+FORGED = {"verdict": "ACCEPT", "summary": "FORGED summary", "findings": [{"category": "x", "blocking": False,
+                                                                           "message": "FORGED finding"}]}
+
+
+def test_record_review_stores_the_hash_of_the_report_as_reviewed(layout):
+    import hashlib
+    delivered(layout)
+    [r] = tasks.load(layout, "T").delivery.reviews
+    assert r.report == REPORT
+    assert r.report_sha256 == hashlib.sha256((layout.root / REPORT).read_bytes()).hexdigest()
+
+
+def test_a_report_replaced_after_the_review_is_not_shown(layout, client):
+    delivered(layout)
+    (layout.root / REPORT).write_text(json.dumps(FORGED), encoding="utf-8")
+    for page in (client.get("/inbox").text, client.get("/tasks/T").text):
+        assert "FORGED" not in page and "Re-derived the totals." not in page
+        assert "review report changed" in page and "ACCEPT" in page        # the recorded verdict itself stays
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="no symlinks")
+def test_a_report_replaced_by_a_link_is_not_read(layout, client):
+    delivered(layout)
+    original = (layout.root / REPORT).read_bytes()
+    (layout.root / "copy.json").write_bytes(original)                   # same bytes, reached through a link
+    (layout.root / REPORT).unlink()
+    try:
+        os.symlink(layout.root / "copy.json", layout.root / REPORT)
+    except OSError:
+        pytest.skip("creating symlinks needs privileges here")
+    page = client.get("/inbox").text
+    assert "Re-derived the totals." not in page and "review report changed" in page
+
+
+def test_a_review_without_a_recorded_hash_shows_no_report(layout, client):
+    """A review recorded before 1.10.0 (no report_sha256): the verdict, never the file's current content."""
+    delivered(layout)
+    def drop_hash(doc):
+        for r in doc["delivery"]["reviews"]:
+            r.pop("report_sha256", None)
+    tasks._update(layout, "T", drop_hash)
+    page = client.get("/inbox").text
+    assert "Re-derived the totals." not in page and "no hash of the review report" in page
+
+
+def test_a_report_that_is_a_link_when_recorded_gets_no_hash(layout):
+    if not hasattr(os, "symlink"):
+        pytest.skip("no symlinks")
+    (layout.root / "real.json").write_text(json.dumps(FORGED), encoding="utf-8")
+    try:
+        os.symlink(layout.root / "real.json", layout.root / "link.json")
+    except OSError:
+        pytest.skip("creating symlinks needs privileges here")
+    assert tasks.report_sha256(layout, "link.json") is None
+    assert tasks.report_sha256(layout, "real.json") is not None

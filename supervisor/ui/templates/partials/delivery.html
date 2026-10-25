@@ -12,6 +12,8 @@
   {% for r in dv.reviews %}
   <details class="inbox-detail" open>
     <summary>Review by {{ r.role | replace('_', ' ') }}: <strong>{{ r.verdict }}</strong>{% if r.findings %} &middot; {{ r.findings | length }} finding{{ '' if r.findings | length == 1 else 's' }}{% endif %}</summary>
+    {% if r.report_state == 'changed' %}<p class="flash flash-error">The review report changed (or was replaced by a link) after this review was recorded; its summary and findings are not shown.</p>
+    {% elif r.report_state == 'unverified' %}<p class="muted">Summary and findings not shown: no hash of the review report was recorded with this review.</p>{% endif %}
     {% if r.summary %}<p class="evidence-text">{{ r.summary }}</p>{% endif %}
     {% if r.findings %}<ul class="plain-items">{% for f in r.findings %}<li><strong>{{ f.category or 'finding' }}{{ ', blocking' if f.blocking else '' }}:</strong> {{ f.message }}</li>{% endfor %}</ul>{% endif %}
   </details>

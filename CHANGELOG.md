@@ -11,17 +11,18 @@ public extension API and gate G2 move to 1.11.0 and extension packages (G5) to 1
 framework skills). No extension hook added or changed; extensions need no change (the `Adapter` base class gains
 two optional methods with defaults, below).
 
-**Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one:
-a job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a
-reroute; log lines written by a command gain `command`; `routing.yaml` gains the optional
-`claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json` exists only after a credit refusal.
+**Migration:** none; `supervisor migrate` only records the new version. No state or config shape change needs one: a
+job record gains the optional `progress_stage`, `deferred_lane`, and `rerouted_to` / `rerouted_from` on a reroute; a
+task's review record gains the optional `report_sha256`; log lines written by a command gain `command`;
+`routing.yaml` gains the optional `claude_api.exhausted_recheck_hours`; `state/runtime/claude_api_credit.json`
+exists only after a credit refusal.
 
-**Rollback** to v1.9.0, in a maintenance window: (1) with 1.10.0 still checked out, drain (`supervisor drain`)
-until no job is running — every iteration 1.10.0 re-queues a reroute a crash interrupted, which v1.9.0 cannot do;
-(2) `supervisor doctor` must show `jobs` OK (no task's newest record is an un-requeued `REROUTED`); (3) stop, check
-out `v1.9.0`, `supervisor migrate` (records `framework_version` 1.9.0 again), `supervisor doctor`, start. What
-1.10.0 wrote stays readable by 1.9.0: the extra job-record fields are ignored, a closed `REROUTED` record is a
-finished attempt, a successor it queued is an ordinary PREPARED record, and a record waiting on a spent lane
+**Rollback** to v1.9.0, in a maintenance window: (1) with 1.10.0 still checked out, drain (`supervisor drain`) until
+no job is running — every iteration 1.10.0 re-queues a reroute a crash interrupted, which v1.9.0 cannot do; (2)
+`supervisor doctor` must show `jobs` OK (no task's newest record is an un-requeued `REROUTED`); (3) stop, check out
+`v1.9.0`, `supervisor migrate` (records `framework_version` 1.9.0 again), `supervisor doctor`, start. What 1.10.0
+wrote stays readable by 1.9.0: the extra job-record and review-record fields are ignored, a closed `REROUTED` record
+is a finished attempt, a successor it queued is an ordinary PREPARED record, and a record waiting on a spent lane
 waits for its time. Or restore the snapshot taken before the upgrade.
 
 - **An approval shows what it approves.** A delivery approval in the inbox used to show a one-paragraph summary and
@@ -33,9 +34,11 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   task's current one says so and shows no files. What is shown is what was frozen: the delivered paths must still hash
   to the digest and each file's bytes are checked against their manifest entry before they are shown, thumbnailed or
   served (`/tasks/<id>/files/<n>?digest=`); otherwise the card says the files changed and shows none. An approval's
-  own `evidence` list never reads files: references outside the delivery are listed by name only. The task page's
-  artifact list is replaced by the same view
-  (`supervisor/ui/delivery.py`, `partials/delivery.html`).
+  own `evidence` list never reads files: references outside the delivery are listed by name only. A review's summary
+  and findings come from its report only while that file still hashes to the `report_sha256` now recorded with each
+  review (`tasks.record_review`); a changed or linked report, or a review recorded before 1.10.0, shows the verdict
+  with a note instead. The verification shown is the recorded outcome and detail. The task page's artifact list is
+  replaced by the same view (`supervisor/ui/delivery.py`, `partials/delivery.html`).
 - **Decision records are frozen in the delivery digest.** Every declared artifact under `state/` was dropped as a
   store file, including `state/decisions/*.md`, so a task whose acceptance is "decision recorded" was reviewed and
   approved without its decision record in the digest. `state/decisions/` is now authored state

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -524,14 +525,39 @@ def record_verification(layout: Layout, task_id: str, digest: str, ok: bool, rep
     return t
 
 
+MAX_REPORT_BYTES = 4 * 1024 * 1024
+
+
+def read_linkfree(layout: Layout, rel: str, limit: int) -> bytes | None:
+    """Up to `limit` bytes of the project file `rel`, or None when it is missing, larger, outside the root or reached
+    through a link (checked before it is opened). One read: a caller that hashes the result hashes what it uses."""
+    from ._vendor.contract import contained, resolve as resolve_linkfree
+    try:
+        path = resolve_linkfree(layout.root / str(rel))
+        if not contained(path, [layout.root], root=layout.root) or not path.is_file():
+            return None
+        with path.open("rb") as stream:
+            data = stream.read(limit + 1)
+    except (OSError, ValueError):
+        return None
+    return data if len(data) <= limit else None
+
+
+def report_sha256(layout: Layout, rel: str | None) -> str | None:
+    data = read_linkfree(layout, rel, MAX_REPORT_BYTES) if rel else None
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
                   report: str | None = None, actor: str = "review") -> Task:
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
+    sha = report_sha256(layout, report)             # the report as reviewed, so a later edit cannot speak for the reviewer
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")
         d.setdefault("reviews", []).append(ReviewRecord(digest=digest, role=role, verdict=verdict_e, at=store.now_iso(),
-                                                        vendor=vendor, report=report).model_dump(mode="json"))
+                                                        vendor=vendor, report=report,
+                                                        report_sha256=sha).model_dump(mode="json"))
     t = _update(layout, task_id, fn)
     log(layout, "review", actor, task=task_id, role=role, verdict=verdict_e.value, digest=digest)
     return t

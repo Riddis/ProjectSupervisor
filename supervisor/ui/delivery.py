@@ -7,7 +7,8 @@ bound to the delivery it was shown for.
 What is shown is what was frozen: the delivered paths are hashed again (`frozen()`) and must still produce the
 digest, and every file's bytes are read once, hashed and used only when they match their manifest entry
 (`read_frozen()`), so a file edited after the delivery was recorded is never displayed under its verification and
-reviews."""
+reviews. A review's summary and findings come from its report file only while that still hashes to the
+`report_sha256` recorded with the review (tasks.record_review): a replaced report never speaks for the reviewer."""
 from __future__ import annotations
 
 import fnmatch
@@ -16,7 +17,8 @@ import html
 import json
 from pathlib import Path
 
-from .._vendor.contract import contained, digest as digest_of, manifest, resolve as resolve_linkfree
+from .. import tasks as tasks_mod
+from .._vendor.contract import digest as digest_of, manifest
 from ..models.task import Task
 from ..paths import Layout
 from . import thumbs
@@ -27,18 +29,6 @@ TEXT_LIMIT = 200_000          # a whole decision record or config file; beyond t
 MAX_THUMBS = 24               # a delivery of hundreds of images shows the first ones as thumbnails, the rest as links
 REVIEW_TEXT_LIMIT = 4000
 MAX_FILE_BYTES = 64 * 1024 * 1024   # a larger delivered file is listed, not read into memory to be verified and served
-
-
-def resolve(layout: Layout, rel: str):
-    """The delivered file `rel` (a path the task record holds) on disk, or None when it is gone or escapes the
-    project root."""
-    try:
-        path = (layout.root / str(rel)).resolve()
-    except (OSError, ValueError):
-        return None
-    if not contained(path, [layout.root], root=layout.root) or not path.is_file():
-        return None
-    return path
 
 
 def frozen(layout: Layout, task: Task, digest: str) -> dict | None:
@@ -60,15 +50,13 @@ def read_frozen(layout: Layout, rel: str, entries: dict) -> bytes | None:
     entry = entries.get(Path(str(rel)).as_posix())
     if not isinstance(entry, dict) or entry.get("kind") != "file" or int(entry.get("size") or 0) > MAX_FILE_BYTES:
         return None
-    try:
-        path = resolve_linkfree(layout.root / str(rel))
-        if not contained(path, [layout.root], root=layout.root):
-            return None
-        with path.open("rb") as stream:
-            data = stream.read(MAX_FILE_BYTES + 1)
-    except (OSError, ValueError):
-        return None
-    return data if hashlib.sha256(data).hexdigest() == entry.get("sha256") else None
+    return read_verified(layout, rel, entry.get("sha256"), MAX_FILE_BYTES)
+
+
+def read_verified(layout: Layout, rel: str, sha256: str | None, limit: int) -> bytes | None:
+    """The bytes of `rel`, read once through a link-free path (tasks.read_linkfree), only when they hash to `sha256`."""
+    data = tasks_mod.read_linkfree(layout, rel, limit) if sha256 else None
+    return data if data is not None and hashlib.sha256(data).hexdigest() == sha256 else None
 
 
 def file_view(layout: Layout, task_id: str, index: int, rel: str, entries: dict, digest: str,
@@ -96,14 +84,21 @@ def uncovered(task: Task) -> list[str]:
             if not any(p == a or fnmatch.fnmatchcase(p, a) for p in paths)]
 
 
-def _review_report(layout: Layout, ref: str | None) -> dict:
-    path = resolve(layout, ref) if ref else None
-    if path is None:
+def _review_report(layout: Layout, ref: str | None, sha256: str | None) -> dict:
+    """The reviewer's summary and findings, from the report file exactly as it was when the review was recorded
+    (`ReviewRecord.report_sha256`). `report_state` says why they are missing: `unverified` (no hash was recorded,
+    e.g. a review recorded before 1.10.0) or `changed` (the file no longer hashes to it, is gone, or is a link)."""
+    if not ref:
         return {}
+    if not sha256:
+        return {"report_state": "unverified"}
+    data = read_verified(layout, ref, sha256, tasks_mod.MAX_REPORT_BYTES)
+    if data is None:
+        return {"report_state": "changed"}
     try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return {"report_state": "changed"}
     if not isinstance(doc, dict):
         return {}
     findings = [{"category": str(f.get("category") or ""), "blocking": bool(f.get("blocking")),
@@ -139,5 +134,5 @@ def view(layout: Layout, task: Task, digest: str | None = None) -> dict:
         out["verification"] = {"ok": d.verification.ok, "detail": d.verification.detail}
     for r in d.reviews:
         if r.digest == digest and not r.superseded:
-            out["reviews"].append({"role": r.role, "verdict": r.verdict.value, **_review_report(layout, r.report)})
+            out["reviews"].append({"role": r.role, "verdict": r.verdict.value, **_review_report(layout, r.report, r.report_sha256)})
     return out
