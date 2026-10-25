@@ -476,6 +476,22 @@ def test_local_gpu_migration_applies_each_span_once_in_file_order(fresh):
     assert migrations.run(layout) == []
 
 
+def test_local_gpu_migration_keeps_anchor_names_and_tags(fresh):
+    """Review of 1.8.4, third round (P2): a scalar's span starts at its anchor and tag, so `&local_gpu local_gpu`
+    lost its anchor name (and `*local_gpu` then pointed at nothing)."""
+    layout = Layout(fresh)
+    seed = layout.root / "state" / "tasks_seed.yaml"
+    seed.write_bytes(b"tasks:\n- id: A\n  cost_category: &local_gpu local_gpu\n- id: B\n  cost_category: *local_gpu\n"
+                     b"- id: C\n  cost_category: &x_local_gpu !!str 'local_gpu'  # tagged\n")
+    migrations.run(layout)
+    assert seed.read_bytes() == (b"tasks:\n- id: A\n  cost_category: &local_gpu local\n"
+                                 b"- id: B\n  cost_category: *local_gpu\n"
+                                 b"- id: C\n  cost_category: &x_local_gpu !!str 'local'  # tagged\n")
+    doc = yaml.safe_load(seed.read_text(encoding="utf-8"))
+    assert [t["cost_category"] for t in doc["tasks"]] == ["local", "local", "local"]
+    assert migrations.run(layout) == []
+
+
 def test_project_write_keeps_a_crlf_project_yaml_crlf(fresh):
     layout = Layout(fresh)
     layout.project_file.write_bytes(layout.project_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))

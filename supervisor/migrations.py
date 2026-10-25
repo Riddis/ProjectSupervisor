@@ -69,7 +69,10 @@ def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
         # twice, and the root mapping's fields are listed before the seed's tasks wherever they stand in the file. A
         # span applied twice, or an earlier one before a later one, would rewrite text the shift has moved.
         for start, end in sorted(set(_task_field_values(text, "cost_category", "local_gpu")), reverse=True):
-            new = new[:start] + new[start:end].replace("local_gpu", "local") + new[end:]
+            # A node's span starts at its anchor or tag (`&local_gpu !!str local_gpu`); the value is its last token,
+            # so only the last occurrence is replaced and anchor names (and the aliases naming them) stay intact.
+            at = new.rfind("local_gpu", start, end)
+            new = new[:at] + "local" + new[at + len("local_gpu"):]
         if new == text:
             continue
         if not dry_run:
