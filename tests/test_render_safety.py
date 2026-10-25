@@ -232,3 +232,89 @@ def setup(registry):
     assert sum(1 for p in out if p.name == "STATE.md") == 2
     log = store.log.read_text(encoding="utf-8") if store.log.exists() else ""
     assert '"projection_error"' not in log
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 6: however the CLI is invoked
+
+CLI_EXT = """
+import typer
+cli = typer.Typer()
+
+@cli.command("hello")
+def hello():
+    typer.echo("hello from the extension")
+
+def setup(registry):
+    def extra(layout):
+        p = layout.root / "EXTRA.md"
+        p.write_text("# extra", encoding="utf-8")
+        return p
+    registry.projection(extra, path="EXTRA.md")
+    registry.cli(cli, "echo")
+"""
+
+
+@pytest.fixture
+def cli_store(store, monkeypatch):
+    from supervisor import cli
+    _with_extension(store, CLI_EXT)
+    monkeypatch.setattr(cli, "_extensions_cli", None, raising=False)   # a fresh process: nothing built yet
+    store.runtime.mkdir(parents=True, exist_ok=True)
+    (store.runtime / "supervisor.json").write_text(json.dumps({"status": "RUNNING", "pid": 4242}), encoding="utf-8")
+    return store
+
+
+@pytest.mark.parametrize("how", ["app_call", "cli_runner"])
+def test_status_sets_up_no_extension_however_the_cli_is_invoked(cli_store, capsys, how):
+    """Review 1.10.0 round 6: importing the CLI and calling `app(args=["status"])` (or a test runner) used to load
+    the extensions at import and write their projection record while state/.lock was held."""
+    from supervisor import cli, extensions
+    lock = FileLock(cli_store.lock, owner="loop").acquire()
+    try:
+        before = _tree(cli_store.root)
+        if how == "app_call":
+            with pytest.raises(SystemExit) as exit_:
+                cli.app(args=["status"])
+            assert exit_.value.code in (0, None)
+            output = capsys.readouterr().out
+        else:
+            result = CliRunner().invoke(cli.app, ["status"])
+            assert result.exit_code == 0, result.output
+            output = result.output
+        after = _tree(cli_store.root)
+    finally:
+        lock.release()
+    assert "**Supervisor:** RUNNING (pid 4242" in output
+    assert after == before
+    assert str(cli_store.root) not in extensions._registries and cli._extensions_cli is None
+
+
+def test_an_extension_command_group_is_found_when_asked_for(cli_store):
+    from supervisor import cli
+    result = CliRunner().invoke(cli.app, ["echo", "hello"])
+    assert result.exit_code == 0, result.output
+    assert "hello from the extension" in result.output
+    assert "echo" in CliRunner().invoke(cli.app, ["--help"]).output
+
+
+def test_importing_the_cli_and_calling_app_status_in_a_fresh_process_changes_nothing(cli_store):
+    """The reviewer's probe: a new process imports the CLI (which used to discover extensions at import, keyed on
+    sys.argv) and calls `app(args=["status"])` with state/.lock held."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    lock = FileLock(cli_store.lock, owner="loop").acquire()
+    try:
+        before = _tree(cli_store.root)
+        env = {**os.environ, "SUPERVISOR_ROOT": str(cli_store.root), "PYTHONDONTWRITEBYTECODE": "1",
+               "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+        out = subprocess.run([sys.executable, "-c", "from supervisor.cli import app; app(args=['status'])"],
+                             cwd=str(cli_store.root), env=env, capture_output=True, text=True, timeout=120)
+        after = _tree(cli_store.root)
+    finally:
+        lock.release()
+    assert out.returncode == 0, out.stderr
+    assert "**Supervisor:** RUNNING (pid 4242" in out.stdout
+    assert sorted(after) == sorted(before), set(after) ^ set(before)
+    assert [k for k in before if before[k] != after[k]] == []
