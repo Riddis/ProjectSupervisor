@@ -35,13 +35,16 @@ def _routing_limits_rename(layout: Layout, dry_run: bool) -> list[str]:
     return ["config/routing.yaml: limits.max_gpu_jobs renamed to max_resource_jobs"]
 
 
-def _task_field_values(text: str, field: str, value: str) -> list[tuple[int, int]]:
-    """Character spans of every task-level `field: value` in a task file (its top-level mapping) or a seed (each item
-    of its top-level `tasks` list), located through the YAML node tree. Anything else that merely looks like the
-    field — a line inside a block-scalar note, a quoted example, a comment — is not a task's field and is not
-    returned. An unparsable file yields nothing (the doctor reports it)."""
+def _task_field_tokens(text: str, field: str, value: str) -> list[tuple[int, int, str | None]]:
+    """(start, end, quote style) of the scalar token of every task-level `field: value` in a task file (its top-level
+    mapping) or a seed (each item of its top-level `tasks` list), located through the YAML node tree. Anything else
+    that merely looks like the field — a line inside a block-scalar note, a quoted example, a comment — is not a
+    task's field and is not returned. The span is the scalar token alone, as written (quotes, escapes, folded lines),
+    never the anchor or tag in front of it, and a value shared through an alias appears once. An unparsable file
+    yields nothing (the doctor reports it)."""
     try:
         root = yaml.compose(text)
+        tokens = {t.end_mark.index: t for t in yaml.scan(text) if isinstance(t, yaml.ScalarToken)}
     except yaml.YAMLError:
         return []
     if not isinstance(root, yaml.MappingNode):
@@ -50,29 +53,35 @@ def _task_field_values(text: str, field: str, value: str) -> list[tuple[int, int
     for key, node in root.value:
         if isinstance(key, yaml.ScalarNode) and key.value == "tasks" and isinstance(node, yaml.SequenceNode):
             mappings += [item for item in node.value if isinstance(item, yaml.MappingNode)]
-    return [(node.start_mark.index, node.end_mark.index) for mapping in mappings for key, node in mapping.value
-            if isinstance(key, yaml.ScalarNode) and key.value == field
-            and isinstance(node, yaml.ScalarNode) and node.value == value]
+    found = set()
+    for mapping in mappings:
+        for key, node in mapping.value:
+            if (isinstance(key, yaml.ScalarNode) and key.value == field
+                    and isinstance(node, yaml.ScalarNode) and node.value == value):
+                token = tokens.get(node.end_mark.index)          # a scalar node ends where its token ends
+                if token is not None:
+                    found.add((token.start_mark.index, token.end_mark.index, token.style))
+    return sorted(found)
 
 
 def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
-    """cost_category local_gpu → local (1.0.0). Only a task's own field is rewritten (in place, keeping its quoting
-    and any trailing comment), so a file that mentions local_gpu in a note, an example or a comment is neither
-    changed nor reported, and a second run reports nothing."""
+    """cost_category local_gpu → local (1.0.0). Only a task's own field is rewritten, in place: the value's token is
+    replaced in its own quoting style, its anchor, tag and trailing comment kept, so a file that mentions local_gpu
+    in a note, an example or a comment is neither changed nor reported, and a second run reports nothing."""
     notes = []
     for p in sorted(layout.tasks.glob("*.yaml")) + [layout.root / "state" / "tasks_seed.yaml"]:
         if not p.exists():
             continue
         text = p.read_text(encoding="utf-8")
         new = text
-        # Each span once, last first: a YAML alias (`*gpu`) shares its anchor's node, so the same span can come back
-        # twice, and the root mapping's fields are listed before the seed's tasks wherever they stand in the file. A
-        # span applied twice, or an earlier one before a later one, would rewrite text the shift has moved.
-        for start, end in sorted(set(_task_field_values(text, "cost_category", "local_gpu")), reverse=True):
-            # A node's span starts at its anchor or tag (`&local_gpu !!str local_gpu`); the value is its last token,
-            # so only the last occurrence is replaced and anchor names (and the aliases naming them) stay intact.
-            at = new.rfind("local_gpu", start, end)
-            new = new[:at] + "local" + new[at + len("local_gpu"):]
+        # Last token first, so each replacement leaves the positions of the ones still to come unchanged.
+        for start, end, style in reversed(_task_field_tokens(text, "cost_category", "local_gpu")):
+            raw = new[start:end]
+            if style in ("'", '"'):
+                replacement = f"{style}local{style}"
+            else:                       # plain, or a block scalar (`|-`), whose token also holds the line breaks after
+                replacement = "local" + raw[len(raw.rstrip("\n")):]     # it: written as plain `local`, breaks kept
+            new = new[:start] + replacement + new[end:]
         if new == text:
             continue
         if not dry_run:

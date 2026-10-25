@@ -23,8 +23,9 @@ No state or config shape change; `supervisor migrate` only records the new versi
   migration reported (and rewrote) any file that mentioned `local_gpu` anywhere, so a second `migrate` reported the
   same files again; it now rewrites only a task's own `cost_category` field, found through the YAML node tree, so
   an example of the old value inside a note or a quoted string stays as written. Each field is rewritten once, in file order
-  (a YAML alias shares its anchor's span), and only the value token: an anchor or tag before it
-  (`&local_gpu !!str local_gpu`) keeps its name. Every migration write, and `project.write()`,
+  (a YAML alias shares its anchor's span), and only the value's own scalar token (from the YAML scanner),
+  replaced in its quoting style: an anchor or tag before it keeps its name, and an escaped or folded spelling of the
+  value is rewritten whole. Every migration write, and `project.write()`,
   goes through `store.rewrite_text()`, which writes only when the content changes and keeps the file's LF or CRLF
   style (`Path.write_text` turned LF files into CRLF on Windows).
 - Tests: `test_capacity_poll.py`; the owner decision-item tests the Studio carried (REQUEUE salvage, DEFER, CANCEL on

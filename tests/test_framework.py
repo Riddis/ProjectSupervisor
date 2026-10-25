@@ -492,6 +492,24 @@ def test_local_gpu_migration_keeps_anchor_names_and_tags(fresh):
     assert migrations.run(layout) == []
 
 
+def test_local_gpu_migration_replaces_the_scalar_token_as_written(fresh):
+    """Review of 1.8.4, fourth round (P2): searching the span for the decoded value renamed an anchor when the token
+    spelled the value with an escape, and corrupted the file when the text never contained it (a folded line). The
+    scalar token itself is replaced, in its own style; a block scalar keeps the line breaks after it."""
+    layout = Layout(fresh)
+    seed = layout.root / "state" / "tasks_seed.yaml"
+    seed.write_bytes(b'tasks:\n- id: A\n  cost_category: &local_gpu "local\\x5Fgpu"\n'
+                     b'- id: B\n  cost_category: "local_\\\n    gpu"  # folded\n'
+                     b"- id: C\n  cost_category: |-\n    local_gpu\n- id: D\n  cost_category: *local_gpu\n")
+    migrations.run(layout)
+    assert seed.read_bytes() == (b'tasks:\n- id: A\n  cost_category: &local_gpu "local"\n'
+                                 b'- id: B\n  cost_category: "local"  # folded\n'
+                                 b"- id: C\n  cost_category: local\n- id: D\n  cost_category: *local_gpu\n")
+    doc = yaml.safe_load(seed.read_text(encoding="utf-8"))
+    assert [t["cost_category"] for t in doc["tasks"]] == ["local"] * 4
+    assert migrations.run(layout) == []
+
+
 def test_project_write_keeps_a_crlf_project_yaml_crlf(fresh):
     layout = Layout(fresh)
     layout.project_file.write_bytes(layout.project_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
