@@ -5,6 +5,15 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
+- **Fixed: `supervisor migrate` no longer rewrites the approvals the framework opens.** The 1.1.1 migration
+  (`migrations._approval_responses`) mapped `APPROVE` → `ACCEPT` in every inbox item's `allowed_responses`, but
+  `APPROVE` is the current spelling there: the loop writes `inbox.APPROVAL_RESPONSES` (`APPROVE`, `REJECT`, `MODIFY`)
+  into every approval item it opens. So every `supervisor migrate` rewrote, and re-dumped, each approval item opened
+  since the last run, answered ones included. The migration now maps only the pre-1.0.0 `MORE_LIKE` and `REGENERATE`
+  there; `APPROVE` → `ACCEPT` in a recorded approval response (`ApprovalResponse` has no `APPROVE`) is unchanged.
+  Items an earlier run already rewrote are left as they are: their buttons read `ACCEPT`, which answers an approval
+  the same way (`inbox.APPROVAL_ALIASES`), and answered items are history. No state or config shape change.
+
 - **Tests: the diagnosis launch test no longer races its fake agent.**
   `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in
   flight right after launch, but the fake manager could answer, and the same loop iteration ingest its diagnosis,

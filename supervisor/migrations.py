@@ -15,6 +15,10 @@ Migration = Callable[[Layout, bool], list[str]]
 # REGENERATE both asked for another attempt at the same deliverable, which is what REDO means now; APPROVE was the
 # inbox spelling of ACCEPT (still accepted as an alias when answering, see inbox.APPROVAL_ALIASES).
 LEGACY_RESPONSES = {"MORE_LIKE": "REDO", "REGENERATE": "REDO", "APPROVE": "ACCEPT"}
+# An inbox item's allowed_responses are what the owner may answer, not a recorded verdict. APPROVE is the current
+# spelling there: every approval item the framework opens offers it (inbox.APPROVAL_RESPONSES) and answering maps it
+# to ACCEPT. Only the responses no version since 1.0.0 offers are legacy in that list.
+LEGACY_ALLOWED_RESPONSES = {"MORE_LIKE": "REDO", "REGENERATE": "REDO"}
 
 
 class MigrationError(RuntimeError):
@@ -91,8 +95,9 @@ def _tasks_cost_category(layout: Layout, dry_run: bool) -> list[str]:
 
 
 def _approval_responses(layout: Layout, dry_run: bool) -> list[str]:
-    """Task approvals (and inbox allowed_responses) with a legacy response → the current enum (1.1.1):
-    MORE_LIKE/REGENERATE → REDO, APPROVE → ACCEPT. A task holding an old value fails validation and cannot load."""
+    """Task approvals with a legacy response → the current enum (1.1.1): MORE_LIKE/REGENERATE → REDO, APPROVE →
+    ACCEPT. A task holding an old value fails validation and cannot load. An inbox item's allowed_responses map only
+    MORE_LIKE/REGENERATE → REDO; APPROVE stays, since the framework writes it into every approval item (1.10.1)."""
     notes = []
     for p in sorted(layout.tasks.glob("*.yaml")) + sorted(layout.inbox.glob("*.yaml")):
         try:
@@ -107,10 +112,10 @@ def _approval_responses(layout: Layout, dry_run: bool) -> list[str]:
                 a["response"] = LEGACY_RESPONSES[old]
                 changed.append(f"{old} → {LEGACY_RESPONSES[old]}")
         allowed = doc.get("allowed_responses")
-        if isinstance(allowed, list) and any(str(x) in LEGACY_RESPONSES for x in allowed):
+        if isinstance(allowed, list) and any(str(x) in LEGACY_ALLOWED_RESPONSES for x in allowed):
             new = []
             for x in allowed:
-                mapped = LEGACY_RESPONSES.get(str(x), x)
+                mapped = LEGACY_ALLOWED_RESPONSES.get(str(x), x)
                 if mapped not in new:
                     new.append(mapped)
             doc["allowed_responses"] = new

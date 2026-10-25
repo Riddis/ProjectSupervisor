@@ -299,6 +299,8 @@ def test_legacy_approval_responses_are_migrated(fresh):
     p.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     (layout.inbox / "H-01.yaml").write_text(yaml.safe_dump({"id": "H-01", "status": "open", "for": "owner",
                                                             "allowed_responses": ["ACCEPT", "MORE_LIKE", "REGENERATE"]}), encoding="utf-8")
+    (layout.inbox / "H-02.yaml").write_text(yaml.safe_dump({"id": "H-02", "status": "open", "for": "owner",
+                                                            "allowed_responses": ["APPROVE", "REJECT", "MORE_LIKE"]}), encoding="utf-8")
     with pytest.raises(tasks_mod.TaskError):
         tasks_mod.load(layout, "T-01")
     notes = migrations.run(layout, dry_run=True)
@@ -308,7 +310,29 @@ def test_legacy_approval_responses_are_migrated(fresh):
     t = tasks_mod.load(layout, "T-01")
     assert [a.response.value for a in t.delivery.approvals] == ["REDO", "ACCEPT"]
     assert yaml.safe_load((layout.inbox / "H-01.yaml").read_text(encoding="utf-8"))["allowed_responses"] == ["ACCEPT", "REDO"]
+    assert yaml.safe_load((layout.inbox / "H-02.yaml").read_text(encoding="utf-8"))["allowed_responses"] == [
+        "APPROVE", "REJECT", "REDO"]                     # APPROVE is a current allowed response, not a legacy one
     assert migrations.run(layout) == []
+
+
+def test_migrate_leaves_the_approvals_the_framework_opens_unchanged(fresh):
+    """APPROVE is the current spelling of an approval item's allowed response (inbox.APPROVAL_RESPONSES), not a
+    legacy one: an approval opened by this framework, open or answered, survives two migrate runs byte for byte."""
+    from supervisor import inbox as inbox_mod
+    layout = Layout(fresh)
+    make_task(layout, "T-01", status="WAITING_FOR_HUMAN", human="required")
+    opened = [inbox_mod.create(layout, for_role="owner", subject=f"Approve delivery: T-01 ({d})", summary="s",
+                               kind=inbox_mod.APPROVAL_KIND, allowed_responses=inbox_mod.APPROVAL_RESPONSES,
+                               free_text=True, from_="loop", task_id="T-01", approval_digest=d)
+              for d in ("d1", "d2")]
+    inbox_mod.answer(layout, opened[0]["id"], "APPROVE", by="owner")
+    files = sorted(layout.inbox.glob("*.yaml"))
+    before = {p.name: p.read_bytes() for p in files}
+    assert [yaml.safe_load(b)["allowed_responses"] for b in before.values()] == [["APPROVE", "REJECT", "MODIFY"]] * 2
+    for dry_run in (True, False, False):
+        notes = migrations.run(layout, dry_run=dry_run)
+        assert not [n for n in notes if "inbox" in n], notes
+        assert {p.name: p.read_bytes() for p in files} == before
 
 
 def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
