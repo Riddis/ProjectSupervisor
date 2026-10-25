@@ -503,27 +503,26 @@ def main():
     app()
 
 
-if __name__ == "__main__":
-    main()
-
-
-_extensions_cli = None
+_extensions_cli: dict[str, tuple[object, TyperGroup]] = {}    # project root -> (its registry, its command groups)
 
 
 def _extension_group():
-    """The project's extension command groups as one click group, built on first use (see _Commands) and kept for the
-    process. Each is mounted exactly as `app.add_typer(ext_app, name=name)` would mount it."""
-    global _extensions_cli
-    if _extensions_cli is not None:
-        return _extensions_cli
-    holder = typer.Typer()
+    """The current project's extension command groups as one click group, built on first use (see _Commands). Kept
+    per project root and only while that root's extension registry is the one they were built from: another project
+    (SUPERVISOR_ROOT or the working directory changed) or a reloaded registry (extensions.reset) builds them again.
+    Each is mounted exactly as `app.add_typer(ext_app, name=name)` would mount it."""
     root = find_root()
+    key = str(Layout(root).root) if root is not None else ""
+    cached = _extensions_cli.get(key)
+    if cached is not None and (root is None or extensions_mod.loaded(root) is cached[0]):
+        return cached[1]
+    holder = typer.Typer()
+    reg = None
     if root is not None:
         try:
             reg = extensions_mod.load(Layout(root))
         except Exception as exc:                            # noqa: BLE001 - a broken extension must not break the CLI
             print(f"warning: extensions not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
-            reg = None
         for err in (reg.errors if reg else []):             # a failed extension's `supervisor <name>` group is absent: say so
             print(f"warning: extension not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
         for ext_app, name in (reg.cli_apps if reg else []):
@@ -532,8 +531,13 @@ def _extension_group():
             except Exception as exc:                        # noqa: BLE001
                 print(f"warning: command group {name!r} could not be attached: {exc}", file=sys.stderr)
     try:
-        _extensions_cli = typer.main.get_group(holder) if holder.registered_groups else TyperGroup(name=None)
+        group = typer.main.get_group(holder) if holder.registered_groups else TyperGroup(name=None)
     except Exception as exc:                                # noqa: BLE001
         print(f"warning: extension command groups could not be built: {exc}", file=sys.stderr)
-        _extensions_cli = TyperGroup(name=None)
-    return _extensions_cli
+        group = TyperGroup(name=None)
+    _extensions_cli[key] = (reg, group)
+    return group
+
+
+if __name__ == "__main__":                                  # last: everything main() can reach is defined above
+    main()

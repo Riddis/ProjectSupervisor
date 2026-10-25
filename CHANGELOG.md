@@ -65,9 +65,11 @@ waits for its time. Or restore the snapshot taken before the upgrade.
   as not running. It now prints the same lines (`render.state_lines`, with the live `state/runtime/supervisor.json`)
   and changes nothing in the project: it creates no directory and sets up no extension (setup is project code, and
   loading reconciles `state/runtime/projection_paths.json`), and extension command groups (`registry.cli`) are now
-  looked up only when a command name is not a built-in one, or for `--help`, however the CLI is invoked (a process,
-  `app(...)`, a test runner) — before, every import of the CLI set the extensions up. `supervisor render` still
-  re-renders the files.
+  looked up when a command name is not a built-in one, or when the whole command list is wanted (`supervisor --help`,
+  top-level shell completion), however the CLI is invoked (a process, `app(...)`, a test runner) — before, every
+  import of the CLI set the extensions up. Resolving a built-in command never sets an extension up; running one may (a
+  writing command loads the project's extensions, `status` does not). The groups are kept per project root and rebuilt
+  when that root's extension registry is reloaded. `supervisor render` still re-renders the files.
 - **Fixed: a slower render can no longer overwrite a fresher one.** Every projection — the six built-in views and each
   one an extension registers (`registry.projection`) — reads and writes under `state/.render.lock`
   (`render.render_lock`), so two renderers (the loop and an owner command, say) are ordered: the one that enters

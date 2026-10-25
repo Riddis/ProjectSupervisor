@@ -165,10 +165,11 @@ def test_a_cold_status_process_leaves_the_whole_project_unchanged(store):
     lock = FileLock(store.lock, owner="loop").acquire()
     try:
         before = _tree(store.root)
-        env = {**os.environ, "SUPERVISOR_ROOT": str(store.root), "PYTHONDONTWRITEBYTECODE": "1",
+        env = {**os.environ, "SUPERVISOR_ROOT": str(store.root), "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8",
                "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
         out = subprocess.run([sys.executable, "-m", "supervisor", "status"], cwd=str(store.root), env=env,
-                             capture_output=True, text=True, timeout=120)
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=120)
         after = _tree(store.root)
     finally:
         lock.release()
@@ -258,7 +259,7 @@ def setup(registry):
 def cli_store(store, monkeypatch):
     from supervisor import cli
     _with_extension(store, CLI_EXT)
-    monkeypatch.setattr(cli, "_extensions_cli", None, raising=False)   # a fresh process: nothing built yet
+    monkeypatch.setattr(cli, "_extensions_cli", {}, raising=False)     # a fresh process: nothing built yet
     store.runtime.mkdir(parents=True, exist_ok=True)
     (store.runtime / "supervisor.json").write_text(json.dumps({"status": "RUNNING", "pid": 4242}), encoding="utf-8")
     return store
@@ -286,7 +287,7 @@ def test_status_sets_up_no_extension_however_the_cli_is_invoked(cli_store, capsy
         lock.release()
     assert "**Supervisor:** RUNNING (pid 4242" in output
     assert after == before
-    assert str(cli_store.root) not in extensions._registries and cli._extensions_cli is None
+    assert extensions.loaded(cli_store.root) is None and not cli._extensions_cli
 
 
 def test_an_extension_command_group_is_found_when_asked_for(cli_store):
@@ -307,10 +308,11 @@ def test_importing_the_cli_and_calling_app_status_in_a_fresh_process_changes_not
     lock = FileLock(cli_store.lock, owner="loop").acquire()
     try:
         before = _tree(cli_store.root)
-        env = {**os.environ, "SUPERVISOR_ROOT": str(cli_store.root), "PYTHONDONTWRITEBYTECODE": "1",
+        env = {**os.environ, "SUPERVISOR_ROOT": str(cli_store.root), "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8",
                "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
         out = subprocess.run([sys.executable, "-c", "from supervisor.cli import app; app(args=['status'])"],
-                             cwd=str(cli_store.root), env=env, capture_output=True, text=True, timeout=120)
+                             cwd=str(cli_store.root), env=env, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=120)
         after = _tree(cli_store.root)
     finally:
         lock.release()
@@ -318,3 +320,73 @@ def test_importing_the_cli_and_calling_app_status_in_a_fresh_process_changes_not
     assert "**Supervisor:** RUNNING (pid 4242" in out.stdout
     assert sorted(after) == sorted(before), set(after) ^ set(before)
     assert [k for k in before if before[k] != after[k]] == []
+
+
+# ------------------------------------------------------------------ review 1.10.0 round 7
+
+def _cli_project(root, ext_name, command):
+    """A minimal project at `root` whose one extension registers the command group `command`."""
+    from supervisor import project
+    from supervisor.paths import Layout
+    layout = Layout(root).ensure()
+    (root / "extensions").mkdir(parents=True, exist_ok=True)
+    (root / "extensions" / f"{ext_name}.py").write_text(f"""
+import typer
+cli = typer.Typer()
+
+@cli.command("hello")
+def hello():
+    typer.echo("hello from {command}")
+
+def setup(registry):
+    registry.cli(cli, "{command}")
+""", encoding="utf-8")
+    project.write(layout, {"name": ext_name, "framework_version": "1.10.0", "extensions": [ext_name]})
+    return layout
+
+
+def test_switching_projects_switches_their_extension_commands(tmp_path, monkeypatch):
+    """Review 1.10.0 round 7: one process, two projects; the second must not keep the first one's command groups."""
+    from supervisor import cli, extensions
+    monkeypatch.setattr(cli, "_extensions_cli", {})
+    a = _cli_project(tmp_path / "a", "alpha_ext", "alpha")
+    b = _cli_project(tmp_path / "b", "beta_ext", "beta")
+    extensions.reset()
+    runner = CliRunner()
+    monkeypatch.setenv("SUPERVISOR_ROOT", str(a.root))
+    assert "hello from alpha" in runner.invoke(cli.app, ["alpha", "hello"]).output
+    monkeypatch.setenv("SUPERVISOR_ROOT", str(b.root))
+    assert runner.invoke(cli.app, ["alpha", "hello"]).exit_code != 0             # A's group is not B's
+    assert "hello from beta" in runner.invoke(cli.app, ["beta", "hello"]).output
+    help_b = runner.invoke(cli.app, ["--help"]).output
+    assert "beta" in help_b and "alpha" not in help_b
+
+
+def test_a_reloaded_registry_rebuilds_the_extension_commands(tmp_path, monkeypatch):
+    from supervisor import cli, extensions
+    monkeypatch.setattr(cli, "_extensions_cli", {})
+    a = _cli_project(tmp_path / "a", "alpha_ext", "alpha")
+    extensions.reset()
+    monkeypatch.setenv("SUPERVISOR_ROOT", str(a.root))
+    runner = CliRunner()
+    assert "hello from alpha" in runner.invoke(cli.app, ["alpha", "hello"]).output
+    (a.root / "extensions" / "alpha_ext.py").write_text(
+        (a.root / "extensions" / "alpha_ext.py").read_text(encoding="utf-8").replace('"alpha")', '"gamma")'),
+        encoding="utf-8")
+    extensions.reset()                                                          # the registry is reloaded
+    assert "hello from alpha" in runner.invoke(cli.app, ["gamma", "hello"]).output
+    assert runner.invoke(cli.app, ["alpha", "hello"]).exit_code != 0
+
+
+def test_running_the_cli_module_directly_shows_help(store):
+    """Review 1.10.0 round 7: `python -m supervisor.cli --help` ran main() before the extension lookup was defined."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    env = {**os.environ, "SUPERVISOR_ROOT": str(store.root), "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    out = subprocess.run([sys.executable, "-m", "supervisor.cli", "--help"], cwd=str(store.root), env=env,
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert "status" in out.stdout and "Traceback" not in out.stderr

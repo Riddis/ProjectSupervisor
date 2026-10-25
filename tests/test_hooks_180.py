@@ -338,7 +338,7 @@ def test_a_broken_extension_cli_group_is_reported_on_stderr(layout, capsys, monk
     _configure(layout.root, ["bad"], {"bad": "import nosuchmodule_xyz\n"})
     from supervisor import cli
     monkeypatch.setattr(cli, "find_root", lambda: layout.root)
-    monkeypatch.setattr(cli, "_extensions_cli", None)               # built on first use (1.10.0)
+    monkeypatch.setattr(cli, "_extensions_cli", {})                 # built on first use (1.10.0)
     cli._extension_group()
     err = capsys.readouterr().err
     assert "bad" in err and "missing from this CLI" in err

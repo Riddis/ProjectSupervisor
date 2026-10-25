@@ -482,6 +482,11 @@ def registry(layout: Layout) -> Registry:
     return load(layout)
 
 
+def loaded(root) -> Registry | None:
+    """The registry load() built for this project root in this process, if any — without loading anything."""
+    return _registries.get(str(Layout(root).root))
+
+
 def assert_loaded(layout: Layout) -> Registry:
     """The registry, or ExtensionError naming every required extension that did not load. Called before the loop
     dispatches and before any packet is cleared: a missing protection must stop work, not let it through."""
