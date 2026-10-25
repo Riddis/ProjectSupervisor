@@ -1,14 +1,22 @@
 """What the owner is asked to approve, shown in full: the files a delivery digest covers, the verification and the
 live reviews of that digest (verdict, summary, findings), and any declared artifact the digest does not cover.
 Shared by the inbox's approval cards and the task page. Every path comes from the task record, never from the
-browser; a file is opened through `/tasks/<id>/files/<n>`, an index into the task's own `paths`."""
+browser; a file is opened through `/tasks/<id>/files/<n>?digest=<digest>`, an index into the task's own `paths`
+bound to the delivery it was shown for.
+
+What is shown is what was frozen: the delivered paths are hashed again (`frozen()`) and must still produce the
+digest, and every file's bytes are read once, hashed and used only when they match their manifest entry
+(`read_frozen()`), so a file edited after the delivery was recorded is never displayed under its verification and
+reviews."""
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import html
 import json
+from pathlib import Path
 
-from .._vendor.contract import contained
+from .._vendor.contract import contained, digest as digest_of, manifest, resolve as resolve_linkfree
 from ..models.task import Task
 from ..paths import Layout
 from . import thumbs
@@ -18,6 +26,7 @@ TEXT_SUFFIXES = {".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".p
 TEXT_LIMIT = 200_000          # a whole decision record or config file; beyond this, open the file itself
 MAX_THUMBS = 24               # a delivery of hundreds of images shows the first ones as thumbnails, the rest as links
 REVIEW_TEXT_LIMIT = 4000
+MAX_FILE_BYTES = 64 * 1024 * 1024   # a larger delivered file is listed, not read into memory to be verified and served
 
 
 def resolve(layout: Layout, rel: str):
@@ -32,19 +41,48 @@ def resolve(layout: Layout, rel: str):
     return path
 
 
-def file_view(layout: Layout, task_id: str, index: int, rel: str, thumb: bool = True) -> dict:
-    view = {"ref": rel, "href": f"/tasks/{task_id}/files/{index}", "kind": "link"}
-    path = resolve(layout, rel)
-    if path is None:
+def frozen(layout: Layout, task: Task, digest: str) -> dict | None:
+    """The manifest of the task's delivered paths as they are now, when it still hashes to `digest`; None when any
+    of them changed, vanished, became a link or cannot be read (contract.manifest refuses links)."""
+    if not digest or not task.paths:
+        return None
+    try:
+        entries = manifest([layout.root / p for p in task.paths], root=layout.root)
+    except (OSError, ValueError):
+        return None
+    return entries if digest_of(entries) == digest else None
+
+
+def read_frozen(layout: Layout, rel: str, entries: dict) -> bytes | None:
+    """The bytes of delivered file `rel` exactly as frozen: read once, hashed, and returned only when they match its
+    manifest entry, so what is shown or served is what was hashed (no gap between a check and a later read). The
+    path is checked for links before anything is opened."""
+    entry = entries.get(Path(str(rel)).as_posix())
+    if not isinstance(entry, dict) or entry.get("kind") != "file" or int(entry.get("size") or 0) > MAX_FILE_BYTES:
+        return None
+    try:
+        path = resolve_linkfree(layout.root / str(rel))
+        if not contained(path, [layout.root], root=layout.root):
+            return None
+        with path.open("rb") as stream:
+            data = stream.read(MAX_FILE_BYTES + 1)
+    except (OSError, ValueError):
+        return None
+    return data if hashlib.sha256(data).hexdigest() == entry.get("sha256") else None
+
+
+def file_view(layout: Layout, task_id: str, index: int, rel: str, entries: dict, digest: str,
+              thumb: bool = True) -> dict:
+    view = {"ref": rel, "href": f"/tasks/{task_id}/files/{index}?digest={digest}", "kind": "link"}
+    data = read_frozen(layout, rel, entries)
+    if data is None:
         return {**view, "kind": "missing"}
-    if thumbs.is_image(path):
-        key = thumbs.ensure(layout, path) if thumb else None
+    suffix = Path(str(rel)).suffix.lower()
+    if suffix in thumbs.IMAGE_SUFFIXES:
+        key = thumbs.ensure_bytes(layout, data) if thumb else None
         return {**view, "kind": "image", "thumb_key": key} if key else view
-    if path.suffix.lower() in TEXT_SUFFIXES:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return {**view, "kind": "missing"}
+    if suffix in TEXT_SUFFIXES:
+        text = data.decode("utf-8", errors="replace")
         truncated = len(text) > TEXT_LIMIT
         return {**view, "kind": "text", "html": html.escape(text[:TEXT_LIMIT]), "truncated": truncated,
                 "lines": text.count("\n") + 1}
@@ -76,16 +114,23 @@ def _review_report(layout: Layout, ref: str | None) -> dict:
 
 def view(layout: Layout, task: Task, digest: str | None = None) -> dict:
     """The delivery behind `digest` (default: the task's current one). `current` is False when the task has moved on
-    to another digest since — the files on disk then belong to the newer delivery, so none are shown."""
+    to another digest since — the files on disk then belong to the newer delivery, so none are shown. `intact` is
+    False when the task still records this digest but its delivered files no longer hash to it (edited, removed or
+    replaced by a link after the delivery was recorded): nothing is shown either, only that warning."""
     d = task.delivery
     digest = digest or d.digest
     current = bool(digest) and digest == d.digest
-    out = {"digest": digest, "current": current, "files": [], "uncovered": [], "verification": None, "reviews": []}
+    out = {"digest": digest, "current": current, "intact": False, "files": [], "uncovered": [],
+           "verification": None, "reviews": []}
     if not current:
         return out
+    entries = frozen(layout, task, digest)
+    if entries is None:
+        return out
+    out["intact"] = True
     shown_images = 0
     for i, rel in enumerate(task.paths):
-        fv = file_view(layout, task.id, i, rel, thumb=shown_images < MAX_THUMBS)
+        fv = file_view(layout, task.id, i, rel, entries, digest, thumb=shown_images < MAX_THUMBS)
         if fv["kind"] == "image":
             shown_images += 1
         out["files"].append(fv)                    # images past MAX_THUMBS are links, not thumbnails

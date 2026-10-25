@@ -1,6 +1,8 @@
 {# What an approval covers: `dv` is supervisor.ui.delivery.view(). #}
 {% if not dv.current %}
 <p class="flash flash-error">This approval is for digest <code>{{ (dv.digest or '')[:12] }}</code>, which is no longer the task's current delivery; the files on disk belong to a newer one.</p>
+{% elif not dv.intact %}
+<p class="flash flash-error">The delivered files no longer match digest <code>{{ (dv.digest or '')[:12] }}</code>: something changed, removed or linked them after this delivery was recorded, so they are not the files that were verified and reviewed. None are shown; the checkpoint would refuse this approval.</p>
 {% else %}
 <div class="delivery-view">
   {% if dv.uncovered %}

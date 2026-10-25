@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
 from ... import jobs as jobs_mod
@@ -42,20 +44,31 @@ def task_detail(task_id: str, request: Request, layout: Layout = Depends(require
 
 
 @router.get("/tasks/{task_id}/files/{index}")
-def task_file(task_id: str, index: int, layout: Layout = Depends(require_auth)):
-    """One file of the task's current delivery, by its position in the task's `paths` — the browser names an index,
-    never a path. Text is served as plain text (never rendered as a page from the project's own origin)."""
+def task_file(task_id: str, index: int, digest: str = "", layout: Layout = Depends(require_auth)):
+    """One file of the task's current delivery, by its position in the task's `paths` and the digest the page was
+    shown for — the browser names an index, never a path. Served only while that digest is still the task's and the
+    delivered files still hash to it, and only bytes that match the file's manifest entry (read once, then sent).
+    Text is served as plain text (never rendered as a page from the project's own origin)."""
+    import mimetypes
+
+    from fastapi.responses import Response
     t = _get_task(layout, task_id)
     if not 0 <= index < len(t.paths):
         raise HTTPException(status_code=404, detail="no such delivered file")
-    path = delivery_view.resolve(layout, t.paths[index])
-    if path is None:
-        raise HTTPException(status_code=404, detail="file is no longer on disk")
-    from fastapi.responses import FileResponse
-    if thumbs.is_image(path):
-        return FileResponse(path)
-    return FileResponse(path, media_type="text/plain; charset=utf-8",
-                        headers={"X-Content-Type-Options": "nosniff"})
+    if not digest or digest != t.delivery.digest:
+        raise HTTPException(status_code=409, detail="stale link: the task's delivery changed since this page was shown")
+    entries = delivery_view.frozen(layout, t, digest)
+    if entries is None:
+        raise HTTPException(status_code=409, detail="the delivered files changed after this delivery was recorded")
+    rel = t.paths[index]
+    data = delivery_view.read_frozen(layout, rel, entries)
+    if data is None:
+        raise HTTPException(status_code=409, detail="this file does not match the delivery (changed, too large or a link)")
+    headers = {"X-Content-Type-Options": "nosniff"}
+    if thumbs.is_image(Path(rel)):
+        return Response(content=data, media_type=mimetypes.guess_type(rel)[0] or "application/octet-stream",
+                        headers=headers)
+    return Response(content=data, media_type="text/plain; charset=utf-8", headers=headers)
 
 
 @router.post("/tasks/{task_id}/attempts/{attempt_id}/open-run-dir")
