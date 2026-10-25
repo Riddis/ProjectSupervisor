@@ -113,8 +113,9 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
     another lane.
 
     `unattended`: a `claude_cli` pick is switched to `claude_api` only when routing.yaml
-    `capacity.unattended_prefers_api_credits` is true, the Console org is linked and its monthly credit budget is
-    not exhausted, so overnight batches draw API credits instead of the owner's interactive window. With the
+    `capacity.unattended_prefers_api_credits` is true, the Console org is linked, its monthly credit budget is
+    not exhausted and its balance is not marked spent (`claude_api.credit_exhausted`), so overnight batches draw
+    API credits instead of the owner's interactive window. With the
     preference off the pick stays on `claude_cli` and waits on that lane's capacity gate; interactive runs (the
     default) never take this branch."""
     tasks = tasks or tasks_mod.load_all(layout)

@@ -14,6 +14,8 @@ claude_api:                           # Messages API lane (optional; needs a key
   pricing_usd_per_mtok: {}            # model -> {input, output}
   max_tokens: 8192
   timeout_s: 600
+  exhausted_recheck_hours: 24         # after the Console refuses a request for a spent credit balance, the lane stays
+                                      # off this long, then one request tries again (a refused request costs nothing)
 
 # Default adapter per task cost_category when the task's own `job.adapter` is absent. For the model categories
 # (claude, codex, mixed, paid) the owner role's `roles.<role>.adapter` (below) decides the provider instead; the

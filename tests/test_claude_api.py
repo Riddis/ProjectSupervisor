@@ -1,12 +1,14 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
 from supervisor import loop as loop_mod
-from supervisor import scheduler, tasks
+from supervisor import jobs, scheduler, tasks
 from supervisor import verify as verify_mod
+from supervisor._vendor.contract import LaneUnavailable
 from supervisor.adapters import REGISTRY, claude_api
 from supervisor.loop import Supervisor
 from tests.conftest import make_task
@@ -307,3 +309,130 @@ def test_interactive_runs_are_unaffected_by_a_linked_key(layout):
     text_task(layout, "CC")
     plan = scheduler.plan(layout, unattended=False)
     assert {t.id: name for t, name in plan}["CC"] == "claude_cli"
+
+
+# ------------------------------------------------------------------ prepaid credit spent (Console refusal)
+
+CREDIT_REFUSAL = {"type": "error", "error": {"type": "invalid_request_error", "message":
+                  "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to "
+                  "upgrade or purchase credits."}}
+
+
+def refuse_credit(*a, **kw):
+    return FakeResponse(CREDIT_REFUSAL, status_code=400)
+
+
+def test_credit_refusal_defers_instead_of_failing(layout, ad, monkeypatch):
+    """The Console refuses a request once the balance is spent: nothing was billed and the job is not wrong, so the
+    adapter raises LaneUnavailable (a capacity deferral) and leaves no FAILED result for the loop to escalate."""
+    write_key(layout)
+    api_task(layout)
+    monkeypatch.setattr(ad, "_post", refuse_credit)
+    spec = ad.prepare(layout, tasks.load(layout, "CA"), "CA.a1")
+    with pytest.raises(LaneUnavailable) as exc:
+        ad.submit(spec)
+    assert exc.value.reset_epoch > time.time()
+    assert ad.recover(spec) is None                                  # no result.json: nothing to collect
+    assert not claude_api.ledger_path(layout).exists()               # a refused request costs nothing
+    assert claude_api.credit_exhausted(layout)
+    assert not claude_api.credits_remaining(layout)
+
+
+def test_other_http_errors_still_fail_the_attempt(layout, ad, monkeypatch):
+    write_key(layout)
+    api_task(layout)
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: FakeResponse(
+        {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens: too large"}}, 400))
+    spec = ad.prepare(layout, tasks.load(layout, "CA"), "CA.a1")
+    result = ad.collect(spec, ad.submit(spec))
+    assert result.status == "FAILED" and "http 400" in result.error
+    assert not claude_api.credit_exhausted(layout)
+
+
+def test_spent_credit_stops_the_unattended_switch_until_the_recheck(layout, monkeypatch):
+    write_key(layout)
+    write_routing(layout, exhausted_recheck_hours=6)
+    plain_claude_task(layout, "CM")
+    claude_api.mark_credit_exhausted(layout, "credit balance is too low")
+    assert {t.id: n for t, n in scheduler.plan(layout, unattended=True)}["CM"] == "claude_cli"
+    later = time.time() + 6 * 3600 + 60
+    monkeypatch.setattr(claude_api.time, "time", lambda: later)     # past the recheck: one more try is free
+    assert not claude_api.credit_exhausted(layout)
+    assert {t.id: n for t, n in scheduler.plan(layout, unattended=True)}["CM"] == "claude_api"
+
+
+def test_a_successful_call_clears_the_spent_mark(layout, ad, monkeypatch):
+    write_key(layout)
+    api_task(layout)
+    claude_api.mark_credit_exhausted(layout, "credit balance is too low")
+    later = time.time() + 25 * 3600                                  # default recheck (24 h) has passed
+    monkeypatch.setattr(claude_api.time, "time", lambda: later)
+    text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
+    monkeypatch.setattr(ad, "_post", lambda *a, **kw: FakeResponse(messages_body(text)))
+    spec = ad.prepare(layout, tasks.load(layout, "CA"), "CA.a1")
+    assert ad.collect(spec, ad.submit(spec)).status == "COMPLETE"
+    assert not claude_api.credit_state_path(layout).exists()
+
+
+def test_switched_delivery_moves_back_to_its_own_lane_on_a_credit_refusal(layout, monkeypatch):
+    """The unattended switch sent a claude_cli task to credits; the Console says the balance is spent. The task runs
+    on claude_cli instead: no failed attempt, no escalation, the refused record closed as rerouted."""
+    write_key(layout)
+    plain_claude_task(layout, "CN")
+    write_routing(layout)
+    monkeypatch.setattr(REGISTRY["claude_api"], "_post", refuse_credit)
+    launched = []
+    monkeypatch.setattr(REGISTRY["claude_cli"], "submit", lambda spec: launched.append(spec) or {"kind": "fake"})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "recover", lambda spec: None)
+    failures = []
+    monkeypatch.setattr(loop_mod.escalation_mod, "record_failure", lambda *a, **kw: failures.append(a))
+    sup = Supervisor(layout, sleep_s=0, unattended=True)
+    [(task, name)] = scheduler.plan(layout, unattended=True)
+    assert name == "claude_api"
+    sup.dispatch(task, name)
+    recs = jobs.for_task(layout, "CN")
+    assert [r["adapter"] for r in recs] == ["claude_api", "claude_cli"]
+    assert recs[0]["phase"] == "DONE" and recs[0]["result"] == "REROUTED" and recs[0]["rerouted_to"] == "claude_cli"
+    assert recs[1]["phase"] == "SUBMITTED" and len(launched) == 1
+    assert not failures
+    assert tasks.load(layout, "CN").status.value == "IN_PROGRESS"
+    sup.repair_continuations()                                       # the reroute is not queued a second time
+    assert len(jobs.for_task(layout, "CN")) == 2
+
+
+def test_a_reroute_interrupted_before_the_new_attempt_is_queued_on_the_next_pass(layout, monkeypatch):
+    """Killed after the refused record was closed but before its replacement existed: repair_continuations() queues
+    it on the recorded lane. The refused record itself is DONE, so it is never launched on credits again."""
+    write_key(layout)
+    plain_claude_task(layout, "CO")
+    write_routing(layout)
+    monkeypatch.setattr(REGISTRY["claude_api"], "_post", refuse_credit)
+    monkeypatch.setattr(REGISTRY["claude_cli"], "submit", lambda spec: {"kind": "fake"})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "recover", lambda spec: None)
+    sup = Supervisor(layout, sleep_s=0, unattended=True)
+    real_dispatch = sup.dispatch
+    def die_on_reroute(task, name, *a, **kw):
+        if name == "claude_cli":
+            raise RuntimeError("killed before the rerouted attempt was queued")
+        return real_dispatch(task, name, *a, **kw)
+    monkeypatch.setattr(sup, "dispatch", die_on_reroute)
+    with pytest.raises(RuntimeError):
+        sup.dispatch(tasks.load(layout, "CO"), "claude_api")
+    assert [r["result"] for r in jobs.for_task(layout, "CO")] == ["REROUTED"]
+    monkeypatch.setattr(sup, "dispatch", real_dispatch)             # fresh process
+    sup.repair_continuations()
+    recs = jobs.for_task(layout, "CO")
+    assert [r["adapter"] for r in recs] == ["claude_api", "claude_cli"] and recs[1]["phase"] == "SUBMITTED"
+
+
+def test_a_task_pinned_to_claude_api_waits_for_credit(layout, ad, monkeypatch):
+    """An explicit job.adapter is never overridden: with the balance spent the record stays PREPARED until the
+    recheck, costing nothing, instead of failing."""
+    write_key(layout)
+    api_task(layout)
+    monkeypatch.setattr(ad, "_post", refuse_credit)
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
+    assert rec["phase"] == "PREPARED" and float(rec["deferred_until"]) > time.time()
+    assert len(jobs.for_task(layout, "CA")) == 1
+    assert tasks.load(layout, "CA").status.value == "IN_PROGRESS"

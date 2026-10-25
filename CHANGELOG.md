@@ -3,6 +3,21 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
+  low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
+  Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model
+  ran, no attempt consumed) and marks the lane spent in `state/runtime/claude_api_credit.json` until
+  `claude_api.exhausted_recheck_hours` (default 24, new optional key) have passed; a served request clears it.
+  While spent, `credits_remaining()` is false, so `--unattended` stops switching `claude_cli` picks onto credits.
+  The loop (`Supervisor.launch`) handles `LaneUnavailable` for a delivery whose own lane differs (the switch had
+  moved it): the record is closed `DONE`/`REROUTED` with `rerouted_to`, the task is dispatched on that lane, and
+  `repair_continuations()` finishes a reroute a crash interrupted. Anything else (a task pinned to `claude_api`, a
+  review) waits PREPARED until the recheck, as for any capacity deferral. A reached `monthly_budget_usd` is the same
+  gate (lifts next calendar month) instead of a FAILED attempt; `monthly_budget_usd: 0` still disables the lane.
+  No migration: the new key is optional and the state file is absent until a refusal.
+
 ## 1.9.0 — 2026-10-25
 
 Boundary baseline: phase 1 of the boundary plan (`docs/BOUNDARY.md`), reviewed in three rounds and accepted.
