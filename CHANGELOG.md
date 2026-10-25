@@ -33,9 +33,11 @@ command gain `command`, `routing.yaml` gains the optional `claude_api.exhausted_
   nothing.
 - **Progress reports from long jobs** (`supervisor/progress.py`). A job writes `<run dir>/PROGRESS.json`
   (`stage`, `detail`, optional `done`/`total`); delivery briefs for `claude_cli` and `codex_cli` ask for it before
-  any step longer than a few minutes, and every launched job (and what it starts) inherits
-  `SUPERVISOR_PROGRESS_FILE` for `progress.report()`. The *Now running* row and the agent page show the stage and a
-  bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification.
+  any step longer than a few minutes, and every subprocess job (the `process`, `claude_cli` and `codex_cli` lanes,
+  and what it starts) inherits `SUPERVISOR_PROGRESS_FILE` for `progress.report()`; an in-process `python` job can
+  pass its run dir's file to `report(file=...)`. The *Now running* row and the agent page show the stage and a
+  bar; the loop logs `job_progress` once per stage change. Advisory only: never evidence for verification, and a
+  malformed or oversized report (it is the job's file) shows nothing and never fails the job or a page.
 - **`claude_api`: a spent credit balance moves work instead of failing it.** The Console's "credit balance is too
   low" refusal (nothing billed) used to be an HTTP-error FAILED attempt, which the loop then retried and escalated.
   Now `submit()` raises the new `LaneUnavailable` (a `CapacityDeferred` subclass in `_vendor/contract.py`: no model

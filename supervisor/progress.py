@@ -5,22 +5,25 @@ what a long job is doing (downloading, training, evaluating) instead of only how
 Anything may write it: a model session with its file tools (the brief asks it to, `instructions()`), a script that
 session starts (it inherits `SUPERVISOR_PROGRESS_FILE` and can call `report()`), or a
 deterministic process job. It is advisory and never trusted: it changes no state, it is not evidence for
-verification, and a missing or malformed file just shows nothing. The loop logs a `job_progress` event when the
+verification, and a missing, oversized or malformed file just shows nothing: `read()` is total (any content
+returns a report or None) and `observe()` never raises, so a report can neither fail the job nor break a page. The loop logs a `job_progress` event when the
 stage changes (`observe()`), never per step, so the log keeps one line per stage. Writing the file is also output
 for the idle timer (supervisor.timeouts measures the run dir), so a job that reports progress is not idle."""
 from __future__ import annotations
 
+import json
 import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ._vendor.contract import atomic_json, read_json
+from ._vendor.contract import atomic_json
 
 PROGRESS_FILE = "PROGRESS.json"
 ENV_VAR = "SUPERVISOR_PROGRESS_FILE"
 MAX_STAGE = 80
 MAX_DETAIL = 300
+MAX_BYTES = 16 * 1024          # a report is one small object; anything larger is not read at all
 
 
 def path(run_dir) -> Path:
@@ -34,9 +37,14 @@ def env(spec: dict) -> dict:
 
 
 def _num(value) -> float | None:
+    """A finite float, or None: booleans, strings and integers too large for a float are not numbers here."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) else None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def report(stage: str, detail: str = "", done: float | None = None, total: float | None = None,
@@ -62,20 +70,29 @@ def read(run_dir) -> dict | None:
     the file's modification time, epoch seconds — the writer's own `at` is not trusted). None when there is none."""
     if not run_dir:
         return None
-    p = path(run_dir)
     try:
-        doc = read_json(p)
-        updated = p.stat().st_mtime
-    except (OSError, ValueError):
+        return _read(path(run_dir))
+    except Exception:                        # noqa: BLE001 - the file is the job's to write; nothing in it may raise
         return None
-    if not isinstance(doc, dict) or not str(doc.get("stage") or "").strip():
+
+
+def _read(p: Path) -> dict | None:
+    with p.open("rb") as stream:             # bounded before parsing: no deep or huge document reaches json
+        raw = stream.read(MAX_BYTES + 1)
+        updated = os.fstat(stream.fileno()).st_mtime
+    if len(raw) > MAX_BYTES:
         return None
+    doc = json.loads(raw.decode("utf-8"))
+    if not isinstance(doc, dict) or not isinstance(doc.get("stage"), str) or not doc["stage"].strip():
+        return None
+    detail = doc.get("detail")
     done, total = _num(doc.get("done")), _num(doc.get("total"))
     if done is None and _num(doc.get("percent")) is not None:
         done, total = _num(doc.get("percent")), 100.0
-    percent = max(0.0, min(100.0, done / total * 100)) if done is not None and total else None
-    return {"stage": " ".join(str(doc["stage"]).split())[:MAX_STAGE],
-            "detail": " ".join(str(doc.get("detail") or "").split())[:MAX_DETAIL],
+    ratio = done / total * 100 if done is not None and total else None
+    percent = max(0.0, min(100.0, ratio)) if ratio is not None and math.isfinite(ratio) else None
+    return {"stage": " ".join(doc["stage"][:MAX_STAGE * 4].split())[:MAX_STAGE],
+            "detail": " ".join(detail[:MAX_DETAIL * 4].split())[:MAX_DETAIL] if isinstance(detail, str) else "",
             "done": done, "total": total, "percent": percent, "updated": updated}
 
 
@@ -85,16 +102,16 @@ def observe(layout, rec: dict) -> dict | None:
     Returns the current report. Never raises: progress is advisory, and a failure here must not fail the job."""
     from . import jobs as jobs_mod
     from . import tasks as tasks_mod
-    current = read((rec.get("spec") or {}).get("run_dir"))
-    if current is None or current["stage"] == rec.get("progress_stage"):
-        return current
     try:
+        current = read((rec.get("spec") or {}).get("run_dir"))
+        if current is None or current["stage"] == rec.get("progress_stage"):
+            return current
         jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], progress_stage=current["stage"])
         tasks_mod.log(layout, "job_progress", "loop", task=rec.get("task_id"), attempt=rec["attempt_id"],
                       stage=current["stage"], detail=current["detail"] or None)
-    except (OSError, ValueError):
-        pass
-    return current
+        return current
+    except Exception:                        # noqa: BLE001 - advisory: losing one progress line is the worst case
+        return None
 
 
 def instructions(run_dir) -> str:

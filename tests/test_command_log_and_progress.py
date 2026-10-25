@@ -127,6 +127,65 @@ def test_settle_observes_progress_of_a_job_still_running(layout, monkeypatch):
     assert [r["stage"] for r in log_lines(layout) if r["event"] == "job_progress"] == ["evaluating"]
 
 
+HOSTILE_REPORTS = {                                                           # id -> bytes the job wrote
+    "huge-int": b'{"stage": "training", "done": 1' + b"0" * 400 + b', "total": 500}',  # no float holds it
+    "inf": b'{"stage": "training", "done": 1e999, "total": 1}',
+    "ratio-overflow": b'{"stage": "training", "done": 5, "total": 1e-320}',
+    "deep": b'{"stage": ' + b"[" * 5000 + b"]" * 5000 + b"}",
+    "oversized": b'{"stage": "training", "detail": "' + b"x" * (64 * 1024) + b'"}',
+    "not-strings": b'{"stage": {"a": 1}, "detail": ["x"]}',
+    "not-utf8": bytes([0xFF, 0xFE]) + b"{",
+}
+HOSTILE = pytest.mark.parametrize("content", list(HOSTILE_REPORTS.values()), ids=list(HOSTILE_REPORTS))
+
+
+@HOSTILE
+def test_read_is_total_for_hostile_reports(tmp_path, content):
+    (tmp_path / progress.PROGRESS_FILE).write_bytes(content)
+    got = progress.read(tmp_path)                                             # must not raise
+    assert got is None or got["percent"] is None or 0.0 <= got["percent"] <= 100.0
+
+
+@HOSTILE
+def test_a_hostile_report_never_fails_a_running_job(layout, monkeypatch, content):
+    """Review 1.10.0 #2: observing a job's own report happens outside the adapter-failure boundary, so whatever the
+    job wrote, the job is not ingested as FAILED and no retry or escalation is spent."""
+    make_task(layout, "T")
+    rec = running(layout)
+    progress.path(rec["spec"]["run_dir"]).write_bytes(content)
+    monkeypatch.setattr(ProcessAdapter, "collect", lambda self, spec, handle: None)
+    sup = Supervisor(layout, sleep_s=0)
+    failed = []
+    monkeypatch.setattr(sup, "_adapter_failed", lambda *a, **kw: failed.append(a))
+    sup.settle()
+    assert not failed and jobs.read(layout, "T.a1")["phase"] == "RUNNING"
+
+
+def test_an_observer_error_never_reaches_the_job(layout, monkeypatch):
+    make_task(layout, "T")
+    running(layout)
+    monkeypatch.setattr(ProcessAdapter, "collect", lambda self, spec, handle: None)
+    def boom(*a, **kw):
+        raise RecursionError("whatever the cause")
+    monkeypatch.setattr(progress, "_read", boom)
+    sup = Supervisor(layout, sleep_s=0)
+    failed = []
+    monkeypatch.setattr(sup, "_adapter_failed", lambda *a, **kw: failed.append(a))
+    sup.settle()
+    assert not failed and jobs.read(layout, "T.a1")["phase"] == "RUNNING"
+
+
+@HOSTILE
+def test_pages_render_with_a_hostile_report(layout, content):
+    make_task(layout, "T")
+    rec = running(layout)
+    progress.path(rec["spec"]["run_dir"]).write_bytes(content)
+    client = TestClient(create_app(layout), base_url="http://127.0.0.1")
+    client.cookies.set(CSRF_COOKIE, "csrf")
+    assert client.get("/agents/T.a1").status_code == 200
+    assert client.get("/overview").status_code == 200
+
+
 def test_launched_jobs_inherit_the_progress_file(layout):
     spec = {"attempt_id": "T.a1", "run_dir": str(layout.runs / "T" / "T.a1")}
     env = ProcessAdapter().env(spec)

@@ -785,12 +785,15 @@ class Supervisor:
                 if result is None:
                     if rec["phase"] == "SUBMITTED":
                         rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "RUNNING")
-                    progress_mod.observe(self.layout, rec)     # one log line per reported stage
-                    continue
-                if result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
+                elif result.status == "FAILED" and result.error and "without result" in result.error and not ad.alive(handle):
                     result.error = f"lost: {result.error}"
             except Exception as exc:                          # noqa: BLE001 - the job's failure, not the loop's
                 self._adapter_failed(rec, "collect", exc)
+                continue
+            if result is None:
+                # Outside the adapter boundary above: a job's own progress report is advisory and must never be
+                # mistaken for the adapter failing (observe() does not raise; this keeps it that way structurally).
+                progress_mod.observe(self.layout, rec)         # one log line per reported stage
                 continue
             self.ingest(rec, result)
 
