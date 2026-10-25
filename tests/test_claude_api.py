@@ -436,3 +436,56 @@ def test_a_task_pinned_to_claude_api_waits_for_credit(layout, ad, monkeypatch):
     assert rec["phase"] == "PREPARED" and float(rec["deferred_until"]) > time.time()
     assert len(jobs.for_task(layout, "CA")) == 1
     assert tasks.load(layout, "CA").status.value == "IN_PROGRESS"
+
+
+def _history(layout, tid, upto):
+    """Attempts 1..upto-1 of `tid` already finished, so the next record is attempt `upto`."""
+    for n in range(1, upto):
+        jobs.write(layout, {"attempt_id": f"{tid}.a{n}", "task_id": tid, "adapter": "claude_cli", "phase": "DONE",
+                            "result": "FAILED", "spec": {"kind": "delivery"}})
+
+
+def test_job_records_are_ordered_by_attempt_number(layout):
+    _history(layout, "CQ", 12)
+    assert [r["attempt_id"] for r in jobs.for_task(layout, "CQ")][-3:] == ["CQ.a9", "CQ.a10", "CQ.a11"]
+
+
+@pytest.mark.parametrize("refused", [9, 10])
+def test_a_reroute_interrupted_before_its_successor_is_repaired_at_any_attempt_number(layout, monkeypatch, refused):
+    """Review 1.10.0 #1: attempt 10 sorts before attempt 9 by file name; repair must still find the newest."""
+    write_key(layout)
+    plain_claude_task(layout, "CR")
+    tasks.set_status(layout, "CR", "IN_PROGRESS")
+    _history(layout, "CR", refused)
+    jobs.write(layout, {"attempt_id": f"CR.a{refused}", "task_id": "CR", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "submit", lambda spec: {"kind": "fake"})
+    monkeypatch.setattr(REGISTRY["claude_cli"], "recover", lambda spec: None)
+    sup = Supervisor(layout, sleep_s=0)
+    sup.repair_continuations()
+    recs = jobs.for_task(layout, "CR")
+    new = recs[-1]
+    assert new["attempt_id"] == f"CR.a{refused + 1}" and new["adapter"] == "claude_cli"
+    assert new["rerouted_from"] == f"CR.a{refused}" and new["phase"] == "SUBMITTED"
+    assert jobs.read(layout, f"CR.a{refused}")["continued"] is True
+    sup.repair_continuations()                                       # idempotent
+    assert len(jobs.for_task(layout, "CR")) == refused + 1
+
+
+@pytest.mark.parametrize("refused", [9, 10])
+def test_a_reroute_interrupted_after_its_successor_queues_nothing_more(layout, monkeypatch, refused):
+    """The successor was written but the refused record not yet marked: repair marks it and dispatches nothing."""
+    write_key(layout)
+    plain_claude_task(layout, "CS")
+    tasks.set_status(layout, "CS", "IN_PROGRESS")
+    _history(layout, "CS", refused)
+    jobs.write(layout, {"attempt_id": f"CS.a{refused}", "task_id": "CS", "adapter": "claude_api", "phase": "DONE",
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+    jobs.write(layout, {"attempt_id": f"CS.a{refused + 1}", "task_id": "CS", "adapter": "claude_cli",
+                        "phase": "PREPARED", "rerouted_from": f"CS.a{refused}", "spec": {"kind": "delivery"}})
+    dispatched = []
+    sup = Supervisor(layout, sleep_s=0)
+    monkeypatch.setattr(sup, "dispatch", lambda *a, **kw: dispatched.append(a))
+    sup.repair_continuations()
+    assert not dispatched and len(jobs.for_task(layout, "CS")) == refused + 1
+    assert jobs.read(layout, f"CS.a{refused}")["continued"] is True

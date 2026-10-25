@@ -69,13 +69,23 @@ def open_records(layout: Layout) -> list[dict]:
     return out
 
 
+def attempt_no(attempt_id: str) -> int:
+    """The attempt number of `<task>.a<n>` (0 when the id has no such suffix)."""
+    try:
+        return int(str(attempt_id).rsplit(".a", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def for_task(layout: Layout, task_id: str) -> list[dict]:
+    """The task's job records, oldest attempt first by attempt NUMBER: file names sort `T.a10` before `T.a9`, and
+    callers take `[-1]` as the newest."""
     out = []
-    for p in sorted(layout.jobs.glob(f"{task_id}.*.json")):
+    for p in layout.jobs.glob(f"{task_id}.*.json"):
         try:
             r = read_json(p)
         except (OSError, ValueError):
             r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": "corrupt record"}
         if r.get("task_id") == task_id:
             out.append(r)
-    return out
+    return sorted(out, key=lambda r: (attempt_no(r.get("attempt_id", "")), str(r.get("attempt_id", ""))))

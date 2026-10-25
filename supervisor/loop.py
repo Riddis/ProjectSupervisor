@@ -27,11 +27,7 @@ from .store import now_iso
 EXIT_RELOAD = 3
 
 
-def _attempt_no(attempt_id: str) -> int:
-    try:
-        return int(str(attempt_id).rsplit(".a", 1)[1])
-    except (IndexError, ValueError):
-        return 0
+_attempt_no = jobs_mod.attempt_no
 
 
 def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
@@ -206,15 +202,17 @@ class Supervisor:
     def reroute(self, rec: dict, lane: str, reason: str) -> dict:
         """The lane refused every job for now (LaneUnavailable: no model ran, nothing was spent) and the task has a lane
         of its own: close the refused record FIRST, naming where the work goes, then queue it there. No attempt failed,
-        so nothing escalates. A crash in between leaves a DONE/REROUTED last record that repair_continuations()
-        queues; the refused record is never launched on its old lane again."""
+        so nothing escalates. The new attempt names the refused one (`rerouted_from`), so repair_continuations()
+        can tell a reroute whose successor exists from one a crash interrupted before it, and queues only the
+        latter; the refused record is never launched on its old lane again."""
         rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result="REROUTED", finished=now_iso(),
                                  error=reason, rerouted_to=lane)
         tasks_mod.log(self.layout, "lane_rerouted", "loop", task=rec["task_id"], attempt=rec["attempt_id"],
                       adapter=rec["adapter"], to=lane, reason=reason)
         tasks_mod.add_note(self.layout, rec["task_id"], f"{rec['attempt_id']}: {rec['adapter']} unavailable ({reason}); "
                            f"rerouted to {lane}", actor="loop")
-        self.dispatch(tasks_mod.load(self.layout, rec["task_id"]), lane, note=f"rerouted from {rec['adapter']}")
+        self.dispatch(tasks_mod.load(self.layout, rec["task_id"]), lane, note=f"rerouted from {rec['adapter']}",
+                      extra={"rerouted_from": rec["attempt_id"]})
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
         return jobs_mod.read(self.layout, rec["attempt_id"])
 
@@ -528,8 +526,12 @@ class Supervisor:
 
     def repair_continuations(self) -> None:
         """A requeue that crashed after queuing nothing (pre-fix records or a torn write): the last record of a task is
-        DONE with result DEFERRED but no continuation exists and the task is still IN_PROGRESS → queue it now. The
-        same for a reroute (result REROUTED) interrupted before its new attempt existed: queued on `rerouted_to`."""
+        DONE with result DEFERRED but no continuation exists and the task is still IN_PROGRESS → queue it now.
+
+        A reroute (result REROUTED) not yet marked `continued`: when an attempt names it (`rerouted_from`), or any
+        later attempt exists, the work already went on and the record is only marked; when it is the task's newest
+        attempt, a crash came before its successor was written and it is queued on `rerouted_to` now. Attempts are
+        ordered by number (jobs.for_task), so attempt 10 is newer than attempt 9."""
         seen = set()
         for rec in sorted(jobs_mod.all_records(self.layout), key=lambda r: r["attempt_id"]):
             seen.add(rec["task_id"])
@@ -539,16 +541,7 @@ class Supervisor:
             run_dir = (last.get("spec") or {}).get("run_dir")
             needs = last.get("result") == "DEFERRED" or (last.get("result") in ("PARTIAL", "BLOCKED") and run_dir
                                                            and handoff.incomplete(Path(run_dir)))
-            lane = last.get("rerouted_to")
-            rerouted = last.get("result") == "REROUTED" and lane in REGISTRY
-            if last["phase"] == "DONE" and rerouted and not last.get("continued"):
-                try:
-                    task = tasks_mod.load(self.layout, task_id)
-                except Exception:
-                    continue
-                if task.status == TaskStatus.IN_PROGRESS:
-                    self.dispatch(task, lane, note=f"rerouted from {last['adapter']}")
-                    jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
+            if self._repair_reroutes(task_id, recs):
                 continue
             if last["phase"] == "DONE" and needs and not last.get("continued") and last["adapter"] in REGISTRY:
                 try:
@@ -558,6 +551,27 @@ class Supervisor:
                 if task.status == TaskStatus.IN_PROGRESS:
                     self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
                     jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
+
+    def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:
+        """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here)."""
+        last = recs[-1]
+        for r in recs:
+            if r["phase"] != "DONE" or r.get("result") != "REROUTED" or r.get("continued"):
+                continue
+            succeeded = r is not last or any(o.get("rerouted_from") == r["attempt_id"] for o in recs)
+            lane = r.get("rerouted_to")
+            if not succeeded:
+                if lane not in REGISTRY:
+                    continue
+                try:
+                    task = tasks_mod.load(self.layout, task_id)
+                except Exception:
+                    continue
+                if task.status != TaskStatus.IN_PROGRESS:
+                    continue
+                self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", extra={"rerouted_from": r["attempt_id"]})
+            jobs_mod.set_phase(self.layout, r["attempt_id"], "DONE", continued=True)
+        return last.get("result") == "REROUTED"
 
     def request_owner_decisions(self) -> None:
         """A task BLOCKED with "owner decision needed" (review budget spent, continuations exhausted, ...) gets exactly
