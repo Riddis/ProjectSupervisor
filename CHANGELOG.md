@@ -3,6 +3,23 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext` and gate G2.
+
+- **Gate G2: the extension API contract** (`supervisor/api_contract.py`). `python -m supervisor.api_contract record`
+  writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature
+  (parameter names, kinds, defaults and annotations; for a class its constructor, public bases, methods, properties
+  and fields). `python -m supervisor.api_contract check` fails when that file does not describe the code, when a
+  public name is missing from `docs/EXTENSION_API.md`, and when the difference from the last release tag's contract
+  breaks the version rule: a removal or a change that breaks a caller (a removed or renamed parameter, a new
+  required one, a lost default, a moved positional) needs a major version; an addition or a compatible change at
+  least a minor version and a line in this file's "Extension API" entry naming it. The previous contract is read
+  with `git show <last v* tag>:docs/extension_api.json`; a shallow clone fails instead of passing unchecked. CI runs
+  it as the job `G2 extension API`, with the full history; 1.11.0 records the first contract, so the comparison
+  starts with the release after it.
+- **Extension API:** the package `supervisor.ext` exists; its `__all__` is the contract and is still empty.
+
 ## 1.10.1 — 2026-10-25
 
 Fixes only: a migration that rewrote current approval items on every run, a human job failing on `APPROVE`, an

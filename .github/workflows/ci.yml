@@ -1,7 +1,7 @@
-# Framework CI (docs/BOUNDARY.md): gate G1 (boundary check) and gate G3 (the suite on Linux and Windows, the
-# template smoke test included). Both jobs are required checks on main through branch protection, so a pull
-# request that fails either cannot merge. A local run gives the same verdict:
-#   python -m supervisor.boundary        python -m pytest -q
+# Framework CI (docs/BOUNDARY.md): gate G1 (boundary check), gate G2 (the extension API contract, from 1.11.0) and
+# gate G3 (the suite on Linux and Windows, the template smoke test included). They are required checks on main
+# through branch protection, so a pull request that fails one cannot merge. A local run gives the same verdict:
+#   python -m supervisor.boundary        python -m supervisor.api_contract check        python -m pytest -q
 name: ci
 
 on:
@@ -23,6 +23,22 @@ jobs:
           python-version: "3.11"
       - name: supervisor.boundary (standard library only, no install)
         run: python -B -m supervisor.boundary
+
+  api_contract:
+    name: G2 extension API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history and tags: the previous release's contract is read from its tag
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: install
+        run: python -m pip install -e ".[ui]"
+      - name: supervisor.api_contract check (against the last release tag)
+        run: python -B -m supervisor.api_contract check
 
   suite:
     name: G3 suite (${{ matrix.os }})

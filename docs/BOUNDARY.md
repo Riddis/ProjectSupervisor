@@ -38,7 +38,7 @@ walk contributors through them; no gate depends on a skill being used.
 | Gate | Checks | Runs | Since |
 |---|---|---|---|
 | **G1** boundary check | `supervisor boundary check` / `python -m supervisor.boundary` over `supervisor/` — (a) no static import of a project or extension module, dynamic loading only in the listed loader; (b) no drive-letter or home-directory path, non-loopback host, e-mail address or registered user name; (c) no model or vendor name outside the listed files. Exceptions are explicit entries in `boundary.toml`. Registered projects' domain words are reported as supporting evidence, never as a failure | CI (required); `.githooks/pre-commit` locally | 1.9.0 |
-| **G2** extension API contract | the public API compared with the last release tag's contract; breaking changes only in a major version after a minor of deprecation | CI (required) | 1.11.0 |
+| **G2** extension API contract | `python -m supervisor.api_contract check` — `supervisor.ext.__all__` (names, kinds, signatures, class members) equals `docs/extension_api.json`, every name is in `docs/EXTENSION_API.md`, and the difference from the last release tag's contract follows the version rule: a removal or a change that breaks callers only in a major version after a minor of deprecation; an addition or compatible change at least a minor version with a CHANGELOG "Extension API" line naming it | CI (required) | 1.11.0 |
 | **G3** framework suite | full suite on Linux and Windows, the template smoke test (`init` → `doctor` → one task to COMPLETE); from 1.12.0 every reference extension loads and passes its conformance check | CI on every push and pull request (required) | 1.9.0 |
 | **G4** release | CHANGELOG, version rule, migrations (idempotent, dry-run aware), G2 against the last release, tag, independent review with the boundary checklist; runtime worktrees advance only to tags | the `framework-release` skill and the reviewer; `supervisor doctor` refuses an untagged checkout | 1.9.0 |
 | **G5** extension conformance | manifest, identifiers, imports, staged registration, config schema; the extension's behaviour suite across its framework range | the extension's CI; framework CI for reference extensions; doctor runs the static half | 1.12.0 |
@@ -62,6 +62,7 @@ walk contributors through them; no gate depends on a skill being used.
 
 ```
 python -m supervisor.boundary                      # G1, from the framework root; no install needed
+python -m supervisor.api_contract check            # G2; `record` rewrites docs/extension_api.json after an API change
 python -m pytest -q                                # G3 (tools\test_windows.ps1 on Windows saves the log)
 git config core.hooksPath .githooks                # once per clone: G1 before every commit
 ```
@@ -72,7 +73,9 @@ list stays tight.
 
 ## Enforcement on GitHub
 
-`.github/workflows/ci.yml` runs G1 and G3 (Linux and Windows) on every push to `main` and every pull request.
-Branch protection on `main` makes both required checks, so a change that fails either cannot merge; that setting
-lives in the repository's settings, not in a file (Settings → Branches → `main`: require a pull request and the
-status checks `G1 boundary check`, `G3 suite (ubuntu-latest)`, `G3 suite (windows-latest)`).
+`.github/workflows/ci.yml` runs G1, G2 (from 1.11.0, with the full history and tags, so it can read the last
+release's contract) and G3 (Linux and Windows) on every push to `main` and every pull request. Branch protection on
+`main` makes them required checks, so a change that fails one cannot merge; that setting lives in the repository's
+settings, not in a file (Settings → Branches → `main`: require a pull request and the status checks
+`G1 boundary check`, `G2 extension API`, `G3 suite (ubuntu-latest)`, `G3 suite (windows-latest)`). A new check is
+added there once it has passed on a pull request.
