@@ -48,6 +48,38 @@ def _sddl(path) -> str:
         kernel32.LocalFree(text)
 
 
+def _dacl_part(sddl: str) -> str:
+    return "D:" + sddl.split("D:", 1)[1]
+
+
+def _canonical_dacl(sddl: str) -> str:
+    """`sddl`'s DACL as Windows writes it back: a SID that has an SDDL alias comes back as the alias (the built-in
+    Administrator account, which a CI runner may use, as LA), so a fixture compares like with like."""
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    to_string = advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    to_string.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR),
+                          ctypes.POINTER(wintypes.ULONG)]
+    to_string.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    descriptor, text = ctypes.c_void_p(), wintypes.LPWSTR()
+    assert to_descriptor(sddl, 1, ctypes.byref(descriptor), None), ctypes.WinError(ctypes.get_last_error())
+    try:
+        assert to_string(descriptor, 1, 0x4, ctypes.byref(text), None), ctypes.WinError(ctypes.get_last_error())
+        try:
+            return text.value
+        finally:
+            kernel32.LocalFree(text)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
 def _user_sid() -> str:
     out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, encoding="utf-8",
                          errors="replace", check=True).stdout
@@ -268,7 +300,8 @@ def test_a_file_that_may_not_be_deleted_is_refused_cleanly(tmp_path):
     try:
         _set_dacl(folder, folder_dacl)
         _set_dacl(p, file_dacl)
-        assert _sddl(folder).endswith(folder_dacl) and _sddl(p).endswith(file_dacl)
+        for q, dacl in ((folder, folder_dacl), (p, file_dacl)):
+            assert _dacl_part(_sddl(q)) == _canonical_dacl(dacl), (q.name, _sddl(q), _canonical_dacl(dacl))
         before = _sddl(p)
         with pytest.raises(contract.CannotKeep, match="nothing was replaced"):
             store.rewrite_text(p, "a: 2\n")
