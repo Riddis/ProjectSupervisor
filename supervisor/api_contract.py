@@ -137,7 +137,7 @@ def _class(cls, internal, public) -> dict:
             if not name.startswith("_") and name not in members:
                 members[name] = _member(value, internal, public)
     out: dict = {"kind": "class", "bases": bases}
-    init = _signature(cls)
+    init = None if getattr(cls, "_is_protocol", False) else _signature(cls)   # a Protocol is never constructed
     if init is not None:
         init.pop("returns", None)                     # a constructor returns the instance, whatever __init__ says
         out["init"] = init

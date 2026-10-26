@@ -25,6 +25,18 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   `Adapter`, `ProcessAdapter` and `Result`, `CapacityDeferred` (a deferral costs no attempt), the doctor's `Check`,
   the GPU probe `gpu` (never raises) and `now_iso`. `Layout`'s paths and `CapacityDeferred.reset_epoch` are now
   declared on their classes, so the contract records them; nothing else about them changes.
+- **Extension API:** `Registry`, the hooks `setup(registry)` receives, as a documented `typing.Protocol`; the
+  loader's registry keeps exactly its signatures (tested), so G2 now covers the hook signatures too.
+- **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
+  lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
+  or job already has, built in or another extension's (before, an extension could silently replace the `process` or
+  `python` lane, or another extension's); registering the same object again is still harmless, so an extension that
+  also registers at import keeps working. The registry lists what each extension registered (`adapters`,
+  `python_jobs`), and `extensions.import_side_effects(layout, name)` imports a module in a fresh interpreter and
+  names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
+  keep working and are deprecated (warnings follow in this release). `supervisor extension new` writes a module
+  that imports `supervisor.ext`. Tests only: `extensions.reset()` now also forgets the lanes and python jobs
+  extensions registered, like a fresh process.
 
 ## 1.10.1 — 2026-10-25
 

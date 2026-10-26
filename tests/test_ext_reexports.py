@@ -29,8 +29,10 @@ def test_the_reexported_names_are_the_framework_objects():
         contract.atomic_json, contract.read_json, contract.atomic_write_text, contract.contained,
         contract.CapacityDeferred)
     assert (ext.Adapter, ext.Result, ext.ProcessAdapter) == (base.Adapter, base.Result, process.ProcessAdapter)
-    assert set(ext.__all__) == {"Adapter", "CapacityDeferred", "Check", "Layout", "ProcessAdapter", "Result",
-                                "atomic_json", "atomic_write_text", "contained", "gpu", "now_iso", "read_json"}
+    reexported = {"Adapter", "CapacityDeferred", "Check", "Layout", "ProcessAdapter", "Result",
+                  "atomic_json", "atomic_write_text", "contained", "gpu", "now_iso", "read_json"}
+    assert reexported <= set(ext.__all__)
+    assert set(ext.__all__) - reexported == {"Registry"}           # the rest are supervisor.ext's own (step 3 on)
 
 
 def test_layout_resolves_every_path_from_the_project_root(tmp_path, monkeypatch):

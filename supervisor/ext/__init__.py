@@ -13,16 +13,18 @@ from ..adapters.process import ProcessAdapter
 from ..doctor import Check
 from ..paths import Layout
 from ..store import now_iso
+from ._registry import Registry
 
-# Grouped by purpose in docs/EXTENSION_API.md: project paths (Layout); files (atomic_json, atomic_write_text,
-# contained, read_json); job lanes (Adapter, CapacityDeferred, ProcessAdapter, Result); doctor checks (Check); the
-# shared GPU probe (gpu, a module); time (now_iso).
+# Grouped by purpose in docs/EXTENSION_API.md: registration (Registry); project paths (Layout); files (atomic_json,
+# atomic_write_text, contained, read_json); job lanes (Adapter, CapacityDeferred, ProcessAdapter, Result); doctor
+# checks (Check); the shared GPU probe (gpu, a module); time (now_iso).
 __all__ = [
     "Adapter",
     "CapacityDeferred",
     "Check",
     "Layout",
     "ProcessAdapter",
+    "Registry",
     "Result",
     "atomic_json",
     "atomic_write_text",

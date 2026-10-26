@@ -149,6 +149,8 @@ class Registry:
     _declared: dict[str, set[str]] = field(default_factory=dict)  # key -> paths its registration declares NOW
     projection_paths: set[str] = field(default_factory=set)     # root-relative files the projections write (verify excludes them)
     cli_apps: list[tuple[Any, str]] = field(default_factory=list)
+    adapters: dict[str, str] = field(default_factory=dict)          # lane name -> the extension that registered it
+    python_jobs: dict[str, str] = field(default_factory=dict)       # python job name -> the extension that registered it
     commands: dict[str, Callable] = field(default_factory=dict)    # command kinds registered by extensions (commands.HANDLERS has them too)
     inbox_kinds: dict[str, InboxKind] = field(default_factory=dict)
     template_dirs: list[Path] = field(default_factory=list)
@@ -227,8 +229,21 @@ class Registry:
         self.projection_paths = _paths_in_record(rec, configured) | self._all_declared()
 
     def adapter(self, adapter) -> None:
-        from .adapters.base import register
+        """A job lane: an `Adapter` instance, registered under its `name`. Call it from setup(), never at import
+        (importing an extension changes no registry). Registering the same object again is harmless (an extension
+        that also registers at import, as before 1.11.0); a name another lane already has, built in or another
+        extension's, is an error, never an overwrite: the new lane would take over that lane's jobs."""
+        from .adapters.base import REGISTRY, register
+        name = getattr(adapter, "name", None)
+        if not isinstance(name, str) or not name:
+            raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
+        current = REGISTRY.get(name)
+        if current is not None and current is not adapter:
+            raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
         register(adapter)
+        owner = self._setting_up or "?"
+        self.adapters[name] = owner
+        _extension_adapters[name] = owner
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)
@@ -285,8 +300,21 @@ class Registry:
         self.cli_apps.append((app, name))
 
     def python_job(self, name: str, fn: Callable) -> None:
-        from .adapters.python import job
-        job(name)(fn)
+        """A deterministic job for `job: {adapter: python, fn: <name>, params: {...}}`, `fn(root, run_dir, **params)
+        -> {"status", "artifacts", "notes"}`. Call it from setup(), never at import. Like `adapter()`, the same
+        function again is harmless and a name already taken is an error."""
+        from .adapters.python import JOBS
+        if not isinstance(name, str) or not name:
+            raise ExtensionError(f"a python job needs a non-empty string name, got {name!r}")
+        if not callable(fn):
+            raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
+        current = JOBS.get(name)
+        if current is not None and current is not fn:
+            raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
+        JOBS[name] = fn
+        owner = self._setting_up or "?"
+        self.python_jobs[name] = owner
+        _extension_jobs[name] = owner
 
     def command(self, kind: str, fn: Callable) -> None:
         """An owner command kind, `fn(layout, payload, actor) -> dict`, applied by whoever holds the state lock (the
@@ -349,6 +377,16 @@ class Registry:
 
 _registries: dict[str, Registry] = {}
 _extension_commands: set[str] = set()                        # command kinds extensions registered in this process
+_extension_adapters: dict[str, str] = {}                     # lane name -> extension, registered in this process
+_extension_jobs: dict[str, str] = {}                         # python job name -> extension, registered in this process
+
+
+def _holder(name: str, current, owners: dict[str, str]) -> str:
+    """Who has `name` already, for a refused registration."""
+    if name in owners:
+        return f"by extension {owners[name]!r}"
+    module = getattr(current, "__module__", None) or type(current).__module__
+    return "as a built-in" if module.startswith("supervisor.") else f"by {module} (at import)"
 
 
 def specs(layout: Layout) -> list[tuple[str, bool]]:
@@ -498,15 +536,78 @@ def assert_loaded(layout: Layout) -> Registry:
 
 
 def reset() -> None:
-    """Tests only: forget loaded registries and the per-project extension packages (adapters registered by
-    extensions stay registered)."""
+    """Tests only, a fresh process: forget loaded registries, the per-project extension packages, and the lanes,
+    python jobs and command kinds extensions registered through the registry (the built-in ones stay)."""
     _registries.clear()
     from . import commands as commands_mod
+    from .adapters.base import REGISTRY
+    from .adapters.python import JOBS
     for kind in _extension_commands:
         commands_mod.HANDLERS.pop(kind, None)
     _extension_commands.clear()
+    for name in _extension_adapters:
+        REGISTRY.pop(name, None)
+    _extension_adapters.clear()
+    for name in _extension_jobs:
+        JOBS.pop(name, None)
+    _extension_jobs.clear()
     for key in [k for k in sys.modules if k == NAMESPACE or k.startswith(NAMESPACE + ".")]:
         del sys.modules[key]
+
+
+# Run by import_side_effects() in a fresh interpreter: import every framework module first (so what they register
+# at their own import is not blamed on the extension), snapshot the process-wide registries, import the extension
+# module the way the loader does, and print which entries the import added, replaced or removed.
+_SIDE_EFFECTS_PROBE = """
+import importlib, json, pkgutil, sys
+import supervisor
+for info in pkgutil.walk_packages(supervisor.__path__, "supervisor."):
+    if info.name.rsplit(".", 1)[-1] == "__main__":
+        continue
+    try:
+        importlib.import_module(info.name)
+    except Exception:
+        pass
+from supervisor import commands, extensions
+from supervisor.adapters.base import REGISTRY
+from supervisor.adapters.python import JOBS
+from supervisor.paths import Layout
+
+def snapshot():
+    return {"adapters": {k: id(v) for k, v in REGISTRY.items()}, "python_jobs": {k: id(v) for k, v in JOBS.items()},
+            "commands": {k: id(v) for k, v in commands.HANDLERS.items()}}
+
+before = snapshot()
+extensions._import(Layout(sys.argv[1]), sys.argv[2])
+after = snapshot()
+changed = {k: sorted(n for n in before[k].keys() | after[k].keys() if before[k].get(n) != after[k].get(n))
+           for k in before}
+print()
+print(json.dumps(changed))
+"""
+
+
+def import_side_effects(layout: Layout, name: str, timeout_s: float = 120) -> dict[str, list[str]]:
+    """What importing extension `name` (as the loader would) changes in the process-wide registries, measured in a
+    fresh interpreter: {"adapters": [...], "python_jobs": [...], "commands": [...]}, each the names added, replaced
+    or removed. All empty for an extension that registers only in setup(). Raises ExtensionError when the module
+    does not import."""
+    import json
+    import os
+    import subprocess
+    framework = str(Path(__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": framework + (os.pathsep + os.environ["PYTHONPATH"]
+                                                    if os.environ.get("PYTHONPATH") else "")}
+    try:
+        out = subprocess.run([sys.executable, "-c", _SIDE_EFFECTS_PROBE, str(layout.root), name], cwd=str(layout.root),
+                             env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                             timeout=timeout_s, check=False)
+    except subprocess.TimeoutExpired:
+        raise ExtensionError(f"{name}: importing it in a fresh process took over {timeout_s:g} s") from None
+    if out.returncode != 0:
+        tail = (out.stderr.strip().splitlines() or ["(no output)"])[-1]
+        raise ExtensionError(f"{name}: does not import in a fresh process: {tail}")
+    return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 def scaffold_module(layout: Layout, name: str) -> Path:
@@ -523,6 +624,8 @@ def scaffold_module(layout: Layout, name: str) -> Path:
     p.write_text(f'''"""{name}: a project extension (see docs/FRAMEWORK_VS_EXTENSION.md in the framework repo).
 
 Registered in project.yaml under `extensions: [{name}]`. Everything here is specific to THIS project.
+Import only from `supervisor.ext` (the public extension API, docs/EXTENSION_API.md in the framework repo), and
+register only inside setup(): importing this module must change nothing.
 """
 from __future__ import annotations
 
@@ -530,12 +633,12 @@ from __future__ import annotations
 def setup(registry):
     # Examples — delete what you do not need:
     #
-    # from supervisor.doctor import Check
+    # from supervisor.ext import Check
     # registry.doctor_check(lambda layout: Check("{name}", True, "ok"))
     #
     # registry.overview_panel(lambda layout: {{"title": "{name}", "rows": [("status", "ok")]}})
     #
-    # from supervisor.adapters.process import ProcessAdapter
+    # from supervisor.ext import ProcessAdapter
     # class MyAdapter(ProcessAdapter):
     #     name = "my_lane"
     #     def prepare(self, layout, task, attempt_id): ...

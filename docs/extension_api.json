@@ -564,6 +564,269 @@
         }
       }
     },
+    "Registry": {
+      "bases": [
+        "typing.Protocol"
+      ],
+      "kind": "class",
+      "members": {
+        "adapter": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Adapter",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            }
+          ],
+          "returns": "None"
+        },
+        "cli": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "app"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "None"
+        },
+        "command": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "Callable[[Layout, dict, str], dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "doctor_check": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], Any]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "inbox_kind": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "label"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "page"
+            },
+            {
+              "annotation": "bool",
+              "default": "False",
+              "kind": "positional_or_keyword",
+              "name": "answerable"
+            },
+            {
+              "annotation": "bool",
+              "default": "True",
+              "kind": "positional_or_keyword",
+              "name": "show_evidence"
+            },
+            {
+              "annotation": "tuple[str, ...] | list[str]",
+              "default": "()",
+              "kind": "positional_or_keyword",
+              "name": "score_keys"
+            }
+          ],
+          "returns": "None"
+        },
+        "layout": {
+          "annotation": "Layout",
+          "kind": "field"
+        },
+        "overview_panel": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "packet_screen": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[..., None]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "projection": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], Path]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "None"
+        },
+        "python_job": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            },
+            {
+              "annotation": "Callable[..., dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "static_dir": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "prefix"
+            }
+          ],
+          "returns": "None"
+        },
+        "template_dir": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "None"
+        },
+        "ui_router": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "router"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "label"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "None"
+        }
+      }
+    },
     "Result": {
       "bases": [],
       "init": {

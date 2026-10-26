@@ -14,6 +14,41 @@ from supervisor.ext import Adapter, Check, Layout, Result, atomic_json, gpu
 The API is introduced in 1.11.0. Where a name is the framework's own object, re-exported unchanged, it says so: the
 behaviour described is the framework's, and a test reaches it through `supervisor.ext` (`tests/test_ext_reexports.py`).
 
+## Registration
+
+### `Registry`
+
+The object `setup(registry)` receives: an extension registers everything through it, from `setup()` only. Importing
+an extension module must change nothing, no registered lane, job or command and no started process, because the
+loader may import a module to inspect it before deciding to set it up. `supervisor.extensions.import_side_effects()`
+imports a module in a fresh interpreter and names every lane, python job and command kind the import itself
+registered; the reference extension's test holds it to none. The `Registry` exported here is a `typing.Protocol`, for
+type hints and documentation; the loader's own registry has exactly these signatures (a test keeps them equal).
+Extensions never construct one.
+
+| Hook | Registers |
+|---|---|
+| `layout` | the project's `Layout` (an attribute, not a hook) |
+| `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
+| `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
+| `doctor_check(fn)` | `fn(layout) -> Check` |
+| `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}` on the Overview |
+| `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)`, raising to refuse a brief |
+| `projection(fn, path=None, name=None)` | `fn(layout) -> Path`, an extra rendered markdown view |
+| `cli(app, name)` | a Typer app as `supervisor <name> ...` |
+| `command(kind, fn)` | an owner command kind `fn(layout, payload, actor) -> dict`, idempotent by `payload["_id"]` |
+| `inbox_kind(kind, label, page=None, answerable=False, show_evidence=True, score_keys=())` | an inbox item kind the extension creates and owns |
+| `ui_router(router, label, path)` | a FastAPI router and its sidebar entry |
+| `template_dir(path)` | Jinja templates, loaded after the framework's |
+| `static_dir(path, prefix)` | static files at `/static/<prefix>/...` |
+
+`docs/FRAMEWORK_VS_EXTENSION.md` describes each hook in full. Names are unique: `adapter()` refuses a lane name
+another lane already has, built in or another extension's, and `python_job()`, `command()` and `inbox_kind()` refuse
+a taken name the same way. A refusal is an `ExtensionError` from `setup()`: the extension does not load, and a
+required one blocks the loop. Registering the same object a second time is harmless, so an extension that still
+registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)` from the internal
+modules still work and are deprecated from 1.11.0.
+
 ## Project paths
 
 ### `Layout`

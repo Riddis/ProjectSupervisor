@@ -96,6 +96,19 @@ def test_a_constructor_records_its_parameters_not_a_return_annotation(tmp_path):
     assert [p["name"] for p in init["params"]] == ["name", "ok"] and "returns" not in init
 
 
+def test_a_protocol_records_its_methods_and_no_constructor(tmp_path):
+    """A Protocol is never constructed; its synthetic __init__ differs between Python versions."""
+    c = planted(tmp_path, """
+        from typing import Protocol
+        __all__ = ["Hooks"]
+        class Hooks(Protocol):
+            def adapter(self, adapter) -> None:
+                ...
+    """)
+    entry = c["names"]["Hooks"]
+    assert "init" not in entry and sorted(entry["members"]) == ["adapter"] and entry["bases"] == ["typing.Protocol"]
+
+
 def test_describe_refuses_a_name_in_all_that_does_not_exist(tmp_path):
     with pytest.raises(ac.ContractError, match="missing"):
         planted(tmp_path, '__all__ = ["missing"]\n')
