@@ -142,6 +142,51 @@ def _windows_private_temporary(path):
         kernel32.LocalFree(descriptor)
 
 
+def _windows_make_private(path):
+    """Give an existing file the owner-only DACL `_windows_private_temporary` creates files with. Its owner may always
+    change its DACL, so this works on a temporary file whose copied DACL no longer lets its owner delete it."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    set_security = advapi32.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    DACL, PROTECTED_DACL = 0x4, 0x80000000
+    descriptor = ctypes.c_void_p()
+    if not to_descriptor("D:P(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not set_security(str(path), DACL | PROTECTED_DACL, descriptor):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _discard(temporary, private=False):
+    """Remove a temporary file that will not replace anything. With `private` (a Windows keep=True file, which may
+    carry the old file's DACL by now) a refused delete is retried after making it owner-only again."""
+    try:
+        temporary.unlink()
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        if not private:
+            return
+    try:
+        _windows_make_private(temporary)
+        temporary.unlink()
+    except OSError:
+        pass
+
+
 def _keep_xattrs(source, target):
     """Make `target`'s extended attributes exactly `source`'s: POSIX ACLs (system.posix_acl_access) and any other.
     An attribute `target` has and `source` lacks is removed — a temporary file can inherit an access ACL from its
@@ -187,9 +232,10 @@ def atomic_write_text(path, text, newline=None, keep=False):
     `newline` is open()'s: None writes "\\n" as the platform's line ending, "" writes `text` exactly as given.
     `keep=True` makes the new file keep what an existing one had: its owner, group and permissions (POSIX mode bits
     and, on Linux, ACLs and every other extended attribute; the Windows DACL) are carried onto the temporary file,
-    which is private until then, before it replaces the old one, a symlink is followed (its target is replaced, the link stays),
-    and a file with several hard links is not replaced. When any of that is impossible it raises CannotKeep and the
-    old file stays exactly as it was. The default leaves the new file with the directory's defaults, as before.
+    which is private until then, before it replaces the old one; a symlink is followed (its target is replaced, the
+    link stays), and a file with several hard links is not replaced. When any of that is impossible, or the replace
+    itself is refused (no right to delete the old file), it raises CannotKeep, removes the temporary file and leaves
+    the old file exactly as it was. The default leaves the new file with the directory's defaults, as before.
     """
     path = Path(path)
     if keep and path.is_symlink():
@@ -217,10 +263,7 @@ def atomic_write_text(path, text, newline=None, keep=False):
                 raise CannotKeep(f"{path}: the rewritten file could not keep its owner, group and permissions "
                                  f"({exc}); nothing was replaced. Rewrite it as the account that owns it") from exc
     except BaseException:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+        _discard(temporary, private=keep and os.name == "nt")
         raise
     try:
         for attempt in range(_REPLACE_ATTEMPTS):
@@ -240,11 +283,12 @@ def atomic_write_text(path, text, newline=None, keep=False):
                 elif attempt == _REPLACE_ATTEMPTS - 1 or not _transient_replace_error(exc, temporary):
                     raise
                 time.sleep(min(0.4, 0.02 * (attempt + 1)))
-    except BaseException:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+    except BaseException as exc:
+        _discard(temporary, private=keep and os.name == "nt")
+        if keep and isinstance(exc, PermissionError) and not isinstance(exc, CannotKeep):
+            raise CannotKeep(f"{path}: could not be replaced ({exc}); nothing was replaced. An atomic rewrite needs "
+                             f"the right to delete the old file (or its folder's delete-child right), and no other "
+                             f"process holding it open") from exc
         raise
 
 

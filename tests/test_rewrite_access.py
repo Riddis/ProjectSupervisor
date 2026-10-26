@@ -220,6 +220,30 @@ def test_the_temporary_file_is_private_while_it_holds_the_new_content(tmp_path, 
         assert seen["access"] & 0o077 == 0, oct(seen["access"])
 
 
+@windows_only
+def test_a_file_that_may_not_be_deleted_is_refused_cleanly(tmp_path):
+    """A file the user may read and write but not delete, in a folder that grants no delete-child: the in-place write
+    of 1.10.0 could rewrite it, an atomic replace cannot. Before this fix the replace failed as a bare PermissionError
+    and the temporary file stayed behind (the old DACL, copied onto it, did not allow deleting it either)."""
+    user = f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"
+    folder = tmp_path / "nodelete"
+    folder.mkdir()
+    subprocess.run(["icacls", str(folder), "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)M"],
+                   capture_output=True, check=True)              # modify: no delete-child on the folder
+    p = folder / "doc.yaml"
+    p.write_bytes(b"a: 1\r\n")
+    subprocess.run(["icacls", str(p), "/inheritance:r", "/grant:r", f"{user}:(R,W)"], capture_output=True, check=True)
+    before = _sddl(p)
+    try:
+        with pytest.raises(contract.CannotKeep, match="nothing was replaced"):
+            store.rewrite_text(p, "a: 2\n")
+        assert p.read_bytes() == b"a: 1\r\n" and _sddl(p) == before
+        assert _leftovers(folder, "doc.yaml") == []
+    finally:                                                     # let pytest remove its temporary tree
+        for q in [p, *folder.iterdir()]:
+            subprocess.run(["icacls", str(q), "/grant", f"{user}:F"], capture_output=True)
+
+
 def test_a_rewrite_that_cannot_keep_the_access_is_refused(tmp_path, monkeypatch):
     p = tmp_path / "doc.yaml"
     p.write_bytes(b"a: 1\n")
