@@ -139,6 +139,7 @@ def _class(cls, internal, public) -> dict:
     out: dict = {"kind": "class", "bases": bases}
     init = _signature(cls)
     if init is not None:
+        init.pop("returns", None)                     # a constructor returns the instance, whatever __init__ says
         out["init"] = init
     out["members"] = dict(sorted(members.items()))
     return out

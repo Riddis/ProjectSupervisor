@@ -18,7 +18,13 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   with `git show <last v* tag>:docs/extension_api.json`; a shallow clone fails instead of passing unchecked. CI runs
   it as the job `G2 extension API`, with the full history; 1.11.0 records the first contract, so the comparison
   starts with the release after it.
-- **Extension API:** the package `supervisor.ext` exists; its `__all__` is the contract and is still empty.
+- **Extension API:** the package `supervisor.ext`, documented in `docs/EXTENSION_API.md`; its `__all__` is the
+  contract. Re-exported unchanged, with tests through `supervisor.ext` for the behaviour extensions rely on: `Layout`
+  (paths from the project root), the file helpers `atomic_write_text`, `atomic_json`, `read_json` and `contained`
+  (atomic replace that waits out a reader on Windows; a path outside the root is not contained), the lane classes
+  `Adapter`, `ProcessAdapter` and `Result`, `CapacityDeferred` (a deferral costs no attempt), the doctor's `Check`,
+  the GPU probe `gpu` (never raises) and `now_iso`. `Layout`'s paths and `CapacityDeferred.reset_epoch` are now
+  declared on their classes, so the contract records them; nothing else about them changes.
 
 ## 1.10.1 — 2026-10-25
 

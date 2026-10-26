@@ -82,6 +82,20 @@ def test_describe_skips_members_inherited_from_outside_the_framework(tmp_path):
     assert c["names"]["Codec"]["bases"] == ["json.encoder.JSONEncoder"]
 
 
+def test_a_constructor_records_its_parameters_not_a_return_annotation(tmp_path):
+    """A dataclass's generated __init__ carries a return annotation whose text differs between Python versions."""
+    c = planted(tmp_path, """
+        from dataclasses import dataclass
+        __all__ = ["Check"]
+        @dataclass
+        class Check:
+            name: str
+            ok: bool = True
+    """)
+    init = c["names"]["Check"]["init"]
+    assert [p["name"] for p in init["params"]] == ["name", "ok"] and "returns" not in init
+
+
 def test_describe_refuses_a_name_in_all_that_does_not_exist(tmp_path):
     with pytest.raises(ac.ContractError, match="missing"):
         planted(tmp_path, '__all__ = ["missing"]\n')

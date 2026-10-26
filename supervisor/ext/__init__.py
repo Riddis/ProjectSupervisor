@@ -6,4 +6,28 @@ Modules in this package may import framework internals; nothing outside it impor
 way. A name is exported only when an extension needs it (docs/BOUNDARY.md); everything else stays internal."""
 from __future__ import annotations
 
-__all__: list[str] = []
+from .. import gpu
+from .._vendor.contract import CapacityDeferred, atomic_json, atomic_write_text, contained, read_json
+from ..adapters.base import Adapter, Result
+from ..adapters.process import ProcessAdapter
+from ..doctor import Check
+from ..paths import Layout
+from ..store import now_iso
+
+# Grouped by purpose in docs/EXTENSION_API.md: project paths (Layout); files (atomic_json, atomic_write_text,
+# contained, read_json); job lanes (Adapter, CapacityDeferred, ProcessAdapter, Result); doctor checks (Check); the
+# shared GPU probe (gpu, a module); time (now_iso).
+__all__ = [
+    "Adapter",
+    "CapacityDeferred",
+    "Check",
+    "Layout",
+    "ProcessAdapter",
+    "Result",
+    "atomic_json",
+    "atomic_write_text",
+    "contained",
+    "gpu",
+    "now_iso",
+    "read_json",
+]

@@ -530,6 +530,7 @@ class CleanupRequired(RuntimeError):
 
 class CapacityDeferred(RuntimeError):
     """No model was launched: the measured capacity reserve gates this job (costs no attempt)."""
+    reset_epoch: float                        # epoch seconds: the earliest time the job may be launched again
 
     def __init__(self, reset_epoch, message):
         super().__init__(message)
