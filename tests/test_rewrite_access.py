@@ -18,9 +18,34 @@ windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows ACLs")
 
 
 def _sddl(path) -> str:
-    out = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{path}').Sddl"],
-                         capture_output=True, encoding="utf-8", errors="replace", check=True)
-    return out.stdout.strip()
+    """The file's owner, group and DACL as SDDL, read natively (GetFileSecurityW + ConvertSecurityDescriptorTo-
+    StringSecurityDescriptorW), not through the code under test and not through a PowerShell child, whose module path
+    depends on the caller's environment (review 1.10.1 F7: Get-Acl could not load in Windows CI)."""
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_security = advapi32.GetFileSecurityW
+    get_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD)]
+    get_security.restype = wintypes.BOOL
+    to_string = advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    to_string.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR),
+                          ctypes.POINTER(wintypes.ULONG)]
+    to_string.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    info = 0x1 | 0x2 | 0x4                                  # owner, group, DACL
+    needed = wintypes.DWORD(0)
+    get_security(str(path), info, None, 0, ctypes.byref(needed))
+    assert needed.value, ctypes.WinError(ctypes.get_last_error())
+    buffer = ctypes.create_string_buffer(needed.value)
+    assert get_security(str(path), info, buffer, needed, ctypes.byref(needed)), ctypes.WinError(ctypes.get_last_error())
+    text = wintypes.LPWSTR()
+    assert to_string(buffer, 1, info, ctypes.byref(text), None), ctypes.WinError(ctypes.get_last_error())
+    try:
+        return text.value
+    finally:
+        kernel32.LocalFree(text)
 
 
 def _leftovers(directory, name):
