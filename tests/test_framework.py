@@ -299,6 +299,8 @@ def test_legacy_approval_responses_are_migrated(fresh):
     p.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
     (layout.inbox / "H-01.yaml").write_text(yaml.safe_dump({"id": "H-01", "status": "open", "for": "owner",
                                                             "allowed_responses": ["ACCEPT", "MORE_LIKE", "REGENERATE"]}), encoding="utf-8")
+    (layout.inbox / "H-02.yaml").write_text(yaml.safe_dump({"id": "H-02", "status": "open", "for": "owner",
+                                                            "allowed_responses": ["APPROVE", "REJECT", "MORE_LIKE"]}), encoding="utf-8")
     with pytest.raises(tasks_mod.TaskError):
         tasks_mod.load(layout, "T-01")
     notes = migrations.run(layout, dry_run=True)
@@ -308,6 +310,80 @@ def test_legacy_approval_responses_are_migrated(fresh):
     t = tasks_mod.load(layout, "T-01")
     assert [a.response.value for a in t.delivery.approvals] == ["REDO", "ACCEPT"]
     assert yaml.safe_load((layout.inbox / "H-01.yaml").read_text(encoding="utf-8"))["allowed_responses"] == ["ACCEPT", "REDO"]
+    assert yaml.safe_load((layout.inbox / "H-02.yaml").read_text(encoding="utf-8"))["allowed_responses"] == [
+        "APPROVE", "REJECT", "REDO"]                     # APPROVE is a current allowed response, not a legacy one
+    assert migrations.run(layout) == []
+
+
+def test_migrate_leaves_the_approvals_the_framework_opens_unchanged(fresh):
+    """APPROVE is the current spelling of an approval item's allowed response (inbox.APPROVAL_RESPONSES), not a
+    legacy one: an approval opened by this framework, open or answered, survives two migrate runs byte for byte."""
+    from supervisor import inbox as inbox_mod
+    layout = Layout(fresh)
+    make_task(layout, "T-01", status="WAITING_FOR_HUMAN", human="required")
+    opened = [inbox_mod.create(layout, for_role="owner", subject=f"Approve delivery: T-01 ({d})", summary="s",
+                               kind=inbox_mod.APPROVAL_KIND, allowed_responses=inbox_mod.APPROVAL_RESPONSES,
+                               free_text=True, from_="loop", task_id="T-01", approval_digest=d)
+              for d in ("d1", "d2")]
+    inbox_mod.answer(layout, opened[0]["id"], "APPROVE", by="owner")
+    files = sorted(layout.inbox.glob("*.yaml"))
+    before = {p.name: p.read_bytes() for p in files}
+    assert [yaml.safe_load(b)["allowed_responses"] for b in before.values()] == [["APPROVE", "REJECT", "MODIFY"]] * 2
+    for dry_run in (True, False, False):
+        notes = migrations.run(layout, dry_run=dry_run)
+        assert not [n for n in notes if "inbox" in n], notes
+        assert {p.name: p.read_bytes() for p in files} == before
+
+
+@pytest.fixture
+def interrupted_writes(monkeypatch):
+    """`interrupted_writes(True)`: from then on every file opened for writing is interrupted right after the open,
+    before a byte is written (Path.open and os.fdopen both open through io.open); `interrupted_writes(False)` ends it."""
+    import io
+    real_open = io.open
+
+    def open_(file, mode="r", *args, **kwargs):
+        stream = real_open(file, mode, *args, **kwargs)
+        if "w" in mode:
+            stream.close()
+            raise OSError("interrupted after the open")
+        return stream
+
+    return lambda on: monkeypatch.setattr(io, "open", open_ if on else real_open)
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_an_interrupted_rewrite_keeps_the_old_file(tmp_path, interrupted_writes, newline):
+    """Review 1.10.1 F2: rewrite_text truncated the file in place, so an interruption left it empty."""
+    from supervisor import store
+    p = tmp_path / "doc.yaml"
+    old = f"id: H-01{newline}summary: keep me{newline}".encode()
+    p.write_bytes(old)
+    interrupted_writes(True)
+    with pytest.raises(OSError, match="interrupted"):
+        store.rewrite_text(p, "id: H-01\nsummary: changed\n")
+    interrupted_writes(False)
+    assert p.read_bytes() == old
+    assert [q.name for q in tmp_path.iterdir()] == ["doc.yaml"]           # no temporary file left behind
+    assert store.rewrite_text(p, "id: H-01\nsummary: changed\n")
+    assert p.read_bytes() == f"id: H-01{newline}summary: changed{newline}".encode()
+
+
+def test_migrate_interrupted_mid_write_resumes_without_losing_the_item(fresh, interrupted_writes):
+    """Review 1.10.1 F2: an interruption while migrate rewrote an item erased it, and the rerun saw nothing left to do."""
+    layout = Layout(fresh)
+    item = layout.inbox / "H-01.yaml"
+    item.write_text(yaml.safe_dump({"id": "H-01", "status": "open", "for": "owner", "summary": "keep me",
+                                    "allowed_responses": ["MORE_LIKE"]}), encoding="utf-8")
+    old = item.read_bytes()
+    interrupted_writes(True)
+    with pytest.raises(OSError, match="interrupted"):
+        migrations.run(layout)
+    interrupted_writes(False)
+    assert item.read_bytes() == old
+    assert any("H-01.yaml" in n for n in migrations.run(layout))
+    doc = yaml.safe_load(item.read_text(encoding="utf-8"))
+    assert (doc["summary"], doc["allowed_responses"]) == ("keep me", ["REDO"])
     assert migrations.run(layout) == []
 
 

@@ -3,15 +3,61 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.10.1 — 2026-10-25
+
+Fixes only: a migration that rewrote current approval items on every run, a human job failing on `APPROVE`, an
+interrupted migrate able to empty a file, and a racy test.
+
+**Migration:** none added. `supervisor migrate` records the new version and, unlike 1.10.0, leaves approval items
+the loop opened alone. Its dry run on a project at 1.10.0 lists only `project.yaml: framework_version 1.10.0 →
+1.10.1` (plus any pre-1.0.0 response it would still map). **Rollback** to v1.10.0, in a maintenance window: drain,
+stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewrites `APPROVE` in approval items as
+1.10.0 always did), `supervisor doctor`, start; nothing 1.10.1 writes is new to 1.10.0.
+
+- **Fixed: `supervisor migrate` no longer rewrites the approvals the framework opens.** The 1.1.1 migration
+  (`migrations._approval_responses`) mapped `APPROVE` → `ACCEPT` in every inbox item's `allowed_responses`, but
+  `APPROVE` is the current spelling there: the loop writes `inbox.APPROVAL_RESPONSES` (`APPROVE`, `REJECT`, `MODIFY`)
+  into every approval item it opens. So every `supervisor migrate` rewrote, and re-dumped, each approval item opened
+  since the last run, answered ones included. The migration now maps only the pre-1.0.0 `MORE_LIKE` and `REGENERATE`
+  there; `APPROVE` → `ACCEPT` in a recorded approval response (`ApprovalResponse` has no `APPROVE`) is unchanged.
+  Items an earlier run already rewrote are left as they are: their buttons read `ACCEPT`, which answers an approval
+  the same way (`inbox.APPROVAL_ALIASES`), and answered items are history. No state or config shape change.
+- **Fixed: a human job that offers `APPROVE` completes on it.** A `human` job may offer the approval list
+  (`job.allowed_responses: [APPROVE, REJECT, MODIFY]`). Its inbox item belongs to the attempt, so the approval aliases
+  never applied, and the adapter completed only on `ACCEPT` or free text: answering `APPROVE` failed the job. 1.10.0's
+  migrate hid this by turning such a list into `ACCEPT`; with that rewrite gone the adapter now reads `APPROVE` as
+  `ACCEPT` itself (`adapters/human.py`). Other custom words keep their meaning: anything but `ACCEPT`, `APPROVE` or
+  free text still fails the job, with the answer as the note.
+- **Fixed: an interrupted `supervisor migrate` can no longer empty a file.** `store.rewrite_text`, which migrations and
+  `project.write` use (the `framework_version` update, `supervisor extension new`), truncated the file and then wrote
+  it, so a process stopped in between left an empty file. A rerun then read it as an empty document and had nothing
+  to migrate, so the content was lost (since 1.8.4). It now writes a temporary file and replaces the original
+  atomically, like every store write, keeping the file's LF or CRLF; an interruption leaves the old file whole, and
+  the rerun finishes the job. The rewritten file keeps what the old one had, as the in-place write did: its owner,
+  group and permissions (POSIX mode bits and, on Linux, POSIX ACLs and every other extended attribute, so a
+  directory's default ACL cannot add a grant the old file did not have; on Windows the DACL, including protection
+  from inheritance; other POSIX systems keep owner, group and mode bits only), and its links
+  (a symlink's target is rewritten and the link stays). The temporary file is private from its creation (POSIX mode
+  0600; on Windows a DACL granting only its owner, set in the call that creates it), so the new content is never
+  open to other accounts before the old file's access is applied, nor in a temporary file a killed process leaves
+  behind. When that cannot be kept — a file owned by another account,
+  a group the writer is not in, a file with several hard links, a file the account may write but not delete (the
+  in-place write of 1.10.0 could rewrite that one; a replace cannot) — the file is not rewritten: `supervisor migrate`
+  stops with an error naming it, the file is left exactly as it was, and a rerun after fixing it finishes the job.
+  The temporary copy is removed; on Windows an old DACL that denies even its owner the right to change it (an OWNER
+  RIGHTS entry) can prevent that, and the error then names the copy left behind, which has the old file's access.
+  Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes two optional arguments, `newline` (as
+  `open()`'s) and `keep` (keep the existing file's access and links, or raise the new `CannotKeep`); both default to
+  the old behaviour.
 
 - **Tests: the diagnosis launch test no longer races its fake agent.**
   `test_a_diagnosis_launch_does_not_flip_the_blocked_task_to_in_progress` asserted that a diagnosis job was still in
   flight right after launch, but the fake manager could answer, and the same loop iteration ingest its diagnosis,
   before the assertion ran (reproducible on 1.9.0 and 1.10.0 by holding `submit()` until the fake exits). The fake
   (`tests/fixtures/fake_diagnosis.py`) now waits for a release file when `FAKE_DIAGNOSIS_HOLD` is set; the test checks
-  the launch state while it is held, then releases it and waits for the job to finish. Test-only: no framework code
-  changes.
+  the launch state while it is held, then releases it and waits for the job to finish. The same race, and the same
+  hold, in `test_exhausted_retries_dispatch_one_manager_diagnosis_not_an_owner_item`, whose fake manager could requeue
+  the task before it was checked as stopped. Test-only: no framework code changes.
 
 ## 1.10.0 — 2026-10-25
 

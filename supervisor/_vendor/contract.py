@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -31,26 +32,252 @@ def _transient_replace_error(exc, temporary):
     return isinstance(exc, PermissionError) or code in (5, 32, 33) or (code == 2 and temporary.exists())
 
 
-def atomic_write_text(path, text):
+class CannotKeep(PermissionError):
+    """atomic_write_text(keep=True) could not give the new file what the old one had (owner, group, permissions,
+    links). Nothing was replaced: the old file is exactly as it was."""
+
+
+def _windows_keep_access(source, target):
+    """Give `target` the DACL of `source`, its protection from inheritance included, and its owner and group where they
+    differ (setting an owner other than oneself needs a privilege, so that fails and the caller refuses)."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    get_security = advapi32.GetFileSecurityW
+    get_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD)]
+    get_security.restype = wintypes.BOOL
+    set_security = advapi32.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    get_control = advapi32.GetSecurityDescriptorControl
+    get_control.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD)]
+    get_control.restype = wintypes.BOOL
+    sid_getters = (advapi32.GetSecurityDescriptorOwner, advapi32.GetSecurityDescriptorGroup)
+    for getter in sid_getters:
+        getter.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+        getter.restype = wintypes.BOOL
+    equal_sid = advapi32.EqualSid
+    equal_sid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    equal_sid.restype = wintypes.BOOL
+    set_control = advapi32.SetSecurityDescriptorControl
+    set_control.argtypes = [ctypes.c_void_p, wintypes.WORD, wintypes.WORD]
+    set_control.restype = wintypes.BOOL
+    OWNER, GROUP, DACL = 0x1, 0x2, 0x4
+    PROTECTED_DACL, UNPROTECTED_DACL, SE_DACL_PROTECTED = 0x80000000, 0x20000000, 0x1000
+    SE_DACL_AUTO_INHERITED, SE_DACL_AUTO_INHERIT_REQ = 0x0400, 0x0100
+
+    def check(ok):
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def descriptor(path):
+        needed = wintypes.DWORD(0)
+        get_security(str(path), OWNER | GROUP | DACL, None, 0, ctypes.byref(needed))
+        if not needed.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(needed.value)
+        check(get_security(str(path), OWNER | GROUP | DACL, buffer, needed, ctypes.byref(needed)))
+        return buffer
+
+    def sid(buffer, getter):
+        value, defaulted = ctypes.c_void_p(), wintypes.BOOL()
+        check(getter(buffer, ctypes.byref(value), ctypes.byref(defaulted)))
+        return value
+
+    old, new = descriptor(source), descriptor(target)
+    control, revision = wintypes.WORD(), wintypes.DWORD()
+    check(get_control(old, ctypes.byref(control), ctypes.byref(revision)))
+    info = DACL | (PROTECTED_DACL if control.value & SE_DACL_PROTECTED else UNPROTECTED_DACL)
+    if control.value & SE_DACL_AUTO_INHERITED:              # SetFileSecurity keeps that bit only when asked to
+        check(set_control(old, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ))
+    for flag, getter in zip((OWNER, GROUP), sid_getters):
+        if not equal_sid(sid(old, getter), sid(new, getter)):
+            info |= flag                                   # an unchanged owner or group is not rewritten
+    check(set_security(str(target), info, old))
+
+
+def _windows_private_temporary(path):
+    """Create a new, empty temporary file beside `path` whose DACL is set in the same call that creates it
+    (CreateFileW with a security descriptor) and grants only its owner (OWNER RIGHTS, protected from inheritance), so
+    no other account can open it at any moment, with or without content. Returns (fd, name), like mkstemp."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes),
+                            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    GENERIC_WRITE, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, ERROR_FILE_EXISTS = 0x40000000, 1, 0x80, 80
+    invalid = ctypes.c_void_p(-1).value
+    descriptor = ctypes.c_void_p()
+    if not to_descriptor("D:P(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        for _ in range(100):
+            name = os.path.join(str(Path(path).parent), f".{Path(path).name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
+            handle = create_file(name, GENERIC_WRITE, 0, ctypes.byref(attributes), CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                                 None)
+            if handle not in (None, invalid):
+                return msvcrt.open_osfhandle(handle, os.O_WRONLY), name   # binary fd; the fd now owns the handle
+            error = ctypes.get_last_error()
+            if error != ERROR_FILE_EXISTS:
+                raise ctypes.WinError(error)
+        raise FileExistsError(f"no free temporary name beside {path}")
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _windows_make_private(path):
+    """Give an existing file the owner-only DACL `_windows_private_temporary` creates files with. Its owner may change
+    its DACL — unless that DACL has an OWNER RIGHTS entry taking WRITE_DAC away, in which case this raises."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    set_security = advapi32.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    DACL, PROTECTED_DACL = 0x4, 0x80000000
+    descriptor = ctypes.c_void_p()
+    if not to_descriptor("D:P(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not set_security(str(path), DACL | PROTECTED_DACL, descriptor):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
+def _discard(temporary, private=False):
+    """Remove a temporary file that will not replace anything; False when it could not be removed. With `private` (a
+    Windows keep=True file, which may carry the old file's DACL by now) a refused delete is retried after making it
+    owner-only again, which the copied DACL can also refuse (review 1.10.1 F9): then the file stays, with the old
+    file's access and the new content, and the caller names it."""
+    try:
+        temporary.unlink()
+        return True
+    except FileNotFoundError:
+        return True
+    except OSError:
+        if not private:
+            return False
+    try:
+        _windows_make_private(temporary)
+        temporary.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _left_behind(temporary, removed):
+    return "" if removed else f" A temporary copy with the new content and the old file's access was left at {temporary}."
+
+
+def _keep_xattrs(source, target):
+    """Make `target`'s extended attributes exactly `source`'s: POSIX ACLs (system.posix_acl_access) and any other.
+    An attribute `target` has and `source` lacks is removed — a temporary file can inherit an access ACL from its
+    directory's default ACL that the old file did not have. Raises OSError when one cannot be set or removed;
+    _keep_access compares the result once the mode bits are set too."""
+    wanted = {name: os.getxattr(source, name) for name in os.listxattr(source)}
+    for name in os.listxattr(target):
+        if name not in wanted:
+            os.removexattr(target, name)
+    for name, value in wanted.items():
+        try:
+            current = os.getxattr(target, name)
+        except OSError:
+            current = None
+        if current != value:                                # an equal one is not rewritten (a label may be guarded)
+            os.setxattr(target, name, value)
+
+
+def _keep_access(source, target):
+    """Give `target` the owner, group and permissions of `source`: on POSIX its uid, gid and mode bits, and on Linux
+    every extended attribute (POSIX ACLs included; other POSIX systems offer no API for theirs); on Windows its DACL
+    (protection included), owner and group. Raises OSError when any of it cannot be set."""
+    if os.name == "nt":
+        _windows_keep_access(source, target)
+        return
+    st = os.stat(source)
+    os.chown(target, st.st_uid, st.st_gid)                 # a different owner, or a group one is not in: EPERM
+    if hasattr(os, "listxattr"):
+        _keep_xattrs(source, target)
+    os.chmod(target, stat.S_IMODE(st.st_mode))             # last: after chown (it may clear set-id bits) and the ACL
+    if hasattr(os, "listxattr") and _xattr_values(target) != _xattr_values(source):
+        raise OSError(f"the extended attributes of {target} differ from {source} after copying")
+
+
+def _xattr_values(path):
+    return {name: os.getxattr(path, name) for name in os.listxattr(path)}
+
+
+def atomic_write_text(path, text, newline=None, keep=False):
     """Write via a unique temporary file and an atomic replace, retrying lock conflicts.
 
     Prevents torn files. It does NOT prevent lost updates — that is the store's job (rev + lock).
+    `newline` is open()'s: None writes "\\n" as the platform's line ending, "" writes `text` exactly as given.
+    `keep=True` makes the new file keep what an existing one had: its owner, group and permissions (POSIX mode bits
+    and, on Linux, ACLs and every other extended attribute; the Windows DACL) are carried onto the temporary file,
+    which is private until then, before it replaces the old one; a symlink is followed (its target is replaced, the
+    link stays), and a file with several hard links is not replaced. When any of that is impossible, or the temporary
+    file cannot be created or the replace itself is refused (no right to delete the old file), it raises CannotKeep
+    and leaves the old file exactly as it was. It removes the temporary file; when even that is refused (the copied
+    DACL can deny it to the owner), the message names the copy left behind, which has the old file's access.
+    The default leaves the new file with the directory's defaults, as before.
     """
     path = Path(path)
+    if keep and path.is_symlink():
+        path = Path(os.path.realpath(path))
+    if keep and path.exists() and os.stat(path).st_nlink > 1:
+        raise CannotKeep(f"{path}: has {os.stat(path).st_nlink} hard links, which replacing it would split; "
+                         f"remove the extra links or rewrite it in place by hand")
     path.parent.mkdir(parents=True, exist_ok=True)
     # mkstemp: the OS guarantees a fresh name (O_EXCL). A PID + clock name is not unique on Windows, where the clock
     # ticks coarsely enough for two threads to pick the same name and one to hit the other's open handle.
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    # With keep=True on Windows the temporary file is private from creation instead (mkstemp's 0600 is a POSIX mode,
+    # not a DACL there): it holds the new content before the old file's access is carried over (review 1.10.1 F5).
+    try:
+        if keep and os.name == "nt":
+            fd, name = _windows_private_temporary(path)
+        else:
+            fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    except PermissionError as exc:
+        if not keep:
+            raise
+        raise CannotKeep(f"{path}: no temporary file could be created beside it ({exc}); nothing was replaced") from exc
     temporary = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:
             handle.write(text)
-    except BaseException:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+        if keep and path.exists():
+            try:
+                _keep_access(path, temporary)
+            except OSError as exc:
+                raise CannotKeep(f"{path}: the rewritten file could not keep its owner, group and permissions "
+                                 f"({exc}); nothing was replaced. Rewrite it as the account that owns it") from exc
+    except BaseException as exc:
+        _after_failure(exc, path, temporary, keep, replacing=False)
     try:
         for attempt in range(_REPLACE_ATTEMPTS):
             try:
@@ -63,16 +290,31 @@ def atomic_write_text(path, text):
                     # both leave an untorn file, which is all this function promises (lost updates are the store's job).
                     if path.exists():
                         return
-                    temporary.write_text(text, encoding="utf-8")       # target vanished too: rewrite and retry
+                    if keep:                               # the old file, and what it had, are gone: nothing to keep
+                        raise CannotKeep(f"{path}: replaced or removed by another writer during the rewrite")
+                    temporary.write_text(text, encoding="utf-8", newline=newline)  # target vanished too: rewrite, retry
                 elif attempt == _REPLACE_ATTEMPTS - 1 or not _transient_replace_error(exc, temporary):
                     raise
                 time.sleep(min(0.4, 0.02 * (attempt + 1)))
-    except BaseException:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+    except BaseException as exc:
+        _after_failure(exc, path, temporary, keep, replacing=True)
+
+
+def _after_failure(exc, path, temporary, keep, replacing):
+    """Remove the temporary file after `exc` and raise what the caller sees: with `keep`, a refused replace as
+    CannotKeep; a temporary file that could not be removed is named (in a CannotKeep's message, else as a note)."""
+    left = _left_behind(temporary, _discard(temporary, private=keep and os.name == "nt"))
+    if keep and isinstance(exc, CannotKeep):
+        if left:
+            raise CannotKeep(f"{exc}{left}") from exc
+        raise exc
+    if keep and replacing and isinstance(exc, PermissionError):
+        raise CannotKeep(f"{path}: could not be replaced ({exc}); nothing was replaced. An atomic rewrite needs the "
+                         f"right to delete the old file (or its folder's delete-child right), and no other process "
+                         f"holding it open.{left}") from exc
+    if left:
+        exc.add_note(left.strip())
+    raise exc
 
 
 def atomic_json(path, data):

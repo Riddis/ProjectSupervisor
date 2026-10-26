@@ -1,7 +1,7 @@
 """Human adapter: writes an inbox item, sets the task to WAITING_FOR_HUMAN, and waits — a human
 gate never times out. `collect()` returns None (still waiting) until the owner answers in the Control Center or via
-`supervisor inbox answer`; the answer then maps to a delivery status: ACCEPT or free text (the owner's own words are the
-deliverable) → COMPLETE; REJECT/MODIFY/REDO → FAILED, with the full response (including any
+`supervisor inbox answer`; the answer then maps to a delivery status: ACCEPT (or APPROVE, the inbox's spelling of it on
+an approval list) or free text (the owner's own words are the deliverable) → COMPLETE; REJECT/MODIFY/REDO → FAILED, with the full response (including any
 argument, e.g. "MODIFY shorter summary") recorded as the failure note so a later attempt can act on the feedback —
 `FAILED` tasks are re-dispatchable, unlike a silent drop."""
 from __future__ import annotations
@@ -16,7 +16,9 @@ from ..models.task import TaskStatus
 from ..paths import Layout
 from .base import Adapter, Result, register
 
-ACCEPTED_KINDS = {"ACCEPT", "text"}
+# APPROVE is ACCEPT as an approval list spells it (inbox.APPROVAL_RESPONSES): a human job may offer that list, and its
+# item is attempt-backed, so inbox.apply_approval's aliases never reach it. Other custom words keep their own meaning.
+ACCEPTED_KINDS = {"ACCEPT", "APPROVE", "text"}
 DEFER_SECONDS = 300.0
 
 
