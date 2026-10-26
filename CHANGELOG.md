@@ -35,7 +35,10 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   atomically, like every store write, keeping the file's LF or CRLF; an interruption leaves the old file whole, and
   the rerun finishes the job. The rewritten file keeps what the old one had, as the in-place write did: its owner,
   group and permissions (POSIX mode bits; on Windows the DACL, including protection from inheritance), and its links
-  (a symlink's target is rewritten and the link stays). When that cannot be kept — a file owned by another account,
+  (a symlink's target is rewritten and the link stays). The temporary file is private from its creation (POSIX mode
+  0600; on Windows a DACL granting only its owner, set in the call that creates it), so the new content is never
+  open to other accounts before the old file's access is applied, nor in a temporary file a killed process leaves
+  behind. When that cannot be kept — a file owned by another account,
   a group the writer is not in, a file with several hard links — the file is not rewritten: `supervisor migrate`
   stops with an error naming it, the file is left exactly as it was, and a rerun after fixing it finishes the job.
   Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes two optional arguments, `newline` (as

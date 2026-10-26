@@ -98,6 +98,50 @@ def _windows_keep_access(source, target):
     check(set_security(str(target), info, old))
 
 
+def _windows_private_temporary(path):
+    """Create a new, empty temporary file beside `path` whose DACL is set in the same call that creates it
+    (CreateFileW with a security descriptor) and grants only its owner (OWNER RIGHTS, protected from inheritance), so
+    no other account can open it at any moment, with or without content. Returns (fd, name), like mkstemp."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class SecurityAttributes(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(SecurityAttributes),
+                            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create_file.restype = wintypes.HANDLE
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    GENERIC_WRITE, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, ERROR_FILE_EXISTS = 0x40000000, 1, 0x80, 80
+    invalid = ctypes.c_void_p(-1).value
+    descriptor = ctypes.c_void_p()
+    if not to_descriptor("D:P(A;;FA;;;OW)", 1, ctypes.byref(descriptor), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        for _ in range(100):
+            name = os.path.join(str(Path(path).parent), f".{Path(path).name}.{os.getpid()}.{os.urandom(6).hex()}.tmp")
+            handle = create_file(name, GENERIC_WRITE, 0, ctypes.byref(attributes), CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+                                 None)
+            if handle not in (None, invalid):
+                return msvcrt.open_osfhandle(handle, os.O_WRONLY), name   # binary fd; the fd now owns the handle
+            error = ctypes.get_last_error()
+            if error != ERROR_FILE_EXISTS:
+                raise ctypes.WinError(error)
+        raise FileExistsError(f"no free temporary name beside {path}")
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
 def _keep_access(source, target):
     """Give `target` the owner, group and permissions of `source`: on POSIX its uid, gid and mode bits; on Windows its
     DACL (protection included), owner and group. Raises OSError when any of it cannot be set."""
@@ -128,7 +172,12 @@ def atomic_write_text(path, text, newline=None, keep=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     # mkstemp: the OS guarantees a fresh name (O_EXCL). A PID + clock name is not unique on Windows, where the clock
     # ticks coarsely enough for two threads to pick the same name and one to hit the other's open handle.
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    # With keep=True on Windows the temporary file is private from creation instead (mkstemp's 0600 is a POSIX mode,
+    # not a DACL there): it holds the new content before the old file's access is carried over (review 1.10.1 F5).
+    if keep and os.name == "nt":
+        fd, name = _windows_private_temporary(path)
+    else:
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:

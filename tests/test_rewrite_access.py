@@ -114,6 +114,37 @@ def test_a_rewrite_keeps_the_windows_acl(tmp_path, protected):
     assert _sddl(p) == before
 
 
+def test_the_temporary_file_is_private_while_it_holds_the_new_content(tmp_path, monkeypatch):
+    """Review 1.10.1 F5: the new content sat in a temporary file with the directory's (wider) access until the old
+    file's access was carried over, and stayed there if the process died first. It must be private from creation:
+    on Windows a protected DACL naming only the owner, on POSIX no group or other permission bits."""
+    import re
+    p = tmp_path / "private.yaml"
+    p.write_bytes(b"secret: old\n")
+    if os.name == "nt":
+        user = f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"
+        subprocess.run(["icacls", str(p), "/inheritance:r", "/grant:r", f"{user}:F"], capture_output=True, check=True)
+    seen = {}
+    real = contract._keep_access
+
+    def spy(source, target):                                # the new content is written, the old access not yet applied
+        seen["content"] = open(target, "rb").read()
+        seen["access"] = _sddl(target) if os.name == "nt" else stat.S_IMODE(os.stat(target).st_mode)
+        return real(source, target)
+
+    monkeypatch.setattr(contract, "_keep_access", spy)
+    assert store.rewrite_text(p, "secret: new\n")
+    assert seen["content"].replace(b"\r\n", b"\n") == b"secret: new\n"
+    if os.name == "nt":
+        owner = re.match(r"O:(.+?)G:", seen["access"]).group(1)
+        dacl = seen["access"].split("D:", 1)[1]
+        aces = re.findall(r"\(([AD]);[^;]*;[^;]*;[^;]*;[^;]*;([^)]+)\)", dacl)
+        assert dacl.startswith("P"), seen["access"]                       # nothing inherited from the directory
+        assert aces and {sid for _, sid in aces} <= {"OW", owner}, seen["access"]
+    else:
+        assert seen["access"] & 0o077 == 0, oct(seen["access"])
+
+
 def test_a_rewrite_that_cannot_keep_the_access_is_refused(tmp_path, monkeypatch):
     p = tmp_path / "doc.yaml"
     p.write_bytes(b"a: 1\n")
