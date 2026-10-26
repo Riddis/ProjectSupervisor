@@ -79,6 +79,81 @@ def test_a_rewrite_keeps_a_supplementary_group(tmp_path):
     assert (os.stat(p).st_gid, stat.S_IMODE(os.stat(p).st_mode)) == (extra[0], 0o660)
 
 
+ACL_ACCESS, ACL_DEFAULT = "system.posix_acl_access", "system.posix_acl_default"
+USER_OBJ, NAMED_USER, GROUP_OBJ, MASK, OTHER, NO_ID = 0x01, 0x02, 0x04, 0x10, 0x20, 0xFFFFFFFF
+
+
+def _posix_acl(named_user_perm, other_perm=0):
+    """A Linux POSIX ACL xattr value (version 2, then tag/perm/id entries in order) with one named user, uid 65534."""
+    import struct
+    entries = [(USER_OBJ, 6, NO_ID), (NAMED_USER, named_user_perm, 65534), (GROUP_OBJ, 4, NO_ID),
+               (MASK, 4, NO_ID), (OTHER, other_perm, NO_ID)]
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+
+
+def _access(path):
+    """Everything that decides who can open the file on Linux: mode bits, owner, group and every extended attribute
+    (POSIX ACLs live in system.posix_acl_access)."""
+    st = os.stat(path)
+    return (stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid,
+            {name: os.getxattr(path, name) for name in sorted(os.listxattr(path))})
+
+
+@pytest.fixture
+def linux_acls(tmp_path):
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux POSIX ACLs")
+    probe = tmp_path / "acl-probe"
+    probe.write_text("x", encoding="utf-8")
+    try:
+        os.setxattr(probe, ACL_ACCESS, _posix_acl(4))
+    except OSError as exc:
+        pytest.skip(f"this filesystem has no POSIX ACLs: {exc}")
+    probe.unlink()
+
+
+def test_a_directory_default_acl_does_not_reach_a_rewritten_file(tmp_path, linux_acls):
+    """Review 1.10.1 F6, broadening: the directory grants uid 65534 read by default, the file itself does not (its
+    access ACL removed, mode 0640). The temporary file inherited the default entry and chmod's mask made it effective."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.setxattr(shared, ACL_DEFAULT, _posix_acl(4))
+    p = shared / "project.yaml"
+    p.write_text("a: 1\n", encoding="utf-8")
+    os.removexattr(p, ACL_ACCESS)
+    os.chmod(p, 0o640)
+    before = _access(p)
+    assert ACL_ACCESS not in before[3]
+    assert store.rewrite_text(p, "a: 2\n")
+    assert _access(p) == before
+
+
+def test_an_explicit_named_user_grant_survives_a_rewrite(tmp_path, linux_acls):
+    """Review 1.10.1 F6, loss: a file's own access ACL (uid 65534 may read) was dropped by the replace."""
+    p = tmp_path / "shared.yaml"
+    p.write_text("a: 1\n", encoding="utf-8")
+    os.setxattr(p, ACL_ACCESS, _posix_acl(4))
+    before = _access(p)
+    assert ACL_ACCESS in before[3]
+    assert store.rewrite_text(p, "a: 2\n")
+    assert _access(p) == before
+
+
+def test_an_attribute_that_cannot_be_kept_refuses_the_rewrite(tmp_path, linux_acls, monkeypatch):
+    p = tmp_path / "shared.yaml"
+    p.write_bytes(b"a: 1\n")
+    os.setxattr(p, ACL_ACCESS, _posix_acl(4))
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "setxattr", refuse)
+    with pytest.raises(contract.CannotKeep, match="shared.yaml"):
+        store.rewrite_text(p, "a: 2\n")
+    assert p.read_bytes() == b"a: 1\n"
+    assert _leftovers(tmp_path, "shared.yaml") == []
+
+
 @posix_only
 def test_migrate_keeps_the_modes_of_the_files_it_rewrites(tmp_path):
     """The reviewer's probe: project.yaml 0640 (version update) and config/routing.yaml 0664 (max_gpu_jobs rename)."""

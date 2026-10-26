@@ -34,7 +34,9 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   to migrate, so the content was lost (since 1.8.4). It now writes a temporary file and replaces the original
   atomically, like every store write, keeping the file's LF or CRLF; an interruption leaves the old file whole, and
   the rerun finishes the job. The rewritten file keeps what the old one had, as the in-place write did: its owner,
-  group and permissions (POSIX mode bits; on Windows the DACL, including protection from inheritance), and its links
+  group and permissions (POSIX mode bits and, on Linux, POSIX ACLs and every other extended attribute, so a
+  directory's default ACL cannot add a grant the old file did not have; on Windows the DACL, including protection
+  from inheritance; other POSIX systems keep owner, group and mode bits only), and its links
   (a symlink's target is rewritten and the link stays). The temporary file is private from its creation (POSIX mode
   0600; on Windows a DACL granting only its owner, set in the call that creates it), so the new content is never
   open to other accounts before the old file's access is applied, nor in a temporary file a killed process leaves

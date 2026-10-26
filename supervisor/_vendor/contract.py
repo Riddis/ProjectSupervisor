@@ -142,15 +142,42 @@ def _windows_private_temporary(path):
         kernel32.LocalFree(descriptor)
 
 
+def _keep_xattrs(source, target):
+    """Make `target`'s extended attributes exactly `source`'s: POSIX ACLs (system.posix_acl_access) and any other.
+    An attribute `target` has and `source` lacks is removed — a temporary file can inherit an access ACL from its
+    directory's default ACL that the old file did not have. Raises OSError when one cannot be set or removed;
+    _keep_access compares the result once the mode bits are set too."""
+    wanted = {name: os.getxattr(source, name) for name in os.listxattr(source)}
+    for name in os.listxattr(target):
+        if name not in wanted:
+            os.removexattr(target, name)
+    for name, value in wanted.items():
+        try:
+            current = os.getxattr(target, name)
+        except OSError:
+            current = None
+        if current != value:                                # an equal one is not rewritten (a label may be guarded)
+            os.setxattr(target, name, value)
+
+
 def _keep_access(source, target):
-    """Give `target` the owner, group and permissions of `source`: on POSIX its uid, gid and mode bits; on Windows its
-    DACL (protection included), owner and group. Raises OSError when any of it cannot be set."""
+    """Give `target` the owner, group and permissions of `source`: on POSIX its uid, gid and mode bits, and on Linux
+    every extended attribute (POSIX ACLs included; other POSIX systems offer no API for theirs); on Windows its DACL
+    (protection included), owner and group. Raises OSError when any of it cannot be set."""
     if os.name == "nt":
         _windows_keep_access(source, target)
         return
     st = os.stat(source)
     os.chown(target, st.st_uid, st.st_gid)                 # a different owner, or a group one is not in: EPERM
-    os.chmod(target, stat.S_IMODE(st.st_mode))             # after chown, which may clear set-id bits
+    if hasattr(os, "listxattr"):
+        _keep_xattrs(source, target)
+    os.chmod(target, stat.S_IMODE(st.st_mode))             # last: after chown (it may clear set-id bits) and the ACL
+    if hasattr(os, "listxattr") and _xattr_values(target) != _xattr_values(source):
+        raise OSError(f"the extended attributes of {target} differ from {source} after copying")
+
+
+def _xattr_values(path):
+    return {name: os.getxattr(path, name) for name in os.listxattr(path)}
 
 
 def atomic_write_text(path, text, newline=None, keep=False):
@@ -158,8 +185,9 @@ def atomic_write_text(path, text, newline=None, keep=False):
 
     Prevents torn files. It does NOT prevent lost updates — that is the store's job (rev + lock).
     `newline` is open()'s: None writes "\\n" as the platform's line ending, "" writes `text` exactly as given.
-    `keep=True` makes the new file keep what an existing one had: its owner, group and permissions are carried onto
-    the temporary file before it replaces the old one, a symlink is followed (its target is replaced, the link stays),
+    `keep=True` makes the new file keep what an existing one had: its owner, group and permissions (POSIX mode bits
+    and, on Linux, ACLs and every other extended attribute; the Windows DACL) are carried onto the temporary file,
+    which is private until then, before it replaces the old one, a symlink is followed (its target is replaced, the link stays),
     and a file with several hard links is not replaced. When any of that is impossible it raises CannotKeep and the
     old file stays exactly as it was. The default leaves the new file with the directory's defaults, as before.
     """
