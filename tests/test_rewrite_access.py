@@ -48,6 +48,34 @@ def _sddl(path) -> str:
         kernel32.LocalFree(text)
 
 
+def _user_sid() -> str:
+    out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, encoding="utf-8",
+                         errors="replace", check=True).stdout
+    return out.strip().split(",")[-1].strip('"')
+
+
+def _set_dacl(path, sddl):
+    """Replace a file's or folder's whole DACL (protected: nothing inherited, nothing else kept) with `sddl`."""
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    to_descriptor = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    to_descriptor.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                              ctypes.POINTER(wintypes.ULONG)]
+    to_descriptor.restype = wintypes.BOOL
+    set_security = advapi32.SetFileSecurityW
+    set_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    set_security.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    descriptor = ctypes.c_void_p()
+    assert to_descriptor(sddl, 1, ctypes.byref(descriptor), None), ctypes.WinError(ctypes.get_last_error())
+    try:
+        assert set_security(str(path), 0x4 | 0x80000000, descriptor), ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
 def _leftovers(directory, name):
     return [p.name for p in directory.iterdir() if p.name.startswith(f".{name}.")]
 
@@ -225,23 +253,30 @@ def test_a_file_that_may_not_be_deleted_is_refused_cleanly(tmp_path):
     """A file the user may read and write but not delete, in a folder that grants no delete-child: the in-place write
     of 1.10.0 could rewrite it, an atomic replace cannot. Before this fix the replace failed as a bare PermissionError
     and the temporary file stayed behind (the old DACL, copied onto it, did not allow deleting it either)."""
-    user = f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"
+    # Review 1.10.1 F8: `icacls /grant:r <user>` replaced only the user's own grant; any other explicit grant (one a
+    # runner gives to a group the account is in) survived and still allowed the delete, so the test failed in CI. The
+    # whole DACL is now set, protected, with exactly one entry for this account, and checked before it is relied on.
+    sid = _user_sid()
     folder = tmp_path / "nodelete"
     folder.mkdir()
-    subprocess.run(["icacls", str(folder), "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)M"],
-                   capture_output=True, check=True)              # modify: no delete-child on the folder
     p = folder / "doc.yaml"
     p.write_bytes(b"a: 1\r\n")
-    subprocess.run(["icacls", str(p), "/inheritance:r", "/grant:r", f"{user}:(R,W)"], capture_output=True, check=True)
-    before = _sddl(p)
+    for q in (folder, p):                                       # a stray explicit grant the fixture must remove
+        subprocess.run(["icacls", str(q), "/grant", "*S-1-5-32-545:F"], capture_output=True, check=True)
+    folder_dacl = f"D:P(A;OICI;0x1301bf;;;{sid})"               # modify, without delete-child (0x40)
+    file_dacl = f"D:P(A;;0x12019f;;;{sid})"                     # read and write, without delete
     try:
+        _set_dacl(folder, folder_dacl)
+        _set_dacl(p, file_dacl)
+        assert _sddl(folder).endswith(folder_dacl) and _sddl(p).endswith(file_dacl)
+        before = _sddl(p)
         with pytest.raises(contract.CannotKeep, match="nothing was replaced"):
             store.rewrite_text(p, "a: 2\n")
         assert p.read_bytes() == b"a: 1\r\n" and _sddl(p) == before
         assert _leftovers(folder, "doc.yaml") == []
     finally:                                                     # let pytest remove its temporary tree
-        for q in [p, *folder.iterdir()]:
-            subprocess.run(["icacls", str(q), "/grant", f"{user}:F"], capture_output=True)
+        for q in [folder, *folder.iterdir()]:
+            _set_dacl(q, f"D:P(A;OICI;FA;;;{sid})" if q == folder else f"D:P(A;;FA;;;{sid})")
 
 
 def test_a_rewrite_that_cannot_keep_the_access_is_refused(tmp_path, monkeypatch):
