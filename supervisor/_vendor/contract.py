@@ -143,8 +143,8 @@ def _windows_private_temporary(path):
 
 
 def _windows_make_private(path):
-    """Give an existing file the owner-only DACL `_windows_private_temporary` creates files with. Its owner may always
-    change its DACL, so this works on a temporary file whose copied DACL no longer lets its owner delete it."""
+    """Give an existing file the owner-only DACL `_windows_private_temporary` creates files with. Its owner may change
+    its DACL — unless that DACL has an OWNER RIGHTS entry taking WRITE_DAC away, in which case this raises."""
     import ctypes
     from ctypes import wintypes
 
@@ -170,21 +170,28 @@ def _windows_make_private(path):
 
 
 def _discard(temporary, private=False):
-    """Remove a temporary file that will not replace anything. With `private` (a Windows keep=True file, which may
-    carry the old file's DACL by now) a refused delete is retried after making it owner-only again."""
+    """Remove a temporary file that will not replace anything; False when it could not be removed. With `private` (a
+    Windows keep=True file, which may carry the old file's DACL by now) a refused delete is retried after making it
+    owner-only again, which the copied DACL can also refuse (review 1.10.1 F9): then the file stays, with the old
+    file's access and the new content, and the caller names it."""
     try:
         temporary.unlink()
-        return
+        return True
     except FileNotFoundError:
-        return
+        return True
     except OSError:
         if not private:
-            return
+            return False
     try:
         _windows_make_private(temporary)
         temporary.unlink()
+        return True
     except OSError:
-        pass
+        return False
+
+
+def _left_behind(temporary, removed):
+    return "" if removed else f" A temporary copy with the new content and the old file's access was left at {temporary}."
 
 
 def _keep_xattrs(source, target):
@@ -233,9 +240,11 @@ def atomic_write_text(path, text, newline=None, keep=False):
     `keep=True` makes the new file keep what an existing one had: its owner, group and permissions (POSIX mode bits
     and, on Linux, ACLs and every other extended attribute; the Windows DACL) are carried onto the temporary file,
     which is private until then, before it replaces the old one; a symlink is followed (its target is replaced, the
-    link stays), and a file with several hard links is not replaced. When any of that is impossible, or the replace
-    itself is refused (no right to delete the old file), it raises CannotKeep, removes the temporary file and leaves
-    the old file exactly as it was. The default leaves the new file with the directory's defaults, as before.
+    link stays), and a file with several hard links is not replaced. When any of that is impossible, or the temporary
+    file cannot be created or the replace itself is refused (no right to delete the old file), it raises CannotKeep
+    and leaves the old file exactly as it was. It removes the temporary file; when even that is refused (the copied
+    DACL can deny it to the owner), the message names the copy left behind, which has the old file's access.
+    The default leaves the new file with the directory's defaults, as before.
     """
     path = Path(path)
     if keep and path.is_symlink():
@@ -248,10 +257,15 @@ def atomic_write_text(path, text, newline=None, keep=False):
     # ticks coarsely enough for two threads to pick the same name and one to hit the other's open handle.
     # With keep=True on Windows the temporary file is private from creation instead (mkstemp's 0600 is a POSIX mode,
     # not a DACL there): it holds the new content before the old file's access is carried over (review 1.10.1 F5).
-    if keep and os.name == "nt":
-        fd, name = _windows_private_temporary(path)
-    else:
-        fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    try:
+        if keep and os.name == "nt":
+            fd, name = _windows_private_temporary(path)
+        else:
+            fd, name = tempfile.mkstemp(prefix=f".{path.name}.{os.getpid()}.", suffix=".tmp", dir=path.parent)
+    except PermissionError as exc:
+        if not keep:
+            raise
+        raise CannotKeep(f"{path}: no temporary file could be created beside it ({exc}); nothing was replaced") from exc
     temporary = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as handle:
@@ -262,9 +276,8 @@ def atomic_write_text(path, text, newline=None, keep=False):
             except OSError as exc:
                 raise CannotKeep(f"{path}: the rewritten file could not keep its owner, group and permissions "
                                  f"({exc}); nothing was replaced. Rewrite it as the account that owns it") from exc
-    except BaseException:
-        _discard(temporary, private=keep and os.name == "nt")
-        raise
+    except BaseException as exc:
+        _after_failure(exc, path, temporary, keep, replacing=False)
     try:
         for attempt in range(_REPLACE_ATTEMPTS):
             try:
@@ -284,12 +297,24 @@ def atomic_write_text(path, text, newline=None, keep=False):
                     raise
                 time.sleep(min(0.4, 0.02 * (attempt + 1)))
     except BaseException as exc:
-        _discard(temporary, private=keep and os.name == "nt")
-        if keep and isinstance(exc, PermissionError) and not isinstance(exc, CannotKeep):
-            raise CannotKeep(f"{path}: could not be replaced ({exc}); nothing was replaced. An atomic rewrite needs "
-                             f"the right to delete the old file (or its folder's delete-child right), and no other "
-                             f"process holding it open") from exc
-        raise
+        _after_failure(exc, path, temporary, keep, replacing=True)
+
+
+def _after_failure(exc, path, temporary, keep, replacing):
+    """Remove the temporary file after `exc` and raise what the caller sees: with `keep`, a refused replace as
+    CannotKeep; a temporary file that could not be removed is named (in a CannotKeep's message, else as a note)."""
+    left = _left_behind(temporary, _discard(temporary, private=keep and os.name == "nt"))
+    if keep and isinstance(exc, CannotKeep):
+        if left:
+            raise CannotKeep(f"{exc}{left}") from exc
+        raise exc
+    if keep and replacing and isinstance(exc, PermissionError):
+        raise CannotKeep(f"{path}: could not be replaced ({exc}); nothing was replaced. An atomic rewrite needs the "
+                         f"right to delete the old file (or its folder's delete-child right), and no other process "
+                         f"holding it open.{left}") from exc
+    if left:
+        exc.add_note(left.strip())
+    raise exc
 
 
 def atomic_json(path, data):

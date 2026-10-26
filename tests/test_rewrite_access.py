@@ -279,6 +279,53 @@ def test_a_file_that_may_not_be_deleted_is_refused_cleanly(tmp_path):
             _set_dacl(q, f"D:P(A;OICI;FA;;;{sid})" if q == folder else f"D:P(A;;FA;;;{sid})")
 
 
+def test_a_temporary_file_that_cannot_be_removed_is_named_in_the_refusal(tmp_path, monkeypatch):
+    """Review 1.10.1 F9: a copied DACL can take away even the owner's right to make the temporary file deletable (an
+    OWNER RIGHTS deny on WRITE_DAC), so after a refused replace it can stay behind, with the old file's access. The
+    refusal must say where it is instead of promising it is gone."""
+    import pathlib
+    p = tmp_path / "doc.yaml"
+    p.write_bytes(b"a: 1\n")
+    real_unlink = pathlib.Path.unlink
+
+    def refused(*args, **kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    def unlink(self, *args, **kwargs):
+        if self.name.startswith(".doc.yaml."):
+            refused()
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(contract, "_REPLACE_ATTEMPTS", 1)
+    monkeypatch.setattr(pathlib.Path, "replace", refused)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    monkeypatch.setattr(contract, "_windows_make_private", refused)
+    with pytest.raises(contract.CannotKeep, match="nothing was replaced") as raised:
+        store.rewrite_text(p, "a: 2\n")
+    monkeypatch.undo()
+    left = _leftovers(tmp_path, "doc.yaml")
+    assert len(left) == 1 and left[0] in str(raised.value), str(raised.value)
+    assert p.read_bytes() == b"a: 1\n"
+    (tmp_path / left[0]).unlink()
+
+
+def test_a_temporary_file_that_cannot_be_created_is_a_clean_refusal(tmp_path, monkeypatch):
+    """Review 1.10.1 (round 4, under F9): a folder whose inherited entries refuse the private temporary file made the
+    rewrite fail with a bare PermissionError. Nothing was created or replaced; it is a CannotKeep like the others."""
+    p = tmp_path / "doc.yaml"
+    p.write_bytes(b"a: 1\n")
+
+    def refused(*args, **kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(contract, "_windows_private_temporary", refused)
+    monkeypatch.setattr(contract.tempfile, "mkstemp", refused)
+    with pytest.raises(contract.CannotKeep, match="nothing was replaced"):
+        store.rewrite_text(p, "a: 2\n")
+    monkeypatch.undo()
+    assert p.read_bytes() == b"a: 1\n" and _leftovers(tmp_path, "doc.yaml") == []
+
+
 def test_a_rewrite_that_cannot_keep_the_access_is_refused(tmp_path, monkeypatch):
     p = tmp_path / "doc.yaml"
     p.write_bytes(b"a: 1\n")

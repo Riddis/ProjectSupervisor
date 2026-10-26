@@ -44,6 +44,8 @@ stop, check out `v1.10.0`, `supervisor migrate` (records 1.10.0 again, and rewri
   a group the writer is not in, a file with several hard links, a file the account may write but not delete (the
   in-place write of 1.10.0 could rewrite that one; a replace cannot) — the file is not rewritten: `supervisor migrate`
   stops with an error naming it, the file is left exactly as it was, and a rerun after fixing it finishes the job.
+  The temporary copy is removed; on Windows an old DACL that denies even its owner the right to change it (an OWNER
+  RIGHTS entry) can prevent that, and the error then names the copy left behind, which has the old file's access.
   Extension authors: `atomic_write_text` (`_vendor/contract.py`) takes two optional arguments, `newline` (as
   `open()`'s) and `keep` (keep the existing file's access and links, or raise the new `CannotKeep`); both default to
   the old behaviour.
