@@ -12,31 +12,24 @@ _RUNS = str(pathlib.Path(__file__).resolve().parents[1] / "runs")
 os.environ["GIT_CEILING_DIRECTORIES"] = _RUNS + (os.pathsep + os.environ["GIT_CEILING_DIRECTORIES"]
                                                  if os.environ.get("GIT_CEILING_DIRECTORIES") else "")
 import pytest
-import yaml
 
-from supervisor.paths import Layout
-from supervisor import store
+from supervisor import testing
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "supervisor" / "template"       # the project template: config/, agents/, state/ live here, not at the repo root
 
 
-def make_task(layout, tid, phase=0, deps=(), reviewer=(), human="none", status="NOT_STARTED"):
-    doc = {"id": tid, "phase": phase, "title": tid, "objective": "o", "owner_role": "engineer",
-           "depends_on": list(deps), "actions": ["a"], "artifacts": ["x"], "tests": ["t"], "reviewer": list(reviewer),
-           "acceptance": "ok", "escalation": "none", "human_approval": human, "cost_category": "claude", "status": status}
-    return store.write_new(layout.tasks / f"{tid}.yaml", doc)
+def make_task(layout, tid, phase=0, deps=(), reviewer=(), human="none", status="NOT_STARTED", **fields):
+    """supervisor.testing.make_task with this suite's default cost category: the agent lane's."""
+    fields.setdefault("cost_category", "claude")
+    return testing.make_task(layout, tid, phase, deps, reviewer, human, status, **fields)
 
 
 @pytest.fixture
 def layout(tmp_path, monkeypatch):
+    """A temporary project (supervisor.testing.project) that is also the discovered root."""
     monkeypatch.setenv("SUPERVISOR_ROOT", str(tmp_path))
-    lay = Layout(tmp_path).ensure()
-    (lay.state / "gates.yaml").write_text(yaml.safe_dump({
-        "phases": {0: {"requires": []}, 1: {"requires": ["G0"]}, 9: {"requires": ["G6"]}},
-        "gates": {"G0": {"status": "OPEN", "phase": 0}, "G6": {"status": "OPEN", "phase": 6}}}), encoding="utf-8")
-    (lay.state / "owner_tasks.yaml").write_text("owner_tasks: []\n", encoding="utf-8")
-    return lay
+    return testing.project(tmp_path)
 
 
 @pytest.fixture(autouse=True)

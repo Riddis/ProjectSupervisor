@@ -12,20 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from supervisor import ext, extensions, project
+from supervisor import ext, extensions, testing
 from supervisor.adapters import REGISTRY
 from supervisor.adapters.python import JOBS
 from supervisor.paths import Layout
 
 
 def configure(root: Path, modules: dict[str, str], entries: list | None = None) -> Layout:
-    (root / "extensions").mkdir(parents=True, exist_ok=True)
-    for name, code in modules.items():
-        (root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
-    lay = Layout(root).ensure()
-    project.write(lay, {"name": "proj", "extensions": entries if entries is not None else list(modules)})
-    extensions.reset()
-    return lay
+    return testing.project(root, modules=modules, extensions=entries)
 
 
 LANE = '''

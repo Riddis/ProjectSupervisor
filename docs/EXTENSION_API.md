@@ -366,3 +366,23 @@ decides policy.
 
 `now_iso() -> str`: the current UTC time as ISO 8601 to the second (`2026-10-27T09:30:00+00:00`), the format of
 every timestamp the framework writes.
+
+## Testing extensions: `supervisor.testing` (unstable)
+
+An extension's behaviour tests may import `supervisor.testing`, the one other part of `supervisor` an extension may
+use. It is **explicitly unstable**: it can change in any release, minor ones included, G2 does not record it, and
+nothing in it is promised. It is promoted from the framework's own test fixtures, which use it too.
+
+| Helper | What it does |
+|---|---|
+| `project(root, *, name=None, extensions=None, modules=None, files=None, routing=None, policy=None) -> Layout` | a temporary project: state folders, phase 0 open, no owner tasks; `modules` writes `extensions/<name>.py` and lists them; `files`, `routing`, `policy` write files and config; forgets loaded extensions |
+| `add_extensions(layout, modules, entries=None, files=None) -> Layout` | add extension modules to a project and list them in `project.yaml`, keeping its other keys |
+| `make_task(layout, tid, ..., **fields) -> dict` | a minimal valid task (cost category `deterministic`); any task field as a keyword (`job=`, `artifacts=`) |
+| `FakeLane(name, *, status="COMPLETE", artifacts=(), notes="", error=None, defer=0, defer_until=0.0, gpu=False)` | an in-process lane that writes `artifacts` and finishes with `status`, or defers the first `defer` submits; `submitted` and `deferred` record what it did |
+| `lane(adapter)` | a context manager registering a lane for the block |
+| `drive(layout, iterations=10, until=None)` | run the loop without sleeping until `until()` holds |
+| `ui_client(layout, csrf=CSRF)` | a Control Center test client with the CSRF cookie set (imported on use; needs the `ui` and `dev` extras) |
+| `import_side_effects(layout, name)` | what importing an extension module registers by itself, measured in a fresh interpreter |
+| `reset()` | forget loaded extensions and what they registered |
+
+Nothing in it launches a model client or reaches the network.

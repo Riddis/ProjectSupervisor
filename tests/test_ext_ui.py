@@ -9,15 +9,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
-from supervisor import ext, extensions, project
-from supervisor.ui.app import create_app
-from supervisor.ui.auth import CSRF_COOKIE
+from supervisor import ext, extensions, testing
 
 REPO = Path(__file__).resolve().parents[1]
-CSRF = "test-csrf-value"
+CSRF = testing.CSRF
 
 PAGE = '''
 from pathlib import Path
@@ -55,14 +52,8 @@ BOARD_HTML = '''{% extends "base.html" %}
 
 @pytest.fixture
 def client(layout):
-    (layout.root / "extensions" / "templates").mkdir(parents=True, exist_ok=True)
-    (layout.root / "extensions" / "board.py").write_text(PAGE, encoding="utf-8")
-    (layout.root / "extensions" / "templates" / "board.html").write_text(BOARD_HTML, encoding="utf-8")
-    project.write(layout, {"name": "proj", "extensions": ["board"]})
-    extensions.reset()
-    c = TestClient(create_app(layout), base_url="http://127.0.0.1")
-    c.cookies.set(CSRF_COOKIE, CSRF)
-    yield c
+    testing.add_extensions(layout, {"board": PAGE}, files={"extensions/templates/board.html": BOARD_HTML})
+    yield testing.ui_client(layout)
     extensions.reset()
 
 

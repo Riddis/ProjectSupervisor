@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from supervisor import commands, ext, extensions, project
+from supervisor import commands, ext, extensions, testing
 from supervisor.locks import FileLock
 from supervisor.paths import Layout
 
@@ -29,10 +29,7 @@ def log(layout, event, actor=None, **fields):
 
 @pytest.fixture
 def lay(layout):
-    (layout.root / "extensions").mkdir(parents=True, exist_ok=True)
-    (layout.root / "extensions" / "counter.py").write_text(COUNTER, encoding="utf-8")
-    project.write(layout, {"name": "proj", "extensions": ["counter"]})
-    extensions.reset()
+    testing.add_extensions(layout, {"counter": COUNTER})
     assert extensions.load(layout).errors == []
     yield layout
     extensions.reset()

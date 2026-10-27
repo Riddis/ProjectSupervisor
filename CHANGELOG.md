@@ -54,6 +54,10 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
     option B) with `executable`, `model` and `environment()`, the lane's scrubbed environment; no credential that
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
+- **`supervisor.testing`, explicitly unstable,** for extensions' behaviour tests: `project`, `add_extensions`,
+  `make_task`, an in-process `FakeLane` and `lane()`, the loop driver `drive`, `ui_client` (imported on use),
+  `import_side_effects`, `reset`. Promoted from the framework's test fixtures, which now use it; no compatibility
+  promise, not recorded by G2.
 - **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
   lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
   or job already has, built in or another extension's (before, an extension could silently replace the `process` or

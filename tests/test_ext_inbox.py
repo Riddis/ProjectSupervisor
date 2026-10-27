@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from supervisor import ext, extensions, inbox, project
+from supervisor import ext, extensions, inbox, testing
 from supervisor.paths import Layout
 
 REPO = Path(__file__).resolve().parents[1]
@@ -69,12 +69,7 @@ def get(layout, item_id):
 
 
 def configure(root: Path) -> Layout:
-    (root / "extensions").mkdir(parents=True, exist_ok=True)
-    (root / "extensions" / "owner_ext.py").write_text(OWNER, encoding="utf-8")
-    (root / "extensions" / "other_ext.py").write_text(OTHER, encoding="utf-8")
-    lay = Layout(root).ensure()
-    project.write(lay, {"name": "proj", "extensions": ["owner_ext", "other_ext"]})
-    extensions.reset()
+    lay = testing.add_extensions(Layout(root), {"owner_ext": OWNER, "other_ext": OTHER})
     assert extensions.load(lay).errors == []
     return lay
 

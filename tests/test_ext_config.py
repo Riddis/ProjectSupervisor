@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from supervisor import ext, extensions, project
+from supervisor import ext, extensions, testing
 from supervisor.ext import _config
 from supervisor.paths import Layout
 
@@ -37,15 +37,7 @@ def resources(layout):
 
 
 def configure(root: Path, modules: dict[str, str], entries: list[str], routing: str = ROUTING) -> Layout:
-    (root / "extensions").mkdir(parents=True, exist_ok=True)
-    (root / "config").mkdir(parents=True, exist_ok=True)
-    (root / "config" / "routing.yaml").write_text(routing, encoding="utf-8")
-    for name, code in modules.items():
-        (root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
-    lay = Layout(root).ensure()
-    project.write(lay, {"name": "proj", "extensions": entries})
-    extensions.reset()
-    return lay
+    return testing.project(root, modules=modules, extensions=entries, files={"config/routing.yaml": routing})
 
 
 MODULES = {
