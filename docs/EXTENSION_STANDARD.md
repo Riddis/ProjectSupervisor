@@ -115,6 +115,21 @@ anything the extension ships:
 - **No manifest (1.12.x):** a project-local extension, or an installed module without an entry point, still loads,
   with a warning. A later major release requires the manifest.
 
+## Approval before import
+
+Every configured extension is discovered first. What its manifest decides is settled before any extension module is
+imported, so a refused extension never executes. Refused:
+- an extension whose `framework` range excludes the installed framework;
+- a manifest that claims an identifier built into the framework (a lane such as `claude_cli`, a command kind such as
+  `loop.pause`, an inbox kind such as `gate`);
+- an identifier two manifests claim: both extensions are refused, and each message names the other;
+- an extension whose `requires.extensions` names one that `project.yaml` does not list, and every extension in a
+  cycle of them.
+
+Extensions load in `project.yaml`'s order, except that each one moves after the extensions it requires. One whose
+requirement did not load is refused before its import. A refusal counts as a load failure: a required extension's
+refusal blocks the loop.
+
 ## Loading: all or nothing
 
 `setup(registry)` registers into a staging area. The process-wide tables (lanes, python jobs, command kinds) are

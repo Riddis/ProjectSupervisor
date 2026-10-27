@@ -30,6 +30,15 @@ extension's manifest (`supervisor-extension.toml`, supervisor.manifest) does not
 dropped from sys.modules. An extension without a manifest still loads, staged the same way, and is listed in
 `registry.unmanifested`.
 
+Approval comes first. Every configured extension is discovered, and what its manifest decides is settled before any
+extension module is imported, so a refused extension never executes:
+- the framework range;
+- identifiers that are built into the framework;
+- identifiers another manifest claims too (both are refused);
+- `requires.extensions` that project.yaml does not list, or a cycle among them.
+
+Extensions then load after the ones they require, and one whose requirement did not load is refused.
+
 Failure: a configured extension that does not load is recorded in `registry.errors`. Unless the entry says
 `required: false`, that failure also BLOCKS the loop and every packet (`assert_loaded`): an extension is usually a
 protection (a packet screen, a lane with its own checks), and a protection that silently fell away is worse than a
@@ -533,6 +542,77 @@ def _apply(table: str, name: str, obj, origin: str, owner: str) -> None:
         raise ValueError(f"unknown process-wide table {table!r}")
 
 
+def _built_in(kind: str) -> set[str]:
+    """The identifiers of `kind` the framework itself registers (never through an extension's registry)."""
+    if kind == "adapters":
+        from .adapters import REGISTRY
+        return {n for n in REGISTRY if n not in _ever_adapters}
+    if kind == "python_jobs":
+        from .adapters.python import JOBS
+        return {n for n in JOBS if n not in _ever_jobs}
+    if kind == "commands":
+        from . import commands as commands_mod
+        return {k for k in commands_mod.HANDLERS if k not in _extension_commands}
+    if kind == "inbox_kinds":
+        from . import inbox as inbox_mod
+        return set(inbox_mod.BUILTIN_KINDS)
+    return set()
+
+
+def _approve(finds: dict) -> dict[str, str]:
+    """{extension: why it is refused} for what the manifests decide before any import: the framework range, built-in
+    identifiers, identifiers two manifests claim (both refused: which one is meant is the owner's call), and
+    requires.extensions that project.yaml does not list."""
+    refused: dict[str, str] = {}
+    claims: dict[tuple[str, str], list[str]] = {}
+    for name, found in finds.items():
+        m = found.manifest
+        if m is None:
+            continue
+        why = m.unsupported_reason()
+        if why:
+            refused[name] = why
+            continue
+        for kind, identifiers in m.provides.items():
+            if kind == "hooks":
+                continue
+            builtin = _built_in(kind)
+            for identifier in identifiers:
+                if identifier in builtin:
+                    refused.setdefault(name, f"its manifest claims {kind} {identifier!r}, which is built into the "
+                                             f"framework")
+                claims.setdefault((kind, identifier), []).append(name)
+        unlisted = [d for d in m.requires.extensions if d not in finds]
+        if unlisted:
+            refused.setdefault(name, f"it requires {', '.join(unlisted)}, which project.yaml does not list")
+    for (kind, identifier), names in claims.items():
+        if len(names) > 1:
+            for name in names:
+                others = ", ".join(n for n in names if n != name)
+                refused.setdefault(name, f"{kind} {identifier!r} is claimed by the manifests of {name} and {others}")
+    return refused
+
+
+def _load_order(entries: list[tuple[str, bool]], finds: dict) -> tuple[list[tuple[str, bool]], list[str]]:
+    """project.yaml's order, each extension moved only as far as the ones it requires make it (the first listed
+    extension whose requirements are all placed goes next), and the names caught in a requires cycle (placed last:
+    approval refuses them)."""
+    requires = {name: [d for d in (finds[name].manifest.requires.extensions if finds[name].manifest else ())
+                       if d in finds] for name, _ in entries}
+    placed: list[tuple[str, bool]] = []
+    done: set[str] = set()
+    waiting = list(entries)
+    while waiting:
+        ready = next((e for e in waiting if all(d in done for d in requires[e[0]])), None)
+        if ready is None:
+            break
+        placed.append(ready)
+        done.add(ready[0])
+        waiting.remove(ready)
+    cycle = [name for name, _ in waiting]
+    return placed + waiting, cycle
+
+
 def _undeclared(m, registered: list[tuple[str, str]]) -> list[str]:
     """What setup() registered that manifest `m` does not declare in `provides`."""
     out = []
@@ -649,14 +729,25 @@ def load(layout: Layout) -> Registry:
             reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
             return reg
     modules = []
-    for name, required in specs(layout):
+    entries = specs(layout)
+    finds = {name: discovery.find(layout, name) for name, _required in entries}
+    refused = _approve(finds)
+    entries, cycle = _load_order(entries, finds)
+    for name in cycle:
+        refused.setdefault(name, f"its requires.extensions form a cycle ({' -> '.join(cycle)}); nothing in it loads")
+    for name, required in entries:
         snapshot = reg._snapshot()
         before = set(sys.modules)
         reg._pending, reg._registered = {}, []
         try:
-            found = discovery.find(layout, name)
+            found = finds[name]
             if found.problems:
                 raise ExtensionError("; ".join(found.problems))
+            if name in refused:
+                raise ExtensionError(refused[name] + " (refused before import)")
+            missing = [d for d in (found.manifest.requires.extensions if found.manifest else ()) if d not in reg.loaded]
+            if missing:
+                raise ExtensionError(f"it requires {', '.join(missing)}, which did not load (refused before import)")
             mod = _import(layout, name)
             modules.append(mod)
             if getattr(mod, "__file__", None):

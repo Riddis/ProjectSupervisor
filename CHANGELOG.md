@@ -46,6 +46,15 @@ commit.
   `setup()` registered before failing stayed. The loader now finds each extension through discovery: the same name
   from two sources is refused, where a project-local file used to win silently. `registry.manifests` and
   `registry.unmanifested` list who has a manifest.
+- **Added: approval before import.** From the manifests alone, before any extension module is imported, the loader
+  refuses:
+  - an extension whose framework range excludes the installed framework;
+  - a manifest claiming a built-in identifier;
+  - an identifier two manifests claim (both are refused);
+  - a `requires.extensions` entry `project.yaml` does not list, or a cycle.
+
+  Extensions load after the ones they require, and one whose requirement did not load is refused. Refusals are load
+  failures: a required one blocks the loop.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
