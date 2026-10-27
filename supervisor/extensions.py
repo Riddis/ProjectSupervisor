@@ -37,6 +37,7 @@ import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
+import re
 import sys
 import traceback
 from dataclasses import dataclass, field
@@ -151,6 +152,7 @@ class Registry:
     cli_apps: list[tuple[Any, str]] = field(default_factory=list)
     adapters: dict[str, str] = field(default_factory=dict)          # lane name -> the extension that registered it
     python_jobs: dict[str, str] = field(default_factory=dict)       # python job name -> the extension that registered it
+    config_owners: dict[str, str] = field(default_factory=dict)     # routing.yaml section -> the extension that declared it
     commands: dict[str, Callable] = field(default_factory=dict)    # command kinds registered by extensions (commands.HANDLERS has them too)
     inbox_kinds: dict[str, InboxKind] = field(default_factory=dict)
     template_dirs: list[Path] = field(default_factory=list)
@@ -244,6 +246,23 @@ class Registry:
         owner = self._setting_up or "?"
         self.adapters[name] = owner
         _extension_adapters[name] = owner
+
+    def config_sections(self, *names: str) -> None:
+        """The routing.yaml sections this extension reads with `supervisor.ext.config()`; nothing else of the file is
+        open to it (the shared resource policy comes from `supervisor.ext.resources()`). One owner per section: a
+        framework section, or one another extension declared, is an error."""
+        from .ext._config import framework_sections
+        owner = self._setting_up or "?"
+        for name in names:
+            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
+                raise ExtensionError(f"a config section must be a routing.yaml key (letters, digits, _ and -), got {name!r}")
+            if name in framework_sections():
+                raise ExtensionError(f"config section {name!r} is the framework's; extensions read the shared resource "
+                                     f"policy with supervisor.ext.resources()")
+            if self.config_owners.get(name, owner) != owner:
+                raise ExtensionError(f"config section {name!r} is already declared by extension {self.config_owners[name]!r}")
+        for name in names:
+            self.config_owners[name] = owner
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)
@@ -518,6 +537,40 @@ def _report_optional_failure(layout: Layout, name: str, why: str) -> None:
 
 def registry(layout: Layout) -> Registry:
     return load(layout)
+
+
+def _owning_extension(module: str | None, file: str | None, names: list[str], ext_dir: Path) -> str | None:
+    """The configured extension a module belongs to: by file under the project's extensions/ (as the loader imports
+    it, or as a project's tests import it), else by dotted module name (an installed extension); None for a helper
+    module that is not itself listed, and for everything else."""
+    dotted = None
+    if file:
+        try:
+            parts = list(Path(file).resolve().relative_to(ext_dir).with_suffix("").parts)
+        except (ValueError, OSError):
+            parts = []
+        if parts:
+            dotted = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+    candidates = [dotted] if dotted is not None else ([module] if module else [])
+    for name in sorted(names, key=len, reverse=True):
+        if any(c == name or c.startswith(name + ".") for c in candidates):
+            return name
+    return None
+
+
+def calling_extension(layout: Layout) -> str | None:
+    """The configured extension whose code is running on this thread: the nearest caller whose module is one of the
+    project's extensions. A helper module counts for the extension that calls it. Until phase 3 gives extensions
+    an identity, this is how supervisor.ext knows who is asking (its config sections, the actor of its log lines)."""
+    names = [name for name, _required in specs(layout)]
+    ext_dir = Path(layout.extensions).resolve()
+    frame = sys._getframe(1)
+    while frame is not None:
+        found = _owning_extension(frame.f_globals.get("__name__"), frame.f_globals.get("__file__"), names, ext_dir)
+        if found:
+            return found
+        frame = frame.f_back
+    return None
 
 
 def loaded(root) -> Registry | None:

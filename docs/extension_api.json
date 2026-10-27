@@ -213,6 +213,13 @@
         }
       }
     },
+    "ExtensionError": {
+      "bases": [
+        "RuntimeError"
+      ],
+      "kind": "class",
+      "members": {}
+    },
     "Layout": {
       "bases": [],
       "init": {
@@ -625,6 +632,21 @@
           ],
           "returns": "None"
         },
+        "config_sections": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "var_positional",
+              "name": "names"
+            }
+          ],
+          "returns": "None"
+        },
         "doctor_check": {
           "kind": "method",
           "params": [
@@ -972,6 +994,22 @@
         }
       ]
     },
+    "config": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "section"
+        }
+      ],
+      "returns": "dict"
+    },
     "contained": {
       "kind": "function",
       "params": [
@@ -1028,6 +1066,17 @@
           "name": "path"
         }
       ]
+    },
+    "resources": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        }
+      ],
+      "returns": "dict"
     }
   }
 }

@@ -29,6 +29,7 @@ Extensions never construct one.
 | Hook | Registers |
 |---|---|
 | `layout` | the project's `Layout` (an attribute, not a hook) |
+| `config_sections(*names)` | the `config/routing.yaml` sections this extension reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
 | `doctor_check(fn)` | `fn(layout) -> Check` |
@@ -43,11 +44,55 @@ Extensions never construct one.
 | `static_dir(path, prefix)` | static files at `/static/<prefix>/...` |
 
 `docs/FRAMEWORK_VS_EXTENSION.md` describes each hook in full. Names are unique: `adapter()` refuses a lane name
-another lane already has, built in or another extension's, and `python_job()`, `command()` and `inbox_kind()` refuse
-a taken name the same way. A refusal is an `ExtensionError` from `setup()`: the extension does not load, and a
-required one blocks the loop. Registering the same object a second time is harmless, so an extension that still
-registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)` from the internal
-modules still work and are deprecated from 1.11.0.
+another lane already has, built in or another extension's, and `python_job()`, `command()`, `inbox_kind()` and
+`config_sections()` refuse a taken name the same way. A refusal is an `ExtensionError` from `setup()`: the extension
+does not load, and a required one blocks the loop. Registering the same object a second time is harmless, so an
+extension that still registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)`
+from the internal modules still work and are deprecated from 1.11.0.
+
+### `ExtensionError`
+
+A `RuntimeError`: what the registry raises for a refused registration, and what `config()` raises for a refused
+read. Raised from `setup()`, it stops that extension loading.
+
+## Configuration
+
+Until phase 3 gives each extension its own configuration (`extensions.<identity>` with a schema), an extension
+reads the sections of `config/routing.yaml` it declared, and the shared resource policy. The signatures below stay
+when phase 3 changes where the values come from.
+
+```python
+from supervisor import ext
+
+def setup(registry):
+    registry.config_sections("render", "ffmpeg")      # this extension's sections of config/routing.yaml
+
+def render_config(layout):
+    return ext.config(layout, "render")               # {} when routing.yaml has no `render:` section
+```
+
+### `config`
+
+`config(layout, section) -> dict`: the `section` of `config/routing.yaml`, parsed for this call: a copy, so
+changing it changes nothing, and a later call sees the file as it is then. `{}` when the file or the section is
+absent. Raises `ExtensionError` when:
+
+- the caller is not an extension's code. The caller is the configured extension whose module is running: a module
+  listed under `extensions:` in `project.yaml`, or a helper module it calls, which reads for that extension;
+- the calling extension did not declare `section` with `registry.config_sections()`, including a section another
+  extension declared and one the framework owns;
+- the section is not a mapping, or `routing.yaml` is not valid YAML.
+
+`registry.config_sections(*names)` takes routing.yaml keys (letters, digits, `_`, `-`). It refuses a framework
+section (every top-level key of the template's `routing.yaml`, such as `roles`, `limits`, `capacity`, `timeouts`,
+plus `gpu`, `resources` and `extensions`) and a section another extension already declared: every setting has one
+owner.
+
+### `resources`
+
+`resources(layout) -> dict`: the shared resource policy, open to every extension: `{"gpu": {...}}`, a copy of
+`routing.yaml`'s `gpu` section (`{}` when absent), parsed for this call. Phase 3 moves it to `resources.gpu`; this
+shape stays.
 
 ## Project paths
 

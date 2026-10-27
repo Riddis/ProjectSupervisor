@@ -27,6 +27,14 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   declared on their classes, so the contract records them; nothing else about them changes.
 - **Extension API:** `Registry`, the hooks `setup(registry)` receives, as a documented `typing.Protocol`; the
   loader's registry keeps exactly its signatures (tested), so G2 now covers the hook signatures too.
+- **Extension API: the config facade.** `registry.config_sections(*names)` in `setup()` declares the
+  `config/routing.yaml` sections an extension reads; `config(layout, section)` returns one of them and
+  `resources(layout)` the shared resource policy (`{"gpu": ...}`, routing.yaml's `gpu`), both as copies parsed for
+  the call. `config()` refuses a caller that is not an extension's code and a section the calling extension did not
+  declare; `config_sections()` refuses a framework section (the template routing.yaml's keys, `gpu`, `resources`,
+  `extensions`) and one another extension declared. `ExtensionError` is exported for both refusals. This replaces
+  reading routing.yaml through the claude_cli adapter's `routing()`; phase 3 keeps these signatures and moves the
+  values to `extensions.<identity>` and `resources.gpu`. No config shape change.
 - **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
   lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
   or job already has, built in or another extension's (before, an extension could silently replace the `process` or

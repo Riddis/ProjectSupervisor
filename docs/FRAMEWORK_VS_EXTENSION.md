@@ -93,9 +93,11 @@ What the registry offers (`supervisor/extensions.py`):
 | `static_dir(path, prefix)` | files served at `/static/<prefix>/...` (your `review.js`, a stylesheet, icons). One path segment per prefix; the framework's own assets stay directly under `/static/`. |
 
 Extensions may read their own section of `config/policy.yaml` through `supervisor.policy.section("my_section")`
-and their own keys in `config/routing.yaml` (`supervisor.adapters.claude_cli.routing(layout)`). `supervisor.gpu`
-(`free_mb`, `used_mb`, `total_mb`, `available`) is the shared nvidia-smi probe for lanes, checks and panels that need
-to know what the card has free; it never raises.
+and the sections of `config/routing.yaml` they declare with `registry.config_sections(...)`, through
+`supervisor.ext.config(layout, section)`; the shared resource policy (routing.yaml's `gpu`) through
+`supervisor.ext.resources(layout)` (1.11.0, `docs/EXTENSION_API.md`). `supervisor.ext.gpu` (`free_mb`, `used_mb`,
+`total_mb`, `available`) is the shared nvidia-smi probe for lanes, checks and panels that need to know what the card
+has free; it never raises.
 
 The single heavy resource (`limits.max_resource_jobs`, default 1) is held by any adapter declared `gpu = True` and,
 when routing.yaml lists `limits.resource_cost_categories: [local]`, by the *delivery* of a task of that cost category

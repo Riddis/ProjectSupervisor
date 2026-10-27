@@ -24,6 +24,10 @@ class Registry(Protocol):
         """A deterministic job `fn(root, run_dir, **params) -> dict` for `job: {adapter: python, fn: <name>}`."""
         ...
 
+    def config_sections(self, *names: str) -> None:
+        """The routing.yaml sections this extension reads with `supervisor.ext.config()`; one owner per section."""
+        ...
+
     def doctor_check(self, fn: Callable[[Layout], Any]) -> None:
         """`fn(layout) -> Check`, shown by `supervisor doctor` and the Control Center."""
         ...
