@@ -49,6 +49,13 @@ def tamper(layout, item_id, field, value):
 
 def close(layout, item_id, command_id=None):
     return ext.close_owned_item(layout, item_id, "SUBMIT", note="2/2", by="owner", command_id=command_id)
+
+def rewrite_answer(layout, item_id):
+    def fn(doc):
+        doc["answer"]["response"] = "REJECT"          # in place: the same dict the snapshot would hold
+        doc["answer"]["command_id"] = "replacement"
+        return doc
+    return ext.update_owned_item(layout, item_id, fn)
 '''
 
 OTHER = '''
@@ -161,3 +168,17 @@ def test_owned_item_operations_are_for_extension_code(lay):
         ext.owned_item(lay, g)
     with pytest.raises(ext.ExtensionError, match="extension's code"):
         ext.update_owned_item(lay, g, lambda doc: doc)
+
+
+def test_an_update_cannot_rewrite_a_recorded_answer_in_place(lay):
+    """Review 1.11.0 F2: the fixed fields are compared with a deep snapshot, so mutating the answer dict the callback
+    receives is refused like replacing it, and a replay of the original close still finds its command id."""
+    g = grid(lay)
+    mod(lay, "owner_ext").close(lay, g, command_id="original")
+    before = inbox.load(lay, g)
+    with pytest.raises(ext.InboxError, match="answer"):
+        mod(lay, "owner_ext").rewrite_answer(lay, g)
+    assert inbox.load(lay, g) == before
+    replay = mod(lay, "owner_ext").close(lay, g, command_id="original")
+    assert replay["answer"]["response"] == "SUBMIT" and replay["answer"]["command_id"] == "original"
+

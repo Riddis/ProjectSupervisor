@@ -2,6 +2,7 @@
 `registry.inbox_kind()` lists, reads, updates and closes items of that kind, and only that kind."""
 from __future__ import annotations
 
+import copy
 from collections.abc import Callable
 
 from .. import inbox as _inbox
@@ -11,6 +12,7 @@ from ..inbox import InboxError
 from ..paths import Layout
 
 _FIXED = ("id", "kind", "status", "answer", "answered_at")      # what an update may not change: identity and closure
+_ABSENT = object()
 
 
 def _caller(layout: Layout, what: str) -> tuple[str, dict[str, str]]:
@@ -62,10 +64,11 @@ def update_owned_item(layout: Layout, item_id: str, fn: Callable[[dict], dict | 
 
     def guarded(doc: dict) -> dict:
         _check(item_id, doc.get("kind"), who, owners)
-        before = {k: doc.get(k) for k in _FIXED}
+        # A deep copy: `fn` gets the document itself and may change the answer dict in place (review 1.11.0 F2).
+        before = {k: copy.deepcopy(doc[k]) if k in doc else _ABSENT for k in _FIXED}
         out = fn(doc)
         doc = out if isinstance(out, dict) else doc
-        changed = [k for k in _FIXED if doc.get(k) != before[k]]
+        changed = [k for k in _FIXED if doc.get(k, _ABSENT) != before[k]]
         if changed:
             raise InboxError(f"{item_id}: an update may not change {', '.join(changed)} (close with close_owned_item)")
         return doc
