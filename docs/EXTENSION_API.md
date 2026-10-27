@@ -227,6 +227,123 @@ A dataclass, what `collect()` returns.
 capacity is out for now. The loop keeps the job prepared, records `message` and `reset_epoch` (epoch seconds, the
 earliest time it is tried again) and counts no attempt, however often it happens.
 
+## Agent lanes
+
+### `agent_lane`
+
+`agent_lane(layout, name) -> AgentLane`: a read-only handle on the registered agent lane `name` (a lane that runs an
+agent CLI), for an extension that has to launch the agent itself in a way one job step cannot express, such as a
+JSON-RPC session with the CLI or an exec that passes images. The extension passes the lane's name; the framework's
+code names none. Raises `ExtensionError` for a name that is no lane, or a lane that runs no agent.
+
+### `AgentLane`
+
+| Member | Meaning |
+|---|---|
+| `name` | the lane's name |
+| `executable` | the agent's executable as the lane resolves it (routing.yaml's `executable` for the lane's engine, else the one on `PATH` or the vendor's default install location) |
+| `model` | the model routing.yaml configures for the lane's engine (`<engine>: {model: ...}`), or `None` |
+| `environment() -> dict` | a fresh copy of the environment the lane gives its own agents: the loop's environment with every API key, token and nesting marker removed (`process.scrub_env()`: the variables whose names end in a `config/policy.yaml` `secrets.env_key_suffixes` entry, and the variables that would make the agent a nested session). Pass it as the child's whole environment, so the agent runs on its subscription login and never on a key. Changing the copy changes nothing else |
+
+The handle is read-only: setting an attribute raises `AttributeError`. A launch through it is the extension's own
+process, outside the loop's job records, capacity gate and timeouts; use a job lane (`Adapter`) for work the loop
+should schedule and recover.
+
+## Inbox items
+
+An extension that claims an inbox kind with `registry.inbox_kind(kind, ...)` owns the items of that kind: it creates
+them through its jobs, and only it changes or closes them (a kind claimed with `answerable=False` cannot be closed
+from the inbox form or the `inbox.answer` command). Every operation below acts for the calling extension (the
+configured extension whose code is running, see `config()`), raises `ExtensionError` when the caller is not an
+extension's code, and raises `InboxError` when the item is missing or of a kind the caller did not claim. Items are
+plain mappings as stored (`state/inbox/<id>.yaml`): `id`, `kind`, `status` (`open`, `answered`, ...), `subject`,
+`summary`, the extension's own fields, and `answer` once closed.
+
+### `owned_items`
+
+`owned_items(layout, kind=None) -> list[dict]`: the items of every kind the caller claimed, or of `kind` (which it
+must have claimed), as read now, by id.
+
+### `owned_item`
+
+`owned_item(layout, item_id) -> dict`: one item, as read now.
+
+### `update_owned_item`
+
+`update_owned_item(layout, item_id, fn) -> dict`: read-modify-write under the inbox lock (`state/.inbox.lock`, the
+lock every inbox write takes), so concurrent updates of one item, from the loop, the Control Center and the CLI in
+other processes, all land. `fn(doc)` receives the item as read under the lock, changes it in place or returns a new
+mapping, and may raise to abort without writing anything. It may not change `id`, `kind`, `status`, `answer` or
+`answered_at` (`InboxError`, nothing written): an update cannot turn an item into another kind or close it. Returns
+the item as written. `fn` must not call another inbox operation (the lock is held).
+
+### `close_owned_item`
+
+`close_owned_item(layout, item_id, response, note="", by="owner", command_id=None) -> dict`: answer (close) the item,
+the one path that closes an item of a kind claimed with `answerable=False`. `response` is the answer word or text,
+checked against the item's `allowed_responses` unless the item allows free text. Idempotent by `command_id`: a
+replay with the same id returns the item unchanged and logs nothing; closing an already closed item with another or
+no id raises `InboxError`. Logged as `inbox_answer`.
+
+### `InboxError`
+
+A `ValueError`: an inbox item that does not exist, is not the caller's, or cannot take the change asked of it.
+
+## Commands and the log
+
+### `submit_command`
+
+`submit_command(layout, kind, payload, actor="owner-ui", command_id=None) -> dict`: submit an owner command, the
+way every Control Center action changes state: applied now when no loop holds the state lock, otherwise queued for
+the loop, which applies it within one iteration. Returns the applied record (`{"id", "ok", "result"}` or
+`{"id", "ok": False, "error"}`) or `{"id", "queued": True}`. The handler (registered with `registry.command`) gets
+`payload` plus `_id`, the command id, and must be idempotent by it.
+
+`command_id` makes a resubmission harmless, a form posted twice say: a command whose id was already submitted is not
+applied again, and the answer is that command's record (or `queued`) with `"replayed": True`, whatever the second
+`kind` and `payload` were. An id is letters, digits, `_`, `.` and `-`, at most 80 characters, not starting with `.`
+or `-` (`ValueError` otherwise). Without `command_id` every call is a new command.
+
+### `log_event`
+
+`log_event(layout, event, actor=None, **fields) -> None`: one line in `state/log.jsonl` through the framework's single
+log path: `{"ts", "event", "actor", ...fields}`, with credentials redacted from every field. The actor is the calling
+extension's name, or `<extension>:<actor>` when `actor` is given (`review_rounds:owner-ui`), so every line says which
+extension wrote it. Raises `ExtensionError` when the caller is not an extension's code.
+
+## Policy
+
+### `policy`
+
+A module: an extension's own policy floor in `config/policy.yaml`, and the framework's policy diagnostics. Everything
+it returns is a copy.
+
+| Member | Meaning |
+|---|---|
+| `merge_floor(floor, configured) -> (dict, list[str])` | the framework's merge rule for an extension's floor: section by section, a scalar from `configured` wins, a list is unioned with the floor's, and an entry whose kind differs from the floor entry it would replace (a string for a flag, `null` for a list) is dropped and reported as text. Neither input is changed |
+| `load(layout) -> dict` | the effective `config/policy.yaml`: the framework's floor merged with the file, sections the framework has no floor for (an extension's) as written |
+| `section(layout, name) -> dict` | one section of `load()`, `{}` when absent or not a mapping |
+| `config_problems(layout) -> list[str]` | the entries the framework rejected; each is a value the owner wrote that is not in effect |
+| `secret_scan_problems(layout) -> list[str]` | why the credential store could not be screened completely; non-empty means every packet is refused |
+| `PolicyViolation` | raised by a packet screen (`registry.packet_screen`) to refuse a brief; the loop refuses the job |
+
+## Control Center pages
+
+### `ui`
+
+A module, loaded on first use (it needs the framework's `ui` extra, FastAPI): what an extension page registered with
+`registry.ui_router` uses so it looks, authenticates and writes like the framework's own pages.
+
+| Member | Meaning |
+|---|---|
+| `require_auth` | the page dependency: `layout: Layout = Depends(ui.require_auth)`; refuses a request from another host or origin and returns the project's `Layout` |
+| `require_csrf(request, token)` | call first in every POST handler with the form's `csrf_token` field; a missing or wrong token is HTTP 403 |
+| `render(request, template, context)` | a template response with the framework's context (`csrf_token`, `project_name`); a template `{% extends "base.html" %}` for the framework's chrome (registered with `registry.template_dir`) |
+| `act(request, layout, kind, payload, redirect_to)` | submit an owner command as the Control Center does (actor `owner-ui`) and answer with the framework's banner: a fragment for an HTMX request, else a redirect to `redirect_to` with a flash |
+| `flash(level, message) -> str` | the value of a `?flash=` query parameter for a redirect of your own (`applied`, `pending`, `error`) |
+| `thumbnail(layout, path, size=(256, 256)) -> str \| None` | the key of a cached thumbnail of an image inside the project, served at `/thumb/<key>`; `None` for anything else |
+| `is_image(path) -> bool` | whether the Control Center shows `path` as an image |
+
 ## Doctor checks
 
 ### `Check`

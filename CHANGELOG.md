@@ -35,6 +35,25 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   `extensions`) and one another extension declared. `ExtensionError` is exported for both refusals. This replaces
   reading routing.yaml through the claude_cli adapter's `routing()`; phase 3 keeps these signatures and moves the
   values to `extensions.<identity>` and `resources.gpu`. No config shape change.
+- **Extension API: purpose-named operations** for what extensions reached private helpers for, each acting for the
+  calling extension and tested for the behaviour that must survive:
+  - inbox items of a kind the extension claimed: `owned_items`, `owned_item`, `update_owned_item` (read-modify-write
+    under `state/.inbox.lock`, so concurrent updates from two processes both land; it cannot change the item's id,
+    kind, status or answer) and `close_owned_item` (idempotent by command id); another extension's item is refused
+    (`InboxError`, exported);
+  - `submit_command(layout, kind, payload, actor, command_id=None)`: an owner command, applied now or queued for
+    the loop; with a `command_id`, a resubmission is applied once and reported as `"replayed"`
+    (`commands.submit` and `submit_or_apply` take the optional `command_id`);
+  - `log_event(layout, event, actor=None, **fields)`: the framework's log path, the actor prefixed with the
+    extension's name (`<extension>:<actor>`);
+  - `policy`: `merge_floor` (the framework's merge rule for an extension's floor: lists unioned, a wrong-kinded
+    entry dropped and reported), `load` and `section` as copies, `config_problems`, `secret_scan_problems`,
+    `PolicyViolation`;
+  - `ui`, loaded on first use: `require_auth`, `require_csrf`, `render`, `act`, `flash`, `thumbnail`, `is_image`;
+  - `agent_lane(layout, name) -> AgentLane`: a read-only handle on an agent lane (owner decision 2026-10-27,
+    option B) with `executable`, `model` and `environment()`, the lane's scrubbed environment; no credential that
+    `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
+    internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
 - **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
   lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
   or job already has, built in or another extension's (before, an extension could silently replace the `process` or

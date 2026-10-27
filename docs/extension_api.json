@@ -152,6 +152,55 @@
         }
       }
     },
+    "AgentLane": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "name"
+          },
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "executable"
+          },
+          {
+            "annotation": "str | None",
+            "kind": "positional_or_keyword",
+            "name": "model"
+          },
+          {
+            "annotation": "Callable[[], dict]",
+            "kind": "positional_or_keyword",
+            "name": "environment"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "environment": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "dict"
+        },
+        "executable": {
+          "kind": "property"
+        },
+        "model": {
+          "kind": "property"
+        },
+        "name": {
+          "kind": "property"
+        }
+      }
+    },
     "CapacityDeferred": {
       "bases": [
         "RuntimeError"
@@ -216,6 +265,13 @@
     "ExtensionError": {
       "bases": [
         "RuntimeError"
+      ],
+      "kind": "class",
+      "members": {}
+    },
+    "InboxError": {
+      "bases": [
+        "ValueError"
       ],
       "kind": "class",
       "members": {}
@@ -958,6 +1014,22 @@
         }
       }
     },
+    "agent_lane": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "name"
+        }
+      ],
+      "returns": "AgentLane"
+    },
     "atomic_json": {
       "kind": "function",
       "params": [
@@ -993,6 +1065,45 @@
           "name": "keep"
         }
       ]
+    },
+    "close_owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "response"
+        },
+        {
+          "annotation": "str",
+          "default": "''",
+          "kind": "positional_or_keyword",
+          "name": "note"
+        },
+        {
+          "annotation": "str",
+          "default": "'owner'",
+          "kind": "positional_or_keyword",
+          "name": "by"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "command_id"
+        }
+      ],
+      "returns": "dict"
     },
     "config": {
       "kind": "function",
@@ -1053,10 +1164,144 @@
         }
       }
     },
+    "log_event": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "event"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "actor"
+        },
+        {
+          "kind": "var_keyword",
+          "name": "fields"
+        }
+      ],
+      "returns": "None"
+    },
     "now_iso": {
       "kind": "function",
       "params": [],
       "returns": "str"
+    },
+    "owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        }
+      ],
+      "returns": "dict"
+    },
+    "owned_items": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "kind"
+        }
+      ],
+      "returns": "list[dict]"
+    },
+    "policy": {
+      "kind": "module",
+      "members": {
+        "PolicyViolation": {
+          "bases": [],
+          "kind": "class",
+          "members": {}
+        },
+        "config_problems": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "list[str]"
+        },
+        "load": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "dict"
+        },
+        "merge_floor": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "floor"
+            },
+            {
+              "annotation": "dict | None",
+              "kind": "positional_or_keyword",
+              "name": "configured"
+            }
+          ],
+          "returns": "tuple[dict, list[str]]"
+        },
+        "secret_scan_problems": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "list[str]"
+        },
+        "section": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "dict"
+        }
+      }
     },
     "read_json": {
       "kind": "function",
@@ -1074,6 +1319,192 @@
           "annotation": "Layout",
           "kind": "positional_or_keyword",
           "name": "layout"
+        }
+      ],
+      "returns": "dict"
+    },
+    "submit_command": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "kind"
+        },
+        {
+          "annotation": "dict",
+          "kind": "positional_or_keyword",
+          "name": "payload"
+        },
+        {
+          "annotation": "str",
+          "default": "'owner-ui'",
+          "kind": "positional_or_keyword",
+          "name": "actor"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "command_id"
+        }
+      ],
+      "returns": "dict"
+    },
+    "ui": {
+      "kind": "module",
+      "members": {
+        "act": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "payload"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "redirect_to"
+            }
+          ],
+          "returns": "RedirectResponse"
+        },
+        "flash": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "level"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "message"
+            }
+          ],
+          "returns": "str"
+        },
+        "is_image": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "bool"
+        },
+        "render": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "context"
+            }
+          ]
+        },
+        "require_auth": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            }
+          ],
+          "returns": "Layout"
+        },
+        "require_csrf": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "str | None",
+              "kind": "positional_or_keyword",
+              "name": "form_token"
+            }
+          ],
+          "returns": "None"
+        },
+        "thumbnail": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "tuple[int, int]",
+              "default": "(256, 256)",
+              "kind": "positional_or_keyword",
+              "name": "size"
+            }
+          ],
+          "returns": "str | None"
+        }
+      }
+    },
+    "update_owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        },
+        {
+          "annotation": "Callable[[dict], dict | None]",
+          "kind": "positional_or_keyword",
+          "name": "fn"
         }
       ],
       "returns": "dict"

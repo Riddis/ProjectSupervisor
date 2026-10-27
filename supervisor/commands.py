@@ -25,9 +25,12 @@ def new_id() -> str:
     return f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
 
 
-def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli") -> Path:
+def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> Path:
+    """Queue a command. `command_id` (default: a new id) names the command file and becomes `payload["_id"]`: a
+    caller that resubmits with the same id gets the command applied once, because apply_all() skips a pending file
+    whose applied record already exists."""
     layout.commands.mkdir(parents=True, exist_ok=True)
-    cid = new_id()
+    cid = command_id or new_id()
     p = layout.commands / f"{cid}.json"
     atomic_json(p, {"id": cid, "kind": kind, "payload": payload, "actor": actor, "submitted": now_iso()})
     try:
@@ -455,9 +458,9 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     return outcomes
 
 
-def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli") -> dict:
+def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> dict:
     """CLI/UI entry point: queue the command; if no loop holds the lock, take it and apply immediately."""
-    p = submit(layout, kind, payload, actor)
+    p = submit(layout, kind, payload, actor, command_id=command_id)
     try:
         with FileLock(layout.lock, owner=f"{actor}-direct"):
             outcomes = apply_all(layout)

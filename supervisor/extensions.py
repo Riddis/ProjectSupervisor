@@ -153,6 +153,7 @@ class Registry:
     adapters: dict[str, str] = field(default_factory=dict)          # lane name -> the extension that registered it
     python_jobs: dict[str, str] = field(default_factory=dict)       # python job name -> the extension that registered it
     config_owners: dict[str, str] = field(default_factory=dict)     # routing.yaml section -> the extension that declared it
+    inbox_kind_owners: dict[str, str] = field(default_factory=dict)  # inbox kind -> the extension that claimed it
     commands: dict[str, Callable] = field(default_factory=dict)    # command kinds registered by extensions (commands.HANDLERS has them too)
     inbox_kinds: dict[str, InboxKind] = field(default_factory=dict)
     template_dirs: list[Path] = field(default_factory=list)
@@ -364,6 +365,7 @@ class Registry:
             raise ExtensionError(f"inbox kind {kind!r}: page must be an absolute path containing {{id}}, got {page!r}")
         self.inbox_kinds[kind] = InboxKind(kind, str(label), page, bool(answerable), bool(show_evidence),
                                            tuple(str(k) for k in score_keys))
+        self.inbox_kind_owners[kind] = self._setting_up or "?"
 
     def template_dir(self, path) -> None:
         """A directory of Jinja templates for an extension's Control Center pages. Loaded *after* the framework's own

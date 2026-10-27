@@ -26,9 +26,9 @@ CODEX_AUTH_RE = AUTH_FAILURE_RE
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 
 
-def codex_env() -> dict:
+def codex_env(layout: Layout | None = None) -> dict:
     """ChatGPT login only (no API keys), HOME/USERPROFILE guaranteed for nested shells."""
-    env = scrub_env(dict(os.environ))
+    env = scrub_env(dict(os.environ), layout)
     home = env.get("USERPROFILE") or env.get("HOME") or str(Path.home())
     env.setdefault("USERPROFILE", home); env.setdefault("HOME", home)
     if os.name == "nt" and "HOMEDRIVE" not in env and len(home) > 1 and home[1] == ":":
@@ -117,6 +117,12 @@ class CodexCliAdapter(ProcessAdapter):
     def submit(self, spec):
         capacity.require(Layout(spec["root"]), self.engine)
         return super().submit(spec)
+
+    def agent_handle(self, layout: Layout) -> dict:
+        """For supervisor.ext.agent_lane: what an extension needs to launch this agent itself, under this lane's
+        environment rules (the executable, the configured model, a callable returning the scrubbed environment)."""
+        return {"executable": executable(layout), "model": (routing(layout).get(self.engine) or {}).get("model"),
+                "environment": lambda: codex_env(layout)}
 
     @staticmethod
     def events(run_dir: Path) -> list[dict]:
