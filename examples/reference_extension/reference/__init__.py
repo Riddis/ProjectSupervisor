@@ -6,13 +6,17 @@ Overview panel, a packet screen, a projection, a CLI group, two owner commands, 
 templates and static files, and its own config section. tests/test_hook_contracts.py loads it through the real
 loader, as a project would, and checks each hook's contract.
 
-Install it in a project by copying this folder to `extensions/reference/` and listing `reference` under
-`extensions:` in project.yaml. Its settings live in config/routing.yaml:
+It follows the extension standard (docs/EXTENSION_STANDARD.md): supervisor-extension.toml declares everything
+setup() registers, and `supervisor extension check reference` (gate G5) proves it. Install it in a project either as
+a package (`pip install` this folder's parent, examples/reference_extension/, which has a pyproject.toml), or by
+copying this folder to `extensions/reference/`. Then list `reference` under `extensions:` in project.yaml. Its
+settings live in config/routing.yaml, validated by config.Settings:
 
-    reference:
-      paused: false            # true: its lane defers every job (no attempt spent)
-      forbidden_word: SECRET   # its packet screen refuses a brief containing this word
-      agent_lane: null         # an agent lane whose executable the doctor check reports (nothing is launched)
+    extensions:
+      reference:
+        paused: false            # true: its lane defers every job (no attempt spent)
+        forbidden_word: SECRET   # its packet screen refuses a brief containing this word
+        agent_lane: null         # an agent lane whose executable the doctor check reports (nothing is launched)
 
 Importing this package registers nothing: setup() does all of it."""
 from __future__ import annotations
@@ -129,7 +133,7 @@ def setup(registry: ext.Registry) -> None:
     registry.doctor_check(check)
     registry.overview_panel(panel)
     registry.packet_screen(screen)
-    registry.projection(projection, path="REFERENCE.md", name="notes")
+    registry.projection(projection, path="REFERENCE.md", name="reference_notes")
     registry.cli(make_cli(), "reference")
     registry.command("reference.note", annotate)
     registry.command("reference.close", close)

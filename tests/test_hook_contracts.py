@@ -19,7 +19,12 @@ from supervisor.models.task import TaskStatus
 
 REPO = Path(__file__).resolve().parents[1]
 REFERENCE = REPO / "examples" / "reference_extension" / "reference"
-ROUTING = {"reference": {"forbidden_word": "CLASSIFIED"}, "gpu": {"usable_vram_floor_mb": 4000}}
+ROUTING = {"extensions": {"reference": {"forbidden_word": "CLASSIFIED"}},
+           "resources": {"gpu": {"usable_vram_floor_mb": 4000}}}
+
+
+def routing_with(reference: dict) -> dict:
+    return {**ROUTING, "extensions": {"reference": reference}}
 
 
 @pytest.fixture
@@ -75,6 +80,14 @@ def test_importing_any_of_its_modules_registers_nothing(lay, module):
     assert testing.import_side_effects(lay, module) == {"adapters": [], "python_jobs": [], "commands": []}
 
 
+def test_the_reference_extension_passes_g5(lay):
+    """Gate G5 (`supervisor extension check reference`): its manifest declares exactly what setup() registers."""
+    from supervisor import extension_check
+    testing.reset()
+    found = extension_check.run(lay, "reference")
+    assert all(f.ok for f in found), {f.name: f.detail for f in found if not f.ok}
+
+
 def test_every_documented_hook_is_exercised(lay):
     reg = extensions.load(lay)
     registered = {
@@ -107,7 +120,7 @@ def test_adapter_its_lane_completes_a_task_through_the_loop(lay):
 
 
 def test_adapter_a_paused_lane_defers_without_spending_an_attempt(lay):
-    write_routing(lay, {**ROUTING, "reference": {"paused": True}})
+    write_routing(lay, routing_with({"paused": True}))
     testing.make_task(lay, "P", job={"adapter": "reference_lane"}, artifacts=["reference_out.txt"])
     testing.drive(lay, iterations=4)
     from supervisor import jobs
@@ -127,10 +140,10 @@ def test_python_job_runs_through_the_python_lane(lay):
 
 def test_doctor_check_reports_through_doctor(lay):
     agent = next(name for name, a in REGISTRY.items() if hasattr(a, "agent_handle"))
-    write_routing(lay, {**ROUTING, "reference": {**ROUTING["reference"], "agent_lane": agent}})
+    write_routing(lay, routing_with({**ROUTING["extensions"]["reference"], "agent_lane": agent}))
     check = next(c for c in doctor.run(lay) if c.name == "reference")
     assert check.ok and "GPU floor 4000" in check.detail and f"agent lane {agent}" in check.detail
-    write_routing(lay, {**ROUTING, "reference": {"agent_lane": "no_such_lane"}})
+    write_routing(lay, routing_with({"agent_lane": "no_such_lane"}))
     check = next(c for c in doctor.run(lay) if c.name == "reference")
     assert not check.ok and "no_such_lane" in check.detail
 
