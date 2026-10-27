@@ -7,11 +7,23 @@ from ._vendor import usage_policy as up
 from ._vendor.contract import CapacityDeferred
 from .paths import Layout
 
-_configured_for: str | None = None
+_configured_for: tuple | None = None       # (runtime dir, routing.yaml stamp) the floors were last read for
+
+
+def _stamp(layout: Layout) -> tuple:
+    """routing.yaml as last written: (modification time in ns, size), or () when absent or unreadable."""
+    try:
+        st = (layout.config / "routing.yaml").stat()
+    except OSError:
+        return ()
+    return (st.st_mtime_ns, st.st_size)
 
 
 def configure(layout: Layout) -> None:
+    """Read the floors from routing.yaml (`capacity.<engine>.reserve_percent`, the 5-hour window, and
+    `weekly_gate_percent`, the 7-day window) into the usage policy. Absent ones take the defaults again."""
     global _configured_for
+    stamp = _stamp(layout)
     reserve = {"claude": 10, "codex": 10}
     weekly = {"claude": 0, "codex": 0}
     cfg = layout.config / "routing.yaml"
@@ -25,11 +37,14 @@ def configure(layout: Layout) -> None:
                 if "weekly_gate_percent" in cap[eng]:
                     weekly[eng] = int(cap[eng]["weekly_gate_percent"])
     up.configure(layout.runtime, reserve, weekly)
-    _configured_for = str(layout.runtime)
+    _configured_for = (str(layout.runtime), stamp)
 
 
 def ensure(layout: Layout) -> None:
-    if _configured_for != str(layout.runtime):
+    """Configure for this project, and again whenever routing.yaml changed since (Settings or a hand edit): a
+    floor the owner changes applies to the next dispatch of a running supervisor, not after a restart. Before
+    1.11.0 the floors were read once per process."""
+    if _configured_for != (str(layout.runtime), _stamp(layout)):
         configure(layout)
 
 

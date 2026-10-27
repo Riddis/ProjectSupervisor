@@ -75,6 +75,9 @@ def update(layout: Layout, field: str, value: str, actor: str = "owner-ui") -> d
         cur[keys[-1]] = typed
         with path(layout).open("w", encoding="utf-8") as f:
             _yaml.dump(doc, f)
+    if keys[0] == "capacity":
+        from . import capacity
+        capacity.configure(layout)                     # this process applies the new floor now, whatever the stamp says
     from . import tasks as tasks_mod
     tasks_mod.log(layout, "settings_update", actor, field=field, before=before, after=typed)
     return {"field": field, "before": before, "after": typed}

@@ -7,6 +7,11 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext` and gate G2.
 
+- **Fixed: a capacity floor changed in Settings applies without a restart.** `capacity.configure()` read
+  `config/routing.yaml` once per process, so a floor the owner lowered in Settings (or by hand) reached a running
+  supervisor only after a restart, and jobs kept waiting. The floors are now read again whenever routing.yaml
+  changes (its modification time and size), and a Settings save reconfigures the running process directly.
+
 - **Gate G2: the extension API contract** (`supervisor/api_contract.py`). `python -m supervisor.api_contract record`
   writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature
   (parameter names, kinds, defaults and annotations; for a class its constructor, public bases, methods, properties
