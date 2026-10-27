@@ -33,7 +33,19 @@ commit.
     editable install, beside the package `find_spec` locates.
 
   The same name from two sources is refused, and so is a manifest naming another identity. An extension without a
-  manifest is found as legacy. The loader does not use discovery yet.
+  manifest is found as legacy.
+- **Changed: loading is all or nothing** (`supervisor/extensions.py`). `setup()` registers into a staging area, and
+  the lanes, python jobs and command kinds reach the process-wide tables only in one commit after it returns.
+  Nothing an extension registered remains, required or optional, when any of these happens:
+  - `setup()` raises;
+  - `setup()` registers something its manifest does not declare;
+  - discovery refuses its manifest;
+  - its import fails.
+
+  The project's registry is put back exactly, and the module is dropped from `sys.modules`. Before, whatever
+  `setup()` registered before failing stayed. The loader now finds each extension through discovery: the same name
+  from two sources is refused, where a project-local file used to win silently. `registry.manifests` and
+  `registry.unmanifested` list who has a manifest.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

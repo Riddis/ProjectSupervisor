@@ -114,3 +114,23 @@ anything the extension ships:
 - **The identity:** a manifest whose `identity` differs from the name in `project.yaml` is refused.
 - **No manifest (1.12.x):** a project-local extension, or an installed module without an entry point, still loads,
   with a warning. A later major release requires the manifest.
+
+## Loading: all or nothing
+
+`setup(registry)` registers into a staging area. The process-wide tables (lanes, python jobs, command kinds) are
+written only by one commit after `setup()` returns. Until then nothing outside the extension can see its
+registrations, not even another thread. Whatever fails, nothing the extension registered remains:
+- an exception in `setup()`;
+- a registration its manifest does not declare in `provides`;
+- a manifest that discovery refuses;
+- an import error.
+
+The project's registry is put back as it was, and the module that failed is dropped from `sys.modules`. This holds
+for required and optional extensions alike. A required extension that fails still blocks the loop, as before.
+
+Doctor check names are known only when the checks run, so `provides.doctor_checks` is compared when `supervisor
+doctor` runs them, not at load.
+
+Importing an extension module must change nothing: `setup()` is the only place anything is registered. A module
+that still calls `register()` or `@job` at import (deprecated since 1.11.0) writes past the staging area, and a
+failure cannot take that back.

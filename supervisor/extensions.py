@@ -22,6 +22,14 @@ path — never by putting the directory on `sys.path` — so two projects' `shar
 extension called `json` is the project's file, not the stdlib. Modules inside one project's `extensions/` can
 import each other with relative imports (`from . import helpers`).
 
+Loading is transactional (1.12.0, boundary plan phase 3). setup() registers into a staging area: the process-wide
+tables (lanes, python jobs, command kinds) are written only by one commit after setup() returns, and the project's
+registry is put back as it was when anything fails. The failures are an exception in setup(), a registration the
+extension's manifest (`supervisor-extension.toml`, supervisor.manifest) does not declare, a manifest discovery refuses
+(supervisor.discovery), or an import error. Then nothing the extension registered remains, and a module that failed is
+dropped from sys.modules. An extension without a manifest still loads, staged the same way, and is listed in
+`registry.unmanifested`.
+
 Failure: a configured extension that does not load is recorded in `registry.errors`. Unless the entry says
 `required: false`, that failure also BLOCKS the loop and every packet (`assert_loaded`): an extension is usually a
 protection (a packet screen, a lane with its own checks), and a protection that silently fell away is worse than a
@@ -33,6 +41,8 @@ a project about something completely different belongs in the framework instead 
 from __future__ import annotations
 
 import ast
+import copy
+import dataclasses
 import functools
 import hashlib
 import importlib
@@ -46,7 +56,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import project
+from . import discovery, project
 from ._vendor.contract import atomic_json, read_json
 from .paths import Layout
 
@@ -174,12 +184,62 @@ class Registry:
     internal_imports: list[InternalImport] = field(default_factory=list)   # deprecated imports in extension sources
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
+    unmanifested: list[str] = field(default_factory=list)       # loaded without a manifest (1.12.x: a warning)
+    manifests: dict[str, Any] = field(default_factory=dict)     # extension -> its Manifest, when it has one
 
     _setting_up: str | None = None                              # the extension whose setup(registry) is running
 
     def __post_init__(self) -> None:
         self.projection_paths |= known_projection_paths(self.layout)
         self._rendered_keys: set[str] = set()
+        # While load() runs an extension's setup(): the process-wide writes it asked for, applied by _commit(), and
+        # what it registered, (manifest kind, identifier), checked against its manifest. None outside setup().
+        self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
+        self._registered: list[tuple[str, str]] | None = None
+
+    # ---------------------------------------------------------------- staging (1.12.0)
+
+    def _note(self, kind: str, identifier: str) -> None:
+        if self._registered is not None:
+            self._registered.append((kind, identifier))
+
+    def _staged(self, table: str, name: str):
+        """What this setup() already asked to write under `name` in a process-wide table, or None."""
+        entry = (self._pending or {}).get((table, name))
+        return entry[0] if entry is not None else None
+
+    def _write(self, table: str, name: str, obj, origin: str, owner: str) -> None:
+        """A process-wide write: held until the commit while setup() runs, applied at once otherwise."""
+        if self._pending is not None:
+            self._pending[(table, name)] = (obj, origin, owner)
+        else:
+            _apply(table, name, obj, origin, owner)
+
+    def _commit(self) -> None:
+        for (table, name), (obj, origin, owner) in (self._pending or {}).items():
+            _apply(table, name, obj, origin, owner)
+        self._pending = None
+
+    def _snapshot(self) -> dict:
+        """Every field a setup() can change, copied deep enough to put back: lists and sets copied, dicts copied
+        with their set values (projection declarations). Generic over the dataclass, so a field added later is
+        covered without anyone remembering to."""
+        out = {}
+        for f in dataclasses.fields(self):
+            if f.name in _OUTCOME_FIELDS:
+                continue
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                value = {k: (set(v) if isinstance(v, set) else v) for k, v in value.items()}
+            elif isinstance(value, (list, set)):
+                value = copy.copy(value)
+            out[f.name] = value
+        return out
+
+    def _restore(self, snapshot: dict) -> None:
+        for name, value in snapshot.items():
+            setattr(self, name, value)
+        self._pending = None
 
     def _write_record(self, rec: dict) -> None:
         try:
@@ -250,19 +310,18 @@ class Registry:
         that also registers at import, as before 1.11.0), and so is the extension that registered a name registering
         it again after a reload; a name another lane already has, built in or another extension's, is an error,
         never an overwrite: the new lane would take over that lane's jobs."""
-        from .adapters.base import REGISTRY, register
+        from .adapters.base import REGISTRY
         name = getattr(adapter, "name", None)
         if not isinstance(name, str) or not name:
             raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
         owner = self._setting_up or "?"
         current = REGISTRY.get(name)
-        if current is not None and current is not adapter and _taken(name, _extension_adapters, _ever_adapters,
-                                                                      self._origin()):
+        if (self._staged("adapter", name) is None and current is not None and current is not adapter
+                and _taken(name, _extension_adapters, _ever_adapters, self._origin())):
             raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
-        register(adapter)
+        self._write("adapter", name, adapter, self._origin(), owner)   # now, or at the commit
         self.adapters[name] = owner
-        _extension_adapters[name] = (self._origin(), owner)
-        _ever_adapters.add(name)
+        self._note("adapters", name)
 
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this extension reads with `supervisor.ext.config()`; nothing else of the file is
@@ -282,16 +341,19 @@ class Registry:
             self.config_owners[name] = owner
 
     def doctor_check(self, fn: Callable) -> None:
-        self.doctor_checks.append(fn)
+        self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it
 
     def ui_router(self, router, label: str, path: str) -> None:
         self.ui_routers.append((router, label, path))
+        self._note("routes", str(path))
 
     def overview_panel(self, fn: Callable) -> None:
         self.overview_panels.append(fn)
+        self._note("hooks", "overview_panel")
 
     def packet_screen(self, fn: Callable) -> None:
         self.packet_screens.append(fn)
+        self._note("hooks", "packet_screen")
 
     def projection(self, fn: Callable, path: str | None = None, name: str | None = None) -> None:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
@@ -309,6 +371,7 @@ class Registry:
         while key in self._projection_keys:
             key, n = f"{base}#{n}", n + 1
         self._projection_keys.append(key)
+        self._note("projections", key.split(":", 1)[1].split("#", 1)[0])
         if path:
             rel = Path(path).as_posix()
             self._declared.setdefault(key, set()).add(rel)
@@ -334,6 +397,7 @@ class Registry:
 
     def cli(self, app, name: str) -> None:
         self.cli_apps.append((app, name))
+        self._note("cli", str(name))
 
     def python_job(self, name: str, fn: Callable) -> None:
         """A deterministic job for `job: {adapter: python, fn: <name>, params: {...}}`, `fn(root, run_dir, **params)
@@ -346,12 +410,12 @@ class Registry:
             raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
         owner = self._setting_up or "?"
         current = JOBS.get(name)
-        if current is not None and current is not fn and _taken(name, _extension_jobs, _ever_jobs, self._origin()):
+        if (self._staged("python_job", name) is None and current is not None and current is not fn
+                and _taken(name, _extension_jobs, _ever_jobs, self._origin())):
             raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
-        JOBS[name] = fn
+        self._write("python_job", name, fn, self._origin(), owner)
         self.python_jobs[name] = owner
-        _extension_jobs[name] = (self._origin(), owner)
-        _ever_jobs.add(name)
+        self._note("python_jobs", name)
 
     def _origin(self) -> str:
         """Who is registering, for name ownership: the source file of the extension being set up (one file is one
@@ -369,11 +433,12 @@ class Registry:
         if not kind or not isinstance(kind, str):
             raise ExtensionError(f"command kind must be a non-empty string, got {kind!r}")
         current = commands_mod.HANDLERS.get(kind)
-        if current is not None and current is not fn and _extension_commands.get(kind) != self._origin():
+        if (self._staged("command", kind) is None and current is not None and current is not fn
+                and _extension_commands.get(kind) != self._origin()):
             raise ExtensionError(f"command kind {kind!r} is already registered")      # the same source file may again
-        commands_mod.HANDLERS[kind] = fn
+        self._write("command", kind, fn, self._origin(), self._setting_up or "?")
         self.commands[kind] = fn
-        _extension_commands[kind] = self._origin()
+        self._note("commands", kind)
 
     def inbox_kind(self, kind: str, label: str, page: str | None = None, answerable: bool = False,
                    show_evidence: bool = True, score_keys: tuple[str, ...] | list[str] = ()) -> None:
@@ -390,6 +455,7 @@ class Registry:
         self.inbox_kinds[kind] = InboxKind(kind, str(label), page, bool(answerable), bool(show_evidence),
                                            tuple(str(k) for k in score_keys))
         self.inbox_kind_owners[kind] = self._setting_up or "?"
+        self._note("inbox_kinds", kind)
 
     def template_dir(self, path) -> None:
         """A directory of Jinja templates for an extension's Control Center pages. Loaded *after* the framework's own
@@ -400,6 +466,7 @@ class Registry:
             raise ExtensionError(f"template_dir {p} is not a directory")
         if p not in self.template_dirs:
             self.template_dirs.append(p)
+        self._note("hooks", "template_dir")
 
     def static_dir(self, path, prefix: str) -> None:
         """Static files served at `/static/<prefix>/...` (the framework's own live under `/static/` directly)."""
@@ -412,6 +479,7 @@ class Registry:
         if any(pre == prefix for pre, _ in self.static_dirs):
             raise ExtensionError(f"static prefix {prefix!r} is already registered")
         self.static_dirs.append((prefix, p))
+        self._note("static", prefix)
 
     def blocking_reason(self) -> str | None:
         """Why the loop must not run, or None: names every required extension that failed to load."""
@@ -438,6 +506,47 @@ def _taken(name: str, owners: dict[str, tuple[str, str]], ever: set[str], origin
     if name in owners:
         return owners[name][0] != origin
     return name not in ever
+
+
+# Registry fields that record the outcome of a load rather than what a setup() registered: not put back on failure.
+_OUTCOME_FIELDS = frozenset({"layout", "loaded", "errors", "blocking", "internal_imports", "unmanifested", "manifests",
+                             "_setting_up"})
+
+
+def _apply(table: str, name: str, obj, origin: str, owner: str) -> None:
+    """Write one process-wide registration: a lane, a python job or a command kind, with who owns the name."""
+    if table == "adapter":
+        from .adapters.base import register
+        register(obj)
+        _extension_adapters[name] = (origin, owner)
+        _ever_adapters.add(name)
+    elif table == "python_job":
+        from .adapters.python import JOBS
+        JOBS[name] = obj
+        _extension_jobs[name] = (origin, owner)
+        _ever_jobs.add(name)
+    elif table == "command":
+        from . import commands as commands_mod
+        commands_mod.HANDLERS[name] = obj
+        _extension_commands[name] = origin
+    else:                                                  # pragma: no cover - a programming error
+        raise ValueError(f"unknown process-wide table {table!r}")
+
+
+def _undeclared(m, registered: list[tuple[str, str]]) -> list[str]:
+    """What setup() registered that manifest `m` does not declare in `provides`."""
+    out = []
+    for kind, identifier in registered:
+        if identifier not in m.provides.get(kind, ()):
+            out.append(f"{kind} {identifier!r}" if kind != "hooks" else f"the {identifier} hook (provides.hooks)")
+    return sorted(set(out))
+
+
+def _drop_modules(before: set[str], names: tuple[str, ...]) -> None:
+    """Forget the modules an extension's failed load added, so the next load imports them afresh."""
+    for key in [k for k in sys.modules if k not in before]:
+        if any(key == n or key.startswith(n + ".") for n in names):
+            del sys.modules[key]
 
 
 def _holder(name: str, current, owners: dict[str, tuple[str, str]]) -> str:
@@ -541,7 +650,13 @@ def load(layout: Layout) -> Registry:
             return reg
     modules = []
     for name, required in specs(layout):
+        snapshot = reg._snapshot()
+        before = set(sys.modules)
+        reg._pending, reg._registered = {}, []
         try:
+            found = discovery.find(layout, name)
+            if found.problems:
+                raise ExtensionError("; ".join(found.problems))
             mod = _import(layout, name)
             modules.append(mod)
             if getattr(mod, "__file__", None):
@@ -554,14 +669,27 @@ def load(layout: Layout) -> Registry:
                 setup(reg)
             finally:
                 reg._setting_up = None
+            if found.manifest is not None:
+                extra = _undeclared(found.manifest, reg._registered)
+                if extra:
+                    raise ExtensionError(f"setup() registered what {found.manifest.source} does not declare in "
+                                         f"provides: {', '.join(extra)}; nothing of it was kept")
+                reg.manifests[name] = found.manifest
+            else:
+                reg.unmanifested.append(name)
+            reg._commit()
             reg.loaded.append(name)
         except Exception as exc:                            # noqa: BLE001 - recorded; a required one blocks the loop
+            reg._restore(snapshot)
+            _drop_modules(before, (f"{_package_name(layout)}.{name}", name))
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]
             reg.errors.append(f"{name}: {why}")
             if required:
                 reg.blocking.append(f"{name}: {why}")
             else:
                 _report_optional_failure(layout, name, why)
+        finally:
+            reg._pending, reg._registered = None, None
     reg._reconcile(set(reg.loaded))
     reg.internal_imports = internal_imports(layout, modules)
     _warn_internal_imports(layout, reg.internal_imports)
