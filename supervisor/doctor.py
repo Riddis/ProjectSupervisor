@@ -18,6 +18,7 @@ class Check:
     name: str
     ok: bool
     detail: str
+    warn: bool = False        # ok, but needs attention: shown as WARN, never fails doctor
 
 
 def _version_of(exe: str | None, args=("--version",)) -> str | None:
@@ -178,6 +179,18 @@ def check_extensions(layout: Layout) -> Check:
     return Check("extensions", True, ", ".join(reg.loaded) or "none configured")
 
 
+def check_extension_imports(layout: Layout) -> Check:
+    """Gate G6, deprecation window: extensions import supervisor.ext only (docs/EXTENSION_API.md). An import of a
+    framework internal is a WARN naming file and line; a later major release makes it a FAIL."""
+    found = extensions.load(layout).internal_imports
+    if not found:
+        return Check("extension_imports", True, "extensions import supervisor.ext only")
+    shown = "; ".join(f"{f.file}:{f.line} {f.module}" for f in found[:8])
+    more = f" (+{len(found) - 8} more)" if len(found) > 8 else ""
+    return Check("extension_imports", True, f"{len(found)} import(s) of framework internals, deprecated since 1.11.0 "
+                 f"(import supervisor.ext; a later major release refuses them): {shown}{more}", warn=True)
+
+
 def check_policy(layout: Layout) -> Check:
     """config/policy.yaml entries the floor rejected (supervisor.policy.config_problems): each one is a value the
     owner wrote that is NOT in effect."""
@@ -192,7 +205,7 @@ def check_policy(layout: Layout) -> Check:
 
 
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_extensions]
+          check_git, check_claude_cli, check_codex_cli, check_extensions, check_extension_imports]
 
 
 def run(layout: Layout) -> list[Check]:

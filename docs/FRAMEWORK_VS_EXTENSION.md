@@ -35,7 +35,8 @@ extensions:
   `docs/EXTENSION_API.md`) and registers everything inside `setup(registry)`. Importing its modules must change
   nothing: no lane, python job or command registered at import, no process started.
   `extensions.import_side_effects(layout, name)` checks this in a fresh interpreter. Module-level `register()` and
-  `@job` still work (1.11.0) but are deprecated.
+  `@job` still work (1.11.0) but are deprecated, as is any other import from `supervisor`: the loader warns, and
+  `supervisor doctor` shows a WARN (`extension_imports`) with each import's file and line.
 - **Isolation.** The `extensions/` directory is loaded by file path as its own package (`supervisor_ext.<root hash>`);
   it is never put on `sys.path`. Two projects' `shared_ext.py` are two different modules, and an extension named
   `json` is the project's file, not the stdlib. Modules in one project's `extensions/` import each other with

@@ -159,7 +159,7 @@ def doctor():
     """Health checks: project.yaml, Python, state store, routing/role cards, git, agent CLIs, extensions."""
     checks = doctor_mod.run(_layout())
     for c in checks:
-        typer.echo(f"{'OK  ' if c.ok else 'FAIL'} {c.name}: {c.detail}")
+        typer.echo(f"{'FAIL' if not c.ok else 'WARN' if c.warn else 'OK  '} {c.name}: {c.detail}")
     raise typer.Exit(0 if all(c.ok for c in checks) else 1)
 
 

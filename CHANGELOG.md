@@ -54,6 +54,14 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
     option B) with `executable`, `model` and `environment()`, the lane's scrubbed environment; no credential that
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
+- **Internal imports in extensions are deprecated (gate G6).** After loading, the loader reads the source (AST) of
+  every module in the project's `extensions/` folder, helpers included, and of installed extension modules, for
+  imports from `supervisor` other than `supervisor.ext` and `supervisor.testing`. Each one gets a `DeprecationWarning`
+  at its own file and line (once per process) and is listed by the new doctor check `extension_imports` as a WARN;
+  the extension still loads and works. A later major release refuses them. Owners: expect this WARN for extensions
+  not yet moved to `supervisor.ext`; it fails nothing.
+- **Doctor has a WARN level.** `Check` gains `warn: bool = False` (**Extension API**: `Check.warn`): `ok=True,
+  warn=True` prints `WARN` in `supervisor doctor` and the Control Center and does not change doctor's exit code.
 - **The reference extension** (`examples/reference_extension/reference/`): every registry hook and every
   `supervisor.ext` operation, used through `supervisor.ext` only. `tests/test_hook_contracts.py` copies it into a
   temporary project, loads it through the real loader and checks each hook's contract (its lane completes a task and

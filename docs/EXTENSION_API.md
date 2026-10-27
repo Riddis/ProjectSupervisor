@@ -11,6 +11,12 @@ only in a major release, after a minor release that warns; an addition comes in 
 from supervisor.ext import Adapter, Check, Layout, Result, atomic_json, gpu
 ```
 
+**Internal imports are deprecated (1.11.0).** An extension that still imports anything else from `supervisor`
+(`supervisor.inbox`, `supervisor.ui.deps`, `supervisor._vendor.contract`, ...) loads and works, but the loader issues
+a `DeprecationWarning` at that file and line, and `supervisor doctor` shows a WARN (`extension_imports`) naming each
+import. The scan reads the source of every module in the project's `extensions/` folder, helpers included, and of
+installed extension modules. A later major release turns the WARN into a FAIL.
+
 The API is introduced in 1.11.0. Where a name is the framework's own object, re-exported unchanged, it says so: the
 behaviour described is the framework's, and a test reaches it through `supervisor.ext` (`tests/test_ext_reexports.py`).
 
@@ -354,8 +360,9 @@ A module, loaded on first use (it needs the framework's `ui` extra, FastAPI): wh
 
 ### `Check`
 
-A dataclass `Check(name: str, ok: bool, detail: str)`: what a function registered with `registry.doctor_check(fn)`
-returns, `fn(layout) -> Check`. `supervisor doctor` and the Control Center show it; `ok=False` is a FAIL.
+A dataclass `Check(name: str, ok: bool, detail: str, warn: bool = False)`: what a function registered with
+`registry.doctor_check(fn)` returns, `fn(layout) -> Check`. `supervisor doctor` and the Control Center show it:
+`ok=False` is a FAIL (doctor exits 1); `ok=True, warn=True` is a WARN, something to look at that fails nothing.
 
 ## The GPU probe
 

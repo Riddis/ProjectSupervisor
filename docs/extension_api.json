@@ -243,6 +243,12 @@
             "annotation": "str",
             "kind": "positional_or_keyword",
             "name": "detail"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "warn"
           }
         ]
       },
@@ -257,6 +263,10 @@
           "kind": "field"
         },
         "ok": {
+          "annotation": "bool",
+          "kind": "field"
+        },
+        "warn": {
           "annotation": "bool",
           "kind": "field"
         }

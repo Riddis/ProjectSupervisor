@@ -32,6 +32,7 @@ a project about something completely different belongs in the framework instead 
 """
 from __future__ import annotations
 
+import ast
 import functools
 import hashlib
 import importlib
@@ -40,6 +41,7 @@ import importlib.util
 import re
 import sys
 import traceback
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -111,6 +113,7 @@ def _paths_in_record(rec: dict, configured: set[str]) -> set[str]:
     return out
 
 NAMESPACE = "supervisor_ext"
+PUBLIC_MODULES = ("supervisor.ext", "supervisor.testing")     # all of supervisor an extension may import (1.11.0)
 
 
 class ExtensionError(RuntimeError):
@@ -138,6 +141,14 @@ class InboxKind:
         return self.page.replace("{id}", item_id) if self.page else None
 
 
+@dataclass(frozen=True)
+class InternalImport:
+    """An import of a framework internal in an extension's source: deprecated since 1.11.0 (supervisor.ext only)."""
+    file: str                 # root-relative (posix) under the project root, else absolute
+    line: int
+    module: str               # the dotted module imported (`from supervisor import inbox` -> supervisor.inbox)
+
+
 @dataclass
 class Registry:
     layout: Layout
@@ -159,6 +170,7 @@ class Registry:
     template_dirs: list[Path] = field(default_factory=list)
     static_dirs: list[tuple[str, Path]] = field(default_factory=list)   # (url prefix, directory)
     loaded: list[str] = field(default_factory=list)
+    internal_imports: list[InternalImport] = field(default_factory=list)   # deprecated imports in extension sources
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
 
@@ -501,9 +513,11 @@ def load(layout: Layout) -> Registry:
             reg.errors.append(f"project.yaml: {note}")
             reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
             return reg
+    modules = []
     for name, required in specs(layout):
         try:
             mod = _import(layout, name)
+            modules.append(mod)
             setup = getattr(mod, "setup", None)
             if setup is None:
                 raise ExtensionError(f"no setup(registry) function in {getattr(mod, '__file__', None) or mod.__name__}")
@@ -521,7 +535,70 @@ def load(layout: Layout) -> Registry:
             else:
                 _report_optional_failure(layout, name, why)
     reg._reconcile(set(reg.loaded))
+    reg.internal_imports = internal_imports(layout, modules)
+    _warn_internal_imports(layout, reg.internal_imports)
     return reg
+
+
+def _internal_names(tree: ast.AST) -> list[tuple[int, str]]:
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [(node.lineno, alias.name) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            names = ([(node.lineno, f"supervisor.{alias.name}") for alias in node.names] if node.module == "supervisor"
+                     else [(node.lineno, node.module)])
+        else:
+            continue
+        out += [(line, name) for line, name in names
+                if (name == "supervisor" or name.startswith("supervisor."))
+                and not any(name == p or name.startswith(p + ".") for p in PUBLIC_MODULES)]
+    return out
+
+
+def internal_imports(layout: Layout, modules=()) -> list[InternalImport]:
+    """Every import of a framework internal (anything in `supervisor` but `supervisor.ext` and `supervisor.testing`)
+    in the source of the project's extensions: every module in its extensions/ folder, helpers included, and the files
+    of installed extension modules (a package: all its modules). Read as source (AST), never imported, so the
+    framework's own imports never count; a file that does not parse is left to the loader. Sorted by file and line."""
+    ext_dir = Path(layout.extensions).resolve()
+    files = set(p.resolve() for p in ext_dir.rglob("*.py")) if ext_dir.is_dir() else set()
+    for mod in modules:
+        origin = getattr(mod, "__file__", None)
+        if not origin:
+            continue
+        path = Path(origin).resolve()
+        if ext_dir in path.parents:
+            continue
+        files |= set(p.resolve() for p in path.parent.rglob("*.py")) if path.name == "__init__.py" else {path}
+    root = Path(layout.root).resolve()
+    out = []
+    for path in files:
+        if "__pycache__" in path.parts:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        except (OSError, SyntaxError, ValueError):
+            continue
+        shown = path.relative_to(root).as_posix() if root in path.parents else str(path)
+        out += [InternalImport(shown, line, name) for line, name in _internal_names(tree)]
+    return sorted(set(out), key=lambda f: (f.file, f.line, f.module))
+
+
+_warned: set[tuple[str, int, str]] = set()
+
+
+def _warn_internal_imports(layout: Layout, found: list[InternalImport]) -> None:
+    """One DeprecationWarning per import and process, reported at the extension's own file and line."""
+    for f in found:
+        key = (str(Path(layout.root).resolve()), f.line, f"{f.file}:{f.module}")
+        if key in _warned:
+            continue
+        _warned.add(key)
+        path = Path(f.file) if Path(f.file).is_absolute() else Path(layout.root) / f.file
+        warnings.warn_explicit(f"{f.module} is a framework internal: extensions import supervisor.ext (and "
+                               f"supervisor.testing in their tests) only. Deprecated since 1.11.0; a later major "
+                               f"release refuses it (docs/EXTENSION_API.md)", DeprecationWarning, str(path), f.line)
 
 
 def _report_optional_failure(layout: Layout, name: str, why: str) -> None:
@@ -594,6 +671,7 @@ def reset() -> None:
     """Tests only, a fresh process: forget loaded registries, the per-project extension packages, and the lanes,
     python jobs and command kinds extensions registered through the registry (the built-in ones stay)."""
     _registries.clear()
+    _warned.clear()
     from . import commands as commands_mod
     from .adapters.base import REGISTRY
     from .adapters.python import JOBS
