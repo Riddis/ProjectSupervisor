@@ -134,6 +134,11 @@ against `supervisor.testing`, which promises nothing.
   Settings: a version update changes only the version's token, and a structural change (`supervisor extension new`
   appending to `extensions:`) keeps long lines, `null`, flow-style items, blank lines and indentation. Files an
   earlier migrate already reformatted stay as they are; nothing rewrites them back.
+- **Both writers verify what they write.** A result is kept only when it reads back as the requested document,
+  types included. An anchor edited under one of its keys, for example, cannot change the other key. A string the
+  framework's YAML 1.1 reader would take as another type (`on`, `no`, `~`, `1_000`) is written quoted. When no
+  rewrite reads back as the requested document, the write is refused and the file stays as it was:
+  `yaml_edit.EditRefused`, which Settings reports as a settings error.
 
 ## 1.10.1 — 2026-10-25
 

@@ -6,8 +6,10 @@ every other byte stays. Anything else (a key added or removed, a list changed) g
 to keep long lines whole, write `null` as `null` and indent lists the way the file already does. Every result is read
 back and compared with the requested document, types included. One that differs is not written: an anchor shared by
 two keys and edited on one of them changes both (review 1.11.0 F1). The requested document is then written whole,
-without the file's comments, which is rare and always correct. Writing the result is the caller's job
-(store.rewrite_text: atomic, the file's own line endings)."""
+without the file's comments, and checked the same way; when even that does not read back, the edit is refused
+(EditRefused) and nothing is written. ruamel writes YAML 1.2 and the framework reads YAML 1.1 (PyYAML), so a string
+that 1.1 would read as another type (`on`, `no`, `~`, `1_000`) is always written quoted (review 1.11.0 R2-1). Writing
+the result is the caller's job (store.rewrite_text: atomic, the file's own line endings)."""
 from __future__ import annotations
 
 import copy
@@ -16,6 +18,10 @@ import io
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.representer import RoundTripRepresenter
+
+
+class EditRefused(ValueError):
+    """No way of writing the requested document reads back as it; the file is left as it was."""
 
 
 def _unshared(value):
@@ -161,10 +167,22 @@ def _merge_list(existing, new: list) -> None:
 
 
 class _Representer(RoundTripRepresenter):
-    """The round-trip representer, writing None as `null` (ruamel writes an empty value)."""
+    """The round-trip representer, writing None as `null` (ruamel writes an empty value) and quoting a string the
+    framework's YAML 1.1 reader would read as another type."""
+
+
+_READER = yaml.resolver.Resolver()
+
+
+def _represent_str(representer, data: str):
+    """A string, quoted when the framework's reader would read it plain as something else (YAML 1.1: `on` is true,
+    `~` is null); ruamel resolves plain scalars by YAML 1.2 and would write those bare."""
+    plain_is_str = _READER.resolve(yaml.ScalarNode, data, (True, False)) == "tag:yaml.org,2002:str"
+    return representer.represent_scalar("tag:yaml.org,2002:str", data, style=None if plain_is_str else "'")
 
 
 _Representer.add_representer(type(None), lambda r, _d: r.represent_scalar("tag:yaml.org,2002:null", "null"))
+_Representer.add_representer(str, _represent_str)
 
 
 def _most_common(samples: list, default):
@@ -239,7 +257,8 @@ def dump_whole(text: str, doc: dict) -> str:
 def edit(text: str, doc: dict) -> str:
     """`text` rewritten to say `doc`: only the changed values' tokens when only existing scalars changed, else the
     careful round trip (dump_round_trip), else `doc` whole (dump_whole). Each candidate is read back and kept only
-    when it is `doc`, types included. `text` unchanged when `doc` says what it already says."""
+    when it is `doc`, types included; EditRefused, and nothing to write, when none is. `text` unchanged when `doc`
+    says what it already says."""
     try:
         old = yaml.safe_load(text) if text.strip() else None
     except yaml.YAMLError:
@@ -249,5 +268,8 @@ def edit(text: str, doc: dict) -> str:
         out = replace_scalars(text, changes)
         if out is not None and _reads_as(out, doc):
             return out
-    out = dump_round_trip(text, doc)
-    return out if _reads_as(out, doc) else dump_whole(text, doc)
+    for write in (dump_round_trip, dump_whole):
+        out = write(text, doc)
+        if _reads_as(out, doc):
+            return out
+    raise EditRefused("no rewrite of the file reads back as the requested document; the file is unchanged")

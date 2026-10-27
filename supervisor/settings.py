@@ -98,7 +98,11 @@ def update(layout: Layout, field: str, value: str, actor: str = "owner-ui") -> d
             cur = cur[k]
         before = cur.get(keys[-1])
         cur[keys[-1]] = typed
-        store.rewrite_text(path(layout), yaml_edit.edit(text, new))
+        try:
+            rewritten = yaml_edit.edit(text, new)
+        except yaml_edit.EditRefused as exc:
+            raise SettingsError(f"config/routing.yaml: {field} was not saved: {exc}") from exc
+        store.rewrite_text(path(layout), rewritten)
     if keys[0] == "capacity":
         from . import capacity
         capacity.configure(layout)                     # this process applies the new floor now, whatever the stamp says

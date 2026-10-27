@@ -198,3 +198,60 @@ def test_the_written_value_has_the_requested_type(old, new):
     text = yaml.safe_dump({"x": old, "y": "keep"})
     out = yaml.safe_load(yaml_edit.edit(text, {"x": new, "y": "keep"}))
     assert out == {"x": new, "y": "keep"} and type(out["x"]) is type(new)
+
+
+# ---------------------------------------------------------------- YAML 1.1 strings (review 1.11.0 R2-1)
+
+AMBIGUOUS = ("on", "off", "yes", "no", "~", "null", "1.10", "1_000", "0o17", "2026-10-27", ".inf")
+
+
+def test_a_write_that_breaks_an_alias_keeps_strings_the_reader_would_retype(layout):
+    """The framework reads YAML 1.1 (PyYAML), where a plain `on` is `True`; ruamel writes 1.2, where it is a string.
+    7240390's whole-document fallback wrote `title: on` unquoted and read back `True`. Strings in values, keys and
+    lists must stay strings."""
+    from supervisor import project
+    lines = ["name: demo", "extensions: &enabled [alpha]", "backup_extensions: *enabled", "ui:",
+             '  title: "on" # keep this string']
+    lines += [f'  "{s}": key' for s in AMBIGUOUS]
+    lines += ["modes: [" + ", ".join(f'"{s}"' for s in AMBIGUOUS) + "]"]
+    layout.project_file.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    project._load_cached.cache_clear()
+    wanted = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
+    wanted["backup_extensions"] = ["alpha"]
+    wanted["extensions"] = ["alpha", "gamma"]
+    assert wanted["ui"]["title"] == "on" and all(s in wanted["ui"] for s in AMBIGUOUS)
+    project.write(layout, wanted)
+    assert yaml_edit.same(yaml.safe_load(layout.project_file.read_text(encoding="utf-8")), wanted)
+
+
+def test_a_new_string_the_reader_would_retype_is_quoted_and_the_comments_stay():
+    """A key added by the round trip: the new strings must read back as strings, and the comment-keeping round trip
+    (not the fallback) must be the write that does it."""
+    text = "kept: 1 # owner note\n"
+    wanted = {"kept": 1, "mode": "no", "list": list(AMBIGUOUS), **{s: s for s in AMBIGUOUS}}
+    out = yaml_edit.edit(text, wanted)
+    assert yaml_edit.same(yaml.safe_load(out), wanted)
+    assert "# owner note" in out
+
+
+def test_a_write_no_candidate_can_verify_is_refused_and_the_file_stays(layout, project_file, monkeypatch):
+    """The last-resort writer is checked like the others; when nothing reads back as the requested document, the
+    write is refused before the file is replaced."""
+    from supervisor import project
+    before = project_file.read_bytes()
+    monkeypatch.setattr(yaml_edit, "dump_round_trip", lambda text, doc: "wrong: document\n")
+    monkeypatch.setattr(yaml_edit, "dump_whole", lambda text, doc: "wrong: document\n")
+    doc = yaml.safe_load(PROJECT)
+    doc["extensions"].append("gamma")
+    with pytest.raises(yaml_edit.EditRefused):
+        project.write(layout, doc)
+    assert project_file.read_bytes() == before
+
+
+def test_a_settings_save_no_candidate_can_verify_is_a_settings_error(layout, routing, monkeypatch):
+    monkeypatch.setattr(yaml_edit, "replace_scalars", lambda text, changes: None)
+    monkeypatch.setattr(yaml_edit, "dump_round_trip", lambda text, doc: "wrong: document\n")
+    monkeypatch.setattr(yaml_edit, "dump_whole", lambda text, doc: "wrong: document\n")
+    with pytest.raises(settings.SettingsError, match="not saved"):
+        settings.update(layout, "capacity.claude.reserve_percent", "5")
+    assert routing.read_bytes() == ROUTING.encode("utf-8")
