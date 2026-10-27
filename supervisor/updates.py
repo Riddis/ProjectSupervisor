@@ -55,6 +55,7 @@ class Status:
     remote_version: str = ""
     migration_hint: bool = False              # the remote CHANGELOG mentions a migration since HEAD
     checked_at: float = 0.0
+    head: str = ""                            # the commit checked: a status describes this checkout in this state
     pinned: bool = False                      # detached HEAD: a release-tag checkout, never pulled
     pinned_tag: str = ""                      # the release tag HEAD is at
     newer_release: str = ""                   # the newest release tag above it, if any
@@ -139,13 +140,28 @@ def _cache_path(layout: Layout | None) -> Path | None:
     return (layout.runtime / "update_check.json") if layout is not None else None
 
 
+def _identity(fw: Path) -> tuple[str, str, str]:
+    """(path, branch, HEAD commit) of the checkout as it is now; branch is "HEAD" when detached."""
+    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], fw, timeout=10)
+    code2, head = _git(["rev-parse", "HEAD"], fw, timeout=10)
+    return str(fw), branch.strip() if code == 0 else "", head.strip() if code2 == 0 else ""
+
+
+def describes_checkout(status: Status) -> bool:
+    """Whether `status` was taken of the framework checkout as it is now: same path, branch and HEAD. A check from
+    before a `git checkout <tag>` (or any other move) says nothing about the checkout now (review 1.11.1 F1)."""
+    path, branch, head = _identity(framework_dir())
+    return bool(head) and (status.framework_dir, status.branch, status.head) == (path, branch, head)
+
+
 def check(layout: Layout | None = None, fetch: bool = True, max_age_s: float = CHECK_TTL_S) -> Status:
-    """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`."""
+    """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`, and only
+    while the checkout is still where it was checked (describes_checkout)."""
     cache = _cache_path(layout)
     if cache is not None and cache.exists():
         try:
             prior = Status.from_dict(json.loads(cache.read_text(encoding="utf-8")))
-            if prior.ok and time.time() - prior.checked_at < max_age_s:
+            if prior.ok and time.time() - prior.checked_at < max_age_s and describes_checkout(prior):
                 return prior
         except (OSError, ValueError, TypeError):
             pass
@@ -170,6 +186,7 @@ def _check(fetch: bool) -> Status:
         st.reason = f"git: {branch}"
         return st
     st.branch = branch
+    st.head = _identity(fw)[2]
     code, remote = _git(["remote", "get-url", "origin"], fw, timeout=10)
     if code != 0:
         st.reason = "no `origin` remote configured on the framework clone"
@@ -323,10 +340,19 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, 
     if not status.ok:
         out.error = status.reason
         return out
-    if status.pinned:
-        out.error = (f"the framework checkout is pinned at {status.pinned_tag}"
-                     + (f"; take {status.newer_release} in a maintenance window" if status.newer_release else "")
+    # The checkout as it is now decides, not the status handed in: a status from before the checkout was pinned
+    # still says "branch, N behind" (review 1.11.1 F1). Nothing is stopped or pulled before these two checks.
+    _path, branch_now, _head = _identity(fw)
+    if status.pinned or branch_now == "HEAD":
+        pinned_at = status.pinned_tag if status.pinned else "a detached HEAD"
+        out.error = (f"the framework checkout is pinned at {pinned_at}"
+                     + (f"; take {status.newer_release} in a maintenance window" if status.newer_release else
+                        "; take a release in a maintenance window")
                      + " (docs/UPDATING.md, \"Pinned checkouts\"); nothing was changed")
+        return out
+    if not describes_checkout(status):
+        out.error = ("the framework checkout changed since this update check (another branch or commit); nothing was "
+                     "changed: check again")
         return out
     if status.dirty:
         out.error = "framework clone has uncommitted changes; commit or stash them first"

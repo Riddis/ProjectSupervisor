@@ -307,3 +307,53 @@ def test_the_overview_names_a_newer_release_for_a_pinned_checkout_without_an_upd
     page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
     assert page.status_code == 200 and "v1.1.0" in page.text and "maintenance window" in page.text
     assert "Update now" not in page.text
+
+
+# ---------------------------------------------------------------- review 1.11.1 F1: a status from before the pin
+
+@pytest.fixture
+def pinned_after_a_branch_check(world, monkeypatch):
+    """A real branch check that finds a pull (a release, then an untagged development commit), cached; then the
+    clone is pinned at v1.0.0 within the cache's lifetime. Stopping the loop is recorded, never performed."""
+    tag(world["author"], "v1.0.0")
+    git(world["author"], "push", "-q", "origin", "v1.0.0")
+    release(world["author"], "1.1.0")
+    push_update(world["author"], version="1.2.0-dev")
+    branch_status = updates.check(world["layout"], fetch=True, max_age_s=0)
+    assert branch_status.available and not branch_status.pinned
+    git(world["clone"], "fetch", "-q", "--tags", "origin")
+    git(world["clone"], "checkout", "-q", "v1.0.0")
+    stops = []
+    monkeypatch.setattr(updates, "_stop_loop", lambda layout, out, timeout_s: stops.append(True) or True)
+    return {**world, "branch_status": branch_status, "stops": stops, "head": git(world["clone"], "rev-parse", "HEAD")}
+
+
+def test_the_cached_check_is_not_reused_once_the_checkout_is_pinned(pinned_after_a_branch_check):
+    w = pinned_after_a_branch_check
+    st = updates.check(w["layout"], fetch=True)                         # the launch path: the default cache age
+    assert st.pinned and st.pinned_tag == "v1.0.0" and not st.available
+    asked = []
+    assert updates.prompt_and_apply(w["layout"], st, ask=asked.append, echo=lambda _l: None) is None
+    assert asked == []
+
+
+@pytest.mark.parametrize("supplied", [True, False], ids=["status-from-before-the-pin", "fresh-check"])
+def test_apply_refuses_a_detached_checkout_whatever_status_it_is_given(pinned_after_a_branch_check, supplied):
+    w = pinned_after_a_branch_check
+    res = updates.apply(w["layout"], w["branch_status"] if supplied else None, reinstall=False)
+    assert not res.ok and "pinned" in res.error and res.steps == []
+    assert w["stops"] == [] and git(w["clone"], "rev-parse", "HEAD") == w["head"]
+
+
+def test_apply_refuses_a_status_for_another_state_of_the_checkout(world, monkeypatch):
+    """Still on the branch, but HEAD moved since the check: the status no longer describes this checkout."""
+    push_update(world["author"])
+    st = updates.check(world["layout"], fetch=True, max_age_s=0)
+    assert st.available
+    (world["clone"] / "local.txt").write_text("x\n", encoding="utf-8")
+    git(world["clone"], "add", "local.txt")
+    git(world["clone"], "commit", "-q", "-m", "local work")
+    stops = []
+    monkeypatch.setattr(updates, "_stop_loop", lambda layout, out, timeout_s: stops.append(True) or True)
+    res = updates.apply(world["layout"], st, reinstall=False)
+    assert not res.ok and "changed since" in res.error and res.steps == [] and stops == []
