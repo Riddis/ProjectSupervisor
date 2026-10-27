@@ -164,3 +164,37 @@ def test_project_write_without_a_file_writes_the_document(layout):
     project.write(layout, {"name": "fresh", "extensions": ["a"], "remote": None})
     assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == {"name": "fresh", "extensions": ["a"],
                                                                                 "remote": None}
+
+
+# ---------------------------------------------------------------- aliases (review 1.11.0 F1)
+
+def test_an_aliased_list_edited_on_one_key_keeps_the_other(layout):
+    """`backup_extensions: *enabled` shares the list with `extensions`: appending to one must not change, or be undone
+    by, the other. 1.10.1 wrote two lists; 38c254b lost the appended item on both."""
+    from supervisor import project
+    layout.project_file.write_bytes(b"name: demo\nextensions: &enabled [alpha]\nbackup_extensions: *enabled\n")
+    project._load_cached.cache_clear()
+    wanted = {"name": "demo", "extensions": ["alpha", "gamma"], "backup_extensions": ["alpha"]}
+    project.write(layout, wanted)
+    assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == wanted
+
+
+def test_an_aliased_mapping_edited_on_one_key_keeps_the_other():
+    text = "first: &shared {limit: 1}\nsecond: *shared\n"
+    wanted = {"first": {"limit": 2}, "second": {"limit": 1}}
+    assert yaml_edit.replace_scalars(text, {("first", "limit"): 2}) is None   # the shared token is not a local edit
+    assert yaml.safe_load(yaml_edit.edit(text, wanted)) == wanted
+
+
+def test_an_edit_that_changes_both_aliased_paths_alike_is_still_exact():
+    text = "first: &shared {limit: 1}\nsecond: *shared\n"
+    wanted = {"first": {"limit": 2}, "second": {"limit": 2}}
+    assert yaml.safe_load(yaml_edit.edit(text, wanted)) == wanted
+
+
+@pytest.mark.parametrize("old,new", [(1, True), (True, 1), (1, 1.0), ("1", 1), (None, "null")])
+def test_the_written_value_has_the_requested_type(old, new):
+    """Python's `True == 1` must not let a write that reads back as the wrong YAML type pass verification."""
+    text = yaml.safe_dump({"x": old, "y": "keep"})
+    out = yaml.safe_load(yaml_edit.edit(text, {"x": new, "y": "keep"}))
+    assert out == {"x": new, "y": "keep"} and type(out["x"]) is type(new)

@@ -1,11 +1,13 @@
 """Edits to hand-authored YAML (config/routing.yaml, project.yaml) that change only what they edit.
 
 These files carry owner-decision comments, long lines and the owner's own layout. When only existing scalar values
-change, `edit()` replaces exactly those values' tokens, located through the YAML parser (never by searching text),
-and checks that the result parses to the intended document; every other byte stays. Anything else (a key added or
-removed, a list changed) goes through ruamel's round trip, set to keep long lines whole, write `null` as `null` and
-indent lists the way the file already does. Writing the result is the caller's job (store.rewrite_text: atomic, the
-file's own line endings)."""
+change, `edit()` replaces exactly those values' tokens, located through the YAML parser (never by searching text);
+every other byte stays. Anything else (a key added or removed, a list changed) goes through ruamel's round trip, set
+to keep long lines whole, write `null` as `null` and indent lists the way the file already does. Every result is read
+back and compared with the requested document, types included. One that differs is not written: an anchor shared by
+two keys and edited on one of them changes both (review 1.11.0 F1). The requested document is then written whole,
+without the file's comments, which is rare and always correct. Writing the result is the caller's job
+(store.rewrite_text: atomic, the file's own line endings)."""
 from __future__ import annotations
 
 import copy
@@ -14,6 +16,41 @@ import io
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.representer import RoundTripRepresenter
+
+
+def _unshared(value):
+    """A copy with no shared containers: a YAML alias loads as one object under two keys, and an expected document
+    built on it would change both when one is assigned."""
+    if isinstance(value, dict):
+        return {k: _unshared(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unshared(v) for v in value]
+    return value
+
+
+def _kind(value) -> str:
+    for kind, types in (("bool", bool), ("int", int), ("float", float), ("str", str), ("map", dict), ("seq", list)):
+        if isinstance(value, types):
+            return kind
+    return "null" if value is None else type(value).__name__
+
+
+def same(a, b) -> bool:
+    """Whether two loaded documents are equal, kinds included: `True == 1` and `1 == 1.0` in Python, not in YAML."""
+    if _kind(a) != _kind(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+def _reads_as(text: str, doc) -> bool:
+    try:
+        return same(yaml.safe_load(text), doc)
+    except yaml.YAMLError:
+        return False
 
 
 def scalar_changes(old, new, prefix: tuple = ()) -> dict | None:
@@ -32,7 +69,7 @@ def scalar_changes(old, new, prefix: tuple = ()) -> dict | None:
         elif isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
             if a != b:
                 return None
-        elif a != b or type(a) is not type(b):
+        elif not same(a, b):
             out[prefix + (key,)] = b
     return out
 
@@ -54,7 +91,7 @@ def replace_scalars(text: str, changes: dict) -> str | None:
     try:
         root = yaml.compose(text)
         tokens = {t.end_mark.index: t for t in yaml.scan(text) if isinstance(t, yaml.ScalarToken)}
-        expected = yaml.safe_load(text)
+        expected = _unshared(yaml.safe_load(text))
     except yaml.YAMLError:
         return None
     spans = []
@@ -83,14 +120,7 @@ def replace_scalars(text: str, changes: dict) -> str | None:
     out = text
     for start, end, rendered in spans:
         out = out[:start] + rendered + out[end:]
-    try:
-        return out if yaml.safe_load(out) == expected else None
-    except yaml.YAMLError:
-        return None
-
-
-def _same(a, b) -> bool:
-    return a == b and type(a) is type(b) if isinstance(a, bool) or isinstance(b, bool) else a == b
+    return out if _reads_as(out, expected) else None    # an aliased token changes the other path too: refused
 
 
 def merge_into(existing, new: dict) -> None:
@@ -105,7 +135,7 @@ def merge_into(existing, new: dict) -> None:
             merge_into(cur, v)
         elif isinstance(v, list) and isinstance(cur, list):
             _merge_list(cur, v)
-        elif k not in existing or not _same(cur, v):
+        elif k not in existing or not same(cur, v):
             existing[k] = v
 
 
@@ -119,7 +149,7 @@ def _merge_list(existing, new: list) -> None:
             merge_into(cur, v)
         elif isinstance(v, list) and isinstance(cur, list):
             _merge_list(cur, v)
-        elif not _same(cur, v):
+        elif not same(cur, v):
             existing[i] = v
     del existing[len(new):]
     if len(new) > old_len:
@@ -197,9 +227,19 @@ def dump_round_trip(text: str, doc: dict) -> str:
     return buf.getvalue()
 
 
+def dump_whole(text: str, doc: dict) -> str:
+    """`doc` written whole, with the file's indentation and long lines but none of its comments: the writer of last
+    resort, when no edit of the file reads back as `doc`."""
+    rt = _round_trip(text)
+    buf = io.StringIO()
+    rt.dump(_unshared(doc), buf)
+    return buf.getvalue()
+
+
 def edit(text: str, doc: dict) -> str:
     """`text` rewritten to say `doc`: only the changed values' tokens when only existing scalars changed, else the
-    careful round trip (dump_round_trip). `text` unchanged when `doc` says what it already says."""
+    careful round trip (dump_round_trip), else `doc` whole (dump_whole). Each candidate is read back and kept only
+    when it is `doc`, types included. `text` unchanged when `doc` says what it already says."""
     try:
         old = yaml.safe_load(text) if text.strip() else None
     except yaml.YAMLError:
@@ -207,6 +247,7 @@ def edit(text: str, doc: dict) -> str:
     changes = scalar_changes(old, doc) if isinstance(old, dict) else None
     if changes is not None:
         out = replace_scalars(text, changes)
-        if out is not None:
+        if out is not None and _reads_as(out, doc):
             return out
-    return dump_round_trip(text, doc)
+    out = dump_round_trip(text, doc)
+    return out if _reads_as(out, doc) else dump_whole(text, doc)
