@@ -15,6 +15,12 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   and a 7-day floor (`capacity.<engine>.weekly_gate_percent`); Settings offered only the first, so a 7-day window
   at its floor held dispatch while the floor the owner could see was far lower. Both are editable now (0-100), and
   the page labels each field by its window ("Claude: 7-day floor (% remaining)").
+- **A capacity hold says what holds it.** The deferral read "claude capacity reserve reached", naming neither the
+  window nor the setting. It now names each window that holds dispatch, its remaining share, the floor and the
+  routing.yaml key that sets it, and when it resets ("claude capacity held: 7-day window at 18% remaining, at or
+  below its floor 20% (routing.yaml capacity.claude.weekly_gate_percent); resets 2026-10-29 19:00 UTC"). The
+  Overview's "Dispatch held" tag names the floor and the setting too. A stale reading still gates, as before: a
+  7-day window's remaining share only falls until it resets, so an old reading never overstates what is left.
 
 - **Gate G2: the extension API contract** (`supervisor/api_contract.py`). `python -m supervisor.api_contract record`
   writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature

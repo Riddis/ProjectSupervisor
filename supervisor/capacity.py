@@ -1,6 +1,8 @@
 """Capacity facade over the vendored usage_policy: windows per provider under state/runtime, reserve from routing.yaml."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import yaml
 
 from ._vendor import usage_policy as up
@@ -48,12 +50,25 @@ def ensure(layout: Layout) -> None:
         configure(layout)
 
 
+def _held_because(engine: str, window: dict) -> str:
+    reset = datetime.fromtimestamp(window["reset_epoch"], timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    remaining = f"{window.get('remaining_percent', 0):g}% remaining"
+    if window.get("floor_setting"):
+        return (f"{window['label']} window at {remaining}, at or below its floor {window['floor']:g}% "
+                f"(routing.yaml {window['floor_setting']}); resets {reset}")
+    return f"{window['label']} window exhausted ({remaining}); resets {reset}"
+
+
 def require(layout: Layout, engine: str) -> None:
-    """Raise CapacityDeferred if the engine's measured windows gate dispatch now."""
+    """Raise CapacityDeferred if the engine's measured windows gate dispatch now. The message names each window
+    that holds dispatch, its remaining share, the floor and the routing.yaml setting that holds it, and when the
+    window resets: what the owner needs to decide whether to change the floor or wait."""
     ensure(layout)
     until = up.reserve_until(engine)
     if until is not None:
-        raise CapacityDeferred(until, f"{engine} capacity reserve reached; resets at {until:.0f}")
+        held = [w for w in windows(layout).get(engine, {}).get("windows", []) if w.get("gating")]
+        why = "; ".join(_held_because(engine, w) for w in held) or "a measured window is at its floor"
+        raise CapacityDeferred(until, f"{engine} capacity held: {why}")
 
 
 def ingest_claude_stream(layout: Layout, path, offset=0) -> int:
@@ -67,8 +82,15 @@ def lines(layout: Layout) -> list[str]:
 
 
 def windows(layout: Layout) -> dict:
+    """Per engine, the measured windows; each says whether it holds dispatch (`gating`), its `floor` and the
+    routing.yaml key that sets the floor (`floor_setting`, e.g. capacity.<engine>.weekly_gate_percent, or None)."""
     ensure(layout)
-    return up.capacity_windows()
+    out = up.capacity_windows()
+    for engine, data in out.items():
+        for w in data.get("windows", []):
+            key = w.pop("floor_key", None)
+            w["floor_setting"] = f"capacity.{engine}.{key}" if key else None
+    return out
 
 
 def owner_reset(layout: Layout, engine: str, message: str = "") -> list:

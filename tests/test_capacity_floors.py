@@ -114,3 +114,32 @@ def test_the_settings_page_changes_the_7_day_floor_and_the_next_dispatch_sees_it
     r = client.post("/settings/routing", data={"field": "capacity.claude.weekly_gate_percent", "value": "150",
                                                "csrf_token": testing.CSRF}, follow_redirects=False)
     assert settings.view(lay)["capacity.claude.weekly_gate_percent"] == 15
+
+
+def test_a_deferral_names_the_window_the_floor_the_setting_and_the_reset(lay):
+    obs = observe(lay)
+    reset = next(w["reset_epoch"] for w in obs["windows"] if w["name"] == "seven_day")
+    with pytest.raises(CapacityDeferred) as caught:
+        capacity.require(lay, ENGINE)
+    message = str(caught.value)
+    when = datetime.fromtimestamp(reset, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    assert "7-day window" in message and "18% remaining" in message and "floor 20%" in message
+    assert "capacity.claude.weekly_gate_percent" in message and when in message
+    assert caught.value.reset_epoch == reset + 60
+
+
+def test_a_5_hour_hold_names_the_reserve_setting(lay):
+    routing(lay, reserve=30)
+    observe(lay, seven_day_used=10.0, five_hour_used=80.0)              # 20 % of the 5-hour window left
+    with pytest.raises(CapacityDeferred) as caught:
+        capacity.require(lay, ENGINE)
+    assert "5-hour window" in str(caught.value) and "capacity.claude.reserve_percent" in str(caught.value)
+
+
+def test_the_overview_names_what_holds_dispatch(lay):
+    observe(lay)
+    from supervisor.ui.routes.overview import overview_context
+    seven = next(w for w in overview_context(lay)["capacity"][ENGINE]["windows"] if w["label"] == "7-day")
+    assert seven["gating"] and seven["floor"] == 20 and seven["floor_setting"] == "capacity.claude.weekly_gate_percent"
+    html = testing.ui_client(lay).get("/overview").text
+    assert "at or below the 20% floor" in html and "capacity.claude.weekly_gate_percent" in html
