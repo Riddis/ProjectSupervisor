@@ -227,34 +227,42 @@ def _check(fetch: bool) -> Status:
 
 
 def _check_pinned(fw: Path, st: Status, fetch: bool) -> Status:
-    """A detached checkout: the release tag it is at, and the newest release tag origin publishes, compared by
-    version number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Candidates come from
-    origin's own list (`git ls-remote --tags`), never from the local tags: a runtime worktree shares those with its
-    development clone, where a tag may exist that was never pushed (review 1.11.1 F2). Only that release's objects
-    are fetched, for its changelog; no local ref is created or moved, and nothing here moves HEAD. Without a fetch
-    there is no fresh word from origin: check() serves the last result instead."""
+    """A detached checkout: the release it runs, and the newest release origin publishes, compared by version
+    number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Both come from origin's own list
+    (`git ls-remote --tags`, each tag peeled to its commit), never from the local tags: a runtime worktree shares
+    those with its development clone, where a tag may exist that was never pushed, on another commit (review 1.11.1
+    F2) or on this one (R2-1). The release the checkout runs is the newest one origin publishes at HEAD's commit;
+    when origin publishes none there, the check says so and announces nothing. Only the newer release's objects are
+    fetched, for its changelog; no local ref is created or moved, and nothing here moves HEAD. Without a fetch there
+    is no fresh word from origin: check() serves the last result instead."""
     st.pinned = True
-    code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
-    releases_here = [t for t in at.split() if _release(t)] if code == 0 else []
-    if not releases_here:
-        st.reason = ("the framework checkout is detached but not at a release tag (vX.Y.Z); `supervisor doctor` fails "
-                     "it: check out a release tag")
-        return st
-    st.pinned_tag = max(releases_here, key=_release)
     if not fetch:
         st.reason = "origin's releases have not been checked yet"
         return st
-    code, listed = _git(["ls-remote", "--tags", "--refs", "origin"], fw)
+    code, listed = _git(["ls-remote", "--tags", "origin"], fw)
     if code != 0:
         st.reason = f"could not list origin's tags (offline?): {listed[-200:]}"
         return st
-    published = {}
+    published: dict[str, str] = {}                           # release tag -> the commit it marks
     for line in listed.splitlines():
         target, _, ref = line.partition("\t")
-        name = ref.strip().removeprefix("refs/tags/")
-        if _release(name):
-            published[name] = target.strip()
+        ref = ref.strip()
+        name = ref.removeprefix("refs/tags/").removesuffix("^{}")
+        if _release(name) and (ref.endswith("^{}") or name not in published):
+            published[name] = target.strip()                 # an annotated tag's peeled line names its commit
     newest = max(published, key=_release, default=None)
+    here = [name for name, commit in published.items() if commit == st.head]
+    if not here:
+        code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
+        local = sorted((t for t in at.split() if _release(t)), key=_release) if code == 0 else []
+        st.reason = ((f"the framework checkout is detached at {', '.join(local)}, but origin publishes no release at "
+                      "this commit" if local else
+                      "the framework checkout is detached but not at a release tag (vX.Y.Z); `supervisor doctor` "
+                      "fails it")
+                     + (f"; the newest release origin publishes is {newest}" if newest else "")
+                     + ": check out a published release tag")
+        return st
+    st.pinned_tag = max(here, key=_release)
     if newest and _release(newest) > _release(st.pinned_tag):
         st.newer_release = newest
         st.remote_version = newest[1:]

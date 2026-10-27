@@ -388,3 +388,39 @@ def test_without_a_fetch_a_pinned_checkout_shows_its_last_check_of_origin_and_ne
     cache.write_text(__import__("json").dumps(old), encoding="utf-8")
     last = updates.check(pinned["layout"], fetch=False)
     assert last.newer_release == "v1.1.0" and last.checked_at == old["checked_at"]
+
+
+# ---------------------------------------------------------------- review 1.11.1 R2-1: the release the checkout is at
+
+def test_an_unpublished_tag_at_the_pinned_commit_does_not_hide_a_published_release(pinned):
+    """A local-only v8.0.0 on the very commit the checkout is pinned at: the checkout still runs v1.0.0, the release
+    origin publishes at that commit, and v1.1.0 is still newer."""
+    release(pinned["author"], "1.1.0")
+    git(pinned["clone"], "tag", "-a", "v8.0.0", "-m", "local alias", "HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned_tag == "v1.0.0" and st.newer_release == "v1.1.0"
+    assert "v8.0.0" not in "\n".join(updates.describe(st))
+
+
+def test_a_checkout_at_a_tag_origin_does_not_publish_says_so_and_names_the_newest_release(pinned):
+    """Detached at a commit only a local tag marks: which release this is cannot be established, and the check says
+    so instead of announcing (or hiding) anything."""
+    release(pinned["author"], "1.1.0")
+    push_update(pinned["author"], version="5.0.0-dev")
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "checkout", "-q", "FETCH_HEAD")
+    git(pinned["clone"], "tag", "-a", "v5.0.0", "-m", "local only", "HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert not st.ok and not st.newer_release
+    assert "origin publishes no release at this commit" in st.reason and "v1.1.0" in st.reason
+
+
+def test_a_lightweight_release_tag_is_recognised_as_the_pinned_release(pinned):
+    """`ls-remote` lists a lightweight tag by its commit alone (no peeled line); it is still the release here."""
+    push_update(pinned["author"], version="1.2.0")
+    git(pinned["author"], "tag", "v1.2.0")
+    git(pinned["author"], "push", "-q", "origin", "v1.2.0")
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")
+    git(pinned["clone"], "checkout", "-q", "v1.2.0")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned_tag == "v1.2.0" and not st.newer_release
