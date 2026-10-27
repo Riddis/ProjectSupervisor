@@ -9,7 +9,7 @@
     <tbody>
     {% for field, value in editable.items() %}
       <tr>
-        <td>{{ field }}</td>
+        <td>{{ labels.get(field, field) }}<br><small><code>{{ field }}</code></small></td>
         <td>{{ value }}</td>
         <td>
           <form method="post" action="/settings/routing" class="inline-form">

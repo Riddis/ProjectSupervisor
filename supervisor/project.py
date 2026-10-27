@@ -2,22 +2,18 @@
 `supervisor init` write it, the framework reads it (name, phase labels, extensions, framework version)."""
 from __future__ import annotations
 
-import io
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
-from ruamel.yaml import YAML
 
-from . import __version__, store
+from . import __version__, store, yaml_edit
 from .paths import Layout
 
-# Round-trip YAML for `write`: project.yaml is born from the commented template, and the comments are the
-# documentation most owners read, so an update (migration, `extension new`) must keep them (same approach as
-# settings.py for routing.yaml).
-_rt_yaml = YAML()
-_rt_yaml.preserve_quotes = True
+# `write` changes only what differs (supervisor.yaml_edit): project.yaml is born from the commented template, and
+# the comments and the owner's layout are what most owners read, so an update (migration, `extension new`) keeps
+# them.
 
 DEFAULTS: dict[str, Any] = {
     "name": "Untitled project",
@@ -142,38 +138,15 @@ def ui_port(layout: Layout) -> int:
         return 8790
 
 
-def _merge_into(existing, new: dict) -> None:
-    """Update a ruamel round-trip mapping in place from a plain dict: changed values replace, nested mappings
-    recurse (keeping their comments), keys absent from `new` are dropped, new keys are appended."""
-    for k in [k for k in list(existing.keys()) if k not in new]:
-        del existing[k]
-    for k, v in new.items():
-        cur = existing.get(k) if k in existing else None
-        if isinstance(v, dict) and isinstance(cur, dict):
-            _merge_into(cur, v)
-        elif k not in existing or cur != v:
-            existing[k] = v
-
-
 def write(layout: Layout, doc: dict) -> Path:
-    """Write project.yaml (full document), preserving the comments and layout of the existing file. Used by
-    migrations and `supervisor extension new`; `supervisor init` stamps the template instead."""
+    """Write project.yaml (full document) changing only what differs: the changed values' tokens when only existing
+    values changed (migrate's framework_version), else a round trip that keeps comments, long lines, `null` and the
+    file's indentation (supervisor.yaml_edit). Atomic, in the file's own line endings. Used by migrations and
+    `supervisor extension new`; `supervisor init` stamps the template instead."""
     p = path(layout)
     p.parent.mkdir(parents=True, exist_ok=True)
-    existing = None
-    if p.is_file():
-        try:
-            existing = _rt_yaml.load(p.read_text(encoding="utf-8"))
-        except Exception:                                   # noqa: BLE001 - malformed: replaced by the full document
-            existing = None
-    if isinstance(existing, dict):
-        _merge_into(existing, doc)
-        out = existing
-    else:
-        out = dict(doc)
-    buf = io.StringIO()
-    _rt_yaml.dump(out, buf)
-    store.rewrite_text(p, buf.getvalue())                  # keeps the file's LF/CRLF style
+    text = p.read_bytes().decode("utf-8") if p.is_file() else ""
+    store.rewrite_text(p, yaml_edit.edit(text, dict(doc)))
     _load_cached.cache_clear()
     return p
 

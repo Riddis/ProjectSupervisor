@@ -27,15 +27,19 @@ Rename `## Unreleased` to `## X.Y.Z — <date>` and make it complete for two rea
 changes for me, what must I do) and the extension author (hooks, API). Every state or config shape change has a
 migration in `supervisor/migrations.py` written with **migration-author**, and a **Migration** line saying what
 `supervisor migrate` does and how to roll back. "No state or config shape change" is said explicitly when true.
-From 1.11.0: an "Extension API" line for every addition or deprecation (G2 compares the contract with the last
-tag's).
+An "Extension API" entry for every addition, change or deprecation, naming each (G2 compares the contract with the last
+tag's). A changed section of `docs/EXTENSION_API.md` needs one too, marked `(editorial)` (wording only), `(breaking)`
+(major version) or unmarked (a compatible change: at least minor); the reviewer checks the classification.
 
 ## 3. Gates on the release commit
 
 On the exact commit to be tagged (a clean checkout, nothing uncommitted — check `git status`):
 
 - **G1** `python -m supervisor.boundary`: OK, no notes;
-- **G2** (from 1.11.0) the API contract check against the last tag;
+- **G2** `python -m supervisor.api_contract check` in a clone with full history and tags: the contract recorded in
+  `docs/extension_api.json` is the code, every name has its own section in `docs/EXTENSION_API.md`, and the
+  difference from the last tag's contract (signatures and documented sections) fits the version and is named in the
+  CHANGELOG (it prints the comparison and each classification; a shallow clone is an error, not a pass);
 - **G3** CI green on Linux and Windows for this commit; on the workstation also `tools\test_windows.ps1`, and keep
   `runs/pytest_windows.txt` for the review;
 - `supervisor migrate --dry-run` and `supervisor migrate` on a copy of a project at the previous version: the

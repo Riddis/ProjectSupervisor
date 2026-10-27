@@ -43,20 +43,31 @@ fails such a test). Run `python -m pytest -q` before and after; on Windows `tool
   commit message explains.
 - A change to the shape of anything under a project's `state/` or `config/` is a migration: use the
   **migration-author** skill.
-- A hook added or changed: update `docs/FRAMEWORK_VS_EXTENSION.md` and the template's `project.yaml` /
-  `routing.yaml` comments. Adding one is a minor version, changing one a major version with a migration note for
-  extension authors.
+- A hook added or changed: update `docs/FRAMEWORK_VS_EXTENSION.md`, `supervisor/ext/_registry.py` (the documented
+  `Registry`), the reference extension and its contract test (`tests/test_hook_contracts.py` fails until the new hook
+  has one), and the template's `project.yaml` / `routing.yaml` comments. Adding one is a minor version, changing one
+  a major version with a migration note for extension authors.
+- The public extension API (`supervisor/ext/`, `docs/EXTENSION_API.md`) is a promise to every extension: export a
+  name only when an extension needs it (rule 3 for a second user), with a behaviour test through `supervisor.ext`,
+  its section in `docs/EXTENSION_API.md`, `python -m supervisor.api_contract record` to update
+  `docs/extension_api.json` in the same commit, and an "Extension API" line in `CHANGELOG.md` naming it. Removing a
+  name or changing a signature so a caller breaks needs a minor release that warns first, then a major one.
+  `supervisor.testing` is unstable and carries no such promise.
 - `supervisor/template/` is the only place project files are born; keep it generic and its comments current (dot
   files are stored as `_dot_<name>`).
 
 ## 5. Gates before asking for review
 
-All three, and say in the pull request which ran (the gate table in `docs/BOUNDARY.md` says which apply):
+All four, and say in the pull request which ran (the gate table in `docs/BOUNDARY.md` says which apply):
 
 - **G1** `python -m supervisor.boundary` from the framework root: OK, no notes. Read the supporting evidence
   (registered domain words) and say why each hit is generic.
+- **G2** `python -m supervisor.api_contract check`: the recorded contract is the code, every public name has its own
+  documented section, and the difference from the last release tag (signatures and documented sections) follows the
+  version rule and is classified in the CHANGELOG (CI runs it with full history).
 - **G3** `python -m pytest -q` green on Windows (`tools\test_windows.ps1`) and on Linux (CI runs both).
-- **G7** the written answers from step 1, plus: public API impact (from 1.11.0), migration impact, docs updated.
+- **G7** the written answers from step 1, plus: extension API impact (names added, deprecated or changed),
+  migration impact, docs updated.
 
 Then `CHANGELOG.md` under `## Unreleased` (what changed and why, for owners and extension authors), and the
 commit naming the module or hook. Never commit framework changes from a project repo; never put project files in

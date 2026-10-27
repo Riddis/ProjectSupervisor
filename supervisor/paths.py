@@ -41,6 +41,33 @@ def require_root() -> Path:
 
 
 class Layout:
+    # Declared so the public extension API's contract (supervisor.ext, G2) records every path a Layout carries.
+    root: Path
+    project_file: Path
+    state: Path
+    tasks: Path
+    decisions: Path
+    issues: Path
+    inbox: Path
+    commands: Path
+    commands_applied: Path
+    runtime: Path
+    jobs: Path
+    conversations: Path
+    gates: Path
+    owner_tasks: Path
+    log: Path
+    lock: Path
+    render_lock: Path
+    wake: Path
+    config: Path
+    runs: Path
+    agents: Path
+    secrets: Path
+    uploads: Path
+    extensions: Path
+    docs: Path
+
     def __init__(self, base: Path | None = None):
         self.root = Path(base).resolve() if base else root()
         self.project_file = self.root / PROJECT_FILE

@@ -13,7 +13,8 @@ phases:
   0: "Foundations"
 
 # Project-specific Python under extensions/ (a module name per entry); see the framework's
-# docs/FRAMEWORK_VS_EXTENSION.md. `supervisor extension new <name>` scaffolds one and lists it here.
+# docs/FRAMEWORK_VS_EXTENSION.md. An extension imports only supervisor.ext (docs/EXTENSION_API.md) and registers
+# everything in setup(). `supervisor extension new <name>` scaffolds one and lists it here.
 extensions: []
 
 ui:

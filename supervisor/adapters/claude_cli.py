@@ -261,6 +261,16 @@ class ClaudeCliAdapter(ProcessAdapter):
         env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 
+    def agent_handle(self, layout: Layout) -> dict:
+        """For supervisor.ext.agent_lane: what an extension needs to launch this agent itself, under this lane's
+        environment rules (the executable, the configured model, a callable returning the scrubbed environment)."""
+        def environment() -> dict:
+            env = scrub_env(dict(os.environ), layout)
+            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+            return env
+        return {"executable": executable(layout), "model": (routing(layout).get(self.engine) or {}).get("model"),
+                "environment": environment}
+
     def submit(self, spec):
         capacity.require(Layout(spec["root"]), self.engine)   # CapacityDeferred costs no attempt (loop handles it)
         return super().submit(spec)

@@ -1,0 +1,1533 @@
+{
+  "format": 1,
+  "module": "supervisor.ext",
+  "names": {
+    "Adapter": {
+      "bases": [],
+      "init": {
+        "params": []
+      },
+      "kind": "class",
+      "members": {
+        "alive": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "bool"
+        },
+        "collect": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "Optional[Result]"
+        },
+        "gpu": {
+          "kind": "data",
+          "type": "bool",
+          "value": "False"
+        },
+        "lane_ready": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "bool"
+        },
+        "name": {
+          "kind": "data",
+          "type": "str",
+          "value": "'base'"
+        },
+        "prepare": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "task"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "attempt_id"
+            }
+          ],
+          "returns": "dict"
+        },
+        "recover": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ],
+          "returns": "Optional[dict]"
+        },
+        "reset_lane": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "bool"
+        },
+        "submit": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ],
+          "returns": "dict"
+        },
+        "terminate": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "None"
+        }
+      }
+    },
+    "AgentLane": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "name"
+          },
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "executable"
+          },
+          {
+            "annotation": "str | None",
+            "kind": "positional_or_keyword",
+            "name": "model"
+          },
+          {
+            "annotation": "Callable[[], dict]",
+            "kind": "positional_or_keyword",
+            "name": "environment"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "environment": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "dict"
+        },
+        "executable": {
+          "kind": "property"
+        },
+        "model": {
+          "kind": "property"
+        },
+        "name": {
+          "kind": "property"
+        }
+      }
+    },
+    "CapacityDeferred": {
+      "bases": [
+        "RuntimeError"
+      ],
+      "init": {
+        "params": [
+          {
+            "kind": "positional_or_keyword",
+            "name": "reset_epoch"
+          },
+          {
+            "kind": "positional_or_keyword",
+            "name": "message"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "reset_epoch": {
+          "annotation": "float",
+          "kind": "field"
+        }
+      }
+    },
+    "Check": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "name"
+          },
+          {
+            "annotation": "bool",
+            "kind": "positional_or_keyword",
+            "name": "ok"
+          },
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "detail"
+          },
+          {
+            "annotation": "bool",
+            "default": "False",
+            "kind": "positional_or_keyword",
+            "name": "warn"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "detail": {
+          "annotation": "str",
+          "kind": "field"
+        },
+        "name": {
+          "annotation": "str",
+          "kind": "field"
+        },
+        "ok": {
+          "annotation": "bool",
+          "kind": "field"
+        },
+        "warn": {
+          "annotation": "bool",
+          "kind": "field"
+        }
+      }
+    },
+    "ExtensionError": {
+      "bases": [
+        "RuntimeError"
+      ],
+      "kind": "class",
+      "members": {}
+    },
+    "InboxError": {
+      "bases": [
+        "ValueError"
+      ],
+      "kind": "class",
+      "members": {}
+    },
+    "Layout": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "Path | None",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "base"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "agents": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "commands": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "commands_applied": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "config": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "conversations": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "decisions": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "docs": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "ensure": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ]
+        },
+        "extensions": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "gates": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "inbox": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "issues": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "jobs": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "lock": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "log": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "owner_tasks": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "project_file": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "render_lock": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "root": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "runs": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "runtime": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "secrets": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "state": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "tasks": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "uploads": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "wake": {
+          "annotation": "Path",
+          "kind": "field"
+        }
+      }
+    },
+    "ProcessAdapter": {
+      "bases": [
+        "Adapter"
+      ],
+      "init": {
+        "params": []
+      },
+      "kind": "class",
+      "members": {
+        "alive": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ]
+        },
+        "collect": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "Optional[Result]"
+        },
+        "command": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ],
+          "returns": "list[str]"
+        },
+        "env": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ]
+        },
+        "gpu": {
+          "kind": "data",
+          "type": "bool",
+          "value": "False"
+        },
+        "handoff_before_cap": {
+          "kind": "data",
+          "type": "bool",
+          "value": "False"
+        },
+        "lane_ready": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "bool"
+        },
+        "limits": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "tuple[float, Optional[int], float]"
+        },
+        "name": {
+          "kind": "data",
+          "type": "str",
+          "value": "'process'"
+        },
+        "on_timeout": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "None"
+        },
+        "parse_result": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ],
+          "returns": "Result"
+        },
+        "prepare": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "task"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "attempt_id"
+            }
+          ]
+        },
+        "recover": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ]
+        },
+        "reset_lane": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "bool"
+        },
+        "submit": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "spec"
+            }
+          ]
+        },
+        "terminate": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "kind": "positional_or_keyword",
+              "name": "handle"
+            }
+          ]
+        }
+      }
+    },
+    "Registry": {
+      "bases": [
+        "typing.Protocol"
+      ],
+      "kind": "class",
+      "members": {
+        "adapter": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Adapter",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            }
+          ],
+          "returns": "None"
+        },
+        "cli": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "app"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "None"
+        },
+        "command": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "Callable[[Layout, dict, str], dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "config_sections": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "var_positional",
+              "name": "names"
+            }
+          ],
+          "returns": "None"
+        },
+        "doctor_check": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], Any]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "inbox_kind": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "label"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "page"
+            },
+            {
+              "annotation": "bool",
+              "default": "False",
+              "kind": "positional_or_keyword",
+              "name": "answerable"
+            },
+            {
+              "annotation": "bool",
+              "default": "True",
+              "kind": "positional_or_keyword",
+              "name": "show_evidence"
+            },
+            {
+              "annotation": "tuple[str, ...] | list[str]",
+              "default": "()",
+              "kind": "positional_or_keyword",
+              "name": "score_keys"
+            }
+          ],
+          "returns": "None"
+        },
+        "layout": {
+          "annotation": "Layout",
+          "kind": "field"
+        },
+        "overview_panel": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "packet_screen": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[..., None]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "projection": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Callable[[Layout], Path]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "str | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "None"
+        },
+        "python_job": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            },
+            {
+              "annotation": "Callable[..., dict]",
+              "kind": "positional_or_keyword",
+              "name": "fn"
+            }
+          ],
+          "returns": "None"
+        },
+        "static_dir": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "prefix"
+            }
+          ],
+          "returns": "None"
+        },
+        "template_dir": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "None"
+        },
+        "ui_router": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "router"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "label"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "None"
+        }
+      }
+    },
+    "Result": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "status"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "digest"
+          },
+          {
+            "annotation": "list[str]",
+            "default": "<factory>",
+            "kind": "positional_or_keyword",
+            "name": "artifacts"
+          },
+          {
+            "annotation": "str",
+            "default": "''",
+            "kind": "positional_or_keyword",
+            "name": "notes"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "model"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "session_id"
+          },
+          {
+            "annotation": "dict[str, Any]",
+            "default": "<factory>",
+            "kind": "positional_or_keyword",
+            "name": "usage"
+          },
+          {
+            "annotation": "Optional[str]",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "error"
+          },
+          {
+            "annotation": "dict[str, Any]",
+            "default": "<factory>",
+            "kind": "positional_or_keyword",
+            "name": "raw"
+          },
+          {
+            "annotation": "Optional[float]",
+            "default": "None",
+            "kind": "positional_or_keyword",
+            "name": "reset_epoch"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "artifacts": {
+          "annotation": "list[str]",
+          "kind": "field"
+        },
+        "digest": {
+          "annotation": "Optional[str]",
+          "kind": "field"
+        },
+        "error": {
+          "annotation": "Optional[str]",
+          "kind": "field"
+        },
+        "model": {
+          "annotation": "Optional[str]",
+          "kind": "field"
+        },
+        "notes": {
+          "annotation": "str",
+          "kind": "field"
+        },
+        "raw": {
+          "annotation": "dict[str, Any]",
+          "kind": "field"
+        },
+        "reset_epoch": {
+          "annotation": "Optional[float]",
+          "kind": "field"
+        },
+        "session_id": {
+          "annotation": "Optional[str]",
+          "kind": "field"
+        },
+        "status": {
+          "annotation": "str",
+          "kind": "field"
+        },
+        "usage": {
+          "annotation": "dict[str, Any]",
+          "kind": "field"
+        }
+      }
+    },
+    "agent_lane": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "name"
+        }
+      ],
+      "returns": "AgentLane"
+    },
+    "atomic_json": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "path"
+        },
+        {
+          "kind": "positional_or_keyword",
+          "name": "data"
+        }
+      ]
+    },
+    "atomic_write_text": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "path"
+        },
+        {
+          "kind": "positional_or_keyword",
+          "name": "text"
+        },
+        {
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "newline"
+        },
+        {
+          "default": "False",
+          "kind": "positional_or_keyword",
+          "name": "keep"
+        }
+      ]
+    },
+    "close_owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "response"
+        },
+        {
+          "annotation": "str",
+          "default": "''",
+          "kind": "positional_or_keyword",
+          "name": "note"
+        },
+        {
+          "annotation": "str",
+          "default": "'owner'",
+          "kind": "positional_or_keyword",
+          "name": "by"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "command_id"
+        }
+      ],
+      "returns": "dict"
+    },
+    "config": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "section"
+        }
+      ],
+      "returns": "dict"
+    },
+    "contained": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "path"
+        },
+        {
+          "kind": "positional_or_keyword",
+          "name": "roots"
+        },
+        {
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "root"
+        }
+      ]
+    },
+    "gpu": {
+      "kind": "module",
+      "members": {
+        "available": {
+          "kind": "function",
+          "params": [],
+          "returns": "bool"
+        },
+        "free_mb": {
+          "kind": "function",
+          "params": [],
+          "returns": "int | None"
+        },
+        "total_mb": {
+          "kind": "function",
+          "params": [],
+          "returns": "int | None"
+        },
+        "used_mb": {
+          "kind": "function",
+          "params": [],
+          "returns": "int | None"
+        }
+      }
+    },
+    "job_spec": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "task"
+        }
+      ],
+      "returns": "dict"
+    },
+    "log_event": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "event"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "actor"
+        },
+        {
+          "kind": "var_keyword",
+          "name": "fields"
+        }
+      ],
+      "returns": "None"
+    },
+    "now_iso": {
+      "kind": "function",
+      "params": [],
+      "returns": "str"
+    },
+    "owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        }
+      ],
+      "returns": "dict"
+    },
+    "owned_items": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "kind"
+        }
+      ],
+      "returns": "list[dict]"
+    },
+    "policy": {
+      "kind": "module",
+      "members": {
+        "PolicyViolation": {
+          "bases": [],
+          "kind": "class",
+          "members": {}
+        },
+        "config_problems": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "list[str]"
+        },
+        "load": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "dict"
+        },
+        "merge_floor": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "floor"
+            },
+            {
+              "annotation": "dict | None",
+              "kind": "positional_or_keyword",
+              "name": "configured"
+            }
+          ],
+          "returns": "tuple[dict, list[str]]"
+        },
+        "secret_scan_problems": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            }
+          ],
+          "returns": "list[str]"
+        },
+        "section": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            }
+          ],
+          "returns": "dict"
+        }
+      }
+    },
+    "read_json": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "path"
+        }
+      ]
+    },
+    "resources": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        }
+      ],
+      "returns": "dict"
+    },
+    "submit_command": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "kind"
+        },
+        {
+          "annotation": "dict",
+          "kind": "positional_or_keyword",
+          "name": "payload"
+        },
+        {
+          "annotation": "str",
+          "default": "'owner-ui'",
+          "kind": "positional_or_keyword",
+          "name": "actor"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "command_id"
+        }
+      ],
+      "returns": "dict"
+    },
+    "ui": {
+      "kind": "module",
+      "members": {
+        "act": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "kind"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "payload"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "redirect_to"
+            }
+          ],
+          "returns": "RedirectResponse"
+        },
+        "flash": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "level"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "message"
+            }
+          ],
+          "returns": "str"
+        },
+        "is_image": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            }
+          ],
+          "returns": "bool"
+        },
+        "render": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "name"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "context"
+            }
+          ]
+        },
+        "require_auth": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            }
+          ],
+          "returns": "Layout"
+        },
+        "require_csrf": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Request",
+              "kind": "positional_or_keyword",
+              "name": "request"
+            },
+            {
+              "annotation": "str | None",
+              "kind": "positional_or_keyword",
+              "name": "form_token"
+            }
+          ],
+          "returns": "None"
+        },
+        "thumbnail": {
+          "kind": "function",
+          "params": [
+            {
+              "annotation": "Layout",
+              "kind": "positional_or_keyword",
+              "name": "layout"
+            },
+            {
+              "annotation": "str | Path",
+              "kind": "positional_or_keyword",
+              "name": "path"
+            },
+            {
+              "annotation": "tuple[int, int]",
+              "default": "(256, 256)",
+              "kind": "positional_or_keyword",
+              "name": "size"
+            }
+          ],
+          "returns": "str | None"
+        }
+      }
+    },
+    "update_owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "item_id"
+        },
+        {
+          "annotation": "Callable[[dict], dict | None]",
+          "kind": "positional_or_keyword",
+          "name": "fn"
+        }
+      ],
+      "returns": "dict"
+    }
+  }
+}

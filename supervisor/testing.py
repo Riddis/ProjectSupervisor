@@ -1,0 +1,186 @@
+"""Test helpers for extensions: UNSTABLE.
+
+Packaged and project extensions write their behaviour tests against these helpers. Unlike `supervisor.ext`, this
+module carries no compatibility promise: it may change in any release, minor ones included, and gate G2 does not
+record it. It is promoted from the framework's own test fixtures, which use it too.
+
+    from supervisor import testing
+
+    def test_my_lane_completes(tmp_path):
+        lay = testing.project(tmp_path, modules={"my_ext": SOURCE})
+        with testing.lane(testing.FakeLane("render", artifacts=["out.png"])):
+            testing.make_task(lay, "A", job={"adapter": "render"}, artifacts=["out.png"])
+            testing.drive(lay, until=lambda: ...)
+
+Nothing here launches a model client or reaches the network. The Control Center test client is imported only when
+`ui_client()` is called (it needs the framework's `ui` and `dev` extras)."""
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Callable, Iterator
+from pathlib import Path
+
+import yaml
+
+from . import extensions as _extensions
+from . import project as _project
+from . import store
+from ._vendor.contract import CapacityDeferred
+from .adapters.base import REGISTRY, Adapter, Result
+from .paths import Layout
+
+CSRF = "test-csrf-value"                  # the token ui_client() sets as the CSRF cookie; post it as `csrf_token`
+
+_GATES = {"phases": {0: {"requires": []}, 1: {"requires": ["G0"]}, 9: {"requires": ["G6"]}},
+          "gates": {"G0": {"status": "OPEN", "phase": 0}, "G6": {"status": "OPEN", "phase": 6}}}
+
+
+def project(root: str | Path, *, name: str | None = None, extensions: list | None = None,
+            modules: dict[str, str] | None = None, files: dict[str, str] | None = None,
+            routing: dict | None = None, policy: dict | None = None) -> Layout:
+    """A temporary project at `root`: the state folders, an open phase 0 (state/gates.yaml), no owner tasks.
+    `modules` writes `extensions/<name>.py` for each source and lists them in project.yaml (or list `extensions`
+    yourself, e.g. with `required: false`); `files` writes root-relative text files; `routing` and `policy` write
+    config/routing.yaml and config/policy.yaml. project.yaml is written only when `name`, `extensions` or `modules`
+    is given. Loaded extensions are forgotten (`reset()`), so the next load reads this project."""
+    lay = Layout(Path(root)).ensure()
+    (lay.state / "gates.yaml").write_text(yaml.safe_dump(_GATES), encoding="utf-8")
+    (lay.state / "owner_tasks.yaml").write_text("owner_tasks: []\n", encoding="utf-8")
+    for rel, text in (files or {}).items():
+        path = lay.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    for key, doc in (("routing.yaml", routing), ("policy.yaml", policy)):
+        if doc is not None:
+            lay.config.mkdir(parents=True, exist_ok=True)
+            (lay.config / key).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+    if name is not None or extensions is not None or modules:
+        _write_modules(lay, modules or {})
+        doc = {"name": name or "proj"}
+        doc["extensions"] = list(extensions) if extensions is not None else list(modules or {})
+        _project.write(lay, doc)
+    _extensions.reset()
+    return lay
+
+
+def _write_modules(lay: Layout, modules: dict[str, str]) -> None:
+    for name, source in modules.items():
+        path = lay.extensions / (name.replace(".", "/") + ".py")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+
+def add_extensions(layout: Layout, modules: dict[str, str], entries: list | None = None,
+                   files: dict[str, str] | None = None) -> Layout:
+    """Write `extensions/<name>.py` for each module (and root-relative `files`), list `entries` (default: the
+    modules) in project.yaml, keeping its other keys, and forget loaded extensions."""
+    _write_modules(layout, modules)
+    for rel, text in (files or {}).items():
+        path = layout.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    doc = dict(_project.load(layout)) if _project.exists(layout) else {}
+    doc["name"] = doc.get("name") or "proj"
+    doc["extensions"] = list(entries) if entries is not None else list(modules)
+    _project.write(layout, doc)
+    _extensions.reset()
+    return layout.ensure()
+
+
+def make_task(layout: Layout, tid: str, phase: int = 0, deps=(), reviewer=(), human: str = "none",
+              status: str = "NOT_STARTED", **fields) -> dict:
+    """A task in state/tasks/: the minimal valid contract (owner_role engineer, artifacts ["x"], phase 0, cost
+    category deterministic), with any other task field given as a keyword (`job={...}`, `artifacts=[...]`,
+    `owned_paths=[...]`, `cost_category=...`)."""
+    doc = {"id": tid, "phase": phase, "title": tid, "objective": "o", "owner_role": "engineer",
+           "depends_on": list(deps), "actions": ["a"], "artifacts": ["x"], "tests": ["t"], "reviewer": list(reviewer),
+           "acceptance": "ok", "escalation": "none", "human_approval": human, "cost_category": "deterministic",
+           "status": status}
+    doc.update(fields)
+    return store.write_new(layout.tasks / f"{tid}.yaml", doc)
+
+
+class FakeLane(Adapter):
+    """An in-process lane that does what it is told: write `artifacts` (root-relative paths) and finish with
+    `status`, `notes` and `error`; or raise CapacityDeferred from submit() the first `defer` times (re-tried from
+    `defer_until`, epoch seconds). `submitted` lists the attempts it ran, `deferred` counts deferrals."""
+
+    def __init__(self, name: str = "fake_lane", *, status: str = "COMPLETE", artifacts=(), notes: str = "",
+                 error: str | None = None, defer: int = 0, defer_until: float = 0.0, gpu: bool = False):
+        self.name, self.status, self.artifacts, self.notes, self.error = name, status, list(artifacts), notes, error
+        self.defer, self.defer_until, self.gpu = defer, defer_until, gpu
+        self.submitted: list[str] = []
+        self.deferred = 0
+
+    def prepare(self, layout, task, attempt_id):
+        run_dir = layout.runs / task.id / attempt_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
+                "root": str(layout.root)}
+
+    def submit(self, spec):
+        if self.deferred < self.defer:
+            self.deferred += 1
+            raise CapacityDeferred(self.defer_until, f"{self.name}: no capacity (fake)")
+        for rel in self.artifacts:
+            path = Path(spec["root"]) / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{spec['attempt_id']}\n", encoding="utf-8")
+        self.submitted.append(spec["attempt_id"])
+        return {"kind": "fake", "attempt_id": spec["attempt_id"]}
+
+    def alive(self, handle):
+        return False
+
+    def collect(self, spec, handle):
+        return Result(status=self.status, artifacts=list(self.artifacts), notes=self.notes, error=self.error)
+
+
+@contextlib.contextmanager
+def lane(adapter: Adapter) -> Iterator[Adapter]:
+    """Register `adapter` as a lane for the block (replacing any lane of that name), then restore what was there."""
+    before = REGISTRY.get(adapter.name)
+    REGISTRY[adapter.name] = adapter
+    try:
+        yield adapter
+    finally:
+        if before is None:
+            REGISTRY.pop(adapter.name, None)
+        else:
+            REGISTRY[adapter.name] = before
+
+
+def drive(layout: Layout, iterations: int = 10, until: Callable[[], bool] | None = None):
+    """Run the loop for at most `iterations` iterations without sleeping, stopping early once `until()` is true.
+    Returns the Supervisor."""
+    from .loop import Supervisor
+    sup = Supervisor(layout, sleep_s=0)
+    for _ in range(iterations):
+        sup.once()
+        if until is not None and until():
+            break
+    return sup
+
+
+def ui_client(layout: Layout, csrf: str = CSRF):
+    """A Control Center test client for this project (FastAPI's TestClient on 127.0.0.1), with `csrf` as the CSRF
+    cookie: post it as the `csrf_token` form field."""
+    from fastapi.testclient import TestClient
+
+    from .ui.app import create_app
+    from .ui.auth import CSRF_COOKIE
+    client = TestClient(create_app(layout), base_url="http://127.0.0.1")
+    client.cookies.set(CSRF_COOKIE, csrf)
+    return client
+
+
+def import_side_effects(layout: Layout, name: str) -> dict[str, list[str]]:
+    """What importing extension `name` registers by itself, measured in a fresh interpreter (all lists empty for an
+    extension that registers only in setup()). See `supervisor.extensions.import_side_effects`."""
+    return _extensions.import_side_effects(layout, name)
+
+
+def reset() -> None:
+    """Forget loaded extensions and the lanes, python jobs and commands they registered, like a fresh process."""
+    _extensions.reset()
+    _extensions.forget_registrations()

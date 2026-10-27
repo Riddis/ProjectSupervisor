@@ -100,14 +100,23 @@ def window_label(engine, name):
     return WINDOW_LABELS.get((engine, name), name)
 
 
+def window_floor(engine, window):
+    """(floor in percent remaining, the routing.yaml `capacity.<engine>` key that sets it, or None): the 5-hour
+    window's reserve, the 7-day window's floor; any other window gates only when exhausted (floor 0, no key)."""
+    label = window_label(engine, window.get("name"))
+    if label == "5-hour":
+        return _reserve.get(engine, 10), "reserve_percent"
+    if label == "7-day":
+        return _weekly_reserve.get(engine, 0), "weekly_gate_percent"
+    return 0, None
+
+
 def window_gates(engine, window, now):
-    """True when this measured window currently blocks dispatch: short window at/below the reserve,
-    longer windows only when fully exhausted."""
+    """True when this measured window currently blocks dispatch: its remaining share is at or below its floor
+    (window_floor)."""
     if window["reset_epoch"] <= now:
         return False
-    label = window_label(engine, window.get("name"))
-    floor = _reserve.get(engine, 10) if label == "5-hour" else _weekly_reserve.get(engine, 0) if label == "7-day" else 0
-    return window.get("remaining_percent", 101) <= floor
+    return window.get("remaining_percent", 101) <= window_floor(engine, window)[0]
 
 
 def reserve_until(engine, now=None, observation=None):
@@ -262,8 +271,10 @@ def capacity_windows(now=None):
             stamp = window.get("observed_epoch", observed)
             expired = window["reset_epoch"] <= now
             stale = expired or not number(stamp) or now - stamp > MAX_AGE
+            floor, floor_key = window_floor(engine, window)
             windows.append(dict(window, observed_epoch=stamp, stale=stale, expired=expired,
-                                label=window_label(engine, window["name"]), gating=window_gates(engine, window, now)))
+                                label=window_label(engine, window["name"]), gating=window_gates(engine, window, now),
+                                floor=floor, floor_key=floor_key))
         age = now - observed if number(observed) else None
         result[engine] = {"windows": windows, "observed_epoch": observed, "age_seconds": age,
                           "stale": age is not None and age > MAX_AGE, "reserve_until": reserve_until(engine, now, value)}

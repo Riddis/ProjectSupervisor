@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Reference notes — Control Center{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/reference/reference.css">
+<section class="panel" id="reference-notes">
+  <h2>Reference notes</h2>
+  {% for item in items %}
+  <article class="reference-note" id="note-{{ item.id }}">
+    <h3>{{ item.id }}: {{ item.subject }} ({{ item.status }})</h3>
+    <ul>{% for n in item.notes or [] %}<li>{{ n.text }} <small>{{ n.by }}</small></li>{% endfor %}</ul>
+    {% if item.status == "open" %}
+    <form method="post" action="/reference/{{ item.id }}/note">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="text" name="text"> <button type="submit">Add note</button>
+    </form>
+    <form method="post" action="/reference/{{ item.id }}/close">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Close</button>
+    </form>
+    {% endif %}
+  </article>
+  {% else %}
+  <p>No notes.</p>
+  {% endfor %}
+</section>
+{% endblock %}
