@@ -103,3 +103,14 @@ extension's section. When it needs another extension's behaviour, it calls that 
 | Project-local module `extensions/<name>.py` | `extensions/<name>.toml` beside it |
 | Project-local package `extensions/<name>/` | `extensions/<name>/supervisor-extension.toml` |
 | Installed package | `supervisor-extension.toml` inside the Python package, shipped as package data. The distribution declares an entry point in the group `supervisor.extensions` (`<identity> = <package>`) |
+
+`supervisor/discovery.py` finds each name in `project.yaml: extensions` and reads its manifest without executing
+anything the extension ships:
+- **Installed packages:** the manifest is read from the distribution's file list. For an editable install, whose file
+  list shows only its finder, it is read beside the package that `importlib.util.find_spec` locates for the entry
+  point's top-level package; finding that does not run it.
+- **Two sources:** a name found both in `extensions/` and as an installed entry point is refused, and so is a name
+  installed twice. Remove one, or rename one.
+- **The identity:** a manifest whose `identity` differs from the name in `project.yaml` is refused.
+- **No manifest (1.12.x):** a project-local extension, or an installed module without an entry point, still loads,
+  with a warning. A later major release requires the manifest.

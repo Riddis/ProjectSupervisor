@@ -26,6 +26,14 @@ commit.
   - The framework range is compared by version number.
   - The loader does not read manifests yet.
   - New dependency: `packaging` (version ranges, PEP 440), already present wherever pip is.
+- **Added: discovery without import** (`supervisor/discovery.py`). Each name in `project.yaml: extensions` is found
+  with its manifest, executing nothing the extension ships:
+  - project-local, beside the module or inside the package folder;
+  - installed, through the entry point group `supervisor.extensions` and the distribution's file list, or, for an
+    editable install, beside the package `find_spec` locates.
+
+  The same name from two sources is refused, and so is a manifest naming another identity. An extension without a
+  manifest is found as legacy. The loader does not use discovery yet.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
