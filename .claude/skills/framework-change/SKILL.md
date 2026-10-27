@@ -14,7 +14,7 @@ the framework never names a project. Read `docs/BOUNDARY.md` and `docs/FRAMEWORK
 Answer before writing code, and keep the answer for the pull request (G7):
 
 - **Rule 1:** would a project about something completely different want this? Yes → framework, continue here.
-  Some projects → an extension package (from 1.12.0; until then the project's `extensions/`). Only this project →
+  Some projects → an extension package (`supervisor extension new <name> --package`, `docs/EXTENSION_STANDARD.md`). Only this project →
   the project's `extensions/`, `config/` or `agents/`: stop here and do it there.
 - **Rule 3, for a new or changed hook:** name its second user — a generic use beyond the project asking. With
   only one user the project solves it in its extension.
