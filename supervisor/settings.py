@@ -15,11 +15,25 @@ _yaml = YAML()
 _yaml.preserve_quotes = True
 
 # field path -> (type, min, max): the only knobs the Control Center may change.
+# Each engine has two capacity floors, one per measured window: dispatch waits while the window's remaining share is
+# at or below its floor. Both are editable (before 1.11.0 only the 5-hour one was, so a held 7-day window looked
+# like a floor that ignored the owner).
 EDITABLE: dict[tuple[str, ...], tuple[type, float, float]] = {
     ("capacity", "claude", "reserve_percent"): (int, 0, 100),
+    ("capacity", "claude", "weekly_gate_percent"): (int, 0, 100),
     ("capacity", "codex", "reserve_percent"): (int, 0, 100),
+    ("capacity", "codex", "weekly_gate_percent"): (int, 0, 100),
     ("limits", "max_agent_jobs"): (int, 1, 10),
     ("limits", "max_resource_jobs"): (int, 1, 4),
+}
+# What the Settings page calls each field.
+LABELS: dict[str, str] = {
+    "capacity.claude.reserve_percent": "Claude: 5-hour reserve (% remaining)",
+    "capacity.claude.weekly_gate_percent": "Claude: 7-day floor (% remaining)",
+    "capacity.codex.reserve_percent": "Codex: 5-hour reserve (% remaining)",
+    "capacity.codex.weekly_gate_percent": "Codex: 7-day floor (% remaining)",
+    "limits.max_agent_jobs": "Agent jobs at once",
+    "limits.max_resource_jobs": "Heavy-resource jobs at once",
 }
 
 

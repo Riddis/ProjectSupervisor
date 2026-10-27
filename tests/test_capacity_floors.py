@@ -87,3 +87,30 @@ def test_settings_apply_the_floor_even_when_the_file_stamp_does_not_move(lay, mo
         capacity.require(lay, ENGINE)
     settings.update(lay, "capacity.claude.reserve_percent", "10")
     capacity.require(lay, ENGINE)
+
+
+def test_settings_offers_both_floors_labelled_by_window(lay):
+    view = settings.view(lay)
+    assert view["capacity.claude.reserve_percent"] == 1 and view["capacity.claude.weekly_gate_percent"] == 20
+    assert view["capacity.codex.weekly_gate_percent"] == 20
+    assert settings.LABELS["capacity.claude.reserve_percent"] == "Claude: 5-hour reserve (% remaining)"
+    assert settings.LABELS["capacity.claude.weekly_gate_percent"] == "Claude: 7-day floor (% remaining)"
+    for bad in ("101", "-1", "ten"):
+        with pytest.raises(settings.SettingsError):
+            settings.update(lay, "capacity.claude.weekly_gate_percent", bad)
+    assert settings.view(lay)["capacity.claude.weekly_gate_percent"] == 20
+
+
+def test_the_settings_page_changes_the_7_day_floor_and_the_next_dispatch_sees_it(lay):
+    observe(lay)
+    client = testing.ui_client(lay)
+    page = client.get("/settings").text
+    assert "Claude: 7-day floor (% remaining)" in page and "Claude: 5-hour reserve (% remaining)" in page
+    r = client.post("/settings/routing", data={"field": "capacity.claude.weekly_gate_percent", "value": "15",
+                                               "csrf_token": testing.CSRF}, follow_redirects=False)
+    assert r.status_code in (200, 303)
+    assert settings.view(lay)["capacity.claude.weekly_gate_percent"] == 15
+    capacity.require(lay, ENGINE)
+    r = client.post("/settings/routing", data={"field": "capacity.claude.weekly_gate_percent", "value": "150",
+                                               "csrf_token": testing.CSRF}, follow_redirects=False)
+    assert settings.view(lay)["capacity.claude.weekly_gate_percent"] == 15

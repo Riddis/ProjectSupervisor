@@ -15,7 +15,8 @@ def settings_page(request: Request, layout: Layout = Depends(require_auth)):
     raw = (layout.config / "routing.yaml").read_text(encoding="utf-8") if (layout.config / "routing.yaml").exists() else ""
     doc = settings_mod.load(layout) if raw else {}
     return render(request, "settings.html", {
-        "editable": settings_mod.view(layout) if raw else {}, "roles": (doc or {}).get("roles") or {},
+        "editable": settings_mod.view(layout) if raw else {}, "labels": settings_mod.LABELS,
+        "roles": (doc or {}).get("roles") or {},
         "routing_raw": raw, "flash": decode_flash(request),
     })
 

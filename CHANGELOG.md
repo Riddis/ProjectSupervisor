@@ -11,6 +11,10 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   `config/routing.yaml` once per process, so a floor the owner lowered in Settings (or by hand) reached a running
   supervisor only after a restart, and jobs kept waiting. The floors are now read again whenever routing.yaml
   changes (its modification time and size), and a Settings save reconfigures the running process directly.
+- **Settings offers both capacity floors.** Each engine has a 5-hour reserve (`capacity.<engine>.reserve_percent`)
+  and a 7-day floor (`capacity.<engine>.weekly_gate_percent`); Settings offered only the first, so a 7-day window
+  at its floor held dispatch while the floor the owner could see was far lower. Both are editable now (0-100), and
+  the page labels each field by its window ("Claude: 7-day floor (% remaining)").
 
 - **Gate G2: the extension API contract** (`supervisor/api_contract.py`). `python -m supervisor.api_contract record`
   writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature
