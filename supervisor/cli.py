@@ -367,6 +367,16 @@ def extension_list():
         typer.echo("no extensions configured (project.yaml `extensions:`)")
 
 
+@extension_app.command("check")
+def extension_check_cmd(name: str):
+    """Gate G5: whether extension <name> conforms to the standard (docs/EXTENSION_STANDARD.md). Never runs its tests."""
+    from . import extension_check
+    findings = extension_check.run(_layout(load=False), name)
+    for f in findings:
+        typer.echo(f"{'OK  ' if f.ok else 'FAIL'} {f.name}: {f.detail}")
+    raise typer.Exit(0 if all(f.ok for f in findings) else 1)
+
+
 @extension_app.command("new")
 def extension_new(name: str):
     """Scaffold extensions/<name>.py and list it in project.yaml."""

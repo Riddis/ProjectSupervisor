@@ -106,6 +106,24 @@ section with `ext.config(layout, <identity>)`, or a part of it with `ext.config(
   stays byte for byte. The move is refused, and nothing written, if the result does not read back as the same
   values.
 
+## Gate G5: `supervisor extension check <name>`
+
+Whether one extension conforms to this standard, run from a project that has it. It checks conformance only and
+never runs the extension's own tests; the G5 workflow runs those beside it, against the oldest and newest framework
+in the extension's range. Each check prints `OK` or `FAIL`, and any `FAIL` exits 1.
+
+| Check | What it proves |
+| --- | --- |
+| `manifest` | the manifest is found, read and valid, without importing anything |
+| `framework` | the range includes the installed framework |
+| `imports` | the extension's source imports `supervisor.ext` only (and `supervisor.testing` in its tests) |
+| `import_side_effects` | importing the module in a fresh interpreter changes no shared registry |
+| `registrations` | `setup()`, against a staging registry that is never committed, registers exactly what `provides` declares |
+| `idempotent` | a second `setup()` registers the same |
+| `config` | the project's section validates against the manifest's schema |
+
+An extension without a manifest fails `manifest`, and the rest is reported as not run.
+
 ## Migrations
 
 `migrations = "<module>"` names a module exposing `MIGRATIONS`, a list of `migration(layout, dry_run) -> list[str]`

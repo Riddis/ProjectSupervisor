@@ -87,6 +87,17 @@ commit.
   - WARN for an extension without a manifest, or for configuration not yet moved.
 
   An extension's doctor check must report a name its manifest declares in `provides.doctor_checks`.
+- **Added: gate G5, `supervisor extension check <name>`** (`supervisor/extension_check.py`). It checks whether
+  one extension conforms to the standard:
+  - its manifest;
+  - its framework range;
+  - imports of `supervisor.ext` only;
+  - no registration at import (in a fresh interpreter);
+  - `setup()` registering exactly what `provides` declares, the same on a second run, against a staging registry
+    never committed;
+  - its configuration against the schema.
+
+  It never runs the extension's tests.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
