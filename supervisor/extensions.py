@@ -246,17 +246,18 @@ class Registry:
     def adapter(self, adapter) -> None:
         """A job lane: an `Adapter` instance, registered under its `name`. Call it from setup(), never at import
         (importing an extension changes no registry). Registering the same object again is harmless (an extension
-        that also registers at import, as before 1.11.0); a name another lane already has, built in or another
-        extension's, is an error, never an overwrite: the new lane would take over that lane's jobs."""
+        that also registers at import, as before 1.11.0), and so is the extension that registered a name registering
+        it again after a reload; a name another lane already has, built in or another extension's, is an error,
+        never an overwrite: the new lane would take over that lane's jobs."""
         from .adapters.base import REGISTRY, register
         name = getattr(adapter, "name", None)
         if not isinstance(name, str) or not name:
             raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
+        owner = self._setting_up or "?"
         current = REGISTRY.get(name)
-        if current is not None and current is not adapter:
+        if current is not None and current is not adapter and _extension_adapters.get(name) != owner:
             raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
         register(adapter)
-        owner = self._setting_up or "?"
         self.adapters[name] = owner
         _extension_adapters[name] = owner
 
@@ -340,11 +341,11 @@ class Registry:
             raise ExtensionError(f"a python job needs a non-empty string name, got {name!r}")
         if not callable(fn):
             raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
+        owner = self._setting_up or "?"
         current = JOBS.get(name)
-        if current is not None and current is not fn:
+        if current is not None and current is not fn and _extension_jobs.get(name) != owner:
             raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
         JOBS[name] = fn
-        owner = self._setting_up or "?"
         self.python_jobs[name] = owner
         _extension_jobs[name] = owner
 
@@ -410,8 +411,8 @@ class Registry:
 
 _registries: dict[str, Registry] = {}
 _extension_commands: set[str] = set()                        # command kinds extensions registered in this process
-_extension_adapters: dict[str, str] = {}                     # lane name -> extension, registered in this process
-_extension_jobs: dict[str, str] = {}                         # python job name -> extension, registered in this process
+_extension_adapters: dict[str, str] = {}                     # lane name -> the extension that registered it (process)
+_extension_jobs: dict[str, str] = {}                         # python job name -> the extension that registered it
 
 
 def _holder(name: str, current, owners: dict[str, str]) -> str:
@@ -668,24 +669,31 @@ def assert_loaded(layout: Layout) -> Registry:
 
 
 def reset() -> None:
-    """Tests only, a fresh process: forget loaded registries, the per-project extension packages, and the lanes,
-    python jobs and command kinds extensions registered through the registry (the built-in ones stay)."""
+    """Tests only: forget loaded registries, the per-project extension packages and the command kinds extensions
+    registered. Lanes and python jobs extensions registered stay registered, as before 1.11.0 (a project's tests
+    look them up after a reset), and each name stays its extension's, which may register it again after the reload.
+    `forget_registrations()` (supervisor.testing.reset) drops them too, like a fresh process."""
     _registries.clear()
     _warned.clear()
     from . import commands as commands_mod
-    from .adapters.base import REGISTRY
-    from .adapters.python import JOBS
     for kind in _extension_commands:
         commands_mod.HANDLERS.pop(kind, None)
     _extension_commands.clear()
+    for key in [k for k in sys.modules if k == NAMESPACE or k.startswith(NAMESPACE + ".")]:
+        del sys.modules[key]
+
+
+def forget_registrations() -> None:
+    """Tests only: drop the lanes and python jobs extensions registered, and whose names they were (built-in ones
+    stay)."""
+    from .adapters.base import REGISTRY
+    from .adapters.python import JOBS
     for name in _extension_adapters:
         REGISTRY.pop(name, None)
     _extension_adapters.clear()
     for name in _extension_jobs:
         JOBS.pop(name, None)
     _extension_jobs.clear()
-    for key in [k for k in sys.modules if k == NAMESPACE or k.startswith(NAMESPACE + ".")]:
-        del sys.modules[key]
 
 
 # Run by import_side_effects() in a fresh interpreter: import every framework module first (so what they register

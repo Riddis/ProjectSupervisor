@@ -1,7 +1,8 @@
 """Registration only in setup() (phase 2 step 3): `registry.adapter()` and `registry.python_job()` are how an
 extension adds a lane or a python job; they refuse to take over a built-in lane or another extension's name, the
-registry lists what each project's extensions added, and `extensions.reset()` (a fresh process, for tests) forgets
-it. Importing an extension module must change nothing: `extensions.import_side_effects()` imports it in a fresh
+registry lists what each project's extensions added. A name stays its registering extension's across
+`extensions.reset()`, which keeps registered lanes as it did before 1.11.0 (a project's test suite relies on that);
+`supervisor.testing.reset()` forgets them like a fresh process. Importing an extension module must change nothing: `extensions.import_side_effects()` imports it in a fresh
 process and names every process-wide registry entry the import added or replaced. Module-level `register()` and
 `@job` keep working for old extensions. `supervisor.ext.Registry` documents the hooks, and the real registry
 matches it."""
@@ -51,9 +52,9 @@ def setup(registry):
 
 @pytest.fixture(autouse=True)
 def _clean():
-    extensions.reset()
+    testing.reset()
     yield
-    extensions.reset()
+    testing.reset()
 
 
 # ---------------------------------------------------------------- the documented path
@@ -66,11 +67,38 @@ def test_setup_registers_lanes_and_jobs_and_the_registry_lists_them(tmp_path):
     assert reg.adapters == {"ref_lane": "ref"} and reg.python_jobs == {"ref_job": "ref"}
 
 
-def test_reset_forgets_what_extensions_registered_and_keeps_the_built_in_lanes(tmp_path):
-    extensions.load(configure(tmp_path, {"ref": SETUP_ONLY}))
+def test_extensions_reset_keeps_registered_lanes_as_before(tmp_path):
+    """A project's tests reset the loader and then look a lane up (`REGISTRY["comfy"]`): 1.10 kept it registered."""
+    old = LANE.format(name="old_lane") + '''
+from supervisor.adapters.base import register
+from supervisor.adapters.python import job
+register(ADAPTER)
+
+@job("old_job")
+def old_job(root, run_dir, **params):
+    return {"status": "COMPLETE"}
+
+def setup(registry):
+    registry.adapter(ADAPTER)
+'''
+    extensions.load(configure(tmp_path, {"ref": SETUP_ONLY, "old": old}))
     extensions.reset()
+    assert {"ref_lane", "old_lane"} <= set(REGISTRY) and {"ref_job", "old_job"} <= set(JOBS)
+
+
+def test_testing_reset_forgets_them_like_a_fresh_process(tmp_path):
+    extensions.load(configure(tmp_path, {"ref": SETUP_ONLY}))
+    testing.reset()
     assert "ref_lane" not in REGISTRY and "ref_job" not in JOBS
     assert {"python", "process", "human"} <= set(REGISTRY) and "noop" in JOBS
+
+
+def test_a_name_stays_its_extensions_across_a_reset(tmp_path):
+    extensions.load(configure(tmp_path / "a", {"ref": SETUP_ONLY}))
+    extensions.reset()
+    other = LANE.format(name="ref_lane") + "\ndef setup(registry):\n    registry.adapter(ADAPTER)\n"
+    reg = extensions.load(configure(tmp_path / "b", {"other": other}))
+    assert reg.loaded == [] and "ref_lane" in reg.errors[0] and "'ref'" in reg.errors[0]
 
 
 def test_a_reloaded_extension_registers_its_lane_again(tmp_path):

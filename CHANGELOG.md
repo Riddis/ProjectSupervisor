@@ -109,8 +109,9 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   `python_jobs`), and `extensions.import_side_effects(layout, name)` imports a module in a fresh interpreter and
   names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
   keep working and are deprecated (warnings follow in this release). `supervisor extension new` writes a module
-  that imports `supervisor.ext`. Tests only: `extensions.reset()` now also forgets the lanes and python jobs
-  extensions registered, like a fresh process.
+  that imports `supervisor.ext`. A name stays the registering extension's for the process, so the same extension
+  may register it again after a reload. Tests: `extensions.reset()` keeps registered lanes and python jobs, as
+  before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 
 ## 1.10.1 — 2026-10-25
 

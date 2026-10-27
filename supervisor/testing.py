@@ -181,5 +181,6 @@ def import_side_effects(layout: Layout, name: str) -> dict[str, list[str]]:
 
 
 def reset() -> None:
-    """Forget loaded extensions and what they registered, like a fresh process."""
+    """Forget loaded extensions and the lanes, python jobs and commands they registered, like a fresh process."""
     _extensions.reset()
+    _extensions.forget_registrations()
