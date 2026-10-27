@@ -84,7 +84,9 @@ changing it changes nothing, and a later call sees the file as it is then. `{}` 
 absent. Raises `ExtensionError` when:
 
 - the caller is not an extension's code. The caller is the configured extension whose module is running: a module
-  listed under `extensions:` in `project.yaml`, or a helper module it calls, which reads for that extension;
+  listed under `extensions:` in `project.yaml` (recognised by its source file, so the same file imported under another
+  name, as a project's tests may, is the same extension), or a helper module it calls, which reads for that
+  extension;
 - the calling extension did not declare `section` with `registry.config_sections()`, including a section another
   extension declared and one the framework owns;
 - the section is not a mapping, or `routing.yaml` is not valid YAML.

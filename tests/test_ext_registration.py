@@ -212,3 +212,24 @@ def test_the_documented_registry_matches_the_real_one():
     for name in hooks:
         assert params(getattr(ext.Registry, name)) == params(getattr(extensions.Registry, name)), name
     assert "layout" in ext.Registry.__annotations__
+
+
+def test_one_source_file_is_one_extension_whatever_it_is_configured_as(tmp_path, monkeypatch):
+    """A project's own tests import an extension under its installed name (`extensions.comfy`) while the loader
+    imports the same file from the project folder (`comfy`): the same extension, so it may register its lane under
+    either configuration, and code in that file is that extension's."""
+    shared = tmp_path / "shared"
+    (shared / "extensions").mkdir(parents=True)
+    (shared / "extensions" / "__init__.py").write_text("", encoding="utf-8")
+    source = SETUP_ONLY + "\nfrom supervisor import ext\n\ndef settings(layout):\n    return ext.config(layout, 'ref')\n"
+    source = source.replace("def setup(registry):\n", "def setup(registry):\n    registry.config_sections('ref')\n")
+    (shared / "extensions" / "ref.py").write_text(source, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(shared))
+    local = testing.project(shared, extensions=["ref"])                                # loaded from its folder
+    assert extensions.load(local).errors == []
+    extensions.reset()
+    installed = testing.project(tmp_path / "installed", extensions=["extensions.ref"])   # imported by dotted name
+    reg = extensions.load(installed)
+    assert reg.errors == [] and reg.loaded == ["extensions.ref"]
+    import extensions.ref as plain                                                     # the test's own import
+    assert plain.settings(installed) == {}

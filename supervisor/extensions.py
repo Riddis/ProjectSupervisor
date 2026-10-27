@@ -165,6 +165,7 @@ class Registry:
     python_jobs: dict[str, str] = field(default_factory=dict)       # python job name -> the extension that registered it
     config_owners: dict[str, str] = field(default_factory=dict)     # routing.yaml section -> the extension that declared it
     inbox_kind_owners: dict[str, str] = field(default_factory=dict)  # inbox kind -> the extension that claimed it
+    origins: dict[str, str] = field(default_factory=dict)           # extension -> its module's source file, resolved
     commands: dict[str, Callable] = field(default_factory=dict)    # command kinds registered by extensions (commands.HANDLERS has them too)
     inbox_kinds: dict[str, InboxKind] = field(default_factory=dict)
     template_dirs: list[Path] = field(default_factory=list)
@@ -255,11 +256,11 @@ class Registry:
             raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
         owner = self._setting_up or "?"
         current = REGISTRY.get(name)
-        if current is not None and current is not adapter and _extension_adapters.get(name) != owner:
+        if current is not None and current is not adapter and _owner_of(_extension_adapters, name) != self._origin():
             raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
         register(adapter)
         self.adapters[name] = owner
-        _extension_adapters[name] = owner
+        _extension_adapters[name] = (self._origin(), owner)
 
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this extension reads with `supervisor.ext.config()`; nothing else of the file is
@@ -343,11 +344,17 @@ class Registry:
             raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
         owner = self._setting_up or "?"
         current = JOBS.get(name)
-        if current is not None and current is not fn and _extension_jobs.get(name) != owner:
+        if current is not None and current is not fn and _owner_of(_extension_jobs, name) != self._origin():
             raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
         JOBS[name] = fn
         self.python_jobs[name] = owner
-        _extension_jobs[name] = owner
+        _extension_jobs[name] = (self._origin(), owner)
+
+    def _origin(self) -> str:
+        """Who is registering, for name ownership: the source file of the extension being set up (one file is one
+        extension, whatever a project or its tests configure it as), or its name when the file is unknown."""
+        name = self._setting_up or "?"
+        return self.origins.get(name) or f"name:{name}"
 
     def command(self, kind: str, fn: Callable) -> None:
         """An owner command kind, `fn(layout, payload, actor) -> dict`, applied by whoever holds the state lock (the
@@ -411,14 +418,18 @@ class Registry:
 
 _registries: dict[str, Registry] = {}
 _extension_commands: set[str] = set()                        # command kinds extensions registered in this process
-_extension_adapters: dict[str, str] = {}                     # lane name -> the extension that registered it (process)
-_extension_jobs: dict[str, str] = {}                         # python job name -> the extension that registered it
+_extension_adapters: dict[str, tuple[str, str]] = {}         # lane name -> (origin, extension) that registered it
+_extension_jobs: dict[str, tuple[str, str]] = {}             # python job name -> (origin, extension)
 
 
-def _holder(name: str, current, owners: dict[str, str]) -> str:
+def _owner_of(owners: dict[str, tuple[str, str]], name: str) -> str | None:
+    return owners[name][0] if name in owners else None
+
+
+def _holder(name: str, current, owners: dict[str, tuple[str, str]]) -> str:
     """Who has `name` already, for a refused registration."""
     if name in owners:
-        return f"by extension {owners[name]!r}"
+        return f"by extension {owners[name][1]!r}"
     module = getattr(current, "__module__", None) or type(current).__module__
     return "as a built-in" if module.startswith("supervisor.") else f"by {module} (at import)"
 
@@ -519,6 +530,8 @@ def load(layout: Layout) -> Registry:
         try:
             mod = _import(layout, name)
             modules.append(mod)
+            if getattr(mod, "__file__", None):
+                reg.origins[name] = str(Path(mod.__file__).resolve())
             setup = getattr(mod, "setup", None)
             if setup is None:
                 raise ExtensionError(f"no setup(registry) function in {getattr(mod, '__file__', None) or mod.__name__}")
@@ -644,12 +657,36 @@ def calling_extension(layout: Layout) -> str | None:
     an identity, this is how supervisor.ext knows who is asking (its config sections, the actor of its log lines)."""
     names = [name for name, _required in specs(layout)]
     ext_dir = Path(layout.extensions).resolve()
+    reg = _registries.get(str(layout.root))
+    origins = [(Path(f), n) for n, f in (reg.origins.items() if reg else ()) if n in names]
     frame = sys._getframe(1)
     while frame is not None:
-        found = _owning_extension(frame.f_globals.get("__name__"), frame.f_globals.get("__file__"), names, ext_dir)
+        found = (_by_origin(frame.f_globals.get("__file__"), origins)
+                 or _owning_extension(frame.f_globals.get("__name__"), frame.f_globals.get("__file__"), names, ext_dir))
         if found:
             return found
         frame = frame.f_back
+    return None
+
+
+@functools.lru_cache(maxsize=1024)
+def _resolved(file: str) -> Path | None:
+    try:
+        return Path(file).resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _by_origin(file: str | None, origins: list[tuple[Path, str]]) -> str | None:
+    """The extension whose loaded module is this file (or, for a package, contains it): the same file imported
+    under another name (a project's tests import `extensions.comfy` while the loader imports `comfy`) is the same
+    extension."""
+    path = _resolved(file) if file else None
+    if path is None:
+        return None
+    for origin, name in origins:
+        if path == origin or (origin.name == "__init__.py" and origin.parent in path.parents):
+            return name
     return None
 
 

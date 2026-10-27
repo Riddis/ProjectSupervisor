@@ -110,7 +110,8 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
   keep working and are deprecated (warnings follow in this release). `supervisor extension new` writes a module
   that imports `supervisor.ext`. A name stays the registering extension's for the process, so the same extension
-  may register it again after a reload. Tests: `extensions.reset()` keeps registered lanes and python jobs, as
+  may register it again after a reload; an extension is its source file, so one file configured under two names
+  (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests: `extensions.reset()` keeps registered lanes and python jobs, as
   before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 
 ## 1.10.1 — 2026-10-25
