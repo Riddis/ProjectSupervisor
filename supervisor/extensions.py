@@ -368,11 +368,12 @@ class Registry:
         from . import commands as commands_mod
         if not kind or not isinstance(kind, str):
             raise ExtensionError(f"command kind must be a non-empty string, got {kind!r}")
-        if kind in commands_mod.HANDLERS and commands_mod.HANDLERS[kind] is not fn:
-            raise ExtensionError(f"command kind {kind!r} is already registered")
+        current = commands_mod.HANDLERS.get(kind)
+        if current is not None and current is not fn and _extension_commands.get(kind) != self._origin():
+            raise ExtensionError(f"command kind {kind!r} is already registered")      # the same source file may again
         commands_mod.HANDLERS[kind] = fn
         self.commands[kind] = fn
-        _extension_commands.add(kind)
+        _extension_commands[kind] = self._origin()
 
     def inbox_kind(self, kind: str, label: str, page: str | None = None, answerable: bool = False,
                    show_evidence: bool = True, score_keys: tuple[str, ...] | list[str] = ()) -> None:
@@ -420,7 +421,7 @@ class Registry:
 
 
 _registries: dict[str, Registry] = {}
-_extension_commands: set[str] = set()                        # command kinds extensions registered in this process
+_extension_commands: dict[str, str] = {}                     # command kind -> origin that registered it (process)
 # Name ownership, since the last reset(): lane / python job name -> (origin, extension) that registered it.
 _extension_adapters: dict[str, tuple[str, str]] = {}
 _extension_jobs: dict[str, tuple[str, str]] = {}

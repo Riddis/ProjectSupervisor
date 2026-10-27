@@ -285,3 +285,24 @@ def test_the_most_specific_extension_owns_its_module(tmp_path, order):
     events = [json.loads(line) for line in lay.log.read_text(encoding="utf-8").splitlines()]
     assert next(e for e in events if e["event"] == "child_event")["actor"] == "bundle.child:owner"
     assert child.items(lay) == []
+
+
+def test_one_source_file_may_register_its_command_kinds_from_both_of_its_imports(tmp_path, monkeypatch):
+    """Found rehearsing the 1.11.0 window: a project's test fixture loads its extensions by dotted name
+    (`extensions.ref`) and a test then loads the project itself (`ref`), in one process and without a reset. The
+    same file registers its command kind from two module objects; like its lanes, that is one extension, not a
+    takeover. Another file still may not take the kind."""
+    shared = tmp_path / "shared"
+    (shared / "extensions").mkdir(parents=True)
+    (shared / "extensions" / "__init__.py").write_text("", encoding="utf-8")
+    source = "def handle(layout, payload, actor):\n    return {}\n\ndef setup(registry):\n    registry.command('ref.do', handle)\n"
+    (shared / "extensions" / "ref.py").write_text(source, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(shared))
+    taker = source.replace("def handle", "def handle2").replace(", handle)", ", handle2)")
+    installed = testing.project(tmp_path / "installed", extensions=["extensions.ref"])
+    local = testing.project(shared, extensions=["ref"])
+    other = testing.project(tmp_path / "other", modules={"taker": taker})          # each of these resets: build first
+    assert extensions.load(installed).errors == []
+    assert extensions.load(local).errors == []                                   # no reset in between
+    reg = extensions.load(other)
+    assert reg.loaded == [] and "ref.do" in reg.errors[0]
