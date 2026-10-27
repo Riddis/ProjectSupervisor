@@ -77,7 +77,8 @@ the framework.
 
 A change reaches projects only as a tagged release: **framework-release** cuts it (version, changelog, review,
 tag). Projects take the tag in a maintenance window — drain until no job record is open and no command queued,
-stop, move their framework checkout to the tag (`git -C <runtime worktree> checkout vX.Y.Z`), reinstall only if
+stop, move their framework checkout to the tag (`git -C <runtime worktree> fetch origin tag vX.Y.Z`, then
+`git -C <runtime worktree> checkout vX.Y.Z`), reinstall only if
 dependencies changed, `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start. Never `git
 pull` a project's framework checkout: doctor refuses an untagged or dirty one, by design.
 

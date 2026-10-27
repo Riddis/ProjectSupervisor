@@ -18,19 +18,26 @@ change: G2's contract is unchanged.
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
   Every launch printed "update check skipped: origin/HEAD unknown: fatal: ambiguous argument…", and nothing
   reported a newer release.
-  - A detached checkout at a `vX.Y.Z` tag is now *pinned*. The check reports the newest release origin publishes
-    (`git ls-remote --tags`) above the pinned one, by version number (v1.10.0 is above v1.9.0). Other tag names are
-    not releases, and neither is a tag that exists only locally. It fetches only that release's objects, writing no
-    local ref, and says whether its changelog mentions a migration. Without a fetch (the overview), the last result
-    from origin is shown, with the time of that check.
+  - A detached checkout is now *pinned*. Both releases come from origin's own tag list (`git ls-remote --tags`,
+    each tag peeled to its commit) and are compared by version number (v1.10.0 is above v1.9.0):
+    - the release it runs is the newest one origin publishes at its commit;
+    - the newer release is the newest one origin publishes.
+
+    Other tag names are not releases, and neither is a tag that exists only locally, wherever it points. When
+    origin publishes no release at the commit, the check says so and announces nothing. It fetches only the newer
+    release's objects, writing no local ref, and says whether its changelog mentions a migration.
+  - Without a fetch (the overview), the last result from origin is shown, with the time of that check. A failed
+    refresh does not erase it: the overview adds "the latest refresh failed (<reason>)".
   - The launch check says nothing when the checkout is pinned at the newest release. It names a newer release and
-    the maintenance-window steps, and never offers a pull.
+    the maintenance-window steps, `git fetch origin tag vX.Y.Z` included, and never offers a pull.
   - The Control Center's overview shows "Framework release available" with no Update button.
   - `apply` (`supervisor update`, `/overview/update`) inspects the checkout itself. It refuses a detached checkout,
     and a status that no longer describes the checkout (another branch or commit), whatever status it is given, and
     changes nothing. A cached check is reused only while the checkout is still at the branch and commit it was taken
     of.
   - A detached checkout not at a release tag is reported plainly; `supervisor doctor` already fails it.
+  - docs/UPDATING.md and the framework-change skill add `git fetch origin tag vX.Y.Z` before the checkout, since the
+    check no longer creates the tag locally.
 
 ## 1.11.0 — 2026-10-27
 

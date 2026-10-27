@@ -259,6 +259,7 @@ def test_a_pinned_checkout_reports_a_newer_release_and_never_offers_a_pull(pinne
     assert st.migration_hint and not st.available and st.behind == 0
     text = "\n".join(updates.describe(st))
     assert "v1.0.0" in text and "v1.1.0" in text and "maintenance window" in text
+    assert "git fetch origin tag v1.1.0" in text                       # the check no longer creates the tag locally
     asked = []
     assert updates.prompt_and_apply(pinned["layout"], st, ask=asked.append, echo=lambda _l: None) is None
     assert asked == []                                                  # nothing to say yes to

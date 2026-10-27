@@ -292,7 +292,8 @@ def describe(status: Status) -> list[str]:
         if not status.newer_release:
             return [f"framework {status.installed_version} is pinned at {status.pinned_tag}, the newest release"]
         lines = [f"framework release {status.newer_release} is available; this checkout is pinned at {status.pinned_tag}",
-                 ("  take it in a maintenance window: drain, stop, check out the tag in the framework checkout, migrate, "
+                 ("  take it in a maintenance window: drain, stop, in the framework checkout "
+                  f"`git fetch origin tag {status.newer_release}` and `git checkout {status.newer_release}`, migrate, "
                   "doctor, start (docs/UPDATING.md, \"Pinned checkouts\"); the updater never moves a pinned checkout")]
         if status.migration_hint:
             lines.append("  note: the changelog mentions a migration; run `supervisor migrate --dry-run`, then "

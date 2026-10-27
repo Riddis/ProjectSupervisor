@@ -76,20 +76,27 @@ the updater above (which pulls a branch, normally onto an untagged commit) suits
 project. A live project runs a separate worktree of the framework clone, detached at a release tag
 (`git -C <Supervisor> worktree add <Supervisor-runtime> vX.Y.Z`), installed editable from there. It takes a new
 release in a maintenance window: drain until no job record is open and no command is queued, stop the loop and
-the Control Center, `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall only if the dependencies changed,
+the Control Center, `git -C <Supervisor-runtime> fetch origin tag vX.Y.Z` (the update check reads origin's tags
+without creating them locally), `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall only if the dependencies changed,
 `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start.
 
 Since 1.11.1 the updater recognises such a checkout (detached at a `vX.Y.Z` tag) and never pulls it. At launch, in
 `supervisor update --check` and on the Control Center's overview, it reports a newer release that origin publishes.
-- **Which releases count:** the candidates come from origin's own tag list (`git ls-remote --tags`), compared by
-  version number. A tag that exists only locally, for example one made in the development clone the runtime worktree
-  shares its tags with, is not a release.
-- **Migration notes:** only that release's objects are fetched, to read whether its changelog mentions a migration.
-  No local tag is created.
+- **Which releases count:** both the release the checkout runs and the newer one come from origin's own tag list
+  (`git ls-remote --tags`, each tag peeled to its commit), compared by version number.
+  - The release the checkout runs is the newest one origin publishes at its commit.
+  - A tag that exists only locally is not a release, wherever it points. An example is one made in the development
+    clone that the runtime worktree shares its tags with.
+  - When origin publishes no release at the checkout's commit, the check says so and announces nothing. A detached
+    checkout that is not at a release tag at all is reported as such, and `supervisor doctor` fails it.
+- **Migration notes:** only the newer release's objects are fetched, to read whether its changelog mentions a
+  migration. No local tag is created, so a maintenance window fetches the tag before checking it out.
 - **Without a fetch:** the overview reads the check without fetching, so it shows the last result taken from origin,
-  with the time of that check.
+  with the time of that check. A failed refresh does not erase that result; the overview notes that the latest
+  refresh failed.
 - **Refusal:** `supervisor update` and the update route refuse a detached checkout and change nothing, whatever
   update check they were given. An update check is reused only while the checkout is still at the branch and commit
-  it was taken of. A detached checkout that is not at a release tag is
-reported as such, and `supervisor doctor` fails it. Before 1.11.1, every launch on a pinned checkout printed
-"update check skipped: origin/HEAD unknown", because the check looked for a branch.
+  it was taken of.
+
+Before 1.11.1, every launch on a pinned checkout printed "update check skipped: origin/HEAD unknown", because the
+check looked for a branch.
