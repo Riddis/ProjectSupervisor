@@ -80,7 +80,7 @@ the Control Center, `git -C <Supervisor-runtime> fetch origin tag vX.Y.Z` (the u
 without creating them locally), `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall only if the dependencies changed,
 `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start.
 
-Since 1.12.0 (unreleased) the updater recognises such a checkout (detached at a `vX.Y.Z` tag) and never pulls it. At launch, in
+Since 1.12.0 the updater recognises such a checkout (detached at a `vX.Y.Z` tag) and never pulls it. At launch, in
 `supervisor update --check` and on the Control Center's overview, it reports a newer release that origin publishes.
 - **Which releases count:** both the release the checkout runs and the newer one come from origin's own tag list
   (`git ls-remote --tags`, each tag peeled to its commit), compared by version number.

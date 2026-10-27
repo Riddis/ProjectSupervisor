@@ -1,9 +1,8 @@
 # The reference extension's manifest (docs/EXTENSION_STANDARD.md). The framework reads it before importing anything
 # here; `supervisor extension check reference` (gate G5) proves setup() registers exactly what [provides] lists.
-# The release commit of 1.12.0 raises `framework` to ">=1.12,<2".
 identity = "reference"
 version = "1.0.0"
-framework = ">=1.11,<2"
+framework = ">=1.12,<2"
 
 [provides]
 adapters = ["reference_lane"]

@@ -3,19 +3,47 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.12.0 — 2026-10-28
 
-Not released on its own. It ships with the next release, boundary plan phase 3 (planned 1.12.0), and that
-release's G4 review covers these commits (owner decision, 2026-10-27).
-- **Reviewed so far:** astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed.
-- **Not yet reviewed:** `a212283..a90dc13`, which fixes round 2's R2-1 and R2-2 and adds the fetch-the-tag step.
+Phase 3 of the boundary plan (docs/BOUNDARY.md): the extension standard (docs/EXTENSION_STANDARD.md).
+- **Manifests:** every extension has a manifest, `supervisor-extension.toml`, read before anything it ships is
+  imported.
+- **Installed packages:** they are found through the entry point group `supervisor.extensions`.
+- **Loading** is approved first (framework range, collisions, requirements), then all or nothing.
+- **Configuration:** an extension owns `extensions.<identity>`, validated by its schema; the shared resource policy
+  is `resources.gpu`.
+- **Gate G5,** `supervisor extension check`, proves an extension conforms, and `extension new --package` scaffolds
+  the standard package.
 
-**Migration:** none for this fix. The only new data is fields in `state/runtime/update_check.json`, a cache that
-1.11.0 discards and rewrites, so a rollback to v1.11.0 needs nothing extra. No extension API change: G2's contract is
-unchanged.
+Also: the update check on a pinned framework checkout, carried from the unreleased 1.11.1. A minor release:
+everything that works on 1.11.0 keeps working, with warnings (owner decision D1).
 
-Phase 3 (the extension standard) is being built on this section; its release notes are completed in the release
-commit.
+**Migration:** `supervisor migrate` moves configuration to its owners, keeping comments and every other line of
+`config/routing.yaml` as written:
+- `gpu` to `resources.gpu`;
+- each configured extension's manifest's `config.legacy_sections` into `extensions.<identity>`.
+
+Then the migrations extension manifests name run. Its dry run lists each move. Running it is not required: the old
+sections are still read, with a DeprecationWarning and a doctor WARN. The update-check cache gains fields that 1.11.0
+discards.
+
+**Rollback** to v1.11.0, in a maintenance window: restore the snapshot of `config/`, `state/` and `project.yaml`
+taken before `supervisor migrate`. v1.11.0 does not read `extensions.<identity>` or `resources.gpu`. Then check out
+`v1.11.0`, run `supervisor migrate` (it records 1.11.0 again) and `supervisor doctor`, and start. Manifests are
+ignored by 1.11.0. An extension that calls `registry.identity` does not load there. Once work has run on 1.12.0,
+reconcile first (rollback B).
+
+**Extension authors:**
+- Add a manifest beside your module (`extensions/<name>.toml`) or in your package. It declares everything `setup()`
+  registers, with the identifiers older than the namespace rule as `legacy_ids`.
+- Name a pydantic schema for your section, and list the old top-level sections as `config.legacy_sections`.
+- Run `supervisor extension check <name>`.
+
+An extension without a manifest still loads in 1.12.x, with a doctor WARN; a later major release requires one.
+
+**Review:** the G4 review covers `v1.11.0..` this release commit, including the carried pinned-checkout commits.
+Astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed. `a212283..a90dc13` (round 2's R2-1 and
+R2-2, and the fetch-the-tag step) has not been reviewed yet.
 
 - **Added: the extension manifest** (`supervisor/manifest.py`, `docs/EXTENSION_STANDARD.md`).
   `supervisor-extension.toml` declares an extension's identity, its version, the framework versions it supports,
