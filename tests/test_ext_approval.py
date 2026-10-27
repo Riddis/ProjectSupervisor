@@ -99,7 +99,7 @@ def test_a_dependency_that_did_not_load_refuses_its_dependants(tmp_path):
                                         "bench": {"extra": '[requires]\nextensions = ["comfy"]\n'}})
     reg = extensions.load(layout)
     assert not reg.loaded and not imported(tmp_path, "bench")
-    assert any(e.startswith("bench:") and "comfy" in e and "did not load" in e for e in reg.errors)
+    assert any(e.startswith("bench:") and "comfy" in e and "refused" in e for e in reg.errors)   # decided before import
 
 
 def test_a_dependency_cycle_is_refused(tmp_path):

@@ -610,6 +610,42 @@ def _approve(finds: dict) -> dict[str, str]:
     return refused
 
 
+@dataclass(frozen=True)
+class Approval:
+    """What the manifests decide before any extension is imported (approval()): each configured name's discovery,
+    the names refused with why, and the load order (project.yaml's, each extension after what it requires)."""
+    finds: dict
+    refused: dict[str, str]
+    entries: list[tuple[str, bool]]
+
+    def approved(self) -> list:
+        """The manifests of the extensions with one that are not refused, in load order."""
+        return [self.finds[n].manifest for n, _r in self.entries
+                if n not in self.refused and not self.finds[n].problems and self.finds[n].manifest is not None]
+
+
+def approval(layout: Layout) -> Approval:
+    """Import-free approval of every configured extension, shared by the loader and `supervisor migrate` (review
+    1.12.0 R1). A name is refused for a discovery problem, an excluded framework range, a built-in or doubly claimed
+    identifier or legacy section, an unlisted requirement, a requires cycle, or requiring a refused extension. Setup
+    failures are not decided here: they happen later, in load()."""
+    entries = specs(layout)
+    finds = {name: discovery.find(layout, name) for name, _required in entries}
+    refused = _approve(finds)
+    for name, found in finds.items():
+        if found.problems:
+            refused.setdefault(name, "; ".join(found.problems))
+    entries, cycle = _load_order(entries, finds)
+    for name in cycle:
+        refused.setdefault(name, f"its requires.extensions form a cycle ({' -> '.join(cycle)}); nothing in it loads")
+    for name, _required in entries:                        # load order: a requirement is decided before its users
+        m = finds[name].manifest
+        bad = [d for d in (m.requires.extensions if m else ()) if d in refused]
+        if bad and name not in refused:
+            refused[name] = f"it requires {', '.join(bad)}, which is refused"
+    return Approval(finds, refused, entries)
+
+
 def _load_order(entries: list[tuple[str, bool]], finds: dict) -> tuple[list[tuple[str, bool]], list[str]]:
     """project.yaml's order, each extension moved only as far as the ones it requires make it (the first listed
     extension whose requirements are all placed goes next), and the names caught in a requires cycle (placed last:
@@ -767,13 +803,9 @@ def load(layout: Layout) -> Registry:
             reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
             return reg
     modules = []
-    entries = specs(layout)
-    finds = {name: discovery.find(layout, name) for name, _required in entries}
-    refused = _approve(finds)
-    entries, cycle = _load_order(entries, finds)
-    for name in cycle:
-        refused.setdefault(name, f"its requires.extensions form a cycle ({' -> '.join(cycle)}); nothing in it loads")
-    for name, required in entries:
+    plan = approval(layout)
+    finds, refused = plan.finds, plan.refused
+    for name, required in plan.entries:
         snapshot = reg._snapshot()
         before = set(sys.modules)
         reg._pending, reg._registered = {}, []

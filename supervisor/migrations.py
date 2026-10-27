@@ -134,14 +134,11 @@ def _approval_responses(layout: Layout, dry_run: bool) -> list[str]:
 
 
 def _configured_manifests(layout: Layout) -> list:
-    """The manifests of the configured extensions that support this framework, read by discovery (no import)."""
-    from . import discovery, extensions
-    out = []
-    for name, _required in extensions.specs(layout):
-        m = discovery.find(layout, name).manifest
-        if m is not None and m.supports():
-            out.append(m)
-    return out
+    """The manifests of the configured extensions the loader's import-free approval accepts (extensions.approval).
+    A manifest the loader would refuse directs no config move and has no migration imported (review 1.12.0 R1); an
+    extension that only fails in setup() is not refused here, since migrate never runs setup()."""
+    from . import extensions
+    return extensions.approval(layout).approved()
 
 
 def _resources_gpu(layout: Layout, dry_run: bool) -> list[str]:
