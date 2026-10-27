@@ -21,6 +21,12 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
   added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
   them (new internal module `supervisor/yaml_edit.py`).
+- **Fixed: `supervisor migrate` no longer reformats project.yaml.** `project.write()`, which every migrate with a
+  version change calls, dumped the whole file through ruamel: a long `description` reflowed at 80 columns, `null`
+  written as an empty value, list items moved to the parent's indentation. It now goes through the same writer as
+  Settings: a version update changes only the version's token, and a structural change (`supervisor extension new`
+  appending to `extensions:`) keeps long lines, `null`, flow-style items, blank lines and indentation. Files an
+  earlier migrate already reformatted stay as they are; nothing rewrites them back.
 - **A capacity hold says what holds it.** The deferral read "claude capacity reserve reached", naming neither the
   window nor the setting. It now names each window that holds dispatch, its remaining share, the floor and the
   routing.yaml key that sets it, and when it resets ("claude capacity held: 7-day window at 18% remaining, at or

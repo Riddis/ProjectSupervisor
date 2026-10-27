@@ -95,3 +95,72 @@ def test_scalar_changes_lists_value_edits_and_refuses_structure():
     assert yaml_edit.scalar_changes(old, {**old, "e": [1, 2, 3]}) is None      # a list changed
     assert yaml_edit.scalar_changes(old, {**old, "a": {"x": 1}}) is None       # a scalar became a mapping
     assert yaml_edit.scalar_changes(old, dict(old)) == {}
+
+
+# ---------------------------------------------------------------- project.yaml (project.write)
+
+DESCRIPTION = ("A long description of the project that runs well past eighty columns, as an owner writes it on one "
+               "line, with a dash - and a colon: inside")
+PROJECT = ("# project.yaml - what makes this folder a supervisor project.\r\n"
+           'name: "Demo Studio"\r\n'
+           f'description: "{DESCRIPTION}"\r\n'
+           'framework_version: "1.9.0"           # checked by `supervisor doctor`; `supervisor migrate` updates it\r\n'
+           "\r\n"
+           "repo:\r\n"
+           "  path: .\r\n"
+           "  remote: null\r\n"
+           "\r\n"
+           "# every extension is required\r\n"
+           "extensions:\r\n"
+           "  - {name: alpha, required: true}\r\n"
+           "  - {name: beta, required: true}\r\n"
+           "\r\n"
+           "ui:\r\n"
+           "  port: 8790\r\n"
+           "  title: null\r\n")
+
+
+@pytest.fixture
+def project_file(layout):
+    path = layout.project_file
+    path.write_bytes(PROJECT.encode("utf-8"))
+    from supervisor import project
+    project._load_cached.cache_clear()
+    return path
+
+
+def test_migrate_changes_only_the_framework_version(layout, project_file):
+    """Every migrate with a version change rewrote the whole file before 1.11.0."""
+    from supervisor import __version__, migrations
+    migrations.run(layout)
+    assert project_file.read_bytes() == PROJECT.replace('"1.9.0"', f'"{__version__}"').encode("utf-8")
+
+
+def test_project_write_of_a_new_value_changes_only_that_value(layout, project_file):
+    from supervisor import project
+    doc = yaml.safe_load(PROJECT)
+    project.write(layout, {**doc, "ui": {"port": 8791, "title": None}})
+    assert project_file.read_bytes() == PROJECT.replace("port: 8790", "port: 8791").encode("utf-8")
+
+
+def test_a_structural_change_keeps_the_rest_of_project_yaml_as_written(layout, project_file):
+    """`supervisor extension new` appends to the list: a round trip, which must not reflow, blank nulls or move items."""
+    from supervisor import project
+    doc = yaml.safe_load(PROJECT)
+    doc["extensions"].append("gamma")
+    project.write(layout, doc)
+    raw = project_file.read_bytes().decode("utf-8")
+    assert yaml.safe_load(raw) == doc
+    assert "\n" not in raw.replace("\r\n", "")                                   # CRLF throughout
+    assert f'description: "{DESCRIPTION}"\r\n' in raw                            # not reflowed
+    assert "  remote: null\r\n" in raw and "  title: null\r\n" in raw             # null stays null
+    assert ("  - {name: alpha, required: true}\r\n  - {name: beta, required: true}\r\n  - gamma\r\n") in raw
+    assert "# every extension is required" in raw and "# checked by `supervisor doctor`" in raw
+
+
+def test_project_write_without_a_file_writes_the_document(layout):
+    from supervisor import project
+    layout.project_file.unlink(missing_ok=True)
+    project.write(layout, {"name": "fresh", "extensions": ["a"], "remote": None})
+    assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == {"name": "fresh", "extensions": ["a"],
+                                                                                "remote": None}

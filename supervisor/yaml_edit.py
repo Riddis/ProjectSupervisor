@@ -89,17 +89,45 @@ def replace_scalars(text: str, changes: dict) -> str | None:
         return None
 
 
+def _same(a, b) -> bool:
+    return a == b and type(a) is type(b) if isinstance(a, bool) or isinstance(b, bool) else a == b
+
+
 def merge_into(existing, new: dict) -> None:
-    """Update a ruamel round-trip mapping in place from a plain dict: changed values replace, nested mappings
-    recurse (keeping their comments), keys absent from `new` are dropped, new keys are appended."""
+    """Update a ruamel round-trip mapping in place from a plain dict: changed values replace, nested mappings and
+    lists are merged item by item (keeping their comments and flow style), keys absent from `new` are dropped, new
+    keys are appended."""
     for k in [k for k in list(existing.keys()) if k not in new]:
         del existing[k]
     for k, v in new.items():
         cur = existing.get(k) if k in existing else None
         if isinstance(v, dict) and isinstance(cur, dict):
             merge_into(cur, v)
-        elif k not in existing or cur != v:
+        elif isinstance(v, list) and isinstance(cur, list):
+            _merge_list(cur, v)
+        elif k not in existing or not _same(cur, v):
             existing[k] = v
+
+
+def _merge_list(existing, new: list) -> None:
+    """A ruamel sequence updated item by item; appended items take over the comment (often a blank line) that
+    followed the old last item, so the list still ends where it did."""
+    old_len = len(existing)
+    for i, v in enumerate(new[:old_len]):
+        cur = existing[i]
+        if isinstance(v, dict) and isinstance(cur, dict):
+            merge_into(cur, v)
+        elif isinstance(v, list) and isinstance(cur, list):
+            _merge_list(cur, v)
+        elif not _same(cur, v):
+            existing[i] = v
+    del existing[len(new):]
+    if len(new) > old_len:
+        comments = getattr(getattr(existing, "ca", None), "items", None)
+        tail = comments.pop(old_len - 1, None) if comments is not None and old_len else None
+        existing.extend(new[old_len:])
+        if tail is not None:
+            comments[len(existing) - 1] = tail
 
 
 class _Representer(RoundTripRepresenter):
