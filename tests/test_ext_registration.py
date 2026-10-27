@@ -231,5 +231,5 @@ def test_one_source_file_is_one_extension_whatever_it_is_configured_as(tmp_path,
     installed = testing.project(tmp_path / "installed", extensions=["extensions.ref"])   # imported by dotted name
     reg = extensions.load(installed)
     assert reg.errors == [] and reg.loaded == ["extensions.ref"]
-    import extensions.ref as plain                                                     # the test's own import
+    import extensions.ref as plain  # the test's own import
     assert plain.settings(installed) == {}
