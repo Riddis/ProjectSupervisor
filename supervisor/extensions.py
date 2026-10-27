@@ -256,11 +256,13 @@ class Registry:
             raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
         owner = self._setting_up or "?"
         current = REGISTRY.get(name)
-        if current is not None and current is not adapter and _owner_of(_extension_adapters, name) != self._origin():
+        if current is not None and current is not adapter and _taken(name, _extension_adapters, _ever_adapters,
+                                                                      self._origin()):
             raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
         register(adapter)
         self.adapters[name] = owner
         _extension_adapters[name] = (self._origin(), owner)
+        _ever_adapters.add(name)
 
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this extension reads with `supervisor.ext.config()`; nothing else of the file is
@@ -344,11 +346,12 @@ class Registry:
             raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
         owner = self._setting_up or "?"
         current = JOBS.get(name)
-        if current is not None and current is not fn and _owner_of(_extension_jobs, name) != self._origin():
+        if current is not None and current is not fn and _taken(name, _extension_jobs, _ever_jobs, self._origin()):
             raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
         JOBS[name] = fn
         self.python_jobs[name] = owner
         _extension_jobs[name] = (self._origin(), owner)
+        _ever_jobs.add(name)
 
     def _origin(self) -> str:
         """Who is registering, for name ownership: the source file of the extension being set up (one file is one
@@ -418,12 +421,22 @@ class Registry:
 
 _registries: dict[str, Registry] = {}
 _extension_commands: set[str] = set()                        # command kinds extensions registered in this process
-_extension_adapters: dict[str, tuple[str, str]] = {}         # lane name -> (origin, extension) that registered it
-_extension_jobs: dict[str, tuple[str, str]] = {}             # python job name -> (origin, extension)
+# Name ownership, since the last reset(): lane / python job name -> (origin, extension) that registered it.
+_extension_adapters: dict[str, tuple[str, str]] = {}
+_extension_jobs: dict[str, tuple[str, str]] = {}
+# Every name an extension registered through the registry in this process (forget_registrations() drops them).
+_ever_adapters: set[str] = set()
+_ever_jobs: set[str] = set()
 
 
-def _owner_of(owners: dict[str, tuple[str, str]], name: str) -> str | None:
-    return owners[name][0] if name in owners else None
+def _taken(name: str, owners: dict[str, tuple[str, str]], ever: set[str], origin: str) -> bool:
+    """Whether `name`, already registered to another object, is closed to the extension at `origin`: owned by
+    another extension since the last reset, or never registered through the registry at all (a built-in lane, or
+    one an old-style extension registered at import). A name an extension registered before the last reset is
+    open again: reset() means the projects are being loaded anew."""
+    if name in owners:
+        return owners[name][0] != origin
+    return name not in ever
 
 
 def _holder(name: str, current, owners: dict[str, tuple[str, str]]) -> str:
@@ -679,7 +692,7 @@ def _resolved(file: str) -> Path | None:
 
 def _by_origin(file: str | None, origins: list[tuple[Path, str]]) -> str | None:
     """The extension whose loaded module is this file (or, for a package, contains it): the same file imported
-    under another name (a project's tests import `extensions.comfy` while the loader imports `comfy`) is the same
+    under another name (a project's tests import `extensions.render` while the loader imports `render`) is the same
     extension."""
     path = _resolved(file) if file else None
     if path is None:
@@ -708,10 +721,13 @@ def assert_loaded(layout: Layout) -> Registry:
 def reset() -> None:
     """Tests only: forget loaded registries, the per-project extension packages and the command kinds extensions
     registered. Lanes and python jobs extensions registered stay registered, as before 1.11.0 (a project's tests
-    look them up after a reset), and each name stays its extension's, which may register it again after the reload.
-    `forget_registrations()` (supervisor.testing.reset) drops them too, like a fresh process."""
+    look them up after a reset); who owns their names is forgotten, so the next load (a fresh test project with
+    the same extension) may register them again. `forget_registrations()` (supervisor.testing.reset) drops the
+    lanes and jobs too, like a fresh process."""
     _registries.clear()
     _warned.clear()
+    _extension_adapters.clear()
+    _extension_jobs.clear()
     from . import commands as commands_mod
     for kind in _extension_commands:
         commands_mod.HANDLERS.pop(kind, None)
@@ -725,11 +741,13 @@ def forget_registrations() -> None:
     stay)."""
     from .adapters.base import REGISTRY
     from .adapters.python import JOBS
-    for name in _extension_adapters:
+    for name in _ever_adapters:
         REGISTRY.pop(name, None)
+    _ever_adapters.clear()
     _extension_adapters.clear()
-    for name in _extension_jobs:
+    for name in _ever_jobs:
         JOBS.pop(name, None)
+    _ever_jobs.clear()
     _extension_jobs.clear()
 
 

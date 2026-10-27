@@ -93,12 +93,23 @@ def test_testing_reset_forgets_them_like_a_fresh_process(tmp_path):
     assert {"python", "process", "human"} <= set(REGISTRY) and "noop" in JOBS
 
 
-def test_a_name_stays_its_extensions_across_a_reset(tmp_path):
+def test_after_a_reset_a_fresh_project_may_register_the_same_lane(tmp_path):
+    """The pattern of a project's tests: a fresh temporary project per test, each with its own copy of an extension
+    (another file), loaded after extensions.reset()."""
     extensions.load(configure(tmp_path / "a", {"ref": SETUP_ONLY}))
     extensions.reset()
-    other = LANE.format(name="ref_lane") + "\ndef setup(registry):\n    registry.adapter(ADAPTER)\n"
-    reg = extensions.load(configure(tmp_path / "b", {"other": other}))
-    assert reg.loaded == [] and "ref_lane" in reg.errors[0] and "'ref'" in reg.errors[0]
+    reg = extensions.load(configure(tmp_path / "b", {"ref": SETUP_ONLY}))
+    assert reg.errors == [] and reg.loaded == ["ref"]
+
+
+def test_a_lane_registered_only_at_import_is_not_taken_over_either(tmp_path):
+    """An old-style extension's lane, registered at import and never through the registry, is protected like a
+    built-in one."""
+    eager = LANE.format(name="eager_lane") + "\nfrom supervisor.adapters.base import register\nregister(ADAPTER)\n"
+    eager += "\ndef setup(registry):\n    pass\n"
+    taker = LANE.format(name="eager_lane") + "\ndef setup(registry):\n    registry.adapter(ADAPTER)\n"
+    reg = extensions.load(configure(tmp_path, {"eager": eager, "taker": taker}))
+    assert reg.loaded == ["eager"] and any(e.startswith("taker:") and "eager_lane" in e for e in reg.errors)
 
 
 def test_a_reloaded_extension_registers_its_lane_again(tmp_path):

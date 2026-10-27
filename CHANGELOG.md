@@ -84,8 +84,8 @@ against `supervisor.testing`, which promises nothing.
   `python_jobs`), and `extensions.import_side_effects(layout, name)` imports a module in a fresh interpreter and
   names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
   keep working and are deprecated (the loader warns, next entry). `supervisor extension new` writes a module
-  that imports `supervisor.ext`. A name stays the registering extension's for the process, so the same extension
-  may register it again after a reload; an extension is its source file, so one file configured under two names
+  that imports `supervisor.ext`. A name stays the registering extension's until the loader is reset, so the same
+  extension may register it again after a reload; an extension is its source file, so one file configured under two names
   (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests:
   `extensions.reset()` keeps registered lanes and python jobs, as before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 - **Internal imports in extensions are deprecated (gate G6).** After loading, the loader reads the source (AST) of
