@@ -179,6 +179,56 @@ def check_extensions(layout: Layout) -> Check:
     return Check("extensions", True, ", ".join(reg.loaded) or "none configured")
 
 
+def check_extension_manifests(layout: Layout) -> Check:
+    """Gate G6, from the manifests alone (no extension is loaded, so this holds when loading fails).
+
+    FAIL: a manifest discovery refuses, or a framework range that excludes this framework.
+
+    WARN:
+    - an extension without a manifest: it loads in 1.12.x, and a later major release requires one;
+    - configuration still in the old top-level sections, which `supervisor migrate` moves to `extensions.<identity>`
+      and `resources.gpu`."""
+    from . import discovery
+    from .ext._config import _routing
+    specs = extensions.specs(layout)
+    if not specs:
+        return Check("extension_manifests", True, "none configured")
+    try:
+        doc = _routing(layout)
+    except Exception:                                       # noqa: BLE001 - check_routing reports an unreadable file
+        doc = {}
+    owned = doc.get("extensions") if isinstance(doc.get("extensions"), dict) else {}
+    fails, legacy, unmoved, listed = [], [], [], []
+    for name, _required in specs:
+        found = discovery.find(layout, name)
+        m = found.manifest
+        if found.problems:
+            fails.append(f"{name}: {found.problems[0]}")
+        elif m is None:
+            legacy.append(name)
+        elif m.unsupported_reason():
+            fails.append(f"{name}: {m.unsupported_reason()}")
+        else:
+            listed.append(f"{name} {m.version} ({m.framework})")
+            if m.config is not None and m.identity not in owned:
+                unmoved += [s for s in m.config.legacy_sections if s in doc]
+    shared = doc.get("resources") if isinstance(doc.get("resources"), dict) else {}
+    if "gpu" in doc and "gpu" not in shared:
+        unmoved.append("gpu")
+    if fails:
+        return Check("extension_manifests", False, "; ".join(fails)[:300])
+    warns = []
+    if legacy:
+        warns.append(f"without a manifest (supervisor-extension.toml; a later major release requires one): "
+                     f"{', '.join(legacy)}")
+    if unmoved:
+        warns.append(f"configuration in the old routing.yaml sections {', '.join(unmoved)}: run `supervisor migrate`")
+    if warns:
+        return Check("extension_manifests", True, "; ".join(warns + ([", ".join(listed)] if listed else []))[:300],
+                     warn=True)
+    return Check("extension_manifests", True, ", ".join(listed))
+
+
 def check_extension_imports(layout: Layout) -> Check:
     """Gate G6, deprecation window: extensions import supervisor.ext only (docs/EXTENSION_API.md). An import of a
     framework internal is a WARN naming file and line; a later major release makes it a FAIL."""
@@ -205,14 +255,26 @@ def check_policy(layout: Layout) -> Check:
 
 
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_extensions, check_extension_imports]
+          check_git, check_claude_cli, check_codex_cli, check_extensions, check_extension_manifests,
+          check_extension_imports]
 
 
 def run(layout: Layout) -> list[Check]:
+    """The framework's checks, then each extension's. A check registered by an extension with a manifest must report
+    a name its manifest declares in `provides.doctor_checks` (names are known only when a check runs); any other
+    name is a FAIL."""
     out = [fn(layout) for fn in CHECKS]
-    for fn in extensions.load(layout).doctor_checks:
+    reg = extensions.load(layout)
+    for i, fn in enumerate(reg.doctor_checks):
         try:
-            out.append(fn(layout))
+            check = fn(layout)
         except Exception as exc:                            # noqa: BLE001
             out.append(Check(getattr(fn, "__name__", "extension"), False, f"check crashed: {exc}"[:200]))
+            continue
+        owner = reg.doctor_check_owners[i] if i < len(reg.doctor_check_owners) else None
+        m = reg.manifests.get(owner) if owner else None
+        if m is not None and isinstance(check, Check) and check.name not in m.provides.get("doctor_checks", ()):
+            check = Check(check.name, False, f"extension {owner!r} reported the check {check.name!r}, which its "
+                          f"manifest does not declare in provides.doctor_checks")
+        out.append(check)
     return out

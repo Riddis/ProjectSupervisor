@@ -48,13 +48,16 @@ app.add_typer(extension_app, name="extension")
 app.add_typer(boundary_app, name="boundary")
 
 
-def _layout() -> Layout:
+def _layout(load: bool = True) -> Layout:
+    """The project here. `load=False` sets no extension up: `supervisor migrate` must work while an extension fails to
+    load (1.12.0), and its migrations need only the manifests."""
     root = find_root()
     if root is None:
         raise typer.BadParameter(str(NoProject("no project.yaml found here or above; run `supervisor init <dir>` "
                                                "or set SUPERVISOR_ROOT")))
     layout = Layout(root).ensure()
-    extensions_mod.load(layout)
+    if load:
+        extensions_mod.load(layout)
     return layout
 
 
@@ -82,10 +85,10 @@ def _echo_cmd(outcome: dict, task_id: str) -> None:
         typer.echo(f"warning: {w}")
 
 
-def _writer() -> Layout:
+def _writer(load: bool = True) -> Layout:
     """For commands that mutate state/ directly: refuse while a supervisor holds the lock (single-writer rule)."""
     from .locks import holder
-    layout = _layout()
+    layout = _layout(load=load)
     h = holder(layout.lock)
     if h is not None:
         raise typer.BadParameter(f"a supervisor holds state/.lock ({h.get('owner')}); use `supervisor cmd <kind> <json>` "
@@ -127,7 +130,7 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
 def migrate(dry_run: bool = typer.Option(False, help="report what would change without writing")):
     """Bring a project's state and config up to the installed framework version (idempotent)."""
     from . import migrations
-    layout = _writer()
+    layout = _writer(load=False)
     try:
         notes = migrations.run(layout, dry_run=dry_run)
     except migrations.MigrationError as exc:

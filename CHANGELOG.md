@@ -81,6 +81,12 @@ commit.
 
   Then the migrations each manifest names (`migrations = "<module>"`, exposing `MIGRATIONS`) run, importing only
   that module, never `setup()`. Rollback: the maintenance window's snapshot. v1.11.0 does not read the new places.
+- **Changed: doctor and migrate do not depend on loading.** `supervisor migrate` no longer sets extensions up.
+  `supervisor doctor` gains the check `extension_manifests` (G6), read from the manifests alone:
+  - FAIL for a refused manifest or an excluded framework range;
+  - WARN for an extension without a manifest, or for configuration not yet moved.
+
+  An extension's doctor check must report a name its manifest declares in `provides.doctor_checks`.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

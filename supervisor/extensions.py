@@ -172,6 +172,7 @@ class InternalImport:
 class Registry:
     layout: Layout
     doctor_checks: list[Callable] = field(default_factory=list)
+    doctor_check_owners: list[str] = field(default_factory=list)   # the extension of each doctor check, same order
     ui_routers: list[tuple[Any, str, str]] = field(default_factory=list)
     overview_panels: list[Callable] = field(default_factory=list)
     packet_screens: list[Callable] = field(default_factory=list)
@@ -358,6 +359,7 @@ class Registry:
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it
+        self.doctor_check_owners.append(self._setting_up or "?")
 
     def ui_router(self, router, label: str, path: str) -> None:
         self.ui_routers.append((router, label, path))

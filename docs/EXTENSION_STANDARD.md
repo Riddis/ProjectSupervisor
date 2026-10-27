@@ -171,7 +171,17 @@ The project's registry is put back as it was, and the module that failed is drop
 for required and optional extensions alike. A required extension that fails still blocks the loop, as before.
 
 Doctor check names are known only when the checks run, so `provides.doctor_checks` is compared when `supervisor
-doctor` runs them, not at load.
+doctor` runs them: a check reporting a name its manifest does not declare is a FAIL.
+
+## Doctor and migrate
+
+`supervisor migrate` sets no extension up. Its migrations need only the manifests, so a project whose extensions
+fail to load can still be migrated. `supervisor doctor` reads every configured extension's manifest without loading
+it, in the check `extension_manifests` (gate G6), so the check is there when loading fails too:
+- **FAIL:** a manifest discovery refuses, or a framework range that excludes the installed framework.
+- **WARN:** an extension without a manifest, and configuration still in the old top-level sections (run
+  `supervisor migrate`).
+- **OK:** each extension with its version and range.
 
 Importing an extension module must change nothing: `setup()` is the only place anything is registered. A module
 that still calls `register()` or `@job` at import (deprecated since 1.11.0) writes past the staging area, and a
