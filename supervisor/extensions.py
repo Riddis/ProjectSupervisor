@@ -55,6 +55,7 @@ import dataclasses
 import functools
 import hashlib
 import importlib
+import importlib.abc
 import importlib.machinery
 import importlib.util
 import re
@@ -630,6 +631,38 @@ class Approval:
                 if n not in self.refused and not self.finds[n].problems and self.finds[n].manifest is not None]
 
 
+_refused_modules: dict[str, str] = {}                        # module name -> why its extension was refused
+
+
+class _RefusalGuard(importlib.abc.MetaPathFinder):
+    """Refuses importing the module of a refused configured extension, by any path (review 1.12.0 R3): a sibling's
+    `from . import <refused>`, the extensions/ package initializer, a schema or migration module. Without it the
+    loader skipped only its own import, and the refused module's import-time code still ran."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        for name, why in _refused_modules.items():
+            if fullname == name or fullname.startswith(name + "."):
+                raise ImportError(f"{fullname} belongs to a refused extension: {why}", name=fullname)
+        return None
+
+
+_GUARD = _RefusalGuard()
+
+
+def guard_refused(layout: Layout, plan: "Approval") -> None:
+    """Close the import paths to every extension `plan` refused, for the rest of the process (until reset()): its
+    project-local module under the project's namespace, and an installed one's module."""
+    if _GUARD not in sys.meta_path:
+        sys.meta_path.insert(0, _GUARD)
+    for name, why in plan.refused.items():
+        found = plan.finds.get(name)
+        names = {f"{_package_name(layout)}.{name}"}
+        if found is not None and found.source in ("installed", "module"):
+            names.add(found.module or name)
+        for module in names:
+            _refused_modules[module] = why
+
+
 def approval(layout: Layout) -> Approval:
     """Import-free approval of every configured extension, shared by the loader and `supervisor migrate` (review
     1.12.0 R1). A name is refused for a discovery problem, an excluded framework range, a built-in or doubly claimed
@@ -831,6 +864,7 @@ def _load_into(layout: Layout, reg: Registry) -> None:
             return
     modules = []
     plan = approval(layout)
+    guard_refused(layout, plan)                            # before the first import, the package initializer's too
     finds, refused = plan.finds, plan.refused
     for name, required in plan.entries:
         snapshot = reg._snapshot()
@@ -1057,6 +1091,7 @@ def reset() -> None:
     lanes and jobs too, like a fresh process."""
     _registries.clear()
     _loading.clear()
+    _refused_modules.clear()
     _warned.clear()
     _extension_adapters.clear()
     _extension_jobs.clear()

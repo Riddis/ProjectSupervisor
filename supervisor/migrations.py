@@ -138,7 +138,9 @@ def _configured_manifests(layout: Layout) -> list:
     A manifest the loader would refuse directs no config move and has no migration imported (review 1.12.0 R1); an
     extension that only fails in setup() is not refused here, since migrate never runs setup()."""
     from . import extensions
-    return extensions.approval(layout).approved()
+    plan = extensions.approval(layout)
+    extensions.guard_refused(layout, plan)                 # an approved migration cannot import a refused one
+    return plan.approved()
 
 
 def _resources_gpu(layout: Layout, dry_run: bool) -> list[str]:

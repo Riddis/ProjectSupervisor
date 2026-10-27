@@ -39,6 +39,7 @@ class Finding:
 def run(layout: Layout, name: str) -> list[Finding]:
     """Every check, in CHECKS order, for extension `name` of the project at `layout`."""
     out: dict[str, Finding] = {}
+    extensions.guard_refused(layout, extensions.approval(layout))   # nothing it imports may run a refused sibling
     found = discovery.find(layout, name)
     m = found.manifest
     if found.problems:
