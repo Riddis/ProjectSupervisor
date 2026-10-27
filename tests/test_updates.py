@@ -306,7 +306,7 @@ def test_the_overview_names_a_newer_release_for_a_pinned_checkout_without_an_upd
     updates.check(layout, fetch=True, max_age_s=0)
     page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
     assert page.status_code == 200 and "v1.1.0" in page.text and "maintenance window" in page.text
-    assert "Update now" not in page.text
+    assert "Update now" not in page.text and "Origin last checked" in page.text
 
 
 # ---------------------------------------------------------------- review 1.11.1 F1: a status from before the pin
@@ -357,3 +357,34 @@ def test_apply_refuses_a_status_for_another_state_of_the_checkout(world, monkeyp
     monkeypatch.setattr(updates, "_stop_loop", lambda layout, out, timeout_s: stops.append(True) or True)
     res = updates.apply(world["layout"], st, reinstall=False)
     assert not res.ok and "changed since" in res.error and res.steps == [] and stops == []
+
+
+# ---------------------------------------------------------------- review 1.11.1 F2: only what origin publishes
+
+def test_an_unpublished_local_tag_is_not_a_release_and_the_published_one_is_found(pinned):
+    """A runtime worktree shares its tags with the development clone: a tag made there and never pushed is not a
+    release. The check also leaves the clone's own tags as they were."""
+    release(pinned["author"], "1.1.0")
+    push_update(pinned["author"], version="9.0.0-dev")
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "tag", "-a", "v9.0.0", "-m", "local only", "FETCH_HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.newer_release == "v1.1.0" and st.remote_version == "1.1.0"
+    assert "v9.0.0" not in "\n".join(updates.describe(st))
+    assert git(pinned["clone"], "tag", "--list", "v1.1.0") == ""
+
+
+def test_without_a_fetch_a_pinned_checkout_shows_its_last_check_of_origin_and_never_its_local_tags(pinned):
+    """The overview reads the check without fetching. It shows the last result taken from origin, however old, with
+    its time; with none yet, it shows no release (and never one read from the local tags)."""
+    release(pinned["author"], "1.1.0")
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")              # v1.1.0 is now a local tag as well
+    cache = pinned["layout"].runtime / "update_check.json"
+    st = updates.check(pinned["layout"], fetch=False, max_age_s=0)
+    assert not st.ok and not st.newer_release and "origin" in st.reason
+    fresh = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert fresh.newer_release == "v1.1.0"
+    old = fresh.to_dict() | {"checked_at": fresh.checked_at - 86400}
+    cache.write_text(__import__("json").dumps(old), encoding="utf-8")
+    last = updates.check(pinned["layout"], fetch=False)
+    assert last.newer_release == "v1.1.0" and last.checked_at == old["checked_at"]

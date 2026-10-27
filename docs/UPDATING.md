@@ -80,8 +80,16 @@ the Control Center, `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall onl
 `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start.
 
 Since 1.11.1 the updater recognises such a checkout (detached at a `vX.Y.Z` tag) and never pulls it. At launch, in
-`supervisor update --check` and on the Control Center's overview, it reports a newer release tag on origin (by
-version number, after fetching tags), and says whether its changelog mentions a migration. `supervisor update` and
-the update route refuse a pinned checkout and change nothing. A detached checkout that is not at a release tag is
+`supervisor update --check` and on the Control Center's overview, it reports a newer release that origin publishes.
+- **Which releases count:** the candidates come from origin's own tag list (`git ls-remote --tags`), compared by
+  version number. A tag that exists only locally, for example one made in the development clone the runtime worktree
+  shares its tags with, is not a release.
+- **Migration notes:** only that release's objects are fetched, to read whether its changelog mentions a migration.
+  No local tag is created.
+- **Without a fetch:** the overview reads the check without fetching, so it shows the last result taken from origin,
+  with the time of that check.
+- **Refusal:** `supervisor update` and the update route refuse a detached checkout and change nothing, whatever
+  update check they were given. An update check is reused only while the checkout is still at the branch and commit
+  it was taken of. A detached checkout that is not at a release tag is
 reported as such, and `supervisor doctor` fails it. Before 1.11.1, every launch on a pinned checkout printed
 "update check skipped: origin/HEAD unknown", because the check looked for a branch.

@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -63,6 +64,11 @@ class Status:
     @property
     def available(self) -> bool:
         return self.ok and self.behind > 0
+
+    @property
+    def checked_iso(self) -> str:
+        """When the check ran, as an ISO UTC stamp (the UI shows it in local time)."""
+        return datetime.fromtimestamp(self.checked_at, timezone.utc).isoformat() if self.checked_at else ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -156,12 +162,15 @@ def describes_checkout(status: Status) -> bool:
 
 def check(layout: Layout | None = None, fetch: bool = True, max_age_s: float = CHECK_TTL_S) -> Status:
     """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`, and only
-    while the checkout is still where it was checked (describes_checkout)."""
+    while the checkout is still where it was checked (describes_checkout). Without a fetch, a pinned checkout's last
+    result from origin is served whatever its age (`checked_at` says when): a pinned check cannot ask origin
+    without the network."""
     cache = _cache_path(layout)
     if cache is not None and cache.exists():
         try:
             prior = Status.from_dict(json.loads(cache.read_text(encoding="utf-8")))
-            if prior.ok and time.time() - prior.checked_at < max_age_s and describes_checkout(prior):
+            fresh = time.time() - prior.checked_at < max_age_s or (prior.pinned and not fetch)
+            if prior.ok and fresh and describes_checkout(prior):
                 return prior
         except (OSError, ValueError, TypeError):
             pass
@@ -218,8 +227,12 @@ def _check(fetch: bool) -> Status:
 
 
 def _check_pinned(fw: Path, st: Status, fetch: bool) -> Status:
-    """A detached checkout: the release tag it is at, and the newest release tag origin has, compared by version
-    number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Nothing here moves HEAD."""
+    """A detached checkout: the release tag it is at, and the newest release tag origin publishes, compared by
+    version number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Candidates come from
+    origin's own list (`git ls-remote --tags`), never from the local tags: a runtime worktree shares those with its
+    development clone, where a tag may exist that was never pushed (review 1.11.1 F2). Only that release's objects
+    are fetched, for its changelog; no local ref is created or moved, and nothing here moves HEAD. Without a fetch
+    there is no fresh word from origin: check() serves the last result instead."""
     st.pinned = True
     code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
     releases_here = [t for t in at.split() if _release(t)] if code == 0 else []
@@ -228,21 +241,27 @@ def _check_pinned(fw: Path, st: Status, fetch: bool) -> Status:
                      "it: check out a release tag")
         return st
     st.pinned_tag = max(releases_here, key=_release)
-    if fetch:
-        code, out = _git(["fetch", "--quiet", "--tags", "origin"], fw)
-        if code != 0:
-            st.reason = f"fetch failed (offline?): {out[-200:]}"
-            return st
-    code, listed = _git(["tag", "--list", "v*"], fw, timeout=10)
-    if code != 0:
-        st.reason = f"git tag: {listed[-200:]}"
+    if not fetch:
+        st.reason = "origin's releases have not been checked yet"
         return st
-    newest = max((t for t in listed.split() if _release(t)), key=_release, default=st.pinned_tag)
-    if _release(newest) > _release(st.pinned_tag):
+    code, listed = _git(["ls-remote", "--tags", "--refs", "origin"], fw)
+    if code != 0:
+        st.reason = f"could not list origin's tags (offline?): {listed[-200:]}"
+        return st
+    published = {}
+    for line in listed.splitlines():
+        target, _, ref = line.partition("\t")
+        name = ref.strip().removeprefix("refs/tags/")
+        if _release(name):
+            published[name] = target.strip()
+    newest = max(published, key=_release, default=None)
+    if newest and _release(newest) > _release(st.pinned_tag):
         st.newer_release = newest
         st.remote_version = newest[1:]
-        code, diff = _git(["diff", f"HEAD..{newest}", "--", "CHANGELOG.md"], fw, timeout=10)
-        st.migration_hint = code == 0 and "migration" in diff.lower()
+        code, _out = _git(["fetch", "--quiet", "--no-tags", "origin", f"refs/tags/{newest}"], fw)
+        if code == 0:                                        # into the object store only: no ref is written
+            code, diff = _git(["diff", f"HEAD..{published[newest]}", "--", "CHANGELOG.md"], fw, timeout=10)
+            st.migration_hint = code == 0 and "migration" in diff.lower()
     st.ok = True
     return st
 
