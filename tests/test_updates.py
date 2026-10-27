@@ -424,3 +424,48 @@ def test_a_lightweight_release_tag_is_recognised_as_the_pinned_release(pinned):
     git(pinned["clone"], "checkout", "-q", "v1.2.0")
     st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
     assert st.ok and st.pinned_tag == "v1.2.0" and not st.newer_release
+
+
+# ---------------------------------------------------------------- review 1.11.1 R2-2: a failed refresh
+
+def test_a_failed_refresh_keeps_the_last_result_from_origin(pinned, monkeypatch):
+    """The Control Center refreshes at start and every 30 minutes (fetch=True, max_age_s=0). One refresh without
+    the network must not erase what the last good check found: the refresh reports its failure, and the overview's
+    read still shows the release, with the good check's time and a note that the latest refresh failed."""
+    from fastapi.testclient import TestClient
+    from supervisor.ui.app import create_app
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    good = updates.check(layout, fetch=True, max_age_s=0)
+    assert good.newer_release == "v1.1.0"
+    real_git = updates._git
+    monkeypatch.setattr(updates, "_git", lambda args, cwd, timeout=updates.FETCH_TIMEOUT_S:
+                        (128, "fatal: unable to access origin: offline") if args[0] == "ls-remote"
+                        else real_git(args, cwd, timeout))
+    failed = updates.check(layout, fetch=True, max_age_s=0)
+    assert not failed.ok and "offline" in failed.reason
+    shown = updates.check(layout, fetch=False)
+    assert shown.ok and shown.newer_release == "v1.1.0" and shown.checked_at == good.checked_at
+    assert "offline" in shown.refresh_error
+    monkeypatch.setattr("supervisor.ui.app._start_update_checker", lambda layout: None)
+    page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
+    assert "v1.1.0" in page.text and "Origin last checked" in page.text and "latest refresh failed" in page.text
+    monkeypatch.setattr(updates, "_git", real_git)
+    again = updates.check(layout, fetch=True, max_age_s=0)                # back online: the note goes
+    assert again.ok and again.newer_release == "v1.1.0" and not again.refresh_error
+
+
+def test_a_failed_refresh_never_keeps_a_result_for_another_state_of_the_checkout(pinned, monkeypatch):
+    """The kept result must still describe the checkout (review 1.11.1 F1): after a move, a failed refresh leaves
+    nothing to show."""
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    assert updates.check(layout, fetch=True, max_age_s=0).newer_release == "v1.1.0"
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")              # the check itself writes no local tag
+    git(pinned["clone"], "checkout", "-q", "v1.1.0")
+    real_git = updates._git
+    monkeypatch.setattr(updates, "_git", lambda args, cwd, timeout=updates.FETCH_TIMEOUT_S:
+                        (128, "offline") if args[0] == "ls-remote" else real_git(args, cwd, timeout))
+    assert not updates.check(layout, fetch=True, max_age_s=0).ok
+    shown = updates.check(layout, fetch=False)
+    assert not shown.ok and not shown.newer_release

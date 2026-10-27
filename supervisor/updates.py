@@ -60,6 +60,7 @@ class Status:
     pinned: bool = False                      # detached HEAD: a release-tag checkout, never pulled
     pinned_tag: str = ""                      # the release tag HEAD is at
     newer_release: str = ""                   # the newest release tag above it, if any
+    refresh_error: str = ""                   # a kept pinned result: why the latest refresh failed
 
     @property
     def available(self) -> bool:
@@ -164,21 +165,30 @@ def check(layout: Layout | None = None, fetch: bool = True, max_age_s: float = C
     """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`, and only
     while the checkout is still where it was checked (describes_checkout). Without a fetch, a pinned checkout's last
     result from origin is served whatever its age (`checked_at` says when): a pinned check cannot ask origin
-    without the network."""
+    without the network. A failed check returns its failure but does not replace that result: the result stays
+    cached with the failure noted in `refresh_error` (review 1.11.1 R2-2: one refresh without the network erased
+    the release the overview showed)."""
     cache = _cache_path(layout)
+    prior = None
     if cache is not None and cache.exists():
         try:
             prior = Status.from_dict(json.loads(cache.read_text(encoding="utf-8")))
-            fresh = time.time() - prior.checked_at < max_age_s or (prior.pinned and not fetch)
-            if prior.ok and fresh and describes_checkout(prior):
-                return prior
         except (OSError, ValueError, TypeError):
-            pass
+            prior = None
+    if prior is not None and prior.ok and describes_checkout(prior):
+        if time.time() - prior.checked_at < max_age_s or (prior.pinned and not fetch):
+            return prior
+    else:
+        prior = None                                        # nothing worth keeping for this checkout
     status = _check(fetch)
+    record = status
+    if not status.ok and prior is not None and prior.pinned:
+        prior.refresh_error = status.reason
+        record = prior
     if cache is not None:
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps(status.to_dict()), encoding="utf-8")
+            cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
         except OSError:
             pass
     return status
