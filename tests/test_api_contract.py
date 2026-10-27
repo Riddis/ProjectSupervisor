@@ -307,8 +307,8 @@ def test_the_command_line_check_passes_on_this_repository():
 def test_review_1_11_0_f3_signature_changes_that_break_a_call_are_breaking(tmp_path, old, new, broken_call):
     """Review 1.11.0 F3: two changes that make a previously valid call fail, at the comparison and at the gate."""
     namespace_old, namespace_new = {}, {}
-    exec(old, namespace_old)
-    exec(new, namespace_new)
+    exec(old, namespace_old)                                           # noqa: S102 - the test's own literal source
+    exec(new, namespace_new)                                           # noqa: S102 - the test's own literal source
     eval(broken_call, namespace_old)                                   # valid against the old signature
     with pytest.raises(TypeError):
         eval(broken_call, namespace_new)                               # and not against the new one
