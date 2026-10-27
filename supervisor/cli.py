@@ -378,8 +378,21 @@ def extension_check_cmd(name: str):
 
 
 @extension_app.command("new")
-def extension_new(name: str):
-    """Scaffold extensions/<name>.py and list it in project.yaml."""
+def extension_new(name: str,
+                  package: bool = typer.Option(False, "--package", help="create the standard extension package "
+                                               "(supervisor-ext-<name>/) instead of a project-local module"),
+                  directory: Path = typer.Option(None, "--dir", help="where --package creates it (default: here)")):
+    """Scaffold extensions/<name>.py with its manifest and list it in project.yaml; with --package, the standard
+    extension package in its own folder (docs/EXTENSION_STANDARD.md)."""
+    if package:
+        from . import scaffold
+        try:
+            root = scaffold.package(directory or Path.cwd(), name)
+        except (ValueError, FileExistsError) as exc:
+            raise typer.BadParameter(str(exc)) from None
+        typer.echo(f"created {root}: `pip install -e {root}` into a project's environment, list {name!r} under "
+                   f"extensions: in its project.yaml, then `supervisor extension check {name}` there")
+        return
     layout = _layout()
     p = extensions_mod.scaffold_module(layout, name)
     doc = dict(project_mod.load(layout))

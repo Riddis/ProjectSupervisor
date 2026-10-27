@@ -124,6 +124,26 @@ in the extension's range. Each check prints `OK` or `FAIL`, and any `FAIL` exits
 
 An extension without a manifest fails `manifest`, and the rest is reported as not run.
 
+## Scaffolding
+
+- `supervisor extension new <name>` writes `extensions/<name>.py` and its manifest `extensions/<name>.toml`, and
+  lists the name in `project.yaml`.
+- `supervisor extension new <name> --package [--dir <folder>]` creates `supervisor-ext-<name>/`, the standard
+  package, from `supervisor/extension_template/`:
+  - `pyproject.toml`, with the entry point `<name> = supervisor_ext_<name>`, the manifest as package data, and pytest
+    settings of its own;
+  - the package: `setup()`, the manifest, and a pydantic `config.py`;
+  - `tests/test_conformance.py`, which runs `supervisor extension check <name>` in a temporary project;
+  - a behaviour test;
+  - `README.md` and `CHANGELOG.md`.
+
+  The framework is not a declared dependency, since it is on no package index: the manifest's `framework` range,
+  this minor release up to the next major, is what the loader checks.
+
+Both shapes pass `supervisor extension check` as generated, and the package's own suite passes as generated.
+`<name>` is the identity: lower case letters, digits and `_`, starting with a letter. An existing folder is never
+overwritten.
+
 ## Migrations
 
 `migrations = "<module>"` names a module exposing `MIGRATIONS`, a list of `migration(layout, dry_run) -> list[str]`

@@ -98,6 +98,15 @@ commit.
   - its configuration against the schema.
 
   It never runs the extension's tests.
+- **Added: `supervisor extension new <name> --package`**, the standard extension package from
+  `supervisor/extension_template/`. It holds `pyproject.toml` with the entry point, the package with its manifest
+  and a pydantic config model, a generated conformance test, a behaviour test, a README and a CHANGELOG. It passes
+  G5 and its own suite as generated.
+- **Changed: `supervisor extension new <name>`** writes the manifest beside the module, and accepts only an identity
+  the manifest accepts (lower case, digits, `_`).
+- **Fixed: an installed extension is imported by its entry point's module.** Discovery reports the module the entry
+  point names (`supervisor_ext_notes` for identity `notes`), and the loader, G5 and the import-side-effect probe
+  import that. Before, they imported the identity as a module name.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

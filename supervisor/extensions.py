@@ -728,9 +728,10 @@ def _import_schema(layout: Layout, spec: str):
     return schema
 
 
-def _import(layout: Layout, name: str):
+def _import(layout: Layout, name: str, module: str | None = None):
     """The project's `extensions/<name>.py` (loaded by file path under the project's namespace) or, when the
-    project has no such file, an installed dotted module. The project's file always wins over an installed name."""
+    project has no such file, an installed module: `module` when discovery found one (an entry point names its own
+    module, e.g. `supervisor_ext_notes` for identity `notes`), else the dotted name itself."""
     if not _valid_name(name):
         raise ExtensionError(f"invalid extension name {name!r}: use identifiers (letters, digits, underscore), dotted for packages")
     ext_dir = Path(layout.extensions)
@@ -739,7 +740,7 @@ def _import(layout: Layout, name: str):
         pkg_name = _ensure_package(layout)
         return importlib.import_module(f"{pkg_name}.{name}")
     try:
-        return importlib.import_module(name)              # an installed package; never via a sys.path mutation
+        return importlib.import_module(module or name)    # an installed package; never via a sys.path mutation
     except ModuleNotFoundError as exc:
         if exc.name in (name, name.split(".")[0]):
             raise ExtensionError(f"{layout.extensions / rel.with_suffix('.py')} not found and no installed module {name!r}") from None
@@ -786,7 +787,7 @@ def load(layout: Layout) -> Registry:
             missing = [d for d in (found.manifest.requires.extensions if found.manifest else ()) if d not in reg.loaded]
             if missing:
                 raise ExtensionError(f"it requires {', '.join(missing)}, which did not load (refused before import)")
-            mod = _import(layout, name)
+            mod = _import(layout, name, found.module)
             modules.append(mod)
             if getattr(mod, "__file__", None):
                 reg.origins[name] = str(Path(mod.__file__).resolve())
@@ -818,8 +819,9 @@ def load(layout: Layout) -> Registry:
             reg._restore(snapshot)
             schema_module = (found.manifest.config.schema.split(":", 1)[0]
                              if found is not None and found.manifest is not None and found.manifest.config else name)
-            _drop_modules(before, (f"{_package_name(layout)}.{name}", name, f"{_package_name(layout)}.{schema_module}",
-                                   schema_module))
+            installed = found.module if found is not None and found.module else name
+            _drop_modules(before, (f"{_package_name(layout)}.{name}", name, installed,
+                                   f"{_package_name(layout)}.{schema_module}", schema_module))
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]
             reg.errors.append(f"{name}: {why}")
             if required:
@@ -1045,7 +1047,8 @@ def snapshot():
             "commands": {k: id(v) for k, v in commands.HANDLERS.items()}}
 
 before = snapshot()
-extensions._import(Layout(sys.argv[1]), sys.argv[2])
+from supervisor import discovery
+extensions._import(Layout(sys.argv[1]), sys.argv[2], discovery.find(Layout(sys.argv[1]), sys.argv[2]).module)
 after = snapshot()
 changed = {k: sorted(n for n in before[k].keys() | after[k].keys() if before[k].get(n) != after[k].get(n))
            for k in before}
@@ -1078,21 +1081,28 @@ def import_side_effects(layout: Layout, name: str, timeout_s: float = 120) -> di
 
 
 def scaffold_module(layout: Layout, name: str) -> Path:
-    """Write a starter extension module under extensions/ (used by `supervisor extension new <name>`)."""
-    if not name.isidentifier():
-        raise ExtensionError(f"invalid extension name {name!r}: letters, digits and underscores only")
+    """Write a starter extension module under extensions/ and its manifest beside it (used by `supervisor extension
+    new <name>`); neither is overwritten. As written, both pass `supervisor extension check <name>`."""
+    from . import scaffold
+    if not scaffold.IDENTITY.match(name):
+        raise ExtensionError(f"invalid extension name {name!r}: lower case letters, digits and _, starting with a "
+                             f"letter (it is the extension's identity)")
     layout.extensions.mkdir(parents=True, exist_ok=True)
     init = layout.extensions / "__init__.py"
     if not init.exists():
         init.write_text("", encoding="utf-8")
     p = layout.extensions / f"{name}.py"
+    manifest_path = p.with_suffix(".toml")
+    if not manifest_path.exists():
+        manifest_path.write_text(scaffold.local_manifest(name), encoding="utf-8")
     if p.exists():
         return p
     p.write_text(f'''"""{name}: a project extension (see docs/FRAMEWORK_VS_EXTENSION.md in the framework repo).
 
 Registered in project.yaml under `extensions: [{name}]`. Everything here is specific to THIS project.
 Import only from `supervisor.ext` (the public extension API, docs/EXTENSION_API.md in the framework repo), and
-register only inside setup(): importing this module must change nothing.
+register only inside setup(): importing this module must change nothing. Declare what setup() registers in
+{name}.toml beside this file (`supervisor extension check {name}` proves the two agree).
 """
 from __future__ import annotations
 

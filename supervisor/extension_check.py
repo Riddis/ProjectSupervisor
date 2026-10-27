@@ -139,7 +139,7 @@ def _staged(layout: Layout, name: str, m) -> tuple[Counter, str | None, str | No
     extensions._registries[key] = reg
     config_problem = None
     try:
-        mod = extensions._import(layout, name)
+        mod = extensions._import(layout, name, discovery.find(layout, name).module)
         if getattr(mod, "__file__", None):
             reg.origins[name] = str(Path(mod.__file__).resolve())
         reg.manifests[name] = m

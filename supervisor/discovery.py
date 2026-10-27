@@ -15,6 +15,7 @@ still loads it, with a warning (D1). Nothing here imports an extension, and noth
 problems are returned, so the loader and doctor can report each extension on its own."""
 from __future__ import annotations
 
+import dataclasses
 import importlib.machinery
 import importlib.metadata
 import importlib.util
@@ -34,6 +35,7 @@ class Found:
     location: Path | None = None             # the module file or package folder
     manifest: manifest_mod.Manifest | None = None
     problems: tuple[str, ...] = ()
+    module: str | None = None                # what to import for an installed one: its entry point's module
 
     @property
     def legacy(self) -> bool:
@@ -62,7 +64,7 @@ def find(layout: Layout, name: str) -> Found:
         return _installed(name, points[0])
     spec = _top_level_spec(name.split(".")[0])
     if spec is not None:
-        return Found(name, "module", Path(spec.origin) if spec.origin and "." not in name else None)
+        return Found(name, "module", Path(spec.origin) if spec.origin and "." not in name else None, module=name)
     expected = Path(layout.extensions) / Path(*name.split(".")).with_suffix(".py")
     return Found(name, None, problems=(
         (f"extension {name!r} not found: no {expected}, no package folder there, no entry point {name!r} in the "
@@ -94,12 +96,12 @@ def _installed(name: str, ep: importlib.metadata.EntryPoint) -> Found:
     for entry in (dist.files or []) if dist is not None else []:
         if str(entry).replace("\\", "/") == wanted:
             path = Path(dist.locate_file(entry))
-            return _with_manifest(Found(name, "installed", path.parent), path)
+            return _with_manifest(Found(name, "installed", path.parent, module=module), path)
     spec = _top_level_spec(parts[0])                      # an editable install: the file list shows only its finder
     if spec is not None and spec.submodule_search_locations:
         package = Path(next(iter(spec.submodule_search_locations))).joinpath(*parts[1:])
-        return _with_manifest(Found(name, "installed", package), package / manifest_mod.FILENAME)
-    return Found(name, "installed", problems=(
+        return _with_manifest(Found(name, "installed", package, module=module), package / manifest_mod.FILENAME)
+    return Found(name, "installed", module=module, problems=(
         (f"extension {name!r}: the entry point names {module!r}, but neither the distribution's file list nor the "
          f"installed package shows its {manifest_mod.FILENAME}"),))
 
@@ -117,15 +119,14 @@ def _top_level_spec(top: str) -> importlib.machinery.ModuleSpec | None:
 def _with_manifest(found: Found, manifest_path: Path) -> Found:
     if not manifest_path.is_file():
         if found.source == "installed":
-            return Found(found.name, found.source, found.location,
-                         problems=(f"extension {found.name!r}: no {manifest_mod.FILENAME} in {found.location}",))
+            return dataclasses.replace(found, problems=(
+                f"extension {found.name!r}: no {manifest_mod.FILENAME} in {found.location}",))
         return found                                      # a project-local extension without one: legacy (D1)
     try:
         m = manifest_mod.load(manifest_path)
     except manifest_mod.ManifestError as exc:
-        problems = tuple(f"{exc.source}: {p}" for p in exc.problems)
-        return Found(found.name, found.source, found.location, problems=problems)
+        return dataclasses.replace(found, problems=tuple(f"{exc.source}: {p}" for p in exc.problems))
     if m.identity != found.name:
-        return Found(found.name, found.source, found.location, problems=(
+        return dataclasses.replace(found, problems=(
             f"{manifest_path}: its identity is {m.identity!r}, but project.yaml names {found.name!r}",))
-    return Found(found.name, found.source, found.location, manifest=m)
+    return dataclasses.replace(found, manifest=m)
