@@ -298,3 +298,23 @@ def test_the_command_line_check_passes_on_this_repository():
                          capture_output=True, text=True, encoding="utf-8", check=False)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "extension API contract: OK" in out.stdout
+
+
+@pytest.mark.parametrize("old,new,broken_call", [
+    ("def f(a, /, **kwargs):\n    pass\n", "def f(a, **kwargs):\n    pass\n", "f(1, a=2)"),
+    ("def f(*args, **kwargs):\n    pass\n", "def f(args, *rest, **kwargs):\n    pass\n", "f()"),
+], ids=["positional-only-name-now-collides-with-kwargs", "required-parameter-named-like-an-old-collector"])
+def test_review_1_11_0_f3_signature_changes_that_break_a_call_are_breaking(tmp_path, old, new, broken_call):
+    """Review 1.11.0 F3: two changes that make a previously valid call fail, at the comparison and at the gate."""
+    namespace_old, namespace_new = {}, {}
+    exec(old, namespace_old)
+    exec(new, namespace_new)
+    eval(broken_call, namespace_old)                                   # valid against the old signature
+    with pytest.raises(TypeError):
+        eval(broken_call, namespace_new)                               # and not against the new one
+    before = planted(tmp_path, "__all__ = ['f']\n" + old)
+    after = planted(tmp_path, "__all__ = ['f']\n" + new)
+    assert {n for n, _w in ac.compare(before, after).breaking} == {"f"}
+    result = run_check(after, baseline=before, version="1.12.0", baseline_version="1.11.0",
+                       changelog=LOG.replace("added `extra`", "changed `f`"))
+    assert not result.ok and any("major" in p for p in result.problems)
