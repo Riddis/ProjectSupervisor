@@ -3,6 +3,30 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.11.1 — 2026-10-27
+
+A fix only: the update check on a pinned framework checkout.
+
+**Migration:** none added. `supervisor migrate` records the new version, and its dry run on a project at 1.11.0 lists
+only `project.yaml: framework_version 1.11.0 → 1.11.1`. **Rollback** to v1.11.0, in a maintenance window: drain,
+stop, check out `v1.11.0`, `supervisor migrate` (records 1.11.0 again), `supervisor doctor`, start. The only new data
+is three fields in `state/runtime/update_check.json`, a cache that 1.11.0 discards and rewrites. No extension API
+change: G2's contract is unchanged.
+
+- **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
+  worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
+  branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
+  Every launch printed "update check skipped: origin/HEAD unknown: fatal: ambiguous argument…", and nothing
+  reported a newer release.
+  - A detached checkout at a `vX.Y.Z` tag is now *pinned*. The check fetches origin's tags and reports the newest
+    release above the pinned one, by version number (v1.10.0 is above v1.9.0; other tag names are not releases). It
+    also says whether that release's changelog mentions a migration.
+  - The launch check says nothing when the checkout is pinned at the newest release. It names a newer release and
+    the maintenance-window steps, and never offers a pull.
+  - The Control Center's overview shows "Framework release available" with no Update button.
+  - `apply` (`supervisor update`, `/overview/update`) refuses a pinned checkout and changes nothing.
+  - A detached checkout not at a release tag is reported plainly; `supervisor doctor` already fails it.
+
 ## 1.11.0 — 2026-10-27
 
 Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext`, gate G2 recording its

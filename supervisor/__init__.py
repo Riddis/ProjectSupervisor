@@ -2,4 +2,4 @@
 Python supervisor and an owner-facing Control Center. Generic core only; project specifics live in the project
 folder (`project.yaml`, `config/`, `agents/`, `extensions/`)."""
 
-__version__ = "1.11.0"
+__version__ = "1.11.1"
