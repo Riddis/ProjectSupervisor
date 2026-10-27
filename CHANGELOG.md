@@ -34,7 +34,8 @@ against `supervisor.testing`, which promises nothing.
   public name has no section of its own in `docs/EXTENSION_API.md`, and when the difference from the last release
   tag's contract breaks the version rule. Both halves are compared with the tag's (`git show <last v* tag>:...`):
   the signatures, where a removal or a change that breaks a caller (a removed or renamed parameter, a new required
-  one, a lost default, a moved positional, a positional-only name `**kwargs` used to collect) needs a major version
+  one, a lost default, a moved positional, a positional-only name `**kwargs` used to collect, a keyword-only
+  parameter moved where an old positional argument lands) needs a major version
   and an addition or a compatible change at least a minor version with an "Extension API" entry naming it; and each
   name's documented section, where a change must be named in an "Extension API" entry marked `(editorial)` (any
   version), `(breaking)` (major) or neither (compatible: at least minor), since no program can prove prose

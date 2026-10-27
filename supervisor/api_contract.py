@@ -202,6 +202,7 @@ def _incompatible(old: list[dict], new: list[dict]) -> list[str]:
     old_var_pos = any(p["kind"] == "var_positional" for p in old)
     old_var_kw = any(p["kind"] == "var_keyword" for p in old)
     old_keywords = {p["name"] for p in old if p["kind"] in ("positional_or_keyword", "keyword_only")}
+    old_keyword_only = {p["name"] for p in old if p["kind"] == "keyword_only"}
     for i, p in enumerate(old_pos):
         q = new_pos[i] if i < len(new_pos) else None
         if q is None:
@@ -233,10 +234,16 @@ def _incompatible(old: list[dict], new: list[dict]) -> list[str]:
             out.append(f"new required parameter {q['name']}")
         # A keyword the old **kwargs collected now names a parameter that can also be filled by position: a call
         # passing both (`f(1, a=2)` against `f(a, /, **kwargs)`) now fails with "multiple values".
-        if (q["kind"] == "positional_or_keyword" and old_var_kw and q["name"] not in old_keywords
-                and (i < len(old_pos) or old_var_pos)):
+        reachable = i < len(old_pos) or old_var_pos              # an old call could have a positional argument here
+        if q["kind"] == "positional_or_keyword" and reachable and old_var_kw and q["name"] not in old_keywords:
             out.append(f"parameter {q['name']} can now be given by name, so a keyword of that name that **kwargs "
                        f"collected collides with a positional argument")
+        # A keyword-only parameter now also filled by position, where an old call could already put a positional
+        # argument (old `*args`, or an old positional-only slot): `f(1, a=2)` against `f(*args, a)` -> `f(a, *args)`
+        # now gets two values for `a` (review 1.11.0 R2-2).
+        if q["kind"] == "positional_or_keyword" and reachable and q["name"] in old_keyword_only:
+            out.append(f"keyword-only parameter {q['name']} can now be filled by position, so a call passing it by "
+                       f"name with a positional argument at position {i + 1} gives it two values")
     for q in new:
         if q["kind"] == "keyword_only" and "default" not in q and q["name"] not in old_names:
             out.append(f"new required keyword parameter {q['name']}")

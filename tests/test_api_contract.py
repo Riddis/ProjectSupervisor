@@ -322,6 +322,40 @@ def test_review_1_11_0_f3_signature_changes_that_break_a_call_are_breaking(tmp_p
     assert not result.ok and any("major" in p for p in result.problems)
 
 
+@pytest.mark.parametrize("old,new,broken_call", [
+    ("def f(*args, a):\n    pass\n", "def f(a, *args):\n    pass\n", "f(1, a=2)"),
+    ("def f(x, /, *, a):\n    pass\n", "def f(a):\n    pass\n", "f(1, a=2)"),
+], ids=["keyword-only-moved-into-old-args", "keyword-only-moved-into-a-positional-only-slot"])
+def test_review_1_11_0_r2_2_a_keyword_only_parameter_a_positional_argument_now_reaches_is_breaking(
+        tmp_path, old, new, broken_call):
+    """Review 1.11.0 R2-2: a keyword-only parameter that becomes positional-or-keyword in a slot an old call could
+    fill by position (old `*args`, or an old positional-only parameter) gets two values from `f(1, a=2)`."""
+    namespace_old, namespace_new = {}, {}
+    exec(old, namespace_old)                                           # noqa: S102 - the test's own literal source
+    exec(new, namespace_new)                                           # noqa: S102 - the test's own literal source
+    eval(broken_call, namespace_old)                                   # valid against the old signature
+    with pytest.raises(TypeError):
+        eval(broken_call, namespace_new)                               # and not against the new one
+    before = planted(tmp_path, "__all__ = ['f']\n" + old)
+    after = planted(tmp_path, "__all__ = ['f']\n" + new)
+    assert {n for n, _w in ac.compare(before, after).breaking} == {"f"}
+    result = run_check(after, baseline=before, version="1.12.0", baseline_version="1.11.0",
+                       changelog=LOG.replace("added `extra`", "changed `f`"))
+    assert not result.ok and any("major" in p for p in result.problems)
+
+
+@pytest.mark.parametrize("old,new", [
+    ("def f(*, a):\n    pass\n", "def f(a):\n    pass\n"),
+    ("def f(x, *, a):\n    pass\n", "def f(x, a):\n    pass\n"),
+], ids=["no-old-positional-argument", "slot-beyond-every-old-positional-argument"])
+def test_a_keyword_only_parameter_no_old_positional_argument_reaches_may_become_positional(tmp_path, old, new):
+    """The guard for R2-2: when no call valid against the old signature has a positional argument in the new slot,
+    `a=2` still binds alone, and the change is compatible."""
+    before = planted(tmp_path, "__all__ = ['f']\n" + old)
+    after = planted(tmp_path, "__all__ = ['f']\n" + new)
+    assert ac.compare(before, after).breaking == []
+
+
 # ---------------------------------------------------------------- the human contract (review 1.11.0 F5)
 
 NO_API = "# Changelog\n\n## 1.11.1 - 2026-11-02\n\n- Fixed something else. No API changes.\n\n## 1.11.0\n\n- old\n"
