@@ -15,6 +15,12 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   and a 7-day floor (`capacity.<engine>.weekly_gate_percent`); Settings offered only the first, so a 7-day window
   at its floor held dispatch while the floor the owner could see was far lower. Both are editable now (0-100), and
   the page labels each field by its window ("Claude: 7-day floor (% remaining)").
+- **Fixed: a Settings save no longer rewrites routing.yaml.** `settings.update` dumped the whole file through ruamel:
+  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (the Studio's
+  `claude.bash_allow`). It now replaces only the edited value's token, located by the YAML parser, and replaces the
+  file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
+  added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
+  them (new internal module `supervisor/yaml_edit.py`).
 - **A capacity hold says what holds it.** The deferral read "claude capacity reserve reached", naming neither the
   window nor the setting. It now names each window that holds dispatch, its remaining share, the floor and the
   routing.yaml key that sets it, and when it resets ("claude capacity held: 7-day window at 18% remaining, at or

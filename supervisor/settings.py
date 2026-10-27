@@ -1,13 +1,16 @@
 """Validated edits to config/routing.yaml (Control Center Settings panel). Only a short allow-list of numeric fields is
-editable from the UI — routing.yaml is hand-authored with owner-decision comments that a plain
-yaml.safe_dump round-trip would destroy, so this uses ruamel.yaml's round-trip mode, which preserves comments and
-layout, and writes back only the one field that changed."""
+editable from the UI. routing.yaml is hand-authored with owner-decision comments, so an edit changes only the value's
+own token (supervisor.yaml_edit) and the file is replaced atomically in its own line-ending style; before 1.11.0 the
+ruamel round trip reflowed long lines and rewrote every line ending in place."""
 from __future__ import annotations
 
+import copy
 from typing import Any
 
+import yaml
 from ruamel.yaml import YAML
 
+from . import store, yaml_edit
 from .locks import FileLock
 from .paths import Layout
 
@@ -81,14 +84,21 @@ def update(layout: Layout, field: str, value: str, actor: str = "owner-ui") -> d
     if not (lo <= typed <= hi):
         raise SettingsError(f"{field} must be between {lo} and {hi}")
     with FileLock(layout.state / ".routing.lock", owner="settings", timeout=5.0):
-        doc = load(layout)
-        cur = doc
+        text = path(layout).read_bytes().decode("utf-8")
+        doc = yaml.safe_load(text) or {}
+        if not isinstance(doc, dict):
+            raise SettingsError("config/routing.yaml is not a mapping")
+        new = copy.deepcopy(doc)
+        cur = new
         for k in keys[:-1]:
+            if cur.get(k) is None:
+                cur[k] = {}
+            if not isinstance(cur[k], dict):
+                raise SettingsError(f"config/routing.yaml: {k} is not a mapping, so {field} cannot be set")
             cur = cur[k]
         before = cur.get(keys[-1])
         cur[keys[-1]] = typed
-        with path(layout).open("w", encoding="utf-8") as f:
-            _yaml.dump(doc, f)
+        store.rewrite_text(path(layout), yaml_edit.edit(text, new))
     if keys[0] == "capacity":
         from . import capacity
         capacity.configure(layout)                     # this process applies the new floor now, whatever the stamp says
