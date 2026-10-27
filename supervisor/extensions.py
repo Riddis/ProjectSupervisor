@@ -59,6 +59,7 @@ import importlib.machinery
 import importlib.util
 import re
 import sys
+import threading
 import traceback
 import warnings
 from dataclasses import dataclass, field
@@ -506,7 +507,12 @@ class Registry:
         return "required extension(s) failed to load: " + "; ".join(self.blocking)
 
 
-_registries: dict[str, Registry] = {}
+_registries: dict[str, Registry] = {}                       # published: loads that have finished
+# Loads in progress, by (project root, thread): only that thread sees its registry before it is published, so
+# ext.config() in a setup() reads it, and no other thread ever gets an unfinished one (review 1.12.0 R2). G5's
+# staging registry is registered here the same way.
+_loading: dict[tuple[str, int], Registry] = {}
+_load_lock = threading.RLock()                               # one load at a time; other threads wait for its result
 _extension_commands: dict[str, str] = {}                     # command kind -> origin that registered it (process)
 # Name ownership, since the last reset(): lane / python job name -> (origin, extension) that registered it.
 _extension_adapters: dict[str, tuple[str, str]] = {}
@@ -786,13 +792,34 @@ def _import(layout: Layout, name: str, module: str | None = None):
 def load(layout: Layout) -> Registry:
     """Import and set up every extension listed in project.yaml, once per project root per process. A broken
     extension is recorded in `registry.errors` (shown by doctor); a broken *required* one is also recorded in
-    `registry.blocking`, and the loop and the packet screens refuse to proceed until it is fixed (`assert_loaded`)."""
+    `registry.blocking`, and the loop and the packet screens refuse to proceed until it is fixed (`assert_loaded`).
+
+    The registry is published only when the load has finished. Another thread calling load() meanwhile waits for it;
+    the loading thread itself, re-entering through ext.config() in a setup(), gets the registry in progress."""
     key = str(layout.root)
+    me = threading.get_ident()
+    own = _loading.get((key, me))
+    if own is not None:
+        return own
     reg = _registries.get(key)
     if reg is not None:
         return reg
-    reg = Registry(layout)
-    _registries[key] = reg
+    with _load_lock:
+        reg = _registries.get(key)
+        if reg is not None:
+            return reg                                     # finished while this thread waited
+        reg = Registry(layout)
+        _loading[(key, me)] = reg
+        try:
+            _load_into(layout, reg)
+        finally:
+            _loading.pop((key, me), None)
+            _registries[key] = reg
+        return reg
+
+
+def _load_into(layout: Layout, reg: Registry) -> None:
+    """load()'s work on the unpublished registry `reg`."""
     if project.exists(layout):
         _doc, note = project._read_raw(project.path(layout))
         if note:
@@ -801,7 +828,7 @@ def load(layout: Layout) -> Registry:
             # unreadable file blocks exactly like a required extension that failed to import.
             reg.errors.append(f"project.yaml: {note}")
             reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
-            return reg
+            return
     modules = []
     plan = approval(layout)
     finds, refused = plan.finds, plan.refused
@@ -865,7 +892,6 @@ def load(layout: Layout) -> Registry:
     reg._reconcile(set(reg.loaded))
     reg.internal_imports = internal_imports(layout, modules)
     _warn_internal_imports(layout, reg.internal_imports)
-    return reg
 
 
 def _internal_names(tree: ast.AST) -> list[tuple[int, str]]:
@@ -1030,6 +1056,7 @@ def reset() -> None:
     the same extension) may register them again. `forget_registrations()` (supervisor.testing.reset) drops the
     lanes and jobs too, like a fresh process."""
     _registries.clear()
+    _loading.clear()
     _warned.clear()
     _extension_adapters.clear()
     _extension_jobs.clear()

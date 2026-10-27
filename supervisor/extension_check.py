@@ -17,6 +17,7 @@ check names are known only when a check runs, so `supervisor doctor` compares th
 from __future__ import annotations
 
 import ast
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,12 +132,12 @@ def _side_effects(layout: Layout, name: str) -> Finding:
 
 def _staged(layout: Layout, name: str, m) -> tuple[Counter, str | None, str | None]:
     """(what setup() registered, why setup() failed or None, why the config failed or None), against a staging
-    registry that stands in for the project's for the length of the call and is never committed."""
+    registry that is never committed. It stands in for the project's registry for the length of the call, and only on
+    this thread (extensions._loading): any other thread keeps the published registry (review 1.12.0 R2)."""
     from .ext import _config
     reg = extensions.Registry(layout)
-    key = str(layout.root)
-    saved = extensions._registries.get(key)
-    extensions._registries[key] = reg
+    slot = (str(layout.root), threading.get_ident())
+    extensions._loading[slot] = reg
     config_problem = None
     try:
         mod = extensions._import(layout, name, discovery.find(layout, name).module)
@@ -164,10 +165,7 @@ def _staged(layout: Layout, name: str, m) -> tuple[Counter, str | None, str | No
         return Counter(), f"{type(exc).__name__}: {exc}", config_problem
     finally:
         reg._pending = None
-        if saved is None:
-            extensions._registries.pop(key, None)
-        else:
-            extensions._registries[key] = saved
+        extensions._loading.pop(slot, None)
 
 
 def _compare(m, registered: Counter) -> Finding:
