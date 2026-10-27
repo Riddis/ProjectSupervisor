@@ -9,11 +9,16 @@ for data. docs/EXTENSION_API.md is the human half and names every one of them.
     python -m supervisor.api_contract check      # G2
 
 `check` fails when the code and docs/extension_api.json differ (record it again, in the same commit), when a public
-name is missing from docs/EXTENSION_API.md, and, once a release tag carries a contract, when a difference from that
-tag's contract breaks the version rule: a removal or a change that breaks a caller needs a major version (after a
-minor release of deprecation warnings, which the reviewer checks); an addition or a compatible change needs at least
-a minor version and a CHANGELOG "Extension API" line naming it. The previous contract is read from the last `v*` tag
-reachable from HEAD with `git show`; a shallow clone cannot supply it and fails instead of passing unchecked.
+name has no section of its own in docs/EXTENSION_API.md (a `### `name`` heading with text), and, once a release tag
+carries a contract, when a difference from that tag breaks the version rule. Both halves of the contract are compared
+with the tag's: the recorded signatures, where a removal or a change that breaks a caller needs a major version
+(after a minor release of deprecation warnings, which the reviewer checks) and an addition or a compatible change at
+least a minor version; and each name's documented section, where a change (types, data shapes, semantics, error
+cases) cannot be proved compatible by a program, so the CHANGELOG's newest section classifies it in an "Extension API"
+entry naming the name: marked "(editorial)" (any version), "(breaking)" (a major version) or neither (a compatible
+change, at least a minor version). Every change needs that entry. The previous contract is read from the last `v*`
+tag reachable from HEAD with `git show`, both docs/extension_api.json and docs/EXTENSION_API.md; a shallow clone
+cannot supply it and fails instead of passing unchecked.
 """
 from __future__ import annotations
 
@@ -329,15 +334,57 @@ def _newest_section(changelog: str) -> str:
     return m.group(0) if m else ""
 
 
+def _sections(doc: str) -> dict[str, str]:
+    """Each documented name's section of docs/EXTENSION_API.md, whitespace collapsed: the text under a `### `name``
+    heading, up to the next heading of level 1 to 3."""
+    out: dict[str, str] = {}
+    name, lines = None, []
+    for line in doc.splitlines() + ["## end"]:
+        heading = re.match(r"^#{1,3}\s", line)
+        if heading:
+            if name is not None:
+                out[name] = " ".join(" ".join(lines).split())
+            m = re.match(r"^###\s+`([^`]+)`\s*$", line)
+            name, lines = (m.group(1) if m else None), []
+        elif name is not None:
+            lines.append(line)
+    return out
+
+
+def _entries(section: str) -> list[str]:
+    """The CHANGELOG section's top-level bullets, each with its continuation and nested lines."""
+    out: list[str] = []
+    for line in section.splitlines():
+        if line.startswith("- "):
+            out.append(line)
+        elif out and line.strip():
+            out[-1] += "\n" + line
+    return out
+
+
+def _classification(section: str, name: str) -> str | None:
+    """How the newest CHANGELOG section classifies a documented change to `name`: "editorial", "breaking",
+    "compatible", or None when no "Extension API" entry names it."""
+    found = [e for e in _entries(section) if "Extension API" in e and _mentions(e, name)]
+    if not found:
+        return None
+    if any("(breaking)" in e for e in found):
+        return "breaking"
+    if all("(editorial)" in e for e in found):
+        return "editorial"
+    return "compatible"
+
+
 def _listed(items: list[tuple[str, str]], limit: int = 6) -> str:
     shown = "; ".join(f"{n}: {w}" for n, w in items[:limit])
     return shown + (f"; and {len(items) - limit} more" if len(items) > limit else "")
 
 
 def check(current: dict, recorded: dict | None, baseline: dict | None, *, version: str,
-          baseline_version: str | None, changelog: str, api_doc: str | None) -> Result:
-    """G2 over already-loaded inputs: `current` from the code, `recorded` from docs/extension_api.json, `baseline`
-    from the last release tag (None when it has none), `version` the framework version of this commit."""
+          baseline_version: str | None, changelog: str, api_doc: str | None, baseline_doc: str | None = None) -> Result:
+    """G2 over already-loaded inputs: `current` from the code, `recorded` from docs/extension_api.json, `api_doc`
+    docs/EXTENSION_API.md, `baseline` and `baseline_doc` the same two from the last release tag (None when it has
+    none), `version` the framework version of this commit."""
     r = Result()
     if recorded is None:
         r.problems.append(f"{CONTRACT_FILE} is missing: run `python -m supervisor.api_contract record`")
@@ -347,18 +394,23 @@ def check(current: dict, recorded: dict | None, baseline: dict | None, *, versio
         r.problems.append(f"{CONTRACT_FILE} does not describe the code ({what}): run `python -m supervisor.api_contract "
                           f"record` and commit the file with the change")
     names = sorted(current.get("names", {}))
+    sections = _sections(api_doc or "")
     if names and api_doc is None:
         r.problems.append(f"{DOC_FILE} is missing: it documents every public name")
     elif names:
-        undocumented = [n for n in names if not _mentions(api_doc, n)]
+        undocumented = [n for n in names if not sections.get(n)]
         if undocumented:
-            r.problems.append(f"{DOC_FILE} does not document {', '.join(undocumented)}")
+            r.problems.append(f"{DOC_FILE} has no section of its own (a `### `name`` heading with text) for "
+                              f"{', '.join(undocumented)}")
     if baseline is None:
         since = f" ({baseline_version} has none)" if baseline_version else ""
         r.notes.append(f"no previous contract to compare with{since}: this one is the first")
         return r
     d = compare(baseline, current)
     cur, base = _version(version), _version(baseline_version or "0")
+    section = _newest_section(changelog)
+    documented = _documented_changes(r, baseline, current, baseline_doc, sections, section, baseline_version,
+                                     version, cur, base)
     if d.breaking:
         if cur[0] <= base[0]:
             r.problems += [f"breaks callers of {baseline_version} ({n}: {w}): a major version is needed, this is {version}"
@@ -367,7 +419,8 @@ def check(current: dict, recorded: dict | None, baseline: dict | None, *, versio
             r.notes.append(f"breaking changes in major version {version} ({_listed(d.breaking)}): the reviewer checks "
                            f"that each was deprecated with warnings for one minor release first")
     if not (d.breaking or d.changes):
-        r.notes.append(f"unchanged since {baseline_version}")
+        if not documented:
+            r.notes.append(f"unchanged since {baseline_version}")
         return r
     if cur == base:
         r.notes.append(f"the extension API changed since {baseline_version}: the release commit raises at least the "
@@ -375,7 +428,6 @@ def check(current: dict, recorded: dict | None, baseline: dict | None, *, versio
     elif cur[:2] == base[:2]:
         r.problems.append(f"the extension API changed since {baseline_version}, so {version} cannot be a patch "
                           f"release: raise at least the minor version")
-    section = _newest_section(changelog)
     if "Extension API" not in section:
         r.problems.append(f"{CHANGELOG_FILE}: the newest section has no \"Extension API\" line for the changes since "
                           f"{baseline_version} ({_listed(d.breaking + d.changes)})")
@@ -385,6 +437,37 @@ def check(current: dict, recorded: dict | None, baseline: dict | None, *, versio
             r.problems.append(f"{CHANGELOG_FILE}: the newest section does not name {', '.join(unnamed)}, changed in "
                               f"the extension API since {baseline_version}")
     return r
+
+
+def _documented_changes(r: Result, baseline: dict, current: dict, baseline_doc: str | None, sections: dict,
+                        changelog_section: str, baseline_version: str | None, version: str, cur: tuple,
+                        base: tuple) -> list[str]:
+    """Compare each name's documented section with the tag's (review 1.11.0 F5) and hold each change to its
+    CHANGELOG classification. Returns the names whose documented contract changed."""
+    if baseline_doc is None:
+        r.problems.append(f"{baseline_version} carries {CONTRACT_FILE} but no {DOC_FILE}: the documented half of its "
+                          f"contract cannot be compared")
+        return []
+    before = _sections(baseline_doc)
+    changed = [n for n in sorted(set(baseline.get("names", {})) & set(current.get("names", {})))
+               if before.get(n) != sections.get(n)]
+    for name in changed:
+        kind = _classification(changelog_section, name)
+        if kind is None:
+            r.problems.append(f"the documented contract of `{name}` changed since {baseline_version} ({DOC_FILE}): "
+                              f"name it in an \"Extension API\" entry of the {CHANGELOG_FILE}'s newest section, marked "
+                              f"(editorial), (breaking) or neither for a compatible change")
+            continue
+        r.notes.append(f"documented contract of `{name}` changed since {baseline_version}, classified {kind}: the "
+                       f"reviewer checks the classification")
+        if kind == "breaking" and cur[0] <= base[0]:
+            r.problems.append(f"the documented contract of `{name}` changed in a way the CHANGELOG calls breaking: a "
+                              f"major version is needed, this is {version}")
+        elif kind == "compatible" and cur != base and cur[:2] == base[:2]:
+            r.problems.append(f"the documented contract of `{name}` changed since {baseline_version}, so {version} "
+                              f"cannot be a patch release: raise at least the minor version, or mark the entry "
+                              f"(editorial) if only the wording changed")
+    return changed
 
 
 # ---------------------------------------------------------------- git and the command line
@@ -405,6 +488,12 @@ def contract_at(root: Path, tag: str) -> dict | None:
         return json.loads(shown.stdout)
     except ValueError as exc:
         raise ContractError(f"{tag}:{CONTRACT_FILE} is not JSON ({exc})") from None
+
+
+def document_at(root: Path, tag: str) -> str | None:
+    """The docs/EXTENSION_API.md a tag carries, or None when it has none."""
+    shown = _git(root, "show", f"{tag}:{DOC_FILE}")
+    return shown.stdout if shown.returncode == 0 else None
 
 
 def previous_contract(root: Path) -> tuple[str | None, dict | None]:
@@ -455,9 +544,11 @@ def run(command: str, against: str = "auto", echo=print) -> int:
         else:
             tag, baseline = against, contract_at(root, against)
         text = _read(target)
+        baseline_doc = document_at(root, tag) if tag and baseline is not None else None
         result = check(current, json.loads(text) if text is not None else None, baseline,
                        version=supervisor.__version__, baseline_version=tag.lstrip("v") if tag else None,
-                       changelog=_read(root / CHANGELOG_FILE) or "", api_doc=_read(root / DOC_FILE))
+                       changelog=_read(root / CHANGELOG_FILE) or "", api_doc=_read(root / DOC_FILE),
+                       baseline_doc=baseline_doc)
     except (ContractError, ValueError) as exc:
         echo(f"extension API contract: {exc}")
         return 2

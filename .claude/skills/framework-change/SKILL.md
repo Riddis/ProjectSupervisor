@@ -62,8 +62,9 @@ All four, and say in the pull request which ran (the gate table in `docs/BOUNDAR
 
 - **G1** `python -m supervisor.boundary` from the framework root: OK, no notes. Read the supporting evidence
   (registered domain words) and say why each hit is generic.
-- **G2** `python -m supervisor.api_contract check`: the recorded contract is the code, every public name is
-  documented, and the difference from the last release tag follows the version rule (CI runs it with full history).
+- **G2** `python -m supervisor.api_contract check`: the recorded contract is the code, every public name has its own
+  documented section, and the difference from the last release tag (signatures and documented sections) follows the
+  version rule and is classified in the CHANGELOG (CI runs it with full history).
 - **G3** `python -m pytest -q` green on Windows (`tools\test_windows.ps1`) and on Linux (CI runs both).
 - **G7** the written answers from step 1, plus: extension API impact (names added, deprecated or changed),
   migration impact, docs updated.

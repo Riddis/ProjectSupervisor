@@ -31,13 +31,15 @@ against `supervisor.testing`, which promises nothing.
   writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature
   (parameter names, kinds, defaults and annotations; for a class its constructor, public bases, methods, properties
   and fields). `python -m supervisor.api_contract check` fails when that file does not describe the code, when a
-  public name is missing from `docs/EXTENSION_API.md`, and when the difference from the last release tag's contract
-  breaks the version rule: a removal or a change that breaks a caller (a removed or renamed parameter, a new
-  required one, a lost default, a moved positional) needs a major version; an addition or a compatible change at
-  least a minor version and a line in this file's "Extension API" entry naming it. The previous contract is read
-  with `git show <last v* tag>:docs/extension_api.json`; a shallow clone fails instead of passing unchecked. CI runs
-  it as the job `G2 extension API`, with the full history; 1.11.0 records the first contract, so the comparison
-  starts with the release after it.
+  public name has no section of its own in `docs/EXTENSION_API.md`, and when the difference from the last release
+  tag's contract breaks the version rule. Both halves are compared with the tag's (`git show <last v* tag>:...`):
+  the signatures, where a removal or a change that breaks a caller (a removed or renamed parameter, a new required
+  one, a lost default, a moved positional, a positional-only name `**kwargs` used to collect) needs a major version
+  and an addition or a compatible change at least a minor version with an "Extension API" entry naming it; and each
+  name's documented section, where a change must be named in an "Extension API" entry marked `(editorial)` (any
+  version), `(breaking)` (major) or neither (compatible: at least minor), since no program can prove prose
+  compatible. A shallow clone fails instead of passing unchecked. CI runs it as the job `G2 extension API`, with the
+  full history; 1.11.0 records the first contract, so the comparison starts with the release after it.
 - **Extension API:** the package `supervisor.ext`, documented in `docs/EXTENSION_API.md`; its `__all__` is the
   contract. Re-exported unchanged, with tests through `supervisor.ext` for the behaviour extensions rely on: `Layout`
   (paths from the project root), the file helpers `atomic_write_text`, `atomic_json`, `read_json` and `contained`

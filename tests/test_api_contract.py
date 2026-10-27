@@ -182,14 +182,16 @@ def test_identical_contracts_differ_in_nothing(tmp_path):
 
 # ---------------------------------------------------------------- the check
 
-DOC = "# Extension API\n\n`write`, `Lane` and `LIMIT`, `extra`.\n"
+DOC = ("# Extension API\n\nIntro.\n\n## Files\n\n### `write`\n\n`write(path, data)` writes `data`; raises OSError when it "
+       "cannot.\n\n### `Lane`\n\nA lane.\n\n### `LIMIT`\n\nThree.\n\n### `extra`\n\nExtra.\n")
 LOG = "# Changelog\n\n## Unreleased\n\n- **Extension API:** added `extra`.\n\n## 1.11.0 — 2026-11-01\n\n- old\n"
 
 
 def run_check(current, recorded="same", baseline=None, version="1.12.0", baseline_version="1.11.0",
-              changelog=LOG, api_doc=DOC):
+              changelog=LOG, api_doc=DOC, baseline_doc=DOC):
     return ac.check(current, current if recorded == "same" else recorded, baseline, version=version,
-                    baseline_version=baseline_version, changelog=changelog, api_doc=api_doc)
+                    baseline_version=baseline_version, changelog=changelog, api_doc=api_doc,
+                    baseline_doc=baseline_doc)
 
 
 def test_the_check_fails_when_the_recorded_contract_is_not_the_code(tmp_path):
@@ -318,3 +320,88 @@ def test_review_1_11_0_f3_signature_changes_that_break_a_call_are_breaking(tmp_p
     result = run_check(after, baseline=before, version="1.12.0", baseline_version="1.11.0",
                        changelog=LOG.replace("added `extra`", "changed `f`"))
     assert not result.ok and any("major" in p for p in result.problems)
+
+
+# ---------------------------------------------------------------- the human contract (review 1.11.0 F5)
+
+NO_API = "# Changelog\n\n## 1.11.1 - 2026-11-02\n\n- Fixed something else. No API changes.\n\n## 1.11.0\n\n- old\n"
+
+
+def test_every_public_name_has_its_own_documented_section(tmp_path):
+    """A bare mention is not documentation: each name needs a `### `name`` section with text."""
+    c = planted(tmp_path, BASE)
+    names_only = "# Extension API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n"
+    result = run_check(c, api_doc=names_only, baseline=None)
+    assert not result.ok and any("write" in p and "section" in p for p in result.problems)
+    empty = DOC.replace("Three.", "")
+    result = run_check(c, api_doc=empty, baseline=None)
+    assert not result.ok and any("LIMIT" in p for p in result.problems)
+
+
+def test_the_review_probe_deleting_every_description_is_caught(tmp_path):
+    """Review 1.11.0 F5's probe: the same signatures, a document of bare names, a patch release, no API line."""
+    c = planted(tmp_path, BASE)
+    result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API,
+                       api_doc="# Extension API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n")
+    assert not result.ok
+
+
+GUARANTEE_CHANGED = DOC.replace("raises OSError when it cannot.", "returns None when it cannot.")
+
+
+def test_a_changed_documented_guarantee_must_be_classified(tmp_path):
+    """Same signature, a different documented guarantee: G2 does not take the unchanged path."""
+    c = planted(tmp_path, BASE)
+    result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API,
+                       api_doc=GUARANTEE_CHANGED)
+    assert not result.ok
+    assert any("write" in p and "documented" in p and "CHANGELOG" in p for p in result.problems)
+    assert not any("unchanged since" in n for n in result.notes)
+
+
+@pytest.mark.parametrize("entry,version,ok", [
+    ("- **Extension API:** `write` returns None instead of raising.", "1.12.0", True),      # compatible: minor
+    ("- **Extension API:** `write` returns None instead of raising.", "1.11.1", False),     # not in a patch
+    ("- **Extension API (editorial):** `write`'s wording.", "1.11.1", True),               # editorial: any version
+    ("- **Extension API (breaking):** `write` no longer raises.", "1.12.0", False),         # breaking: major only
+    ("- **Extension API (breaking):** `write` no longer raises.", "2.0.0", True),
+    ("- **Extension API:** `Lane` gains nothing.", "1.12.0", False),                         # names the wrong thing
+])
+def test_the_classification_decides_the_version(tmp_path, entry, version, ok):
+    c = planted(tmp_path, BASE)
+    changelog = f"# Changelog\n\n## {version} - 2026-11-02\n\n{entry}\n\n## 1.11.0\n\n- old\n"
+    result = run_check(c, baseline=c, version=version, baseline_version="1.11.0", changelog=changelog,
+                       api_doc=GUARANTEE_CHANGED)
+    assert result.ok is ok, result.problems
+    if ok:
+        assert any("documented" in n and "write" in n for n in result.notes)       # surfaced for the reviewer
+
+
+def test_whitespace_and_reflowing_are_not_a_documented_change(tmp_path):
+    c = planted(tmp_path, BASE)
+    reflowed = DOC.replace("writes `data`; raises", "writes `data`;\nraises")
+    result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API, api_doc=reflowed)
+    assert result.ok and any("unchanged since" in n for n in result.notes)
+
+
+def test_a_tag_with_a_contract_but_no_document_is_an_error(tmp_path):
+    c = planted(tmp_path, BASE)
+    result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API,
+                       baseline_doc=None)
+    assert not result.ok and any("EXTENSION_API.md" in p for p in result.problems)
+
+
+def test_the_previous_document_is_read_from_the_last_tag(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    (repo / "docs" / "EXTENSION_API.md").write_text("tagged text\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "first")
+    git(repo, "tag", "-a", "v1.0.0", "-m", "1.0.0")
+    (repo / "docs" / "EXTENSION_API.md").write_text("later text\n", encoding="utf-8")
+    git(repo, "commit", "-qam", "second")
+    assert ac.document_at(repo, "v1.0.0") == "tagged text\n"
+

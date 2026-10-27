@@ -3,9 +3,12 @@
 An extension imports `supervisor.ext` and nothing else from `supervisor` (besides `supervisor.testing` in its tests,
 which is explicitly unstable). Everything listed here is a promise: gate G2 (`python -m supervisor.api_contract
 check`, `docs/BOUNDARY.md`) keeps `supervisor.ext.__all__` equal to the recorded contract in `docs/extension_api.json`
-and compares it with the last release's. A name is removed, or its signature changed in a way that breaks a caller,
-only in a major release, after a minor release that warns; an addition comes in a minor release with an
-"Extension API" line in `CHANGELOG.md`. Anything not listed here is internal and may change in any release.
+and compares both it and this document with the last release's. A name is removed, or its signature changed in a way
+that breaks a caller, only in a major release, after a minor release that warns; an addition comes in a minor release
+with an "Extension API" entry in `CHANGELOG.md`. Each name has its own `###` section here; a change to what a section
+promises (types, data shapes, semantics, error cases) is named in an "Extension API" entry too, marked `(editorial)`
+for wording only, `(breaking)` for a major release, or unmarked for a compatible change. Anything not listed here is
+internal and may change in any release.
 
 ```python
 from supervisor.ext import Adapter, Check, Layout, Result, atomic_json, gpu
