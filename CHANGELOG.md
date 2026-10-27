@@ -3,15 +3,16 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## 1.11.1 — 2026-10-27
+## Unreleased
 
-A fix only: the update check on a pinned framework checkout.
+Not released on its own. It ships with the next release, boundary plan phase 3 (planned 1.12.0), and that
+release's G4 review covers these commits (owner decision, 2026-10-27).
+- **Reviewed so far:** astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed.
+- **Not yet reviewed:** `a212283..a90dc13`, which fixes round 2's R2-1 and R2-2 and adds the fetch-the-tag step.
 
-**Migration:** none added. `supervisor migrate` records the new version, and its dry run on a project at 1.11.0 lists
-only `project.yaml: framework_version 1.11.0 → 1.11.1`. **Rollback** to v1.11.0, in a maintenance window: drain,
-stop, check out `v1.11.0`, `supervisor migrate` (records 1.11.0 again), `supervisor doctor`, start. The only new data
-is three fields in `state/runtime/update_check.json`, a cache that 1.11.0 discards and rewrites. No extension API
-change: G2's contract is unchanged.
+**Migration:** none for this fix. The only new data is fields in `state/runtime/update_check.json`, a cache that
+1.11.0 discards and rewrites, so a rollback to v1.11.0 needs nothing extra. No extension API change: G2's contract is
+unchanged.
 
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a

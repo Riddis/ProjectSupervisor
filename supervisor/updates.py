@@ -7,7 +7,7 @@ which its launcher turns into a restart).
 
 A checkout detached at a release tag (a live project's runtime worktree, docs/UPDATING.md "Pinned checkouts") is
 never pulled: the check fetches origin's tags and reports a newer `vX.Y.Z` release, which the project takes in a
-maintenance window, and `apply` refuses it (1.11.1; before, the check compared HEAD with a missing `origin/HEAD`
+maintenance window, and `apply` refuses it (since 1.12.0; before, the check compared HEAD with a missing `origin/HEAD`
 and every launch printed git's error).
 
 Everything here is fail-soft: no remote, no network, no git, or a dirty clone all produce a `Status` that says why
