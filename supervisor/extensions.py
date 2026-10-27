@@ -706,16 +706,20 @@ def _ensure_package(layout: Layout) -> str | None:
     return pkg_name
 
 
-def _import_schema(layout: Layout, spec: str):
-    """The class a manifest's `config.schema` names (`module:Class`). The module resolves like an extension name: the
+def import_named_module(layout: Layout, module: str):
+    """A module a manifest names (its config schema's, its migrations), resolved like an extension name: the
     project's extensions/ first (under its namespace), else an installed module."""
-    module, _, cls = spec.partition(":")
     ext_dir = Path(layout.extensions)
     rel = Path(*module.split("."))
     if ext_dir.is_dir() and ((ext_dir / rel).with_suffix(".py").exists() or (ext_dir / rel / "__init__.py").exists()):
-        mod = importlib.import_module(f"{_ensure_package(layout)}.{module}")
-    else:
-        mod = importlib.import_module(module)
+        return importlib.import_module(f"{_ensure_package(layout)}.{module}")
+    return importlib.import_module(module)
+
+
+def _import_schema(layout: Layout, spec: str):
+    """The class a manifest's `config.schema` names (`module:Class`)."""
+    module, _, cls = spec.partition(":")
+    mod = import_named_module(layout, module)
     schema = getattr(mod, cls, None)
     if schema is None or not hasattr(schema, "model_validate"):
         raise ExtensionError(f"config.schema {spec!r}: {cls} is not a pydantic model in {module}")

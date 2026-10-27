@@ -69,6 +69,18 @@ commit.
   `resources()` reads `resources.gpu`, else the old `gpu` (warned), and an extension with a manifest sees
   only what it declares in `requires.resources`. Extensions without a manifest see no change, and the
   signatures are unchanged.
+- **Added: the configuration move and extension migrations** (`supervisor/migrations.py`, `supervisor/yaml_edit.py`).
+  `supervisor migrate` moves routing.yaml's `gpu` to `resources.gpu`, and each configured extension's
+  `config.legacy_sections` into `extensions.<identity>`: the section named like the identity at the top, any other
+  nested under its own name. Both are driven by the manifests discovery reads, so no extension code runs.
+  - `yaml_edit.move_sections` cuts each section's lines and re-indents them under the destination. Comments move
+    with the lines, the one on the key line included, and every other line stays byte for byte, in the file's own
+    line endings.
+  - Where lines cannot be moved (a flow-style parent), a comment-keeping round trip is used instead.
+  - Either way the result must read back as the same values moved, or nothing is written.
+
+  Then the migrations each manifest names (`migrations = "<module>"`, exposing `MIGRATIONS`) run, importing only
+  that module, never `setup()`. Rollback: the maintenance window's snapshot. v1.11.0 does not read the new places.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

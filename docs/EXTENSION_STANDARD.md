@@ -99,7 +99,26 @@ section with `ext.config(layout, <identity>)`, or a part of it with `ext.config(
 - **Reading:** until `supervisor migrate` has moved them, they are read from there, with a warning. The section
   named like the identity merges in at the top of `extensions.<identity>`, and any other nests under its own name.
   The Studio's `comfy` lists `["comfy", "ffmpeg"]`, so `ffmpeg` becomes `extensions.comfy.ffmpeg`.
-- **Refused before import:** a legacy section the framework owns, and one that two manifests list. It also gets a read-only view of the shared resource
+- **Refused before import:** a legacy section the framework owns, and one that two manifests list.
+- **Moving them:** `supervisor migrate` moves the legacy sections into `extensions.<identity>`, driven by the
+  manifests alone; no extension code runs. The shared `gpu` section moves to `resources.gpu` the same way. The moved
+  lines keep their comments, the one on the section's key line included, and every other line of `routing.yaml`
+  stays byte for byte. The move is refused, and nothing written, if the result does not read back as the same
+  values.
+
+## Migrations
+
+`migrations = "<module>"` names a module exposing `MIGRATIONS`, a list of `migration(layout, dry_run) -> list[str]`
+under the same contract as the framework's:
+- report only real changes;
+- write nothing on a dry run;
+- report nothing on a second run;
+- change only what the note names.
+
+`supervisor migrate` runs them after the framework's own migrations, importing only that module and never the
+extension's `setup()`. Notes are prefixed with the identity. A failing migration stops the run with an error naming
+the extension. An extension whose framework range excludes the installed framework is skipped; it does not load
+either. The extension that owns an identifier or a section owns its migration and its rollback (`migration-author`). It also gets a read-only view of the shared resource
 policy it declares in `requires.resources` (`resources.gpu`) through `ext.resources()`. It never reads another
 extension's section. When it needs another extension's behaviour, it calls that extension and lists it in
 `requires.extensions`.
