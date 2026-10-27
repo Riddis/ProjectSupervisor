@@ -244,3 +244,44 @@ def test_one_source_file_is_one_extension_whatever_it_is_configured_as(tmp_path,
     assert reg.errors == [] and reg.loaded == ["extensions.ref"]
     import extensions.ref as plain  # the test's own import
     assert plain.settings(installed) == {}
+
+
+BUNDLE = '''
+from supervisor import ext
+
+def setup(registry):
+    registry.config_sections("parent")
+'''
+CHILD = '''
+from supervisor import ext
+
+def setup(registry):
+    registry.config_sections("child")
+    registry.inbox_kind("child_note", "Child notes")
+
+def read(layout):
+    return ext.config(layout, "child")
+
+def log(layout):
+    ext.log_event(layout, "child_event", "owner")
+
+def items(layout):
+    return ext.owned_items(layout)
+'''
+
+
+@pytest.mark.parametrize("order", [["bundle", "bundle.child"], ["bundle.child", "bundle"]])
+def test_the_most_specific_extension_owns_its_module(tmp_path, order):
+    """Review 1.11.0 F4: with a package `bundle` and its module `bundle.child` both configured, code in child.py is
+    `bundle.child`'s, whatever the order: its config section, its inbox kind and its log lines."""
+    lay = testing.project(tmp_path, extensions=order, routing={"child": {"x": 1}},
+                          files={"extensions/bundle/__init__.py": BUNDLE, "extensions/bundle/child.py": CHILD})
+    reg = extensions.load(lay)
+    assert reg.errors == [] and sorted(reg.loaded) == ["bundle", "bundle.child"]
+    child = extensions._import(lay, "bundle.child")
+    assert child.read(lay) == {"x": 1}
+    child.log(lay)
+    import json
+    events = [json.loads(line) for line in lay.log.read_text(encoding="utf-8").splitlines()]
+    assert next(e for e in events if e["event"] == "child_event")["actor"] == "bundle.child:owner"
+    assert child.items(lay) == []

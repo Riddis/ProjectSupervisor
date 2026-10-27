@@ -697,9 +697,13 @@ def _by_origin(file: str | None, origins: list[tuple[Path, str]]) -> str | None:
     path = _resolved(file) if file else None
     if path is None:
         return None
-    for origin, name in origins:
-        if path == origin or (origin.name == "__init__.py" and origin.parent in path.parents):
+    for origin, name in origins:                       # the module itself first: `bundle.child`, not `bundle`
+        if path == origin:
             return name
+    packages = [(origin.parent, name) for origin, name in origins
+                if origin.name == "__init__.py" and origin.parent in path.parents]
+    if packages:                                       # then the innermost configured package that contains it
+        return max(packages, key=lambda p: len(p[0].parts))[1]
     return None
 
 
