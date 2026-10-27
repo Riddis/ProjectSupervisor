@@ -20,6 +20,9 @@ person, or names a vendor outside the listed files.
 
 ## Extensions
 
+An extension imports one thing from the framework, the public extension API `supervisor.ext`, whose every name,
+signature and behaviour is in `docs/EXTENSION_API.md`; `examples/reference_extension/` uses all of it.
+
 `project.yaml` lists modules under `extensions:`; each is loaded from the project's `extensions/<name>.py` (or, when
 the project has no such file, imported as an installed dotted module) and its `setup(registry)` is called once per
 process — by the CLI, the loop and the Control Center alike. `supervisor extension new <name>` scaffolds one and

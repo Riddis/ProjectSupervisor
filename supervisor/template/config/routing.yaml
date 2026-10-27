@@ -2,6 +2,10 @@
 # the project; everything here can change without a release.
 version: 1
 
+# Capacity floors, per engine and measured window: automation waits while a window's remaining share is at or below
+# its floor. reserve_percent is the 5-hour window's floor, weekly_gate_percent the 7-day window's. Both are editable
+# in the Control Center's Settings, and a change (there or here) applies to the next dispatch without a restart; a
+# held job's reason names the window, the floor and this setting.
 capacity:                             # subscription usage windows (measured from the CLIs' own reports)
   claude: {reserve_percent: 20, weekly_gate_percent: 20}   # stop automation when this much of a window remains
   codex: {reserve_percent: 10, weekly_gate_percent: 20}
