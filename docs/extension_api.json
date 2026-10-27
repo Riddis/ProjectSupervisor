@@ -1164,6 +1164,16 @@
         }
       }
     },
+    "job_spec": {
+      "kind": "function",
+      "params": [
+        {
+          "kind": "positional_or_keyword",
+          "name": "task"
+        }
+      ],
+      "returns": "dict"
+    },
     "log_event": {
       "kind": "function",
       "params": [

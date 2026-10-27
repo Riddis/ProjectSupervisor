@@ -54,6 +54,14 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
     option B) with `executable`, `model` and `environment()`, the lane's scrubbed environment; no credential that
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
+- **The reference extension** (`examples/reference_extension/reference/`): every registry hook and every
+  `supervisor.ext` operation, used through `supervisor.ext` only. `tests/test_hook_contracts.py` copies it into a
+  temporary project, loads it through the real loader and checks each hook's contract (its lane completes a task and
+  defers without spending an attempt, its python job runs, its check, panel, screen, projection, CLI group, commands,
+  inbox kind, page, templates and static files work as documented); importing any of its modules registers nothing;
+  a hook added to `ext.Registry` without a contract check fails the suite.
+- **Extension API:** `job_spec(task)`, the copy of a task's `job:` block a lane's `prepare()` reads (the framework's
+  own helper; two Studio lanes kept copies of it).
 - **`supervisor.testing`, explicitly unstable,** for extensions' behaviour tests: `project`, `add_extensions`,
   `make_task`, an in-process `FakeLane` and `lane()`, the loop driver `drive`, `ui_client` (imported on use),
   `import_side_effects`, `reset`. Promoted from the framework's test fixtures, which now use it; no compatibility

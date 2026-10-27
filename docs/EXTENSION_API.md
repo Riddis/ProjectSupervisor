@@ -221,6 +221,12 @@ A dataclass, what `collect()` returns.
 | `raw: dict` | the lane's raw result, kept with the record |
 | `reset_epoch: float \| None` | `DEFERRED` only: the earliest re-dispatch time |
 
+### `job_spec`
+
+`job_spec(task) -> dict`: a copy of the task's `job:` block (`{}` when it has none), what a lane's `prepare()` reads
+to build its spec: `job: {adapter: render, scene: ...}` in the task contract. The task `prepare()` receives also has
+`id`, the attempt's run folder name; extensions read nothing else from it.
+
 ### `CapacityDeferred`
 
 `CapacityDeferred(reset_epoch, message)`, a `RuntimeError`: raised from `submit()` when nothing was launched because
@@ -366,6 +372,15 @@ decides policy.
 
 `now_iso() -> str`: the current UTC time as ISO 8601 to the second (`2026-10-27T09:30:00+00:00`), the format of
 every timestamp the framework writes.
+
+## The reference extension
+
+`examples/reference_extension/reference/` is a working extension that uses every registry hook and every operation
+above, through `supervisor.ext` only: a subprocess lane that defers when its config says so, a python job, a doctor
+check that reports an agent lane, an Overview panel, a packet screen, a projection, a CLI group, two owner commands
+over an inbox kind it owns, and a page with its templates and static files. Copy the folder to a project's
+`extensions/reference/` and list `reference` in `project.yaml` to try it. `tests/test_hook_contracts.py` loads it
+through the real loader and checks each hook's contract; a hook added to `Registry` without a check there fails.
 
 ## Testing extensions: `supervisor.testing` (unstable)
 

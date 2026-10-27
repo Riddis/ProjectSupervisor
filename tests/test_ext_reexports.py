@@ -23,13 +23,14 @@ def test_the_reexported_names_are_the_framework_objects():
     from supervisor import gpu, paths, store
     from supervisor._vendor import contract
     from supervisor.adapters import base, process
+    assert ext.job_spec is process.job_spec
     from supervisor.doctor import Check
     assert ext.Layout is paths.Layout and ext.now_iso is store.now_iso and ext.gpu is gpu and ext.Check is Check
     assert (ext.atomic_json, ext.read_json, ext.atomic_write_text, ext.contained, ext.CapacityDeferred) == (
         contract.atomic_json, contract.read_json, contract.atomic_write_text, contract.contained,
         contract.CapacityDeferred)
     assert (ext.Adapter, ext.Result, ext.ProcessAdapter) == (base.Adapter, base.Result, process.ProcessAdapter)
-    reexported = {"Adapter", "CapacityDeferred", "Check", "Layout", "ProcessAdapter", "Result",
+    reexported = {"Adapter", "CapacityDeferred", "Check", "Layout", "ProcessAdapter", "Result", "job_spec",
                   "atomic_json", "atomic_write_text", "contained", "gpu", "now_iso", "read_json"}
     assert reexported <= set(ext.__all__)
     own = {"Registry", "ExtensionError", "InboxError", "config", "resources", "AgentLane", "agent_lane",
@@ -157,3 +158,16 @@ def test_a_capacity_deferral_costs_no_attempt(layout, monkeypatch):
     assert recs[0]["phase"] == "PREPARED" and int(recs[0].get("launch_attempts", 0)) == 0
     assert "out of capacity" in recs[0]["deferred_reason"]
     assert tasks.load(layout, "X").status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)
+
+
+def test_job_spec_is_a_copy_of_the_tasks_job_block(layout):
+    """What a lane's prepare() reads from the task it is given: the task's `job:` block, {} without one."""
+    make_task(layout, "J")
+    tasks._update(layout, "J", lambda d: d.update(job={"adapter": "x", "scene": {"frames": 3}}))
+    task = tasks.load(layout, "J")
+    spec = ext.job_spec(task)
+    assert spec == {"adapter": "x", "scene": {"frames": 3}}
+    spec["adapter"] = "changed"
+    assert ext.job_spec(task)["adapter"] == "x"
+    make_task(layout, "K")
+    assert ext.job_spec(tasks.load(layout, "K")) == {}
