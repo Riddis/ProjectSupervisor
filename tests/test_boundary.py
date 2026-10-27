@@ -121,7 +121,8 @@ def test_g1a_allowed_list_covers_every_declared_dependency():
     dists = {re.split(r"[<>=!~\[ ]", d)[0].lower() for d in py["dependencies"] + py["optional-dependencies"]["ui"]}
     import_name = {"pydantic": "pydantic", "typer": "typer", "ruamel.yaml": "ruamel", "pyyaml": "yaml",
                    "psutil": "psutil", "portalocker": "portalocker", "python-ulid": "ulid", "pillow": "PIL",
-                   "requests": "requests", "jsonschema": "jsonschema", "fastapi": "fastapi", "uvicorn": "uvicorn",
+                   "requests": "requests", "jsonschema": "jsonschema", "packaging": "packaging",
+                   "fastapi": "fastapi", "uvicorn": "uvicorn",
                    "jinja2": "jinja2", "python-multipart": "multipart", "sse-starlette": "sse_starlette"}
     assert dists == set(import_name), "a dependency changed: update this map and boundary.toml [imports] allowed"
     allowed = set(boundary.load_config(REPO)["imports"]["allowed"])

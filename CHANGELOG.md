@@ -14,6 +14,18 @@ release's G4 review covers these commits (owner decision, 2026-10-27).
 1.11.0 discards and rewrites, so a rollback to v1.11.0 needs nothing extra. No extension API change: G2's contract is
 unchanged.
 
+Phase 3 (the extension standard) is being built on this section; its release notes are completed in the release
+commit.
+
+- **Added: the extension manifest** (`supervisor/manifest.py`, `docs/EXTENSION_STANDARD.md`).
+  `supervisor-extension.toml` declares an extension's identity, its version, the framework versions it supports,
+  what it registers (`provides`, with `legacy_ids`), its configuration section and schema, what it requires, and
+  its migrations.
+  - It is read without importing anything the extension ships.
+  - Parsing is strict, and every problem is reported at once.
+  - The framework range is compared by version number.
+  - The loader does not read manifests yet.
+  - New dependency: `packaging` (version ranges, PEP 440), already present wherever pip is.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

@@ -6,7 +6,7 @@
 # G1a: third-party top-level modules supervisor/ may import, i.e. the distributions pyproject.toml declares
 # (dependencies and the ui extra), by import name. The standard library and `supervisor` itself are always allowed.
 allowed = [
-  "pydantic", "typer", "ruamel", "yaml", "psutil", "portalocker", "ulid", "PIL", "requests", "jsonschema",
+  "pydantic", "typer", "ruamel", "yaml", "psutil", "portalocker", "ulid", "PIL", "requests", "jsonschema", "packaging",
   "fastapi", "starlette", "uvicorn", "jinja2", "multipart", "sse_starlette",
 ]
 # Files that may load code dynamically (import_module / __import__ / spec_from_file_location with a computed name).
