@@ -1025,13 +1025,20 @@ def _owning_extension(module: str | None, file: str | None, names: list[str], ex
     return None
 
 
+def visible_registry(layout: Layout) -> Registry | None:
+    """The registry this thread sees for `layout`, without loading: its own load in progress (or G5's staging
+    registry), else the published one. Not another thread's unfinished load (review 1.12.0 R2)."""
+    key = str(layout.root)
+    return _loading.get((key, threading.get_ident())) or _registries.get(key)
+
+
 def calling_extension(layout: Layout) -> str | None:
     """The configured extension whose code is running on this thread: the nearest caller whose module is one of the
     project's extensions. A helper module counts for the extension that calls it. Until phase 3 gives extensions
     an identity, this is how supervisor.ext knows who is asking (its config sections, the actor of its log lines)."""
     names = [name for name, _required in specs(layout)]
     ext_dir = Path(layout.extensions).resolve()
-    reg = _registries.get(str(layout.root))
+    reg = visible_registry(layout)
     origins = [(Path(f), n) for n, f in (reg.origins.items() if reg else ()) if n in names]
     frame = sys._getframe(1)
     while frame is not None:

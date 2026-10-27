@@ -39,7 +39,8 @@ class Finding:
 def run(layout: Layout, name: str) -> list[Finding]:
     """Every check, in CHECKS order, for extension `name` of the project at `layout`."""
     out: dict[str, Finding] = {}
-    extensions.guard_refused(layout, extensions.approval(layout))   # nothing it imports may run a refused sibling
+    plan = extensions.approval(layout)
+    extensions.guard_refused(layout, plan)                 # nothing it imports may run a refused sibling
     found = discovery.find(layout, name)
     m = found.manifest
     if found.problems:
@@ -59,7 +60,7 @@ def run(layout: Layout, name: str) -> list[Finding]:
         for check in ("registrations", "idempotent", "config"):
             out[check] = Finding(check, False, "not run: the framework range excludes this framework")
         return [out[n] for n in CHECKS]
-    first = _staged(layout, name, m)
+    first = _staged(layout, name, m, plan)
     out["config"] = Finding("config", first[2] is None, first[2] or (
         f"extensions.{m.identity} validates against {m.config.schema}" if m.config else "no config table"))
     if first[1] is not None:
@@ -67,7 +68,7 @@ def run(layout: Layout, name: str) -> list[Finding]:
         out["idempotent"] = Finding("idempotent", False, "not run: setup() did not complete")
         return [out[n] for n in CHECKS]
     out["registrations"] = _compare(m, first[0])
-    second = _staged(layout, name, m)
+    second = _staged(layout, name, m, plan)
     same = second[1] is None and second[0] == first[0]
     out["idempotent"] = Finding("idempotent", same, "a second setup() registers the same" if same else (
         f"a second setup() raised: {second[1]}" if second[1] else
@@ -131,16 +132,49 @@ def _side_effects(layout: Layout, name: str) -> Finding:
     return Finding("import_side_effects", True, "importing the module changes no shared registry")
 
 
-def _staged(layout: Layout, name: str, m) -> tuple[Counter, str | None, str | None]:
+def _requirements(m, plan) -> list[str]:
+    """Every extension `m` requires, directly or through another, in load order."""
+    want, todo = set(), list(m.requires.extensions)
+    while todo:
+        dep = todo.pop()
+        if dep in want:
+            continue
+        want.add(dep)
+        found = plan.finds.get(dep)
+        if found is not None and found.manifest is not None:
+            todo += list(found.manifest.requires.extensions)
+    return [n for n, _r in plan.entries if n in want]
+
+
+def _with_dependencies(reg, layout: Layout, m, plan) -> None:
+    """Give the staging registry each declared dependency's manifest, origin and schema, so a dependency's public
+    function called from setup() reads its own configuration and resources as in a normal load (review 1.12.0 R4).
+    Nothing of the dependency is set up or committed."""
+    for dep in _requirements(m, plan):
+        if dep in plan.refused:
+            raise extensions.ExtensionError(f"it requires {dep}, which is refused: {plan.refused[dep]}")
+        found = plan.finds[dep]
+        if found.location is not None:
+            origin = found.location / "__init__.py" if found.location.is_dir() else found.location
+            reg.origins[dep] = str(origin.resolve())
+        if found.manifest is not None:
+            reg.manifests[dep] = found.manifest
+            if found.manifest.config is not None:
+                reg.config_schemas[dep] = extensions._import_schema(layout, found.manifest.config.schema)
+
+
+def _staged(layout: Layout, name: str, m, plan) -> tuple[Counter, str | None, str | None]:
     """(what setup() registered, why setup() failed or None, why the config failed or None), against a staging
     registry that is never committed. It stands in for the project's registry for the length of the call, and only on
-    this thread (extensions._loading): any other thread keeps the published registry (review 1.12.0 R2)."""
+    this thread (extensions._loading): any other thread keeps the published registry (review 1.12.0 R2). It holds the
+    declared dependencies' context too (R4)."""
     from .ext import _config
     reg = extensions.Registry(layout)
     slot = (str(layout.root), threading.get_ident())
     extensions._loading[slot] = reg
     config_problem = None
     try:
+        _with_dependencies(reg, layout, m, plan)
         mod = extensions._import(layout, name, discovery.find(layout, name).module)
         if getattr(mod, "__file__", None):
             reg.origins[name] = str(Path(mod.__file__).resolve())
