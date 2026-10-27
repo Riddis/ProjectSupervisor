@@ -3,36 +3,29 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.11.0 — 2026-10-27
 
-Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext` and gate G2.
+Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext`, gate G2 recording its
+contract, the deprecation of internal imports in extensions, a reference extension with hook contract tests, and the
+unstable `supervisor.testing`. Also: capacity floors that take effect (Settings offers the 7-day floor, a change
+applies without a restart, a held job names its window and setting), and YAML writers that change only what they
+edit. A minor release: everything added is new surface, and existing extensions keep working, with a doctor WARN for
+each import of a framework internal.
 
-- **Fixed: a capacity floor changed in Settings applies without a restart.** `capacity.configure()` read
-  `config/routing.yaml` once per process, so a floor the owner lowered in Settings (or by hand) reached a running
-  supervisor only after a restart, and jobs kept waiting. The floors are now read again whenever routing.yaml
-  changes (its modification time and size), and a Settings save reconfigures the running process directly.
-- **Settings offers both capacity floors.** Each engine has a 5-hour reserve (`capacity.<engine>.reserve_percent`)
-  and a 7-day floor (`capacity.<engine>.weekly_gate_percent`); Settings offered only the first, so a 7-day window
-  at its floor held dispatch while the floor the owner could see was far lower. Both are editable now (0-100), and
-  the page labels each field by its window ("Claude: 7-day floor (% remaining)").
-- **Fixed: a Settings save no longer rewrites routing.yaml.** `settings.update` dumped the whole file through ruamel:
-  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (the Studio's
-  `claude.bash_allow`). It now replaces only the edited value's token, located by the YAML parser, and replaces the
-  file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
-  added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
-  them (new internal module `supervisor/yaml_edit.py`).
-- **Fixed: `supervisor migrate` no longer reformats project.yaml.** `project.write()`, which every migrate with a
-  version change calls, dumped the whole file through ruamel: a long `description` reflowed at 80 columns, `null`
-  written as an empty value, list items moved to the parent's indentation. It now goes through the same writer as
-  Settings: a version update changes only the version's token, and a structural change (`supervisor extension new`
-  appending to `extensions:`) keeps long lines, `null`, flow-style items, blank lines and indentation. Files an
-  earlier migrate already reformatted stay as they are; nothing rewrites them back.
-- **A capacity hold says what holds it.** The deferral read "claude capacity reserve reached", naming neither the
-  window nor the setting. It now names each window that holds dispatch, its remaining share, the floor and the
-  routing.yaml key that sets it, and when it resets ("claude capacity held: 7-day window at 18% remaining, at or
-  below its floor 20% (routing.yaml capacity.claude.weekly_gate_percent); resets 2026-10-29 19:00 UTC"). The
-  Overview's "Dispatch held" tag names the floor and the setting too. A stale reading still gates, as before: a
-  7-day window's remaining share only falls until it resets, so an old reading never overstates what is left.
+**Migration:** none added; `supervisor migrate` records the new version and now changes only project.yaml's
+`framework_version` line. Its dry run on a project at 1.10.1 lists only `project.yaml: framework_version 1.10.1 →
+1.11.0`. No state or config shape change: `capacity.<engine>.weekly_gate_percent` already existed (Settings now edits
+it), and `registry.config_sections()` declares sections routing.yaml already has.
+
+**Rollback** to v1.10.1, in a maintenance window: drain, stop, check out `v1.10.1`, `supervisor migrate` (records
+1.10.1 again), `supervisor doctor`, start. Nothing 1.11.0 writes is new to 1.10.1. An extension already moved to
+`supervisor.ext` does not load on 1.10.1 (the package does not exist there), so roll its project change back with
+the framework: for the Studio, the parent of its phase-2 merge.
+
+**Extension authors:** import `supervisor.ext` only (docs/EXTENSION_API.md; examples/reference_extension/ uses all
+of it) and register everything in `setup()`. Imports of framework internals and module-level `register()` / `@job`
+keep working in 1.11.x with a DeprecationWarning and a doctor WARN; a later major release refuses them. Write tests
+against `supervisor.testing`, which promises nothing.
 
 - **Gate G2: the extension API contract** (`supervisor/api_contract.py`). `python -m supervisor.api_contract record`
   writes `docs/extension_api.json` from `supervisor.ext.__all__`: every public name with its kind and signature
@@ -81,6 +74,20 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
     option B) with `executable`, `model` and `environment()`, the lane's scrubbed environment; no credential that
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
+- **Extension API:** `job_spec(task)`, the copy of a task's `job:` block a lane's `prepare()` reads (the framework's
+  own helper; two Studio lanes kept copies of it).
+- **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
+  lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
+  or job already has, built in or another extension's (before, an extension could silently replace the `process` or
+  `python` lane, or another extension's); registering the same object again is still harmless, so an extension that
+  also registers at import keeps working. The registry lists what each extension registered (`adapters`,
+  `python_jobs`), and `extensions.import_side_effects(layout, name)` imports a module in a fresh interpreter and
+  names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
+  keep working and are deprecated (the loader warns, next entry). `supervisor extension new` writes a module
+  that imports `supervisor.ext`. A name stays the registering extension's for the process, so the same extension
+  may register it again after a reload; an extension is its source file, so one file configured under two names
+  (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests:
+  `extensions.reset()` keeps registered lanes and python jobs, as before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 - **Internal imports in extensions are deprecated (gate G6).** After loading, the loader reads the source (AST) of
   every module in the project's `extensions/` folder, helpers included, and of installed extension modules, for
   imports from `supervisor` other than `supervisor.ext` and `supervisor.testing`. Each one gets a `DeprecationWarning`
@@ -95,24 +102,36 @@ Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `super
   defers without spending an attempt, its python job runs, its check, panel, screen, projection, CLI group, commands,
   inbox kind, page, templates and static files work as documented); importing any of its modules registers nothing;
   a hook added to `ext.Registry` without a contract check fails the suite.
-- **Extension API:** `job_spec(task)`, the copy of a task's `job:` block a lane's `prepare()` reads (the framework's
-  own helper; two Studio lanes kept copies of it).
 - **`supervisor.testing`, explicitly unstable,** for extensions' behaviour tests: `project`, `add_extensions`,
   `make_task`, an in-process `FakeLane` and `lane()`, the loop driver `drive`, `ui_client` (imported on use),
   `import_side_effects`, `reset`. Promoted from the framework's test fixtures, which now use it; no compatibility
   promise, not recorded by G2.
-- **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
-  lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
-  or job already has, built in or another extension's (before, an extension could silently replace the `process` or
-  `python` lane, or another extension's); registering the same object again is still harmless, so an extension that
-  also registers at import keeps working. The registry lists what each extension registered (`adapters`,
-  `python_jobs`), and `extensions.import_side_effects(layout, name)` imports a module in a fresh interpreter and
-  names every lane, python job and command kind the import itself registered. Module-level `register()` and `@job`
-  keep working and are deprecated (warnings follow in this release). `supervisor extension new` writes a module
-  that imports `supervisor.ext`. A name stays the registering extension's for the process, so the same extension
-  may register it again after a reload; an extension is its source file, so one file configured under two names
-  (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests: `extensions.reset()` keeps registered lanes and python jobs, as
-  before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
+- **Settings offers both capacity floors.** Each engine has a 5-hour reserve (`capacity.<engine>.reserve_percent`)
+  and a 7-day floor (`capacity.<engine>.weekly_gate_percent`); Settings offered only the first, so a 7-day window
+  at its floor held dispatch while the floor the owner could see was far lower. Both are editable now (0-100), and
+  the page labels each field by its window ("Claude: 7-day floor (% remaining)").
+- **Fixed: a capacity floor changed in Settings applies without a restart.** `capacity.configure()` read
+  `config/routing.yaml` once per process, so a floor the owner lowered in Settings (or by hand) reached a running
+  supervisor only after a restart, and jobs kept waiting. The floors are now read again whenever routing.yaml
+  changes (its modification time and size), and a Settings save reconfigures the running process directly.
+- **A capacity hold says what holds it.** The deferral read "claude capacity reserve reached", naming neither the
+  window nor the setting. It now names each window that holds dispatch, its remaining share, the floor and the
+  routing.yaml key that sets it, and when it resets ("claude capacity held: 7-day window at 18% remaining, at or
+  below its floor 20% (routing.yaml capacity.claude.weekly_gate_percent); resets 2026-10-29 19:00 UTC"). The
+  Overview's "Dispatch held" tag names the floor and the setting too. A stale reading still gates, as before: a
+  7-day window's remaining share only falls until it resets, so an old reading never overstates what is left.
+- **Fixed: a Settings save no longer rewrites routing.yaml.** `settings.update` dumped the whole file through ruamel:
+  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (the Studio's
+  `claude.bash_allow`). It now replaces only the edited value's token, located by the YAML parser, and replaces the
+  file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
+  added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
+  them (new internal module `supervisor/yaml_edit.py`).
+- **Fixed: `supervisor migrate` no longer reformats project.yaml.** `project.write()`, which every migrate with a
+  version change calls, dumped the whole file through ruamel: a long `description` reflowed at 80 columns, `null`
+  written as an empty value, list items moved to the parent's indentation. It now goes through the same writer as
+  Settings: a version update changes only the version's token, and a structural change (`supervisor extension new`
+  appending to `extensions:`) keeps long lines, `null`, flow-style items, blank lines and indentation. Files an
+  earlier migrate already reformatted stay as they are; nothing rewrites them back.
 
 ## 1.10.1 — 2026-10-25
 
