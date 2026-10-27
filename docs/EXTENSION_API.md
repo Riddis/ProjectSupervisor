@@ -38,6 +38,7 @@ Extensions never construct one.
 | Hook | Registers |
 |---|---|
 | `layout` | the project's `Layout` (an attribute, not a hook) |
+| `identity` | the identity of the extension being set up: its manifest's `identity`, which is the name `project.yaml` uses (an attribute, since 1.12.0). Build namespaced identifiers from it, e.g. `registry.python_job(registry.identity + "_sync", fn)` |
 | `config_sections(*names)` | the `config/routing.yaml` sections this extension reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |

@@ -728,6 +728,10 @@
           ],
           "returns": "None"
         },
+        "identity": {
+          "annotation": "str",
+          "kind": "field"
+        },
         "inbox_kind": {
           "kind": "method",
           "params": [

@@ -15,6 +15,9 @@ class Registry(Protocol):
     change nothing. Extensions never construct one."""
 
     layout: Layout
+    identity: str
+    """The identity of the extension being set up (its manifest's `identity`, the name project.yaml uses). Build
+    namespaced identifiers from it: `registry.python_job(registry.identity + "_sync", fn)`."""
 
     def adapter(self, adapter: Adapter) -> None:
         """A job lane, registered under `adapter.name`; a name already taken is an error."""

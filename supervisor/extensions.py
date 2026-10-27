@@ -206,6 +206,12 @@ class Registry:
         self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
         self._registered: list[tuple[str, str]] | None = None
 
+    @property
+    def identity(self) -> str | None:
+        """The identity of the extension whose setup() is running (its manifest's, which is the name project.yaml
+        uses), or None outside setup()."""
+        return self._setting_up
+
     # ---------------------------------------------------------------- staging (1.12.0)
 
     def _note(self, kind: str, identifier: str) -> None:

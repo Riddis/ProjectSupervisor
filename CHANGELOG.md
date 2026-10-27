@@ -55,6 +55,10 @@ commit.
 
   Extensions load after the ones they require, and one whose requirement did not load is refused. Refusals are load
   failures: a required one blocks the loop.
+- **Extension API: `Registry.identity`.** During `setup()`, `registry.identity` is the identity of the extension
+  being set up: its manifest's `identity`, which discovery holds equal to the name `project.yaml` uses. An
+  extension builds its namespaced identifiers from it. The `Registry` section of `docs/EXTENSION_API.md` gains
+  the attribute; this is a compatible addition.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
