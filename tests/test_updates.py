@@ -215,3 +215,95 @@ def test_pip_failure_with_empty_output_fails_the_update(world, live_loop, monkey
     monkeypatch.setattr(updates, "_child", lambda args, lay: (0, "", ""))
     res = updates.apply(layout, updates.check(layout, fetch=True, max_age_s=0), reinstall=True)
     assert not res.ok and "pip install -e" in res.error and "exit 1" in res.error and live_loop["spawned"] == []
+
+
+# ---------------------------------------------------------------- a pinned runtime checkout (1.11.1)
+# A live project runs a worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). Before 1.11.1 the
+# check compared HEAD with `origin/HEAD`, which does not exist, and every launch printed git's error.
+
+def tag(cwd: Path, name: str) -> None:
+    git(cwd, "tag", "-a", name, "-m", name)
+
+
+@pytest.fixture
+def pinned(world):
+    """The clone detached at v1.0.0, the way a project's runtime checkout is pinned. A runtime worktree of a
+    development clone has no `origin/HEAD` (only `git clone` sets one): removed, as it is there."""
+    tag(world["author"], "v1.0.0")
+    git(world["author"], "push", "-q", "origin", "v1.0.0")
+    git(world["clone"], "fetch", "-q", "--tags", "origin")
+    git(world["clone"], "checkout", "-q", "v1.0.0")
+    git(world["clone"], "remote", "set-head", "origin", "--delete")
+    return world
+
+
+def release(author: Path, version: str, migration: bool = False) -> None:
+    push_update(author, version=version, migration=migration)
+    tag(author, f"v{version}")
+    git(author, "push", "-q", "origin", f"v{version}")
+
+
+def test_a_pinned_checkout_at_the_newest_release_is_up_to_date_without_a_git_error(pinned):
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned and st.pinned_tag == "v1.0.0" and not st.newer_release and not st.available
+    lines = updates.describe(st)
+    assert "v1.0.0" in lines[0] and "newest release" in lines[0]
+    assert not any("origin/HEAD" in line or "fatal" in line for line in lines)
+
+
+def test_a_pinned_checkout_reports_a_newer_release_and_never_offers_a_pull(pinned):
+    release(pinned["author"], "1.1.0", migration=True)
+    push_update(pinned["author"], version="1.2.0-dev")                  # an untagged commit is not a release
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned and st.newer_release == "v1.1.0" and st.remote_version == "1.1.0"
+    assert st.migration_hint and not st.available and st.behind == 0
+    text = "\n".join(updates.describe(st))
+    assert "v1.0.0" in text and "v1.1.0" in text and "maintenance window" in text
+    asked = []
+    assert updates.prompt_and_apply(pinned["layout"], st, ask=asked.append, echo=lambda _l: None) is None
+    assert asked == []                                                  # nothing to say yes to
+    head = git(pinned["clone"], "rev-parse", "HEAD")
+    res = updates.apply(pinned["layout"], st, reinstall=False)
+    assert not res.ok and "pinned" in res.error and "v1.1.0" in res.error and res.steps == []
+    assert git(pinned["clone"], "rev-parse", "HEAD") == head
+
+
+def test_the_newest_release_is_chosen_by_version_number_not_by_name(pinned):
+    for version in ("1.9.0", "1.10.0"):
+        release(pinned["author"], version)
+    tag(pinned["author"], "pre-release-notes")                          # not a vX.Y.Z tag: ignored
+    git(pinned["author"], "push", "-q", "origin", "pre-release-notes")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.newer_release == "v1.10.0" and st.remote_version == "1.10.0"
+
+
+def test_a_detached_checkout_not_at_a_release_tag_says_so_plainly(pinned):
+    push_update(pinned["author"])
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "checkout", "-q", "FETCH_HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert not st.ok and not st.available and "not at a release tag" in st.reason
+    assert "origin/HEAD" not in st.reason and "fatal" not in st.reason
+
+
+def test_the_launch_check_is_silent_when_pinned_to_the_newest_release_and_names_a_newer_one(pinned, capsys):
+    from supervisor import cli
+    cli._launch_update_check(pinned["layout"], interactive=True)
+    assert capsys.readouterr().out == ""
+    release(pinned["author"], "1.1.0")
+    (pinned["layout"].runtime / "update_check.json").unlink()
+    cli._launch_update_check(pinned["layout"], interactive=True)
+    out = capsys.readouterr().out
+    assert "v1.1.0" in out and "maintenance window" in out and "[y/N]" not in out
+
+
+def test_the_overview_names_a_newer_release_for_a_pinned_checkout_without_an_update_button(pinned, monkeypatch):
+    from fastapi.testclient import TestClient
+    from supervisor.ui.app import create_app
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    monkeypatch.setattr("supervisor.ui.app._start_update_checker", lambda layout: None)
+    updates.check(layout, fetch=True, max_age_s=0)
+    page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
+    assert page.status_code == 200 and "v1.1.0" in page.text and "maintenance window" in page.text
+    assert "Update now" not in page.text

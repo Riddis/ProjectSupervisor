@@ -5,12 +5,18 @@ processes so they import the new code (the loop is stopped first — `supervisor
 state lock — and started again through `supervisor.launcher`; the Control Center exits with RESTART_EXIT_CODE,
 which its launcher turns into a restart).
 
+A checkout detached at a release tag (a live project's runtime worktree, docs/UPDATING.md "Pinned checkouts") is
+never pulled: the check fetches origin's tags and reports a newer `vX.Y.Z` release, which the project takes in a
+maintenance window, and `apply` refuses it (1.11.1; before, the check compared HEAD with a missing `origin/HEAD`
+and every launch printed git's error).
+
 Everything here is fail-soft: no remote, no network, no git, or a dirty clone all produce a `Status` that says why
 nothing can be done, never an exception out of a launch path."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +32,7 @@ RESTART_EXIT_CODE = 3            # same convention as the loop's reload: the lau
 FETCH_TIMEOUT_S = 20
 CHECK_TTL_S = 300                # a check younger than this is reused instead of fetching again
 _VERSION_FILE = "supervisor/__init__.py"
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
 @dataclass
@@ -48,6 +55,9 @@ class Status:
     remote_version: str = ""
     migration_hint: bool = False              # the remote CHANGELOG mentions a migration since HEAD
     checked_at: float = 0.0
+    pinned: bool = False                      # detached HEAD: a release-tag checkout, never pulled
+    pinned_tag: str = ""                      # the release tag HEAD is at
+    newer_release: str = ""                   # the newest release tag above it, if any
 
     @property
     def available(self) -> bool:
@@ -119,6 +129,12 @@ def _remote_version(cwd: Path, ref: str) -> str:
     return ""
 
 
+def _release(tag: str) -> tuple[int, int, int] | None:
+    """(major, minor, patch) of a release tag `vX.Y.Z`; None for any other tag name."""
+    m = _RELEASE_TAG.match(tag)
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
 def _cache_path(layout: Layout | None) -> Path | None:
     return (layout.runtime / "update_check.json") if layout is not None else None
 
@@ -158,6 +174,8 @@ def _check(fetch: bool) -> Status:
     if code != 0:
         st.reason = "no `origin` remote configured on the framework clone"
         return st
+    if branch == "HEAD":
+        return _check_pinned(fw, st, fetch)
     if fetch:
         code, out = _git(["fetch", "--quiet", "origin", branch], fw)
         if code != 0:
@@ -182,10 +200,50 @@ def _check(fetch: bool) -> Status:
     return st
 
 
+def _check_pinned(fw: Path, st: Status, fetch: bool) -> Status:
+    """A detached checkout: the release tag it is at, and the newest release tag origin has, compared by version
+    number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Nothing here moves HEAD."""
+    st.pinned = True
+    code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
+    releases_here = [t for t in at.split() if _release(t)] if code == 0 else []
+    if not releases_here:
+        st.reason = ("the framework checkout is detached but not at a release tag (vX.Y.Z); `supervisor doctor` fails "
+                     "it: check out a release tag")
+        return st
+    st.pinned_tag = max(releases_here, key=_release)
+    if fetch:
+        code, out = _git(["fetch", "--quiet", "--tags", "origin"], fw)
+        if code != 0:
+            st.reason = f"fetch failed (offline?): {out[-200:]}"
+            return st
+    code, listed = _git(["tag", "--list", "v*"], fw, timeout=10)
+    if code != 0:
+        st.reason = f"git tag: {listed[-200:]}"
+        return st
+    newest = max((t for t in listed.split() if _release(t)), key=_release, default=st.pinned_tag)
+    if _release(newest) > _release(st.pinned_tag):
+        st.newer_release = newest
+        st.remote_version = newest[1:]
+        code, diff = _git(["diff", f"HEAD..{newest}", "--", "CHANGELOG.md"], fw, timeout=10)
+        st.migration_hint = code == 0 and "migration" in diff.lower()
+    st.ok = True
+    return st
+
+
 def describe(status: Status) -> list[str]:
     """Human lines for the console and the Control Center."""
     if not status.ok:
         return [f"update check skipped: {status.reason}"]
+    if status.pinned:
+        if not status.newer_release:
+            return [f"framework {status.installed_version} is pinned at {status.pinned_tag}, the newest release"]
+        lines = [f"framework release {status.newer_release} is available; this checkout is pinned at {status.pinned_tag}",
+                 ("  take it in a maintenance window: drain, stop, check out the tag in the framework checkout, migrate, "
+                  "doctor, start (docs/UPDATING.md, \"Pinned checkouts\"); the updater never moves a pinned checkout")]
+        if status.migration_hint:
+            lines.append("  note: the changelog mentions a migration; run `supervisor migrate --dry-run`, then "
+                         "`supervisor migrate`")
+        return lines
     if not status.behind:
         return [f"framework {status.installed_version} is up to date with origin/{status.branch}"]
     head = f"framework update available: {status.behind} commit(s) on origin/{status.branch}"
@@ -264,6 +322,11 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, 
     out = Applied(ok=False)
     if not status.ok:
         out.error = status.reason
+        return out
+    if status.pinned:
+        out.error = (f"the framework checkout is pinned at {status.pinned_tag}"
+                     + (f"; take {status.newer_release} in a maintenance window" if status.newer_release else "")
+                     + " (docs/UPDATING.md, \"Pinned checkouts\"); nothing was changed")
         return out
     if status.dirty:
         out.error = "framework clone has uncommitted changes; commit or stash them first"

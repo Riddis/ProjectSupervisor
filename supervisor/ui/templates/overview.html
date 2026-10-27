@@ -9,6 +9,9 @@
   {% if update.dirty %}<p class="flash flash-error">The framework clone has uncommitted changes; commit or stash them before updating.</p>{% else %}
   <form method="post" action="/overview/update" hx-post="/overview/update" hx-target="#ctrl-result" hx-swap="innerHTML" onsubmit="return confirm('Pull the update, reinstall, run migrate and doctor, reload the loop and restart the Control Center?')">{% include "partials/csrf.html" %}<button type="submit" class="primary">{{ icon('reload') }}Update now</button></form>{% endif %}
 </section>{% endif %}
+{% if update and update.newer_release %}<section class="panel update-panel"><div class="section-heading"><h2>Framework release available</h2><span class="section-note">{{ update.pinned_tag }} &rarr; {{ update.newer_release }}</span></div>
+  <p class="section-note">This project runs a framework checkout pinned at a release tag. Take {{ update.newer_release }} in a maintenance window: drain, stop, check out the tag, migrate, doctor, start (docs/UPDATING.md, &ldquo;Pinned checkouts&rdquo;).{% if update.migration_hint %} The changelog mentions a migration.{% endif %}</p>
+</section>{% endif %}
 <div class="metric-grid">
   <a class="metric-card" href="/tasks"><span class="metric-icon">{{ icon('check') }}</span><div class="metric-body"><span class="metric-label">Tasks completed</span><strong>{{ done_count }}<small> / {{ task_count }}</small></strong><progress value="{{ done_count }}" max="{{ task_count or 1 }}" aria-label="Tasks completed"></progress><span class="metric-caption">{{ ((done_count / task_count * 100) if task_count else 0) | round | int }}% complete</span></div></a>
   <a class="metric-card" href="/agents"><span class="metric-icon">{{ icon('jobs') }}</span><div class="metric-body"><span class="metric-label">Open jobs</span><strong>{{ open_jobs | length }}</strong><span class="metric-caption">Agent workload</span></div></a>

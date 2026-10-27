@@ -77,5 +77,11 @@ project. A live project runs a separate worktree of the framework clone, detache
 (`git -C <Supervisor> worktree add <Supervisor-runtime> vX.Y.Z`), installed editable from there. It takes a new
 release in a maintenance window: drain until no job record is open and no command is queued, stop the loop and
 the Control Center, `git -C <Supervisor-runtime> checkout vX.Y.Z`, reinstall only if the dependencies changed,
-`supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start. Answer no to the updater's
-prompt on such a project.
+`supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start.
+
+Since 1.11.1 the updater recognises such a checkout (detached at a `vX.Y.Z` tag) and never pulls it. At launch, in
+`supervisor update --check` and on the Control Center's overview, it reports a newer release tag on origin (by
+version number, after fetching tags), and says whether its changelog mentions a migration. `supervisor update` and
+the update route refuse a pinned checkout and change nothing. A detached checkout that is not at a release tag is
+reported as such, and `supervisor doctor` fails it. Before 1.11.1, every launch on a pinned checkout printed
+"update check skipped: origin/HEAD unknown", because the check looked for a branch.

@@ -417,6 +417,9 @@ def _launch_update_check(layout: Layout, interactive: bool) -> None:
         typer.echo(updates.describe(status)[0])
         return
     if not status.available:
+        if status.newer_release:                            # a pinned checkout: told, never offered a pull
+            for line in updates.describe(status):
+                typer.echo(line)
         return
     if not interactive:
         for line in updates.describe(status):
