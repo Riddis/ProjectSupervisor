@@ -93,12 +93,15 @@ def test_every_problem_is_reported_at_once():
      "extensions.x"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "extensions.x"\nschema = "m.C"\n',
      "module:Class"),
+    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "extensions.x"\nschema = "m:C"\n'
+     'legacy_sections = ["ok", "not a key"]\n', "legacy_sections"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[requires]\nresources = ["tpu"]\n', "unknown resource"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[requires]\nextensions = ["x"]\n', "itself"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\nmigrations = "not a module"\n', "migrations"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\nprovides = "all"\n', "provides must be a table"),
 ], ids=["no-identity", "no-version", "no-framework", "provides-not-a-list", "duplicate", "route-without-slash",
         "unknown-hook", "legacy-not-provided", "legacy-hooks", "config-section-not-owned", "schema-format",
+        "legacy-sections-format",
         "unknown-resource", "requires-itself", "migrations-not-a-module", "provides-not-a-table"])
 def test_each_rule_names_its_problem(text, expected):
     assert any(expected in p for p in problems_of(text)), problems_of(text)

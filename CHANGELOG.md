@@ -59,6 +59,16 @@ commit.
   being set up: its manifest's `identity`, which discovery holds equal to the name `project.yaml` uses. An
   extension builds its namespaced identifiers from it. The `Registry` section of `docs/EXTENSION_API.md` gains
   the attribute; this is a compatible addition.
+- **Extension API: `config` and `resources`, configuration ownership.** An extension whose manifest has a `config`
+  table owns `extensions.<identity>` in `routing.yaml`, validated by its pydantic model before `setup()` runs.
+  Invalid configuration is a load failure that leaves nothing registered. `config(layout, <identity>)` is the
+  validated section, and `config(layout, <legacy section>)` a part of it. Until `supervisor migrate` moves
+  them, values are read from the old top-level sections in `config.legacy_sections` (new manifest field),
+  with a DeprecationWarning.
+
+  `resources()` reads `resources.gpu`, else the old `gpu` (warned), and an extension with a manifest sees
+  only what it declares in `requires.resources`. Extensions without a manifest see no change, and the
+  signatures are unchanged.
 - **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
   worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
   branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.

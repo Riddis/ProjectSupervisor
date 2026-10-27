@@ -35,6 +35,7 @@ doctor_checks = ["ollama"]
 [config]                                     # optional; the extension's own configuration section
 section = "extensions.local_llm"             # always extensions.<identity>
 schema = "supervisor_ext_ollama.config:Settings"   # module:Class, a pydantic model of that section
+legacy_sections = ["local_llm"]              # optional; the top-level sections its values came from before 1.12.0
 
 [requires]                                   # optional
 resources = ["gpu"]                          # shared resource policy it reads (resources.gpu)
@@ -91,7 +92,14 @@ and the framework version.
 ### Configuration
 
 An extension owns `extensions.<identity>` in `config/routing.yaml`. Its pydantic `schema` validates that section
-before `setup()` runs. It reads the section with `ext.config()`. It also gets a read-only view of the shared resource
+before `setup()` runs, so invalid configuration is a load failure that leaves nothing registered. It reads the
+section with `ext.config(layout, <identity>)`, or a part of it with `ext.config(layout, <legacy section>)`.
+
+`config.legacy_sections` names the top-level sections the values lived in before 1.12.0:
+- **Reading:** until `supervisor migrate` has moved them, they are read from there, with a warning. The section
+  named like the identity merges in at the top of `extensions.<identity>`, and any other nests under its own name.
+  The Studio's `comfy` lists `["comfy", "ffmpeg"]`, so `ffmpeg` becomes `extensions.comfy.ffmpeg`.
+- **Refused before import:** a legacy section the framework owns, and one that two manifests list. It also gets a read-only view of the shared resource
 policy it declares in `requires.resources` (`resources.gpu`) through `ext.resources()`. It never reads another
 extension's section. When it needs another extension's behaviour, it calls that extension and lists it in
 `requires.extensions`.

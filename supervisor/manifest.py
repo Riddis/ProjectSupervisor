@@ -33,6 +33,7 @@ _TOP_LEVEL = ("identity", "version", "framework", "provides", "legacy_ids", "con
 _IDENTITY = re.compile(r"^[a-z][a-z0-9_]*$")
 _MODULE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _SEPARATORS = "_.-:/"
+_SECTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 
 
 class ManifestError(ValueError):
@@ -48,6 +49,7 @@ class ManifestError(ValueError):
 class Config:
     section: str                                            # extensions.<identity>
     schema: str                                             # module:Class, imported only after approval
+    legacy_sections: tuple[str, ...] = ()                   # top-level routing.yaml sections the values came from
 
 
 @dataclass(frozen=True)
@@ -198,8 +200,8 @@ def _config(data: dict, identity: str | None, problems: list[str]) -> Config | N
     table = data.get("config")
     if table is None:
         return None
-    if not isinstance(table, dict) or set(table) - {"section", "schema"}:
-        problems.append("config must be a table with exactly `section` and `schema`")
+    if not isinstance(table, dict) or set(table) - {"section", "schema", "legacy_sections"}:
+        problems.append("config must be a table with `section` and `schema`, and optionally `legacy_sections`")
         return None
     section, schema = table.get("section"), table.get("schema")
     ok = True
@@ -211,7 +213,12 @@ def _config(data: dict, identity: str | None, problems: list[str]) -> Config | N
     if not (_MODULE.match(module) and name.isidentifier()):
         problems.append(f"config.schema must name a class as module:Class, not {schema!r}")
         ok = False
-    return Config(section=section, schema=schema) if ok else None
+    legacy = table.get("legacy_sections", [])
+    if (not isinstance(legacy, list) or not all(isinstance(s, str) and _SECTION.match(s) for s in legacy)
+            or len(set(legacy)) != len(legacy)):
+        problems.append(f"config.legacy_sections must be a list of distinct routing.yaml keys, not {legacy!r}")
+        ok = False
+    return Config(section=section, schema=schema, legacy_sections=tuple(legacy)) if ok else None
 
 
 def _requires(data: dict, identity: str | None, problems: list[str]) -> Requires:

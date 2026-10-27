@@ -195,6 +195,7 @@ class Registry:
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
     unmanifested: list[str] = field(default_factory=list)       # loaded without a manifest (1.12.x: a warning)
     manifests: dict[str, Any] = field(default_factory=dict)     # extension -> its Manifest, when it has one
+    config_schemas: dict[str, Any] = field(default_factory=dict)  # extension -> the pydantic model of its section
 
     _setting_up: str | None = None                              # the extension whose setup(registry) is running
 
@@ -524,7 +525,7 @@ def _taken(name: str, owners: dict[str, tuple[str, str]], ever: set[str], origin
 
 
 # Registry fields that record the outcome of a load rather than what a setup() registered: not put back on failure.
-_OUTCOME_FIELDS = frozenset({"layout", "loaded", "errors", "blocking", "internal_imports", "unmanifested", "manifests",
+_OUTCOME_FIELDS = frozenset({"layout", "loaded", "errors", "blocking", "internal_imports", "unmanifested",
                              "_setting_up"})
 
 
@@ -588,6 +589,14 @@ def _approve(finds: dict) -> dict[str, str]:
                     refused.setdefault(name, f"its manifest claims {kind} {identifier!r}, which is built into the "
                                              f"framework")
                 claims.setdefault((kind, identifier), []).append(name)
+        if m.config is not None:
+            from .ext._config import framework_sections
+            owned = sorted(set(m.config.legacy_sections) & framework_sections())
+            if owned:
+                refused.setdefault(name, f"its config.legacy_sections name {', '.join(owned)}, which the "
+                                         f"framework owns")
+            for section in m.config.legacy_sections:
+                claims.setdefault(("config.legacy_sections", section), []).append(name)
         unlisted = [d for d in m.requires.extensions if d not in finds]
         if unlisted:
             refused.setdefault(name, f"it requires {', '.join(unlisted)}, which project.yaml does not list")
@@ -697,6 +706,22 @@ def _ensure_package(layout: Layout) -> str | None:
     return pkg_name
 
 
+def _import_schema(layout: Layout, spec: str):
+    """The class a manifest's `config.schema` names (`module:Class`). The module resolves like an extension name: the
+    project's extensions/ first (under its namespace), else an installed module."""
+    module, _, cls = spec.partition(":")
+    ext_dir = Path(layout.extensions)
+    rel = Path(*module.split("."))
+    if ext_dir.is_dir() and ((ext_dir / rel).with_suffix(".py").exists() or (ext_dir / rel / "__init__.py").exists()):
+        mod = importlib.import_module(f"{_ensure_package(layout)}.{module}")
+    else:
+        mod = importlib.import_module(module)
+    schema = getattr(mod, cls, None)
+    if schema is None or not hasattr(schema, "model_validate"):
+        raise ExtensionError(f"config.schema {spec!r}: {cls} is not a pydantic model in {module}")
+    return schema
+
+
 def _import(layout: Layout, name: str):
     """The project's `extensions/<name>.py` (loaded by file path under the project's namespace) or, when the
     project has no such file, an installed dotted module. The project's file always wins over an installed name."""
@@ -745,6 +770,7 @@ def load(layout: Layout) -> Registry:
         snapshot = reg._snapshot()
         before = set(sys.modules)
         reg._pending, reg._registered = {}, []
+        found = None
         try:
             found = finds[name]
             if found.problems:
@@ -758,6 +784,13 @@ def load(layout: Layout) -> Registry:
             modules.append(mod)
             if getattr(mod, "__file__", None):
                 reg.origins[name] = str(Path(mod.__file__).resolve())
+            if found.manifest is not None:
+                reg.manifests[name] = found.manifest
+                if found.manifest.config is not None:     # validated before setup(): invalid config keeps nothing
+                    from .ext import _config
+                    schema = _import_schema(layout, found.manifest.config.schema)
+                    reg.config_schemas[name] = schema
+                    _config.validated(layout, found.manifest, schema)
             setup = getattr(mod, "setup", None)
             if setup is None:
                 raise ExtensionError(f"no setup(registry) function in {getattr(mod, '__file__', None) or mod.__name__}")
@@ -771,14 +804,16 @@ def load(layout: Layout) -> Registry:
                 if extra:
                     raise ExtensionError(f"setup() registered what {found.manifest.source} does not declare in "
                                          f"provides: {', '.join(extra)}; nothing of it was kept")
-                reg.manifests[name] = found.manifest
             else:
                 reg.unmanifested.append(name)
             reg._commit()
             reg.loaded.append(name)
         except Exception as exc:                            # noqa: BLE001 - recorded; a required one blocks the loop
             reg._restore(snapshot)
-            _drop_modules(before, (f"{_package_name(layout)}.{name}", name))
+            schema_module = (found.manifest.config.schema.split(":", 1)[0]
+                             if found is not None and found.manifest is not None and found.manifest.config else name)
+            _drop_modules(before, (f"{_package_name(layout)}.{name}", name, f"{_package_name(layout)}.{schema_module}",
+                                   schema_module))
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]
             reg.errors.append(f"{name}: {why}")
             if required:
