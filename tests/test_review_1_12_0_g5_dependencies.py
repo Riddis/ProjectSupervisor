@@ -78,9 +78,10 @@ def test_normal_loading_still_gives_the_dependency_its_configuration(tmp_path):
 
 
 def test_an_installed_extension_reads_its_configuration_inside_setup(tmp_path, monkeypatch):
-    """Its module (supervisor_ext_notes) is not its identity (notes): identity comes from the in-progress registry."""
+    """Its module (supervisor_ext_r4_notes) is not its identity (notes): identity comes from the in-progress registry.
+    The module name is this test's own: test_extension_scaffold leaves a generated supervisor_ext_notes imported."""
     site = tmp_path / "site"
-    pkg = site / "supervisor_ext_notes"
+    pkg = site / "supervisor_ext_r4_notes"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(
         "from pydantic import BaseModel\nfrom supervisor import ext\n\n"
@@ -90,17 +91,18 @@ def test_an_installed_extension_reads_its_configuration_inside_setup(tmp_path, m
         "    SEEN.append(ext.config(r.layout, 'notes')['greeting'])\n\nSEEN = []\n", encoding="utf-8")
     (pkg / "supervisor-extension.toml").write_text(manifest(
         "notes", '[provides]\npython_jobs = ["notes_hello"]\n[config]\nsection = "extensions.notes"\n'
-                 'schema = "supervisor_ext_notes:Settings"\n'), encoding="utf-8")
-    info = site / "supervisor_ext_notes-1.0.0.dist-info"
+                 'schema = "supervisor_ext_r4_notes:Settings"\n'), encoding="utf-8")
+    info = site / "supervisor_ext_r4_notes-1.0.0.dist-info"
     info.mkdir()
-    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: supervisor-ext-notes\nVersion: 1.0.0\n",
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: supervisor-ext-r4-notes\nVersion: 1.0.0\n",
                                    encoding="utf-8")
-    (info / "entry_points.txt").write_text("[supervisor.extensions]\nnotes = supervisor_ext_notes\n", encoding="utf-8")
-    (info / "RECORD").write_text("supervisor_ext_notes/__init__.py,,\n"
-                                 "supervisor_ext_notes/supervisor-extension.toml,,\n", encoding="utf-8")
+    (info / "entry_points.txt").write_text("[supervisor.extensions]\nnotes = supervisor_ext_r4_notes\n",
+                                           encoding="utf-8")
+    (info / "RECORD").write_text("supervisor_ext_r4_notes/__init__.py,,\n"
+                                 "supervisor_ext_r4_notes/supervisor-extension.toml,,\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(site))
     layout = testing.project(tmp_path / "p", extensions=["notes"],
                              routing={"extensions": {"notes": {"greeting": "hey"}}})
     reg = extensions.load(layout)
     assert reg.loaded == ["notes"], reg.errors
-    assert __import__("supervisor_ext_notes").SEEN == ["hey"]
+    assert __import__("supervisor_ext_r4_notes").SEEN == ["hey"]
