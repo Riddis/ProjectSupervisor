@@ -73,16 +73,33 @@ def changed(layout: Layout, paths: list[str]) -> list[str]:
     return sorted(out)
 
 
-def _not_yet_accepted(layout: Layout) -> set[str]:
-    """Paths of tasks whose delivery has no checkpoint yet: their own checkpoint commits them, as accepted."""
+def _norm(path: str) -> str:
+    """A root-relative path in one form: forward slashes, no leading `./`, no trailing slash, case folded (the
+    comparison errs towards holding a file back on a case-insensitive file system). The root itself is ""."""
+    p = path.replace("\\", "/").strip()
+    while p.startswith("./"):
+        p = p[2:]
+    p = p.strip("/")
+    return "" if p == "." else p.casefold()
+
+
+def _not_yet_accepted(layout: Layout) -> list[str]:
+    """Delivered paths of tasks without a checkpoint yet, normalized: their own checkpoint commits them, as accepted.
+    A path may be a directory, and then everything under it waits (review 1.12.1 R1)."""
     out = set()
     for t in tasks_mod.load_all(layout).values():
         if t.status == TaskStatus.CANCELLED:
             continue
         if t.status == TaskStatus.COMPLETE and (t.model_extra or {}).get("checkpoint"):
             continue
-        out |= {p.replace("\\", "/") for p in t.paths}
-    return out
+        out |= {_norm(p) for p in t.paths}
+    return sorted(out)
+
+
+def _held_back(path: str, delivered: list[str]) -> bool:
+    """Whether `path` is, or lies under, a path a task delivered without acceptance ("" is the whole project)."""
+    p = _norm(path)
+    return any(d == "" or p == d or p.startswith(d + "/") for d in delivered)
 
 
 def _own_repository(root: Path) -> bool:
@@ -105,12 +122,13 @@ def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: s
     root = layout.root
     if not _own_repository(root):
         return {"status": "skipped", "reason": "not a git repository"}
-    state_files = [p for p in changed(layout, [STATE]) if p not in _not_yet_accepted(layout)]
-    extra_files = changed(layout, list(extra)) if extra else []
+    delivered = _not_yet_accepted(layout)
+    state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered)]
+    extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered)] if extra else []
     if not state_files and not extra_files:
         return {"status": "unchanged"}
     files = sorted(set(state_files) | set(extra_files)
-                   | {p for p in changed(layout, projections(layout)) if p not in _not_yet_accepted(layout)})
+                   | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered)})
     code, staged, _err = _git(root, "diff", "--cached", "--name-only", "--", *files)
     if code == 0 and staged.strip():
         names = ", ".join(staged.split()[:5])
