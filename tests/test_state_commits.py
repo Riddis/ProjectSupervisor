@@ -185,3 +185,23 @@ def test_a_project_inside_another_repository_commits_nothing_there(tmp_path, mon
     inbox.create(lay, for_role="owner", subject="q", summary="s")
     assert state_commit.commit(lay, reason="test")["status"] == "skipped"
     assert commits(outer) == 1
+
+
+def test_a_paused_loop_commits_the_records_made_while_paused(layout, repo):
+    """1.13.0: an owner's command and the inbox item it answers are records too; a PAUSE iteration commits them,
+    where 1.12.1 waited for the first running iteration."""
+    from supervisor import runtime
+    runtime.set_decision(layout, "PAUSE", "test")
+    inbox.create(layout, for_role="owner", subject="while paused", summary="s")
+    assert Supervisor(layout, sleep_s=0).once() == "PAUSE"
+    assert dirty(repo, "state") == []
+    assert git(repo, "log", "-1", "--format=%s").stdout.startswith("state:")
+
+
+def test_a_completed_drain_commits_its_final_records(layout, repo):
+    from supervisor import runtime
+    runtime.set_decision(layout, "DRAIN", "test")
+    inbox.create(layout, for_role="owner", subject="before the drain", summary="s")
+    assert Supervisor(layout, sleep_s=0).once() == "STOP"
+    assert dirty(repo, "state") == []
+    assert "drain_complete" in git(repo, "show", "HEAD:state/log.jsonl").stdout

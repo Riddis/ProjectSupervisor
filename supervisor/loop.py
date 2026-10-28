@@ -839,10 +839,15 @@ class Supervisor:
             return decision
         self.reconcile()                 # collects finished work under every decision; launches only when the gate allows
         self.poll_capacity()
-        if decision == "PAUSE":
-            runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
-        elif decision == "DRAIN":
-            decision = self.drain()
+        if decision in ("PAUSE", "DRAIN"):
+            if decision == "PAUSE":
+                runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
+            else:
+                decision = self.drain()
+            # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and the
+            # work reconcile() collected are records too, and a completed drain commits its last ones at once.
+            done = checkpoint_mod.run(self.layout)
+            self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
         else:
             for task, name in scheduler.plan(self.layout, unattended=self.unattended):
                 self.dispatch(task, name)

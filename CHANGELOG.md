@@ -3,6 +3,16 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
+
+- **Changed: commits go on while the loop is paused or draining.** In 1.12.1 only a running iteration checkpointed
+  accepted work and committed the loop's records, so the records made while paused (an owner's command, the work
+  `reconcile()` collected) waited for the first running iteration. PAUSE and DRAIN iterations now checkpoint and
+  commit too, since a commit launches nothing. A drain that completes commits its last records at once, before the
+  loop stops.
+
 ## 1.12.1 — 2026-10-28
 
 Fixes only, found by running a live project on 1.12.0:
