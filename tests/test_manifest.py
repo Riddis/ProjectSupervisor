@@ -11,27 +11,27 @@ import pytest
 from supervisor import __version__, manifest
 
 FULL = '''
-identity = "local_llm"
+identity = "text_model"
 version = "1.0.0"
 framework = ">=1.12,<2"
-migrations = "supervisor_ext_ollama.migrations"
+migrations = "supervisor_ext_textgen.migrations"
 
 [provides]
-adapters = ["local_llm"]
-doctor_checks = ["local_llm_server", "ollama"]
+adapters = ["text_model"]
+doctor_checks = ["text_model_server", "textgen"]
 hooks = ["overview_panel"]
 
 [legacy_ids]
-doctor_checks = ["ollama"]
+doctor_checks = ["textgen"]
 
 [config]
-section = "extensions.local_llm"
-schema = "supervisor_ext_ollama.config:Settings"
+section = "extensions.text_model"
+schema = "supervisor_ext_textgen.config:Settings"
 
 [requires]
 resources = ["gpu"]
 services = ["http://127.0.0.1:11434"]
-extensions = ["comfy"]
+extensions = ["render"]
 '''
 
 
@@ -43,14 +43,14 @@ def problems_of(text: str) -> list[str]:
 
 def test_a_complete_manifest_reads_as_written():
     m = manifest.parse(FULL, source="supervisor-extension.toml")
-    assert (m.identity, m.version, m.framework) == ("local_llm", "1.0.0", ">=1.12,<2")
-    assert m.provides == {"adapters": ("local_llm",), "doctor_checks": ("local_llm_server", "ollama"),
+    assert (m.identity, m.version, m.framework) == ("text_model", "1.0.0", ">=1.12,<2")
+    assert m.provides == {"adapters": ("text_model",), "doctor_checks": ("text_model_server", "textgen"),
                           "hooks": ("overview_panel",)}
-    assert m.legacy_ids == {"doctor_checks": ("ollama",)}
-    assert (m.config.section, m.config.schema) == ("extensions.local_llm", "supervisor_ext_ollama.config:Settings")
-    assert m.requires.resources == ("gpu",) and m.requires.extensions == ("comfy",)
+    assert m.legacy_ids == {"doctor_checks": ("textgen",)}
+    assert (m.config.section, m.config.schema) == ("extensions.text_model", "supervisor_ext_textgen.config:Settings")
+    assert m.requires.resources == ("gpu",) and m.requires.extensions == ("render",)
     assert m.requires.services == ("http://127.0.0.1:11434",)
-    assert m.migrations == "supervisor_ext_ollama.migrations" and m.source == "supervisor-extension.toml"
+    assert m.migrations == "supervisor_ext_textgen.migrations" and m.source == "supervisor-extension.toml"
 
 
 def test_the_smallest_manifest_needs_identity_version_and_framework():
@@ -67,7 +67,7 @@ def test_reading_a_manifest_imports_nothing_it_names(tmp_path):
     before = set(sys.modules)
     m = manifest.load(path)
     assert m.source == str(path)
-    assert not {name for name in set(sys.modules) - before if name.startswith("supervisor_ext_ollama")}
+    assert not {name for name in set(sys.modules) - before if name.startswith("supervisor_ext_textgen")}
 
 
 def test_every_problem_is_reported_at_once():
@@ -118,30 +118,30 @@ def test_a_toml_syntax_error_names_the_file(tmp_path):
 # ---------------------------------------------------------------- identity and identifiers
 
 @pytest.mark.parametrize("kind,name,ok", [
-    ("adapters", "review_rounds", True),
-    ("doctor_checks", "review_rounds_queue", True),
-    ("commands", "review_rounds.set_verdict", True),
-    ("static", "review_rounds/css", True),
-    ("routes", "/review_rounds", True),
-    ("routes", "/review_rounds/item", True),
-    ("commands", "review.set_verdict", False),          # the Studio's kind: a legacy identifier, not namespaced
+    ("adapters", "ballots", True),
+    ("doctor_checks", "ballots_queue", True),
+    ("commands", "ballots.set_verdict", True),
+    ("static", "ballots/css", True),
+    ("routes", "/ballots", True),
+    ("routes", "/ballots/item", True),
+    ("commands", "vote.cast", False),          # an older kind: a legacy identifier, not namespaced
     ("routes", "/review", False),
-    ("adapters", "review_roundsx", False),              # a longer name is not the identity
-    ("routes", "/review_roundsx", False),
+    ("adapters", "ballotsx", False),              # a longer name is not the identity
+    ("routes", "/ballotsx", False),
 ])
 def test_an_identifier_belongs_to_the_identity_or_is_not_namespaced(kind, name, ok):
-    assert manifest.namespaced("review_rounds", kind, name) is ok
+    assert manifest.namespaced("ballots", kind, name) is ok
 
 
 def test_an_identifier_neither_namespaced_nor_legacy_is_refused_and_a_legacy_one_is_accepted():
-    """The namespace rule (main tab, "Identity and identifiers"): the Studio keeps its existing names as legacy_ids."""
-    base = 'identity = "review_rounds"\nversion = "1.0.0"\nframework = ">=1.12"\n[provides]\n'
-    text = base + 'commands = ["review.set_verdict", "review_rounds.close"]\nroutes = ["/review"]\n'
+    """The namespace rule: an extension older than the rule keeps its existing names as legacy_ids."""
+    base = 'identity = "ballots"\nversion = "1.0.0"\nframework = ">=1.12"\n[provides]\n'
+    text = base + 'commands = ["vote.cast", "ballots.close"]\nroutes = ["/review"]\n'
     found = problems_of(text)
-    assert any("review.set_verdict" in p and "legacy_ids" in p for p in found)
-    assert any("/review" in p for p in found) and not any("review_rounds.close" in p for p in found)
-    legacy = text + '[legacy_ids]\ncommands = ["review.set_verdict"]\nroutes = ["/review"]\n'
-    assert manifest.parse(legacy, source="m.toml").legacy_ids == {"commands": ("review.set_verdict",),
+    assert any("vote.cast" in p and "legacy_ids" in p for p in found)
+    assert any("/review" in p for p in found) and not any("ballots.close" in p for p in found)
+    legacy = text + '[legacy_ids]\ncommands = ["vote.cast"]\nroutes = ["/review"]\n'
+    assert manifest.parse(legacy, source="m.toml").legacy_ids == {"commands": ("vote.cast",),
                                                                   "routes": ("/review",)}
 
 

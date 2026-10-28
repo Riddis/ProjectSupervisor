@@ -35,7 +35,7 @@ def submit_command(layout: Layout, kind: str, payload: dict, actor: str = "owner
 
 def log_event(layout: Layout, event: str, actor: str | None = None, **fields) -> None:
     """One line in state/log.jsonl through the framework's single log path (its credential redaction included). The
-    actor is the calling extension's name, or `<extension>:<actor>` when `actor` is given (`review_rounds:owner-ui`),
+    actor is the calling extension's name, or `<extension>:<actor>` when `actor` is given (`ballots:owner-ui`),
     so a line always says which extension wrote it. Raises ExtensionError when the caller is not an extension's
     code."""
     from .. import extensions

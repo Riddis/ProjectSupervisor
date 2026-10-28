@@ -60,8 +60,10 @@ fails such a test). Run `python -m pytest -q` before and after; on Windows `tool
 
 All four, and say in the pull request which ran (the gate table in `docs/BOUNDARY.md` says which apply):
 
-- **G1** `python -m supervisor.boundary` from the framework root: OK, no notes. Read the supporting evidence
-  (registered domain words) and say why each hit is generic.
+- **G1** `python -m supervisor.boundary` from the framework root: OK, no notes. G1d needs the local project-terms
+  file (`docs/BOUNDARY.md`); when it says it did not run, create that file before asking for review. The framework
+  repo never holds a project's files or information: examples in code, docs, tests and the CHANGELOG use invented
+  names.
 - **G2** `python -m supervisor.api_contract check`: the recorded contract is the code, every public name has its own
   documented section, and the difference from the last release tag (signatures and documented sections) follows the
   version rule and is classified in the CHANGELOG (CI runs it with full history).

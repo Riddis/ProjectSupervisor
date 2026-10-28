@@ -68,7 +68,7 @@ def test_setup_registers_lanes_and_jobs_and_the_registry_lists_them(tmp_path):
 
 
 def test_extensions_reset_keeps_registered_lanes_as_before(tmp_path):
-    """A project's tests reset the loader and then look a lane up (`REGISTRY["comfy"]`): 1.10 kept it registered."""
+    """A project's tests reset the loader and then look a lane up (`REGISTRY["render"]`): 1.10 kept it registered."""
     old = LANE.format(name="old_lane") + '''
 from supervisor.adapters.base import register
 from supervisor.adapters.python import job
@@ -226,8 +226,8 @@ def test_the_documented_registry_matches_the_real_one():
 
 
 def test_one_source_file_is_one_extension_whatever_it_is_configured_as(tmp_path, monkeypatch):
-    """A project's own tests import an extension under its installed name (`extensions.comfy`) while the loader
-    imports the same file from the project folder (`comfy`): the same extension, so it may register its lane under
+    """A project's own tests import an extension under its installed name (`extensions.render`) while the loader
+    imports the same file from the project folder (`render`): the same extension, so it may register its lane under
     either configuration, and code in that file is that extension's."""
     shared = tmp_path / "shared"
     (shared / "extensions").mkdir(parents=True)

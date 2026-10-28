@@ -220,7 +220,7 @@ it), and `registry.config_sections()` declares sections routing.yaml already has
 **Rollback** to v1.10.1, in a maintenance window: drain, stop, check out `v1.10.1`, `supervisor migrate` (records
 1.10.1 again), `supervisor doctor`, start. Nothing 1.11.0 writes is new to 1.10.1. An extension already moved to
 `supervisor.ext` does not load on 1.10.1 (the package does not exist there), so roll its project change back with
-the framework: for the Studio, the parent of its phase-2 merge.
+the framework: the commit before the project's merge of its own change.
 
 **Extension authors:** import `supervisor.ext` only (docs/EXTENSION_API.md; examples/reference_extension/ uses all
 of it) and register everything in `setup()`. Imports of framework internals and module-level `register()` / `@job`
@@ -278,7 +278,7 @@ against `supervisor.testing`, which promises nothing.
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
 - **Extension API:** `job_spec(task)`, the copy of a task's `job:` block a lane's `prepare()` reads (the framework's
-  own helper; two Studio lanes kept copies of it).
+  own helper; project lanes kept copies of it).
 - **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
   lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
   or job already has, built in or another extension's (before, an extension could silently replace the `process` or
@@ -289,7 +289,7 @@ against `supervisor.testing`, which promises nothing.
   keep working and are deprecated (the loader warns, next entry). `supervisor extension new` writes a module
   that imports `supervisor.ext`. A name stays the registering extension's until the loader is reset, so the same
   extension may register it again after a reload; an extension is its source file, so one file configured under two names
-  (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests:
+  (a project's own tests import `extensions.<name>`, the loader `<name>`) is one extension. Tests:
   `extensions.reset()` keeps registered lanes and python jobs, as before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 - **Internal imports in extensions are deprecated (gate G6).** After loading, the loader reads the source (AST) of
   every module in the project's `extensions/` folder, helpers included, and of installed extension modules, for
@@ -324,7 +324,7 @@ against `supervisor.testing`, which promises nothing.
   Overview's "Dispatch held" tag names the floor and the setting too. A stale reading still gates, as before: a
   7-day window's remaining share only falls until it resets, so an old reading never overstates what is left.
 - **Fixed: a Settings save no longer rewrites routing.yaml.** `settings.update` dumped the whole file through ruamel:
-  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (the Studio's
+  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (a long
   `claude.bash_allow`). It now replaces only the edited value's token, located by the YAML parser, and replaces the
   file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
   added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
@@ -525,7 +525,7 @@ No state or config shape change; `supervisor migrate` only records the new versi
 
 ## 1.8.4 — 2026-10-25
 
-Fixes from the Studio migration's phase-4 rehearsal (its record PHASE4.md, findings F2–F5), plus the licence.
+Fixes from a project migration's rehearsal (findings F2–F5), plus the licence.
 No state or config shape change; `supervisor migrate` only records the new version.
 
 - **The loop polls Codex capacity only when something can use the Codex lane** (F2). `codex_cli` is always
@@ -548,7 +548,7 @@ No state or config shape change; `supervisor migrate` only records the new versi
   value is rewritten whole. Every migration write, and `project.write()`,
   goes through `store.rewrite_text()`, which writes only when the content changes and keeps the file's LF or CRLF
   style (`Path.write_text` turned LF files into CRLF on Windows).
-- Tests: `test_capacity_poll.py`; the owner decision-item tests the Studio carried (REQUEUE salvage, DEFER, CANCEL on
+- Tests: `test_capacity_poll.py`; the owner decision-item tests a project carried (REQUEUE salvage, DEFER, CANCEL on
   a review-blocked task) moved here as `test_owner_decision_items.py`.
 - **Licence.** The framework is licensed under Apache License 2.0 with the Commons Clause (`LICENSE`): free to use,
   modify and share; not to be sold, nor offered as a product or service whose value derives substantially from it.

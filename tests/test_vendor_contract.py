@@ -136,7 +136,8 @@ def test_terminate_owned_kills_tree():
     assert proc.poll() is not None
 
 
-def test_vendor_has_no_game_vocabulary():
+def test_vendor_has_no_planning_vocabulary():
+    """The vendored code carries no planning vocabulary from where it came from. Projects' words: gate G1d."""
     import pathlib, re
     root = pathlib.Path(__file__).resolve().parents[1] / "supervisor" / "_vendor"
     for p in root.glob("*.py"):
@@ -144,18 +145,18 @@ def test_vendor_has_no_game_vocabulary():
             continue
         text = p.read_text(encoding="utf-8")
         body = text.split('"""', 2)[2]          # the module docstring may carry the attribution
-        assert not re.search(r"(?i)towerdefense|sprint|epic|godot|astra", body), p
+        assert not re.search(r"(?i)\bsprint\b|\bepic\b", body), p
 
 
 def test_package_has_no_source_project_history_references():
     """The package (including _vendor and the template) ships to strangers: no vocabulary, task ids, owner-task ids,
     runbooks or allowances from the project it was extracted from. `T<phase>-<nn>` is the documented id convention
     (docs/TASK_CONTRACT.md), so docs and tests may use `T0-01`-style examples; package code must not cite specific
-    task or review ids as history ("T0-12.a1 failed ...")."""
+    task or review ids as history ("T0-12.a1 failed ..."). Projects' own words are checked by gate G1d from a local
+    list (tests/test_boundary_project_info.py), never named here."""
     import pathlib, re
     root = pathlib.Path(__file__).resolve().parents[1] / "supervisor"
-    pattern = re.compile(r"(?i)towerdefense|sprint|epic|godot|astra|\bOT-\d|\$100|api_credits\.md|persona|studio|"
-                         r"influencer|comfy|ollama|nudenet|\bT0-\d|review round|C:\\\\Users")
+    pattern = re.compile(r"(?i)\bOT-\d|\bT0-\d|review round|C:\\\\Users")
     hits = []
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.suffix in (".pyc",) or "__pycache__" in p.parts:

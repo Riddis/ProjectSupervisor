@@ -85,7 +85,7 @@ class Manifest:
 
 def namespaced(identity: str, kind: str, name: str) -> bool:
     """Whether identifier `name` of `kind` belongs to `identity`: the identity itself, or the identity followed by a
-    separator (`review_rounds.close`, `review_rounds_queue`). A route is the same with a leading slash."""
+    separator (`ballots.close`, `ballots_queue`). A route is the same with a leading slash."""
     if kind == "routes":
         if not name.startswith("/"):
             return False

@@ -7,11 +7,13 @@
   G1b  no project-specific literals: drive-letter or home-directory paths, non-loopback hosts in URLs or IP
        literals, e-mail addresses and the user names the check is given;
   G1c  no model or vendor names outside the explicit list of files that legitimately carry them (the agent
-       adapters, the capacity and usage code, the CLI doctor checks, the template config, the docs).
+       adapters, the capacity and usage code, the CLI doctor checks, the template config, the docs);
+  G1d  no project information anywhere in the repository (every tracked text file, not only `supervisor/`): the
+       framework repo never contains a project's files or information. A project's words are listed in a local
+       file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
+       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run.
 
 Every exception is an explicit entry in `boundary.toml` at the framework root, so a new one is a reviewed change.
-A scan for registered projects' domain words also runs: it is reported as supporting evidence, never as a failure,
-because a word list cannot prove independence.
 
 Standard library only (no import of the rest of the package), so the pre-commit hook and CI can run it from a bare
 checkout: `python -m supervisor.boundary [--root <framework>]`; installed, it is `supervisor boundary check`."""
@@ -27,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 CONFIG_NAME = "boundary.toml"
+PROJECT_TERMS_ENV = "SUPERVISOR_PROJECT_TERMS"
 PACKAGE = "supervisor"
 TEMPLATE = "supervisor/template/"
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".html", ".js", ".css", ".txt", ".json", ".bat", ".ps1",
@@ -42,7 +45,7 @@ EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9
 
 @dataclass
 class Finding:
-    rule: str            # G1a / G1b / G1c, or "domain" for the supporting scan
+    rule: str            # G1a / G1b / G1c / G1d
     path: str            # framework-root-relative POSIX path
     line: int
     text: str
@@ -55,8 +58,8 @@ class Finding:
 @dataclass
 class Report:
     violations: list[Finding] = field(default_factory=list)
-    evidence: list[Finding] = field(default_factory=list)       # domain-word hits: reported, never failing
     notes: list[str] = field(default_factory=list)              # stale exceptions and similar housekeeping
+    skipped: list[str] = field(default_factory=list)            # rules that could not run here, and why
 
     @property
     def ok(self) -> bool:
@@ -316,24 +319,78 @@ def check_vendors(root: Path, files: list[Path], cfg: dict) -> tuple[list[Findin
     return out, stale
 
 
-# ---------------------------------------------------------------- supporting evidence
+# ---------------------------------------------------------------- G1d project information
 
-def scan_domain_words(root: Path, files: list[Path], cfg: dict) -> list[Finding]:
+def project_terms_path(environ=None) -> Path | None:
+    """The local file listing projects' words: `SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml
+    (None without a home directory, as in a bare CI environment). It lives outside the framework repository, so the
+    list is never project information inside it."""
+    env = (os.environ if environ is None else environ).get(PROJECT_TERMS_ENV)
+    if env:
+        return Path(env)
+    try:
+        return Path.home() / ".config" / "supervisor" / "project-terms.toml"
+    except RuntimeError:                                    # no home directory: there is no local file
+        return None
+
+
+def load_project_terms(path: Path | None = None) -> dict[str, list[str]] | None:
+    """{project: [words]} from the local file (`[projects.<name>] terms = [...]`), or None when there is no file."""
+    path = Path(path) if path else project_terms_path()
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"{path} (the local project-terms file) is not valid TOML: {exc}") from exc
+    return {str(name): [str(t) for t in (entry or {}).get("terms") or []]
+            for name, entry in sorted((data.get("projects") or {}).items())}
+
+
+def repository_files(root: Path) -> list[Path]:
+    """Every file the repository tracks (`git ls-files`), else, without git, every file but caches, `runs/` and
+    `.git/`. Untracked files are not in the repository, so a contributor's scratch notes are not scanned."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False, timeout=60)
+        if out.returncode == 0:
+            return [Path(root) / rel for rel in sorted(out.stdout.decode("utf-8").split("\0")) if rel]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS | {".git", "runs", ".pytest_cache",
+                                                                         ".ruff_cache"})
+        found += [Path(dirpath) / n for n in sorted(filenames)]
+    return found
+
+
+def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None) -> tuple[list[Finding], list[str]]:
+    """G1d: (violations, why it did not run). A `[projects]` table in boundary.toml is itself a violation: it is a
+    project's vocabulary inside the framework repo."""
     out = []
-    for project, entry in sorted((cfg.get("projects") or {}).items()):
-        rx = _term_re(list((entry or {}).get("terms") or []))
+    if cfg.get("projects"):
+        out.append(Finding("G1d", CONFIG_NAME, 1, "[projects]", f"project words listed in the framework repo: move "
+                           f"them to the local file {project_terms_path()} ({PROJECT_TERMS_ENV})"))
+    if terms is None:
+        return out, [f"G1d (project information) did not run: no local project-terms file at {project_terms_path()}"]
+    for project, words in terms.items():
+        rx = _term_re(words)
         if rx is None:
             continue
-        for p in files:
-            rel = _rel(root, p)
+        for p in repository_files(root):
+            if not p.is_file():
+                continue
             try:
                 text = p.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
+            rel = _rel(root, p)
             for no, line in enumerate(text.splitlines(), 1):
                 for m in rx.finditer(line):
-                    out.append(Finding("domain", rel, no, m.group(0), f"a word registered for project {project!r}"))
-    return out
+                    out.append(Finding("G1d", rel, no, m.group(0),
+                                       f"a word of project {project!r} in the framework repo"))
+    return out, []
 
 
 def default_user_names(cfg: dict) -> list[str]:
@@ -347,7 +404,9 @@ def default_user_names(cfg: dict) -> list[str]:
     return names
 
 
-def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None) -> Report:
+def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None,
+          terms: dict[str, list[str]] | None = ...) -> Report:
+    """Every rule over the framework at `root`. `terms` is G1d's word list; by default the local project-terms file."""
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
@@ -360,7 +419,9 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     vendor, stale = check_vendors(root, files, cfg)
     report.violations += vendor
     report.notes += stale
-    report.evidence += scan_domain_words(root, files, cfg)
+    info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms)
+    report.violations += info
+    report.skipped += skipped
     return report
 
 
@@ -387,16 +448,14 @@ def run(root: Path | None = None, as_json: bool = False, echo=print) -> int:
         return 2
     if as_json:
         echo(json.dumps({"ok": report.ok, "violations": [asdict(f) for f in report.violations],
-                         "evidence": [asdict(f) for f in report.evidence], "notes": report.notes}, indent=2))
+                         "notes": report.notes, "skipped": report.skipped}, indent=2))
         return 0 if report.ok else 1
     for f in report.violations:
         echo(str(f))
     for n in report.notes:
         echo(f"note: {n}")
-    if report.evidence:
-        echo(f"supporting evidence (not a failure): {len(report.evidence)} registered domain word(s)")
-        for f in report.evidence:
-            echo(f"  {f}")
+    for s in report.skipped:
+        echo(f"note: {s}")
     echo(f"boundary check: {'OK' if report.ok else f'{len(report.violations)} violation(s)'} ({root})")
     return 0 if report.ok else 1
 

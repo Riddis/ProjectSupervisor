@@ -1,6 +1,6 @@
 """Owner decision items for a task BLOCKED by unreadable reviews: one item, then REQUEUE (review budget reset, the
-verdict on disk salvaged, no new review paid for), DEFER and CANCEL. Upstreamed from the Studio's
-tests/test_owner_decisions.py at its migration phase 6: test_review_salvage covered these only in part."""
+verdict on disk salvaged, no new review paid for), DEFER and CANCEL. Upstreamed from a project's own suite:
+test_review_salvage covered these only in part."""
 import json
 
 from supervisor import escalation, inbox, jobs, review, tasks

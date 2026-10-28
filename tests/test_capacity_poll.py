@@ -1,6 +1,6 @@
-"""The loop's Codex capacity poll runs only when something could send work to the Codex lane (PHASE4 F2 of the
-Studio migration: a rehearsal copy whose config named no Codex lane still reached the installed CLI every iteration,
-because codex_cli is always registered)."""
+"""The loop's Codex capacity poll runs only when something could send work to the Codex lane (1.8.4, F2: a
+rehearsal copy whose config named no Codex lane still reached the installed CLI every iteration, because codex_cli is
+always registered)."""
 import yaml
 
 from supervisor import jobs, runtime, scheduler
