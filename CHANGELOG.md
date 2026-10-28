@@ -25,6 +25,14 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Added: contract warnings** (`tasks.contract_warnings`). `supervisor task import` (and its `--dry-run`),
+  `supervisor task create` and `supervisor check` now warn when a contract asks for something the project cannot give:
+  - an `owner_role` or `reviewer` that routing.yaml does not configure;
+  - a role that is inactive;
+  - a check command outside `verification.allowed_test_commands`.
+
+  `supervisor check` warns only about open tasks. These are warnings, not refusals, so an existing seed keeps
+  importing. Until now, all three passed in silence, and the task then waited forever or failed at verification.
 - **Added: the project-side skills, wave 1** (`supervisor/template/.claude/skills/`, delivered by `supervisor init`
   and `supervisor skills update`):
   - `maintenance-window`: drain, confirm nothing is open, snapshot, the change, migrate, doctor, the suite, start

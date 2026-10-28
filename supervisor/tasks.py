@@ -162,6 +162,35 @@ def artifact_warnings(tasks: Iterable[Task], root: Path | None = None) -> list[s
     return artifact_problems(tasks, root)[1]
 
 
+def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
+    """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
+    - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
+    - one that is inactive (`active: false`), which parks the task until the role is activated;
+    - a check command outside `verification.allowed_test_commands`, which would fail only at verification.
+    Warnings, not errors: a project whose seed already holds one keeps importing."""
+    from . import gate, verify
+    roles = gate.routing_doc(layout).get("roles")
+    roles = roles if isinstance(roles, dict) else {}
+    allowed = verify.allowed_test_commands(layout)
+    out = []
+    for t in tasks:
+        named = [("owner_role", t.owner_role)] + [("reviewer", r) for r in t.reviewer]
+        for field_name, role in named:
+            if not role:
+                continue
+            if roles and role not in roles:
+                out.append(f"{t.id}: {field_name} {role!r} is not a role in config/routing.yaml; the task would wait "
+                           f"for it forever")
+            elif gate.role_inactive(layout, role):
+                out.append(f"{t.id}: {field_name} {role!r} is inactive (routing.yaml roles.{role}.active: false); "
+                           f"the task waits until it is activated")
+        for check in t.checks:
+            if not verify.permitted(check.command, allowed):
+                out.append(f"{t.id}: check {check.command!r} is not in verification.allowed_test_commands; "
+                           f"verification would refuse it")
+    return out
+
+
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
     tasks = tasks or load_all(layout)
     gate_data = gates_mod.load(layout)
@@ -186,6 +215,7 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     combined = load_all(layout)
     combined[doc["id"]] = Task.model_validate(doc)
     art_errors, warnings = artifact_problems([combined[doc["id"]]], root=layout.root)
+    warnings += contract_warnings([combined[doc["id"]]], layout)
     errors = validate_graph(combined) + ownership_errors([combined[doc["id"]]], layout) + art_errors
     if errors:
         raise TaskError("; ".join(errors))
@@ -211,6 +241,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     for t in seed:
         combined[t["id"]] = Task.model_validate(t)   # seed must be a valid contract
     art_errors, warnings = artifact_problems([combined[t["id"]] for t in seed], root=layout.root)
+    warnings += contract_warnings([combined[t["id"]] for t in seed], layout)
     errors = (validate_graph(combined) + ownership_errors([combined[t["id"]] for t in seed if t["id"] not in existing], layout)
               + art_errors)
     if errors:

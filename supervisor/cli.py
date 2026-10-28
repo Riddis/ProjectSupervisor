@@ -170,12 +170,17 @@ def doctor():
 
 @app.command()
 def check():
-    """Validate the task store (fields, enums, dependencies, cycles)."""
+    """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
+    not configure or has made inactive, and about checks off the allowed list."""
     layout = _layout()
     tasks = tasks_mod.load_all(layout)
     errors = tasks_mod.validate_graph(tasks)
     for e in errors:
         typer.echo(f"ERROR {e}")
+    from .models.task import TERMINAL
+    open_tasks = [t for t in tasks.values() if t.status not in TERMINAL]
+    for w in tasks_mod.contract_warnings(open_tasks, layout):
+        typer.echo(f"WARN {w}")
     typer.echo(f"{len(tasks)} tasks; eligible: {', '.join(t.id for t in tasks_mod.eligible(layout, tasks)) or 'none'}")
     raise typer.Exit(1 if errors else 0)
 
