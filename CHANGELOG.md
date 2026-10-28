@@ -25,6 +25,13 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Fixed: the template.**
+  - Its `.gitignore` ignores `secrets/*` but keeps `secrets/README.md`, so that note reaches a new project's first
+    commit.
+  - `supervisor extension new`'s commented example lane is `<identity>_lane`, namespaced as G5 requires, instead of
+    `my_lane`.
+  - `docs/BOUNDARY.md` says what G1d scans: every file git tracks, or without git, every file but caches, `runs/`
+    and `.git/`.
 - **Fixed: a new owned folder no longer fails the first delivery.** A task whose `owned_paths` named a folder that
   did not exist yet failed its first verification with "undeclared changes inside owned paths: <folder>", and spent a
   revision. The delivery manifest recorded the folder as missing before the job and as a directory after it, and

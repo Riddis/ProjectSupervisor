@@ -1285,7 +1285,7 @@ def setup(registry):
     #
     # from supervisor.ext import ProcessAdapter
     # class MyAdapter(ProcessAdapter):
-    #     name = "my_lane"
+    #     name = "{name}_lane"                       # namespaced: it starts with the identity
     #     def prepare(self, layout, task, attempt_id): ...
     # registry.adapter(MyAdapter())
     pass
