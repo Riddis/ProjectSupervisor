@@ -1127,7 +1127,9 @@ def forget_registrations() -> None:
 
 # Run by import_side_effects() in a fresh interpreter: import every framework module first (so what they register
 # at their own import is not blamed on the extension), snapshot the process-wide registries, import the extension
-# module the way the loader does, and print which entries the import added, replaced or removed.
+# module the way the loader does, and print which entries the import added, replaced or removed. The project's
+# approval and refusal guard are set up before that import, as in the loader: nothing it imports may run a refused
+# extension (review 1.12.0 R2-1).
 _SIDE_EFFECTS_PROBE = """
 import importlib, json, pkgutil, sys
 import supervisor
@@ -1147,9 +1149,14 @@ def snapshot():
     return {"adapters": {k: id(v) for k, v in REGISTRY.items()}, "python_jobs": {k: id(v) for k, v in JOBS.items()},
             "commands": {k: id(v) for k, v in commands.HANDLERS.items()}}
 
+layout = Layout(sys.argv[1])
+plan = extensions.approval(layout)
+if sys.argv[2] in plan.refused:
+    raise SystemExit(f"ImportError: {sys.argv[2]} is refused: {plan.refused[sys.argv[2]]}")
+extensions.guard_refused(layout, plan)
 before = snapshot()
 from supervisor import discovery
-extensions._import(Layout(sys.argv[1]), sys.argv[2], discovery.find(Layout(sys.argv[1]), sys.argv[2]).module)
+extensions._import(layout, sys.argv[2], discovery.find(layout, sys.argv[2]).module)
 after = snapshot()
 changed = {k: sorted(n for n in before[k].keys() | after[k].keys() if before[k].get(n) != after[k].get(n))
            for k in before}
@@ -1162,7 +1169,7 @@ def import_side_effects(layout: Layout, name: str, timeout_s: float = 120) -> di
     """What importing extension `name` (as the loader would) changes in the process-wide registries, measured in a
     fresh interpreter: {"adapters": [...], "python_jobs": [...], "commands": [...]}, each the names added, replaced
     or removed. All empty for an extension that registers only in setup(). Raises ExtensionError when the module
-    does not import."""
+    does not import, and when the project's approval refuses it or what it imports."""
     import json
     import os
     import subprocess

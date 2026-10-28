@@ -122,7 +122,10 @@ in the extension's range. Each check prints `OK` or `FAIL`, and any `FAIL` exits
 | `idempotent` | a second `setup()` registers the same |
 | `config` | the project's section validates against the manifest's schema |
 
-An extension without a manifest fails `manifest`, and the rest is reported as not run.
+An extension without a manifest fails `manifest`, and the rest is reported as not run. So is the rest of an extension
+the project's approval refuses (below): G5 imports none of its code, in its own process or in the fresh one, even
+when another project in the process has it imported already. The fresh interpreter `import_side_effects` starts
+takes the project's approval and refusal guard before its first import, as the loader does.
 
 ## Scaffolding
 

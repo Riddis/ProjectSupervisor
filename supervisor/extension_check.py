@@ -55,11 +55,12 @@ def run(layout: Layout, name: str) -> list[Finding]:
     why = m.unsupported_reason()
     out["framework"] = Finding("framework", why is None, why or f"{m.framework} includes this framework")
     out["imports"] = _imports(layout, found)
-    out["import_side_effects"] = _side_effects(layout, name)
-    if why:
-        for check in ("registrations", "idempotent", "config"):
-            out[check] = Finding(check, False, "not run: the framework range excludes this framework")
+    refusal = plan.refused.get(name) or why
+    if refusal:                                            # no import, no setup, cached module or not (review R2-1)
+        for check in ("import_side_effects", "registrations", "idempotent", "config"):
+            out[check] = Finding(check, False, f"not run: refused before import: {refusal}")
         return [out[n] for n in CHECKS]
+    out["import_side_effects"] = _side_effects(layout, name)
     first = _staged(layout, name, m, plan)
     out["config"] = Finding("config", first[2] is None, first[2] or (
         f"extensions.{m.identity} validates against {m.config.schema}" if m.config else "no config table"))
