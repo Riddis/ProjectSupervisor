@@ -245,14 +245,16 @@ def test_accepted_work_is_committed_exactly_as_accepted(layout, repo):
     t = tasks.load(layout, "A")
     cp = (t.model_extra or {}).get("checkpoint")
     assert cp and cp["status"] == "committed" and cp["paths"] == ["A.txt"] and cp["digest"] == t.delivery.digest
-    log = git(repo, "log", "--format=%s", "-n", "1").stdout.strip()
-    assert log.startswith("A: A (delivery " + t.delivery.digest[:12])
-    shown = git(repo, "show", "--stat", "--format=", "HEAD").stdout
+    subjects = git(repo, "log", "--format=%s", "-n", "2").stdout.splitlines()
+    assert subjects[1].startswith("A: A (delivery " + t.delivery.digest[:12])    # the checkpoint
+    assert subjects[0].startswith("state:")                                    # then the loop's records (1.12.1)
+    shown = git(repo, "show", "--stat", "--format=", "HEAD~1").stdout
     assert "A.txt" in shown and "state/tasks/A.yaml" in shown and "unrelated.txt" not in shown
+    assert "unrelated.txt" not in git(repo, "show", "--stat", "--format=", "HEAD").stdout
     assert "unrelated.txt" in git(repo, "status", "--short").stdout   # left for the owner, untouched
     # idempotent: nothing more happens on later iterations
     Supervisor(layout, sleep_s=0).once()
-    assert git(repo, "rev-list", "--count", "HEAD").stdout.strip() == "2"
+    assert git(repo, "rev-list", "--count", "HEAD").stdout.strip() == "3"
 
 
 def test_a_changed_accepted_file_refuses_the_checkpoint_and_opens_an_issue(layout, repo, monkeypatch):
@@ -267,7 +269,7 @@ def test_a_changed_accepted_file_refuses_the_checkpoint_and_opens_an_issue(layou
     assert cp["status"] == "refused" and cp["expected"] == t.delivery.digest and cp["found"] != cp["expected"]
     issues = list(layout.issues.glob("I-*.yaml"))
     assert len(issues) == 1 and "accepted contents changed" in issues[0].read_text()
-    assert git(repo, "rev-list", "--count", "HEAD").stdout.strip() == "1"   # nothing committed
+    assert git(repo, "log", "--format=%h", "--", "A.txt").stdout.strip() == ""   # the changed file: never committed
     assert checkpoint.run(layout) == []                                        # not retried on its own
 
 

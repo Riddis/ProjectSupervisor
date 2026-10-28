@@ -232,6 +232,9 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
     note = project.problem(layout)
     if note and "framework_version" not in note:
         raise MigrationError(f"cannot migrate: {note}; fix the file first")
+    from . import state_commit
+    config_paths = ["config", "project.yaml"]
+    changed_before = set(state_commit.changed(layout, config_paths)) if not dry_run else set()
     notes: list[str] = []
     try:
         for m in MIGRATIONS:
@@ -246,4 +249,13 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
                 project.write(layout, raw)
     except store.CannotKeep as exc:
         raise MigrationError(f"cannot migrate: {exc}") from exc
+    if notes and not dry_run:
+        # Commit what migrate rewrote (1.12.1), with the loop's records: a config file that already had uncommitted
+        # changes is left for the owner, since its commit would carry their edit too.
+        rewritten = [p for p in state_commit.changed(layout, config_paths) if p not in changed_before]
+        out = state_commit.commit(layout, reason="migrate", extra=rewritten, title=f"migrate: framework {__version__}")
+        if out["status"] == "committed":
+            left = sorted(changed_before)
+            notes.append(f"committed as {str(out['commit'])[:12]}" + (f"; left uncommitted (they had changes "
+                                                                       f"before): {', '.join(left)}" if left else ""))
     return notes

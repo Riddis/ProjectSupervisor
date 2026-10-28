@@ -149,6 +149,8 @@ escalation:                         # supervisor/diagnosis.py: when automatic re
 checkpoint:                         # supervisor/checkpoint.py: commit exactly the accepted contents of a COMPLETE task
   enabled: true
   since: null                       # tasks completed before this timestamp are left alone (null = all)
+  state_commits: true               # supervisor/state_commit.py: also commit the loop records (state/, projections)
+  state_interval_minutes: 15        # between checkpoints, at most one state commit per this many minutes
 verification_job:                   # verification that must run commands becomes a tracked process job
   as_job: true                      # so PAUSE/DRAIN/STOP apply while tests run
 timeouts:                           # supervisor/timeouts.py: an agent session (claude_cli/codex_cli) is stopped only when it is

@@ -51,6 +51,7 @@ One Python package, one process per role of the system (loop, UI, CLI), one dire
 | `inbox.py`, `owner_tasks.py`, `decisions.py`, `conversations.py` | the human-facing stores; Control Center chat threads |
 | `capacity.py`, `_vendor/usage_policy.py` | measured subscription windows and reserves per engine |
 | `checkpoint.py` | commits exactly the accepted contents of a COMPLETE task |
+| `state_commit.py` | commits the loop's own records (`state/` and the projections), only those paths, after a checkpoint and at most every 15 minutes (1.12.1) |
 | `policy.py` | credential isolation (packets, logs, child env) + extension packet screens |
 | `commands.py` | command files and their handlers |
 | `runtime.py`, `shutdown.py` | heartbeat/decision document; drain-then-power-off |
@@ -85,4 +86,7 @@ state/commands/*.json (+applied/)  state/runtime/{supervisor.json, usage_*.json,
 runs/<task>/<attempt>/{prompt.md, stdout.jsonl, stderr.txt, result.json, HANDOFF.md, verification.json, ...}
 ```
 
-`runs/`, `state/runtime/`, `secrets/`, `uploads/` are git-ignored; the rest is committed by checkpoints.
+`runs/`, `state/runtime/`, `secrets/`, `uploads/` are git-ignored. A task's accepted work is committed by its checkpoint;
+the loop's own records under `state/`, with the projections, by state commits; what `supervisor migrate` rewrites, by
+its own commit. Each names its paths, so nothing else in the working tree (the owner's edits, work not yet accepted)
+is ever swept in.
