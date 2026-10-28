@@ -43,8 +43,8 @@ An extension without a manifest still loads in 1.12.x, with a doctor WARN; a lat
 
 **Review:** the G4 review covers `v1.11.0..` this release commit, including the carried pinned-checkout commits.
 Astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1 of the 1.12.0 review, on
-`f8b0e52`, closed the pinned-checkout findings R2-1 and R2-2 and found four issues in the extension standard, each
-fixed below with regression tests.
+`f8b0e52`, closed the pinned-checkout findings R2-1 and R2-2 and found four issues in the extension standard. Round 2,
+on `92caa7c`, closed two of them and found three gaps in the other two. Each is fixed below with regression tests.
 
 - **Added: the extension manifest** (`supervisor/manifest.py`, `docs/EXTENSION_STANDARD.md`).
   `supervisor-extension.toml` declares an extension's identity, its version, the framework versions it supports,
@@ -161,6 +161,17 @@ fixed below with regression tests.
   only the extension checked, so a dependency's function called from `setup()` failed to read the dependency's
   configuration and resources. It now holds each declared dependency's manifest, schema and origin, transitively,
   and reports a refused dependency.
+- **Fixed (review 1.12.0 round 2, R2-1): G5 runs no code of a refused extension.** G5 guarded only its own process,
+  and started the fresh interpreter for `import_side_effects` before looking at the approval. It now reports a refused
+  target as "not run: refused before import" without importing it, even when another project already imported it.
+  The fresh interpreter takes the project's approval and guard before its first import.
+- **Fixed (review 1.12.0 round 2, R2-2): a refusal belongs to its project.** The guard banned a refused installed
+  module for the whole process, so a project whose own approval accepts that package could not load it after another
+  project refused it. Imports made for a project (its load, G5, migrate) now follow that project's approval. Outside
+  any project, a refused installed module stays closed unless a project in the process accepts it.
+- **Fixed (review 1.12.0 round 2, R2-3): a load that does not finish blocks.** A load interrupted by SystemExit or
+  KeyboardInterrupt, or broken outside an extension's own handler, was published as complete. The interrupted
+  extension is now rolled back, and the registry is published as blocking until the process restarts.
 - **Fixed: an installed extension is imported by its entry point's module.** Discovery reports the module the entry
   point names (`supervisor_ext_notes` for identity `notes`), and the loader, G5 and the import-side-effect probe
   import that. Before, they imported the identity as a module name.
