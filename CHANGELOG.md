@@ -168,7 +168,9 @@ on `92caa7c`, closed two of them and found three gaps in the other two. Each is 
 - **Fixed (review 1.12.0 round 2, R2-2): a refusal belongs to its project.** The guard banned a refused installed
   module for the whole process, so a project whose own approval accepts that package could not load it after another
   project refused it. Imports made for a project (its load, G5, migrate) now follow that project's approval. Outside
-  any project, a refused installed module stays closed unless a project in the process accepts it.
+  any project, a refused installed module stays closed unless a project in the process accepts it. Round 3 (R3-1):
+  discovery's import-free spec lookup for an editable install passes the guard by, so a refusal elsewhere no longer
+  hides the package's manifest from an accepting project.
 - **Fixed (review 1.12.0 round 2, R2-3): a load that does not finish blocks.** A load interrupted by SystemExit or
   KeyboardInterrupt, or broken outside an extension's own handler, was published as complete. The interrupted
   extension is now rolled back, and the registry is published as blocking until the process restarts.

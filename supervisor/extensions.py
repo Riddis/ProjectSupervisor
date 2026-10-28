@@ -663,10 +663,15 @@ class _RefusalGuard(importlib.abc.MetaPathFinder):
     A refused module stays closed to imports made for the project that refused it, and to those made for any project
     that does not accept it. Outside any project (a lazy import at run time), it stays closed unless a project in this
     process accepts it: that project's own lazy imports then work. A project-local module is named under its
-    project's namespace, so only its own project ever accepts it. A module already imported is not looked up again
-    (Python does not ask a finder), so the loader and G5 check a refusal themselves before any setup()."""
+    project's namespace, so only its own project ever accepts it. Discovery's spec lookup (no import) is let by, so
+    a refusal never hides a package's manifest from the approval of another project.
+
+    A module already imported is not looked up again (Python does not ask a finder), so the loader and G5 check a
+    refusal themselves before any setup()."""
 
     def find_spec(self, fullname, path=None, target=None):
+        if getattr(discovery.spec_lookup, "active", False):
+            return None                                    # discovery's import-free lookup, not an import (R3-1)
         roots = getattr(_importing, "roots", None)
         root = roots[-1] if roots else None
         for name, by_root in list(_refused_modules.items()):

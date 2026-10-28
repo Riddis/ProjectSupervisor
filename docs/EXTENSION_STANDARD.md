@@ -215,7 +215,9 @@ A refusal belongs to the project whose approval made it. In a process with sever
 extension one project refuses still loads for a project that accepts it:
 - imports made for a project (its load, G5, `supervisor migrate`) follow that project's approval;
 - outside any project (a lazy import at run time), a refused installed module stays closed unless a project in the
-  process accepts it.
+  process accepts it;
+- discovery's spec lookup for an editable install, which imports nothing, is never blocked, so one project's refusal
+  cannot hide a package's manifest from another project's approval.
 
 A module already imported is not looked up again, so the loader and G5 check a refusal themselves before any
 `setup()`.

@@ -19,6 +19,7 @@ import dataclasses
 import importlib.machinery
 import importlib.metadata
 import importlib.util
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -106,14 +107,23 @@ def _installed(name: str, ep: importlib.metadata.EntryPoint) -> Found:
          f"installed package shows its {manifest_mod.FILENAME}"),))
 
 
+# Set while _top_level_spec() asks the import system for a spec: the loader's refusal guard stands aside for it, since
+# finding a spec executes nothing the package ships. Approval is decided from what discovery finds, so one project's
+# refusal must not hide a package's manifest from another project (review 1.12.0 R3-1). Importing stays guarded.
+spec_lookup = threading.local()
+
+
 def _top_level_spec(top: str) -> importlib.machinery.ModuleSpec | None:
     """The spec of top-level module `top`, found without executing it (a dotted name's spec would import its
     parent, so only top-level names are asked for)."""
     importlib.invalidate_caches()
+    spec_lookup.active = True
     try:
         return importlib.util.find_spec(top)
     except (ImportError, ValueError):
         return None
+    finally:
+        spec_lookup.active = False
 
 
 def _with_manifest(found: Found, manifest_path: Path) -> Found:
