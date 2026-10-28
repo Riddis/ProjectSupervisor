@@ -44,7 +44,13 @@ def draft_task(layout, paths):
     tasks._update(layout, "DRAFT", lambda d: d.update(paths=paths, status=TaskStatus.WAITING_FOR_REVIEW.value))
 
 
-@pytest.mark.parametrize("delivered", ["state/decisions", "state/decisions/", "state\\decisions", "./state/decisions"])
+@pytest.mark.parametrize("delivered", [
+    "state/decisions", "state/decisions/", "state\\decisions", "./state/decisions",
+    # Round 2: spellings the delivery manifest resolves to the same directory (internal dot segments, repeated
+    # separators), so the exclusion must too.
+    "state/./decisions", "state/tasks/../decisions", "state//decisions", "state/../state/decisions",
+    "state\\.\\decisions\\",
+])
 def test_a_file_inside_a_delivered_directory_waits_for_acceptance(layout, repo, delivered):
     """The reviewer's probe: the task delivered the directory, and a file under it is not yet accepted."""
     draft_task(layout, [delivered])
@@ -101,3 +107,16 @@ def test_after_a_commit_the_index_matches_it_for_its_paths(layout, repo):
     for p in out["paths"]:
         assert git(repo, "diff", "--cached", "--name-only", "--", p).stdout.strip() == "", p
         assert git(repo, "diff", "--name-only", "--", p).stdout.strip() == "", p
+
+
+def test_the_manifest_and_the_exclusion_agree_on_every_spelling(layout, repo):
+    """The delivery manifest is the reference: whatever spelling it walks into a directory, the exclusion holds back."""
+    from supervisor._vendor.contract import manifest
+    layout.decisions.mkdir(parents=True, exist_ok=True)
+    (layout.decisions / "draft.md").write_text("unaccepted draft\n")
+    for spelling in ("state/./decisions", "state/tasks/../decisions", "state//decisions"):
+        walked = manifest([repo / spelling], root=repo)
+        assert "state/decisions/draft.md" in walked, (spelling, sorted(walked))
+        assert state_commit._held_back("state/decisions/draft.md", [spelling], repo), spelling
+    assert not state_commit._held_back("state/decisions-other/x.md", ["state/decisions"], repo)
+    assert not state_commit._held_back("state/inbox/H-001.yaml", ["state/decisions"], repo)

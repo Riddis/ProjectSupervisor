@@ -77,33 +77,43 @@ def changed(layout: Layout, paths: list[str]) -> list[str]:
     return sorted(out)
 
 
-def _norm(path: str) -> str:
-    """A root-relative path in one form: forward slashes, no leading `./`, no trailing slash, case folded (the
-    comparison errs towards holding a file back on a case-insensitive file system). The root itself is ""."""
-    p = path.replace("\\", "/").strip()
-    while p.startswith("./"):
-        p = p[2:]
-    p = p.strip("/")
-    return "" if p == "." else p.casefold()
+def _canonical(root: Path, path: str) -> str:
+    """A path as the delivery manifest resolves it (`contract.resolve`: absolute, `.` and `..` segments and repeated
+    separators resolved), in the platform's case rule (`os.path.normcase`), so the two always agree on what a
+    delivered path covers. A path the manifest would refuse (one through a link) falls back to the same resolution
+    done lexically, which still resolves the segments."""
+    from ._vendor.contract import resolve
+    raw = path.replace("\\", "/")
+    try:
+        resolved = str(resolve(raw, root))
+    except (ValueError, OSError):
+        resolved = os.path.normpath(os.path.join(str(Path(root).resolve()), raw))
+    return os.path.normcase(resolved).rstrip("\\/")
 
 
 def _not_yet_accepted(layout: Layout) -> list[str]:
-    """Delivered paths of tasks without a checkpoint yet, normalized: their own checkpoint commits them, as accepted.
-    A path may be a directory, and then everything under it waits (review 1.12.1 R1)."""
+    """Delivered paths of tasks without a checkpoint yet, as given: their own checkpoint commits them, as accepted. A
+    path may be a directory, and then everything under it waits (review 1.12.1 R1)."""
     out = set()
     for t in tasks_mod.load_all(layout).values():
         if t.status == TaskStatus.CANCELLED:
             continue
         if t.status == TaskStatus.COMPLETE and (t.model_extra or {}).get("checkpoint"):
             continue
-        out |= {_norm(p) for p in t.paths}
+        out |= set(t.paths)
     return sorted(out)
 
 
-def _held_back(path: str, delivered: list[str]) -> bool:
-    """Whether `path` is, or lies under, a path a task delivered without acceptance ("" is the whole project)."""
-    p = _norm(path)
-    return any(d == "" or p == d or p.startswith(d + "/") for d in delivered)
+def _held_back(path: str, delivered: list[str], root: Path) -> bool:
+    """Whether root-relative `path` is, or lies under, a path a task delivered without acceptance, both resolved the
+    way the delivery manifest resolves them (review 1.12.1 R1, round 2: `state/./decisions`, `state//decisions` and
+    `state/tasks/../decisions` all cover `state/decisions/`). A delivered project root covers everything."""
+    file = _canonical(root, path)
+    for d in delivered:
+        covered = _canonical(root, d)
+        if file == covered or file.startswith(covered + os.sep):
+            return True
+    return False
 
 
 def _own_repository(root: Path) -> bool:
@@ -127,12 +137,12 @@ def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: s
     if not _own_repository(root):
         return {"status": "skipped", "reason": "not a git repository"}
     delivered = _not_yet_accepted(layout)
-    state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered)]
-    extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered)] if extra else []
+    state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered, root)]
+    extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered, root)] if extra else []
     if not state_files and not extra_files:
         return {"status": "unchanged"}
     files = sorted(set(state_files) | set(extra_files)
-                   | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered)})
+                   | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered, root)})
     code, staged, _err = _git(root, "diff", "--cached", "--name-only", "--", *files)
     if code == 0 and staged.strip():
         names = ", ".join(staged.split()[:5])
