@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ._vendor.contract import atomic_write_text
+from . import store
 from .paths import Layout
 from .store import now_iso
 
@@ -38,7 +38,7 @@ def create(layout: Layout, title: str, body: str, status: str = "proposed", deci
     front_matter = (f"---\nid: {decision_id}\ndate: {date}\ntitle: {title}\nstatus: {status}\n"
                     f"decided_by: {decided_by}\n---\n")
     content = f"{front_matter}\n## Decision\n\n{body.strip()}\n"
-    atomic_write_text(path_for(layout, decision_id, slug), content)
+    store.write_text(path_for(layout, decision_id, slug), content)
     from . import tasks as tasks_mod
     tasks_mod.log(layout, "decision_created", decided_by, id=decision_id, title=title)
     return {"id": decision_id, "title": title, "status": status}

@@ -14,13 +14,12 @@ from . import extensions as extensions_mod
 from . import project as project_mod
 from . import gates as gates_mod
 from . import store, tasks as tasks_mod
-from ._vendor.contract import atomic_write_text
 from .models.task import TaskStatus
 from .paths import Layout
 
 
 def _write(path: Path, lines: list[str]):
-    atomic_write_text(path, "\n".join(lines).rstrip() + "\n")
+    store.write_text(path, "\n".join(lines).rstrip() + "\n")       # the file's own line endings (1.12.1)
 
 
 _held = threading.local()        # render-lock paths this thread holds: the lock is reentrant within a thread
