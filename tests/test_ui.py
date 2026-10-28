@@ -303,7 +303,7 @@ def test_now_running_lists_every_open_job_with_what_it_is_doing(layout, auth_cli
     from supervisor.ui.routes.overview import now_running
     make_task(layout, "T0-07")
     make_task(layout, "T0-08")
-    tasks_mod._update(layout, "T0-07", lambda d: d.update(title="Bake-off A"))
+    tasks_mod._update(layout, "T0-07", lambda d: d.update(title="Benchmark A"))
     runtime.heartbeat(layout, "RUNNING")
     jobs_mod.write(layout, {"attempt_id": "T0-07.a4", "task_id": "T0-07", "adapter": "claude_cli", "phase": "RUNNING",
                             "spec": {"kind": "delivery", "role": "image_engineer", "model": "sonnet", "effort": "high",
@@ -321,7 +321,7 @@ def test_now_running_lists_every_open_job_with_what_it_is_doing(layout, auth_cli
     assert rows[0]["elapsed_s"] == 600 and rows[0]["timeout_s"] == 3600 and rows[0]["attempt"] == 4
     assert rows[0]["role"] == "image_engineer" and rows[1]["role"] == "code_review"
     page = auth_client.get("/overview").text
-    assert 'id="now-running"' in page and "Bake-off A" in page and 'href="/agents/T0-07.a4"' in page
+    assert 'id="now-running"' in page and "Benchmark A" in page and 'href="/agents/T0-07.a4"' in page
     assert "1 waiting for you" in page                           # the human job is not listed as running
 
 

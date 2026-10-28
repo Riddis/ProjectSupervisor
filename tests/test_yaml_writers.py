@@ -12,9 +12,9 @@ import yaml
 from supervisor import settings, yaml_edit
 
 LONG = "bash_allow: [" + ", ".join(f'"Bash(tool{i} *)"' for i in range(12)) + "]"
-ROUTING = ("# routing.yaml (owner decision D-011)\r\n"
+ROUTING = ("# routing.yaml (owner decision D-901)\r\n"
            "capacity:\r\n"
-           "  claude: {reserve_percent: 1, weekly_gate_percent: 20}    # D-011: both windows\r\n"
+           "  claude: {reserve_percent: 1, weekly_gate_percent: 20}    # D-901: both windows\r\n"
            "  codex: {reserve_percent: 10}\r\n"
            "limits:\r\n"
            "  max_agent_jobs: 2          # owner 2026-10-20\r\n"
@@ -55,7 +55,7 @@ def test_a_setting_the_file_lacks_is_added_and_the_rest_stays_as_written(layout,
     assert "  " + LONG + "\r\n" in raw                                        # no reflow of a long line
     assert "executable: null" in raw                                          # null stays null
     assert "      - Read\r\n      - Edit\r\n" in raw                          # list items keep their indentation
-    assert "# D-011: both windows" in raw and "# owner 2026-10-20" in raw
+    assert "# D-901: both windows" in raw and "# owner 2026-10-20" in raw
 
 
 def test_an_interrupted_settings_write_leaves_the_file_whole(layout, routing, monkeypatch):
@@ -102,7 +102,7 @@ def test_scalar_changes_lists_value_edits_and_refuses_structure():
 DESCRIPTION = ("A long description of the project that runs well past eighty columns, as an owner writes it on one "
                "line, with a dash - and a colon: inside")
 PROJECT = ("# project.yaml - what makes this folder a supervisor project.\r\n"
-           'name: "Demo Studio"\r\n'
+           'name: "Demo Project"\r\n'
            f'description: "{DESCRIPTION}"\r\n'
            'framework_version: "1.9.0"           # checked by `supervisor doctor`; `supervisor migrate` updates it\r\n'
            "\r\n"

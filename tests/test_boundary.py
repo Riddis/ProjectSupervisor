@@ -23,8 +23,6 @@ user_names = ["jdoe"]
 [vendor]
 terms = ["claude", "codex", "gpt", "openai"]
 files = ["supervisor/adapters/claude_cli.py"]
-[projects.demo]
-terms = ["persona"]
 """
 
 
@@ -47,9 +45,9 @@ def rules(root, **kw):
 # ---------------------------------------------------------------- G1a
 
 @pytest.mark.parametrize("code,module", [
-    ("import extensions.comfy\n", "extensions.comfy"),                    # a project's extension
+    ("import extensions.render\n", "extensions.render"),                  # a project's extension
     ("from engine.qa import score\n", "engine.qa"),                       # a project's own package
-    ("import supervisor_ext_ollama\n", "supervisor_ext_ollama"),          # an extension package
+    ("import supervisor_ext_textgen\n", "supervisor_ext_textgen"),        # an extension package
     ("import importlib\nimportlib.import_module('extensions.bench')\n", "extensions.bench"),
 ])
 def test_g1a_refuses_imports_of_project_or_extension_code(tmp_path, code, module):
@@ -132,12 +130,12 @@ def test_g1a_allowed_list_covers_every_declared_dependency():
 # ---------------------------------------------------------------- G1b
 
 @pytest.mark.parametrize("line,text", [
-    ('ROOT = "D:\\\\Repos\\\\Studio"\n', "D:\\\\Repos\\\\Studio"),
+    ('ROOT = "D:\\\\Repos\\\\Project"\n', "D:\\\\Repos\\\\Project"),
     ("path = 'C:/work/thing'\n", "C:/work/thing"),
     ("# see /home/alice/projects\n", "/home/alice"),
     ("cache = r'C:\\Users\\bob\\AppData'\n", "C:\\Users\\bob\\AppData"),
     ('URL = "https://render.mycompany.io/api"\n', "render.mycompany.io"),
-    ('COMFY = "http://render-box.local:8188/"\n', "render-box.local"),        # mDNS: a real machine (review P2)
+    ('RENDER = "http://render-box.local:8188/"\n', "render-box.local"),        # mDNS: a real machine (review P2)
     ('HOST = "10.0.4.17"\n', "10.0.4.17"),
     ("# ask jane.doe@acme-corp.com\n", "jane.doe@acme-corp.com"),
     ("# written by jdoe\n", "jdoe"),
@@ -187,12 +185,6 @@ def test_g1c_does_not_match_inside_other_words_and_reports_stale_entries(tmp_pat
 
 
 # ---------------------------------------------------------------- evidence, CLI, the framework itself
-
-def test_domain_words_are_evidence_not_failures(tmp_path):
-    found, report = rules(framework(tmp_path, {"supervisor/mod.py": "# a persona-free core\n"}))
-    assert found == [] and report.ok
-    assert [(f.rule, f.text) for f in report.evidence] == [("domain", "persona")]
-
 
 def test_module_entry_point_exit_codes(tmp_path):
     clean = framework(tmp_path, {"supervisor/mod.py": "x = 1\n"})

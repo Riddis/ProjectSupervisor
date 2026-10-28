@@ -39,6 +39,31 @@ def rewrite_text(path: Path, text: str) -> bool:
     return True
 
 
+def newline_of(path: Path) -> str:
+    """The line ending a text file uses: CRLF when it has any, else LF, which is also what a new file gets (1.12.1).
+    git stores LF, so a state file the framework creates shows no line-ending change on any platform."""
+    try:
+        with open(path, "rb") as f:
+            return "\r\n" if b"\r\n" in f.read() else "\n"
+    except FileNotFoundError:
+        return "\n"
+
+
+def write_text(path: Path, text: str) -> None:
+    """Replace a text file atomically, in the file's own line endings (LF for a new one). The framework's state
+    writers use this: writing with the platform's newline turned every LF file into CRLF on Windows, so a one-line
+    change showed in git as the whole file changed (1.12.1)."""
+    newline = newline_of(path)
+    atomic_write_text(path, text.replace("\r\n", "\n").replace("\n", newline), newline="")
+
+
+def append_line(path: Path, line: str) -> None:
+    """Append one line in the file's own line endings (LF for a new file): the event log's writer."""
+    newline = newline_of(path)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        f.write(line.rstrip("\r\n") + newline)
+
+
 def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -59,7 +84,7 @@ def write_new(path: Path, doc: dict) -> dict:
     doc.setdefault("created", now_iso())
     doc["updated"] = doc.get("updated", doc["created"])
     doc["rev"] = 1
-    atomic_write_text(path, dump(doc))
+    write_text(path, dump(doc))
     return doc
 
 
@@ -78,5 +103,5 @@ def update(path: Path, fn: Callable[[dict], dict | None], expected_rev: int | No
         doc = result if isinstance(result, dict) else doc
         doc["rev"] = current + 1
         doc["updated"] = now_iso()
-        atomic_write_text(path, dump(doc))
+        write_text(path, dump(doc))
         return doc

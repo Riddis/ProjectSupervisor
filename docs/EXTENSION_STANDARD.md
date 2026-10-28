@@ -10,8 +10,8 @@ Three names are kept apart:
 - **The Python package or module name.**
 - **The distribution name.**
 
-For example, the Ollama lane's identity is `local_llm`, because tasks and job records already name that adapter. Its
-package could be `supervisor_ext_ollama` and its distribution `supervisor-ext-ollama`.
+For example, the Textgen lane's identity is `text_model`, because tasks and job records already name that adapter. Its
+package could be `supervisor_ext_textgen` and its distribution `supervisor-ext-textgen`.
 
 ## The manifest: `supervisor-extension.toml`
 
@@ -19,28 +19,28 @@ Read by the framework before anything the extension ships is imported (`supervis
 migrations are module names here, imported only once the extension is approved.
 
 ```toml
-identity = "local_llm"                       # required; lower case letters, digits and _, starting with a letter
+identity = "text_model"                       # required; lower case letters, digits and _, starting with a letter
 version = "1.0.0"                            # required; the extension's own version (PEP 440)
 framework = ">=1.12,<2"                      # required; the framework versions it supports (a PEP 440 range)
-migrations = "supervisor_ext_ollama.migrations"   # optional; a module exposing MIGRATIONS
+migrations = "supervisor_ext_textgen.migrations"   # optional; a module exposing MIGRATIONS
 
 [provides]                                   # what setup() registers; nothing else may be registered
-adapters = ["local_llm"]
-doctor_checks = ["local_llm_server", "ollama"]
+adapters = ["text_model"]
+doctor_checks = ["text_model_server", "textgen"]
 hooks = ["overview_panel"]                   # hooks that register something without an identifier of its own
 
 [legacy_ids]                                 # identifiers older than the namespace rule, kept as they are
-doctor_checks = ["ollama"]
+doctor_checks = ["textgen"]
 
 [config]                                     # optional; the extension's own configuration section
-section = "extensions.local_llm"             # always extensions.<identity>
-schema = "supervisor_ext_ollama.config:Settings"   # module:Class, a pydantic model of that section
-legacy_sections = ["local_llm"]              # optional; the top-level sections its values came from before 1.12.0
+section = "extensions.text_model"             # always extensions.<identity>
+schema = "supervisor_ext_textgen.config:Settings"   # module:Class, a pydantic model of that section
+legacy_sections = ["text_model"]              # optional; the top-level sections its values came from before 1.12.0
 
 [requires]                                   # optional
 resources = ["gpu"]                          # shared resource policy it reads (resources.gpu)
 services = ["http://127.0.0.1:11434"]        # what it talks to, shown by doctor
-extensions = ["comfy"]                       # identities it calls into; they load first
+extensions = ["render"]                       # identities it calls into; they load first
 ```
 
 Parsing is strict: an unknown key, an unknown kind or a malformed value is a problem, never ignored. Every problem is
@@ -65,14 +65,14 @@ reported at once, so a manifest is fixed in one pass.
 
 Everything an extension registers starts with its identity, unless it is listed in `legacy_ids`:
 - **Plain identifiers:** the identity itself, or the identity followed by `_`, `.`, `-`, `:` or `/`, e.g.
-  `review_rounds`, `review_rounds_queue` or `review_rounds.close`.
-- **Routes:** the same, after a leading `/`, e.g. `/review_rounds` or `/review_rounds/item`.
+  `ballots`, `ballots_queue` or `ballots.close`.
+- **Routes:** the same, after a leading `/`, e.g. `/ballots` or `/ballots/item`.
 
-A longer word is not the identity: `review_roundsx` does not belong to `review_rounds`. An identifier that is neither
+A longer word is not the identity: `ballotsx` does not belong to `ballots`. An identifier that is neither
 namespaced nor listed in `legacy_ids` is refused. A legacy identifier must also be listed in `provides`.
 
-Legacy identifiers exist so that nothing saved has to change. The Studio's review extension keeps its inbox kinds
-`round`, `labelling` and `external_edit`, its command kinds `review.set_verdict` and `review.submit`, and its route
+Legacy identifiers exist so that nothing saved has to change. An extension named `ballots` that predates the rule
+keeps its inbox kinds `round` and `tally`, its command kinds `vote.cast` and `vote.submit`, and its route
 `/review`.
 
 Renaming a persisted identifier is a migration, not an edit:
@@ -98,7 +98,7 @@ section with `ext.config(layout, <identity>)`, or a part of it with `ext.config(
 `config.legacy_sections` names the top-level sections the values lived in before 1.12.0:
 - **Reading:** until `supervisor migrate` has moved them, they are read from there, with a warning. The section
   named like the identity merges in at the top of `extensions.<identity>`, and any other nests under its own name.
-  The Studio's `comfy` lists `["comfy", "ffmpeg"]`, so `ffmpeg` becomes `extensions.comfy.ffmpeg`.
+  An extension `render` listing `["render", "encoder"]` gets `encoder` as `extensions.render.encoder`.
 - **Refused before import:** a legacy section the framework owns, and one that two manifests list.
 - **Moving them:** `supervisor migrate` moves the legacy sections into `extensions.<identity>`, driven by the
   manifests alone; no extension code runs. The shared `gpu` section moves to `resources.gpu` the same way. The moved

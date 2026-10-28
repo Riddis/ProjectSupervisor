@@ -1,0 +1,233 @@
+"""Commits of the supervisor's own records (1.12.1). A checkpoint (checkpoint.py) commits exactly a completed task's
+accepted paths and its record; everything else the loop keeps in tracked files is the loop's own bookkeeping, and
+this module commits it: the other task records, the inbox, issues, gates, applied commands, the seed, the decision
+records, the projections, a checkpoint's final record (written after its commit) and what `supervisor migrate`
+rewrote. Before 1.12.1 nothing committed them, so a live project collected them as uncommitted changes.
+
+A state commit takes exactly its paths, through a temporary index of its own, so the owner's edits elsewhere, staged
+or not, are never swept in, and a failed commit leaves the project's index as it was. It commits `state/` and the
+projections only when something under `state/` changed: a projection carries a render stamp, and projections alone
+would make a commit on every render. It leaves out a path a task has delivered but not yet had accepted, and
+everything under one (its checkpoint commits that), and stops when someone else has staged one of its paths. The loop
+calls `maybe()`: at once after a checkpoint, otherwise at most every `checkpoint.state_interval_minutes` (15).
+`checkpoint.state_commits: false` (routing.yaml) turns it off, for migrate too."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import time
+
+_now = time.time                               # patched in tests
+from pathlib import Path
+
+import yaml
+
+from . import checkpoint, store, tasks as tasks_mod
+from .models.task import TaskStatus
+from .paths import Layout
+
+STATE = "state"
+RECORD = "state_commit.json"                   # state/runtime/: when the last state commit was made
+
+
+def _git(root: Path, *args: str, index: str | None = None) -> tuple[int, str, str]:
+    """(exit code, stdout, stderr). Kept apart: git's warnings (line endings, say) go to stderr and must never be read
+    as file names. `index`: a git index file to use instead of the project's own (GIT_INDEX_FILE)."""
+    env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
+    try:
+        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=checkpoint.GIT_TIMEOUT_S, check=False, env=env)
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 1, "", str(exc)[:300]
+
+
+def settings(layout: Layout) -> dict:
+    out = {"enabled": True, "interval_minutes": 15.0}
+    cfg = layout.config / "routing.yaml"
+    if cfg.exists():
+        try:
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            data = {}
+        cp = data.get("checkpoint") or {}
+        if "state_commits" in cp:
+            out["enabled"] = bool(cp["state_commits"])
+        if cp.get("state_interval_minutes") is not None:
+            out["interval_minutes"] = float(cp["state_interval_minutes"])
+    return out
+
+
+def projections(layout: Layout) -> list[str]:
+    """The rendered files: the framework's and the ones extensions' projections are known to write."""
+    from . import extensions, verify
+    return sorted(set(verify.EXCLUDED_FILES) | extensions.known_projection_paths(layout))
+
+
+def changed(layout: Layout, paths: list[str]) -> list[str]:
+    """Root-relative files under `paths` that differ from HEAD (deleted ones included) or are new and not ignored."""
+    out = set()
+    for args in (("diff", "--name-only", "-z", "HEAD", "--"),
+                 ("ls-files", "--others", "--exclude-standard", "-z", "--")):
+        code, text, _err = _git(layout.root, *args, *paths)
+        if code == 0:
+            out |= {name.replace("\\", "/") for name in text.split("\0") if name.strip()}
+    return sorted(out)
+
+
+def _canonical(root: Path, path: str) -> str:
+    """A path as the delivery manifest resolves it (`contract.resolve`: absolute, `.` and `..` segments and repeated
+    separators resolved), in the platform's case rule (`os.path.normcase`), so the two always agree on what a
+    delivered path covers. A path the manifest would refuse (one through a link) falls back to the same resolution
+    done lexically, which still resolves the segments."""
+    from ._vendor.contract import resolve
+    raw = path.replace("\\", "/")
+    try:
+        resolved = str(resolve(raw, root))
+    except (ValueError, OSError):
+        resolved = os.path.normpath(os.path.join(str(Path(root).resolve()), raw))
+    return os.path.normcase(resolved).rstrip("\\/")
+
+
+def _not_yet_accepted(layout: Layout) -> list[str]:
+    """Delivered paths of tasks without a checkpoint yet, as given: their own checkpoint commits them, as accepted. A
+    path may be a directory, and then everything under it waits (review 1.12.1 R1)."""
+    out = set()
+    for t in tasks_mod.load_all(layout).values():
+        if t.status == TaskStatus.CANCELLED:
+            continue
+        if t.status == TaskStatus.COMPLETE and (t.model_extra or {}).get("checkpoint"):
+            continue
+        out |= set(t.paths)
+    return sorted(out)
+
+
+def _held_back(path: str, delivered: list[str], root: Path) -> bool:
+    """Whether root-relative `path` is, or lies under, a path a task delivered without acceptance, both resolved the
+    way the delivery manifest resolves them (review 1.12.1 R1, round 2: `state/./decisions`, `state//decisions` and
+    `state/tasks/../decisions` all cover `state/decisions/`). A delivered project root covers everything."""
+    file = _canonical(root, path)
+    for d in delivered:
+        covered = _canonical(root, d)
+        if file == covered or file.startswith(covered + os.sep):
+            return True
+    return False
+
+
+def _own_repository(root: Path) -> bool:
+    """The project root is a repository's top level. A project folder inside another repository (a test project in
+    an ignored folder of the framework's checkout, say) is not its own repository, and nothing is committed there."""
+    code, out, _err = _git(root, "rev-parse", "--show-toplevel")
+    if code != 0 or not out.strip():
+        return False
+    try:
+        return Path(out.strip().splitlines()[-1]).resolve() == Path(root).resolve()
+    except OSError:
+        return False
+
+
+def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: str | None = None) -> dict:
+    """Commit the loop's records now (and `extra` root-relative files, as migrate does). {"status": "committed",
+    "commit", "paths"} or {"status": "unchanged"} or {"status": "skipped", "reason"}."""
+    if not settings(layout)["enabled"]:
+        return {"status": "skipped", "reason": "checkpoint.state_commits is off"}
+    root = layout.root
+    if not _own_repository(root):
+        return {"status": "skipped", "reason": "not a git repository"}
+    delivered = _not_yet_accepted(layout)
+    state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered, root)]
+    extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered, root)] if extra else []
+    if not state_files and not extra_files:
+        return {"status": "unchanged"}
+    files = sorted(set(state_files) | set(extra_files)
+                   | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered, root)})
+    code, staged, _err = _git(root, "diff", "--cached", "--name-only", "--", *files)
+    if code == 0 and staged.strip():
+        names = ", ".join(staged.split()[:5])
+        tasks_mod.log(layout, "state_commit_skipped", "state_commit", reason="staged", paths=staged.split()[:20])
+        return {"status": "skipped", "reason": f"staged by someone else: {names}"}
+    message = (f"{title or 'state: the supervisor records (' + reason + ')'}\n\n"
+               f"Committed by the supervisor (checkpoint.state_commits), these {len(files)} file(s) and nothing else:\n"
+               + "".join(f"- {p}\n" for p in files[:40])
+               + (f"- ... and {len(files) - 40} more\n" if len(files) > 40 else ""))
+    out = _commit_in_own_index(root, files, message)
+    if out["status"] == "failed":
+        tasks_mod.log(layout, "state_commit_failed", "state_commit", error=out["reason"][:300])
+        return out
+    if out["status"] == "committed":
+        _remember(layout, out["commit"])
+        out["paths"] = files
+    return out
+
+
+def _commit_in_own_index(root: Path, files: list[str], message: str) -> dict:
+    """Commit `files` (their working-tree content, a deletion included) and nothing else, in a temporary index built
+    from HEAD (review 1.12.1 R2). The project's own index is touched only after the commit exists, and only for these
+    paths (`git reset -- <paths>`, which sets them to the new HEAD), so the owner's staging of other paths stays as it
+    was; when anything fails, the project's index is exactly as it was and a later attempt starts clean."""
+    fd, index = tempfile.mkstemp(prefix="state-commit-", suffix=".index")
+    os.close(fd)
+    os.unlink(index)                                       # git creates it: an empty file is not a valid index
+    try:
+        code, _out, err = _git(root, "read-tree", "HEAD", index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git read-tree: {err[:300]}"}
+        code, _out, err = _git(root, "add", "-A", "--", *files, index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git add: {err[:300]}"}
+        code, out, err = _git(root, "diff", "--cached", "--quiet", "HEAD", index=index)
+        if code == 0:
+            return {"status": "unchanged"}
+        code, out, err = _git(root, "commit", "-q", "-m", message, index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git commit: {(err or out)[:300]}"}
+        code, head, _err = _git(root, "rev-parse", "HEAD")
+        sha = head.strip() if code == 0 else None
+        target = sha or "HEAD"                             # the commit just made, named rather than implied
+        code, _out, err = _git(root, "reset", "-q", target, "--", *files)
+        if code not in (0, 1):                             # 1: "unstaged changes after reset" is only a report
+            return {"status": "committed", "commit": sha,
+                    "warning": f"committed, but the index was not updated for its paths: {err[:200]}"}
+        return {"status": "committed", "commit": sha}
+    finally:
+        for leftover in (index, index + ".lock"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
+
+
+def _record_path(layout: Layout) -> Path:
+    return layout.root / STATE / "runtime" / RECORD
+
+
+def _remember(layout: Layout, sha: str | None) -> None:
+    p = _record_path(layout)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(p, json.dumps({"at": _now(), "commit": sha}) + "\n")
+    except OSError:
+        pass
+
+
+def _last(layout: Layout) -> float:
+    try:
+        return float(json.loads(_record_path(layout).read_text(encoding="utf-8")).get("at") or 0)
+    except (OSError, ValueError, AttributeError):
+        return 0.0
+
+
+def maybe(layout: Layout, after_checkpoint: bool) -> dict | None:
+    """One loop step: commit at once after a checkpoint, otherwise when the interval has passed since the last state
+    commit. None when it is not yet time."""
+    cfg = settings(layout)
+    if not cfg["enabled"]:
+        return None
+    if not after_checkpoint and _now() - _last(layout) < cfg["interval_minutes"] * 60:
+        return None
+    out = commit(layout, reason="after a checkpoint" if after_checkpoint else "periodic")
+    if out["status"] in ("unchanged", "skipped"):
+        _remember(layout, None)                          # checked now: wait a full interval before asking git again
+    return out

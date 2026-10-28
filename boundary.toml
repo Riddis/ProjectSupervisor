@@ -90,7 +90,5 @@ files = [
   "supervisor/ui/templates/partials/icons.html",
 ]
 
-# Supporting evidence, never a failure: each registered project's domain words. The setup skill adds a project's
-# terms here when it is set up; a hit is a question for the reviewer, not a verdict.
-[projects.studio]
-terms = ["persona", "influencer", "comfy", "comfyui", "lora", "instantid", "bakeoff", "bake-off", "instagram"]
+# No [projects] table: a project's words are project information, so they never live in this repository. G1d reads
+# them from a local file outside it (SUPERVISOR_PROJECT_TERMS, else ~/.config/supervisor/project-terms.toml).

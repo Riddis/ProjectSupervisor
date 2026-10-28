@@ -14,7 +14,8 @@ from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, render, review as review_mod
-from . import runtime, scheduler, shutdown as shutdown_mod, tasks as tasks_mod, verify as verify_mod
+from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
+from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
 from .locks import LockHeld as _LockHeld  # noqa: F401
 from ._vendor import handoff
@@ -699,6 +700,15 @@ class Supervisor:
                 acted.append(task.id)
         return acted
 
+    def commit_state(self, after_checkpoint: bool) -> dict | None:
+        """The loop's own records to git (state_commit.py): at once after a checkpoint, else at most every
+        `checkpoint.state_interval_minutes`. A git problem is logged and never stops the loop."""
+        try:
+            return state_commit_mod.maybe(self.layout, after_checkpoint=after_checkpoint)
+        except Exception as exc:                            # noqa: BLE001 - git trouble must never kill the loop
+            tasks_mod.log(self.layout, "state_commit_error", "state_commit", error=str(exc)[:300])
+            return None
+
     def alert_if_idle(self, now: float | None = None) -> dict | None:
         """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
         work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
@@ -843,7 +853,8 @@ class Supervisor:
             self.request_owner_decisions()
             self.sweep_stalled()                                      # nothing stops silently
             self.alert_if_idle()
-            checkpoint_mod.run(self.layout)                           # accepted work → git, exactly as accepted
+            done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
+            self.commit_state(after_checkpoint=bool(done))           # the loop's own records → git (1.12.1)
             runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
                               open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)])
         if getattr(self, "_lock", None):

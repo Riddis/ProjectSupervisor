@@ -3,6 +3,69 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.12.1 — 2026-10-28
+
+Fixes only, found by running a live project on 1.12.0:
+- the framework repository held project information;
+- the supervisor never committed its own records;
+- its state writers turned LF files into CRLF on Windows.
+
+**Migration:** none added. `supervisor migrate` records the new version, and now commits what it rewrote (see below).
+Its dry run on a project at 1.12.0 lists only `project.yaml: framework_version 1.12.0 → 1.12.1`.
+
+**Rollback** to v1.12.0, in a maintenance window: stop, check out `v1.12.0`, run `supervisor migrate` (it records 1.12.0
+again), `supervisor doctor`, start. Nothing 1.12.1 writes is new to 1.12.0. The state commits it made stay in the
+project's history, and they are ordinary commits.
+
+- **Fixed: no project information in the framework repository.** The framework repo never contains a project's files
+  or information. It held none of a project's files, but some of one project's information:
+  - `boundary.toml` listed its words, and the setup skill was designed to add every new project's words there;
+  - docs examples, CHANGELOG lines, test fixtures and comments used its names, decision ids and record names;
+  - the guard tests' forbidden-word lists were its vocabulary.
+
+  The examples and fixtures now use invented names, and the sentences are reworded.
+  - **Added: gate G1d** (`supervisor/boundary.py`). Every tracked text file is scanned for the words of each project,
+    read from a local file outside every repository: `SUPERVISOR_PROJECT_TERMS`, else
+    `~/.config/supervisor/project-terms.toml`, as `[projects.<name>] terms = [...]`. A hit is a violation, and so is a
+    `[projects]` table in `boundary.toml`. Without the local file, as in CI, G1d says it did not run, and CI keeps G1a
+    to G1c. The old word scan checked only `supervisor/` and never failed. It is gone, and so is the report's
+    `evidence` field; `skipped` lists the rules that could not run.
+  - The pre-commit hook runs G1d, and the framework-change and supervisor-setup skills say where the local list lives.
+- **Fixed: the supervisor commits its own records** (`supervisor/state_commit.py`). A checkpoint commits exactly a
+  completed task's accepted paths and its record. Nothing committed the rest the loop keeps in tracked files:
+  - the other task records, the inbox, issues, gates, applied commands, the seed and the decision records;
+  - the projections;
+  - a checkpoint's own final record (`committed` and the hash, written after its commit);
+  - what `supervisor migrate` rewrote.
+
+  A live project collected over a hundred uncommitted changes that way, while `docs/ARCHITECTURE.md` said "the rest
+  is committed by checkpoints".
+  - A state commit names its paths (`git commit -- <paths>`), so the owner's edits elsewhere, staged or not, stay as
+    they are.
+  - It commits `state/` and the projections only when something under `state/` changed: a projection carries a render
+    stamp, so projections alone would make a commit on every render.
+  - The loop makes one right after a checkpoint, and otherwise at most every `checkpoint.state_interval_minutes` (15).
+  - It never commits a path a task has delivered but not yet had accepted, nor anything under one (a task may
+    deliver a directory). Each path is resolved as the delivery manifest resolves it, so `state/./decisions` or
+    `state//decisions` covers `state/decisions/`. That task's checkpoint commits them. Nor does it commit a path someone else has staged. It
+    commits only in a project that is its own repository's top level.
+  - It builds each commit in a temporary index of its own, and sets the project's index for its paths only once the
+    commit exists. A failed commit (a hook refusing it, say) leaves the project's index exactly as it was.
+  - Limits: the loop owns the files under `state/`, so an edit someone makes inside one of them by hand is committed
+    with the loop's. The staged-path check is made before the commit, so someone staging one of those paths at that
+    very moment is not detected.
+  - `supervisor migrate` commits the files it rewrote, as `migrate: framework <version>`. A config file that already
+    had uncommitted changes is left for the owner, and the note says so.
+  - `checkpoint.state_commits: false` (routing.yaml) turns all of this off.
+- **Fixed: the state writers keep each file's line endings.** The store (`store.write_new`, `store.update`), the
+  projections, decision records, conversations and the event log wrote with the platform's newline, so on Windows a
+  rewrite turned an LF file into CRLF. A one-line change then showed in git as the whole file changed: in one
+  project's task seed, 5222 lines showed as changed and 26 of them were real.
+  - `store.write_text()` and `store.append_line()` keep a file's own line endings, and a new file gets LF.
+  - A file that is CRLF now stays CRLF.
+- **Extension API (editorial): `log_event`.** Its documented example actor now uses an invented extension name
+  (the project information above). Nothing else in the API changed.
+
 ## 1.12.0 — 2026-10-28
 
 Phase 3 of the boundary plan (docs/BOUNDARY.md): the extension standard (docs/EXTENSION_STANDARD.md).
@@ -220,7 +283,7 @@ it), and `registry.config_sections()` declares sections routing.yaml already has
 **Rollback** to v1.10.1, in a maintenance window: drain, stop, check out `v1.10.1`, `supervisor migrate` (records
 1.10.1 again), `supervisor doctor`, start. Nothing 1.11.0 writes is new to 1.10.1. An extension already moved to
 `supervisor.ext` does not load on 1.10.1 (the package does not exist there), so roll its project change back with
-the framework: for the Studio, the parent of its phase-2 merge.
+the framework: the commit before the project's merge of its own change.
 
 **Extension authors:** import `supervisor.ext` only (docs/EXTENSION_API.md; examples/reference_extension/ uses all
 of it) and register everything in `setup()`. Imports of framework internals and module-level `register()` / `@job`
@@ -278,7 +341,7 @@ against `supervisor.testing`, which promises nothing.
     `process.scrub_env()` strips reaches a child launched with it. The two agent CLI lanes serve it through a new
     internal `agent_handle(layout)` method; `codex_env()` takes an optional layout.
 - **Extension API:** `job_spec(task)`, the copy of a task's `job:` block a lane's `prepare()` reads (the framework's
-  own helper; two Studio lanes kept copies of it).
+  own helper; project lanes kept copies of it).
 - **Registration only in `setup()`.** `registry.adapter()` and `registry.python_job()` are how an extension adds a
   lane or a python job, and importing an extension module should change nothing. Both now refuse a name another lane
   or job already has, built in or another extension's (before, an extension could silently replace the `process` or
@@ -289,7 +352,7 @@ against `supervisor.testing`, which promises nothing.
   keep working and are deprecated (the loader warns, next entry). `supervisor extension new` writes a module
   that imports `supervisor.ext`. A name stays the registering extension's until the loader is reset, so the same
   extension may register it again after a reload; an extension is its source file, so one file configured under two names
-  (a project's own tests import `extensions.comfy`, the loader `comfy`) is one extension. Tests:
+  (a project's own tests import `extensions.<name>`, the loader `<name>`) is one extension. Tests:
   `extensions.reset()` keeps registered lanes and python jobs, as before (a project's suite looks them up after a reset); `supervisor.testing.reset()` forgets them too.
 - **Internal imports in extensions are deprecated (gate G6).** After loading, the loader reads the source (AST) of
   every module in the project's `extensions/` folder, helpers included, and of installed extension modules, for
@@ -324,7 +387,7 @@ against `supervisor.testing`, which promises nothing.
   Overview's "Dispatch held" tag names the floor and the setting too. A stale reading still gates, as before: a
   7-day window's remaining share only falls until it resets, so an old reading never overstates what is left.
 - **Fixed: a Settings save no longer rewrites routing.yaml.** `settings.update` dumped the whole file through ruamel:
-  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (the Studio's
+  every line ending rewritten in place (non-atomically) and long lines reflowed at 80 columns (a long
   `claude.bash_allow`). It now replaces only the edited value's token, located by the YAML parser, and replaces the
   file atomically in its own line-ending style (`store.rewrite_text`); a setting the file does not have yet is
   added through a round trip that keeps long lines whole, `null` as `null` and lists indented as the file indents
@@ -525,7 +588,7 @@ No state or config shape change; `supervisor migrate` only records the new versi
 
 ## 1.8.4 — 2026-10-25
 
-Fixes from the Studio migration's phase-4 rehearsal (its record PHASE4.md, findings F2–F5), plus the licence.
+Fixes from a project migration's rehearsal (findings F2–F5), plus the licence.
 No state or config shape change; `supervisor migrate` only records the new version.
 
 - **The loop polls Codex capacity only when something can use the Codex lane** (F2). `codex_cli` is always
@@ -548,7 +611,7 @@ No state or config shape change; `supervisor migrate` only records the new versi
   value is rewritten whole. Every migration write, and `project.write()`,
   goes through `store.rewrite_text()`, which writes only when the content changes and keeps the file's LF or CRLF
   style (`Path.write_text` turned LF files into CRLF on Windows).
-- Tests: `test_capacity_poll.py`; the owner decision-item tests the Studio carried (REQUEUE salvage, DEFER, CANCEL on
+- Tests: `test_capacity_poll.py`; the owner decision-item tests a project carried (REQUEUE salvage, DEFER, CANCEL on
   a review-blocked task) moved here as `test_owner_decision_items.py`.
 - **Licence.** The framework is licensed under Apache License 2.0 with the Commons Clause (`LICENSE`): free to use,
   modify and share; not to be sold, nor offered as a product or service whose value derives substantially from it.

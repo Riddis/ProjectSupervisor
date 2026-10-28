@@ -75,7 +75,7 @@ when phase 3 changes where the values come from.
 from supervisor import ext
 
 def setup(registry):
-    registry.config_sections("render", "ffmpeg")      # this extension's sections of config/routing.yaml
+    registry.config_sections("render", "encoder")      # this extension's sections of config/routing.yaml
 
 def render_config(layout):
     return ext.config(layout, "render")               # {} when routing.yaml has no `render:` section
@@ -347,7 +347,7 @@ or `-` (`ValueError` otherwise). Without `command_id` every call is a new comman
 
 `log_event(layout, event, actor=None, **fields) -> None`: one line in `state/log.jsonl` through the framework's single
 log path: `{"ts", "event", "actor", ...fields}`, with credentials redacted from every field. The actor is the calling
-extension's name, or `<extension>:<actor>` when `actor` is given (`review_rounds:owner-ui`), so every line says which
+extension's name, or `<extension>:<actor>` when `actor` is given (`ballots:owner-ui`), so every line says which
 extension wrote it. Raises `ExtensionError` when the caller is not an extension's code.
 
 ## Policy

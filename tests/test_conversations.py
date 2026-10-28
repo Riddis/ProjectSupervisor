@@ -237,7 +237,7 @@ def test_convert_to_decision_writes_a_front_matter_markdown_file(layout):
     meta = conversations.create(layout)
     thread_id = meta["id"]
     conversations.ask(layout, thread_id, "should we switch models?")
-    conversations._finish_turn(layout, thread_id, 2, "done", "Stay on opus for now; revisit after the bake-off.")
+    conversations._finish_turn(layout, thread_id, 2, "done", "Stay on opus for now; revisit after the benchmark.")
     out = conversations.convert(layout, thread_id, 2, "decision", actor="owner", title="Stay on opus")
     files = list(layout.decisions.glob(f"{out['id']}-*.md"))
     assert len(files) == 1

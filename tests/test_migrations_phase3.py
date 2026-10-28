@@ -4,7 +4,8 @@ Two framework migrations move routing.yaml values to their owners. Both run from
 never extension code.
 - **`gpu` to `resources.gpu`:** the shared resource policy the framework owns.
 - **Each manifest's `config.legacy_sections` into `extensions.<identity>`:** the section named like the identity at
-  the top, any other nested under its own name (the Studio's `ffmpeg` becomes `extensions.comfy.ffmpeg`).
+  the top, any other nested under its own name (an extension `render`'s `encoder` becomes
+  `extensions.render.encoder`).
 
 A moved section keeps its comments, the comment on its key line included. Everything else stays byte for byte, in
 the file's own line endings, and the result is read back before it is written.
@@ -24,17 +25,17 @@ ROUTING = (
     "# Routing policy v1. gpu limits below are the owner's (this comment mentions gpu, it is not moved)\n"
     "version: 1\n"
     "capacity:\n"
-    "  claude: {reserve_percent: 20, weekly_gate_percent: 20}    # D-011\n"
+    "  claude: {reserve_percent: 20, weekly_gate_percent: 20}    # D-901\n"
     "gpu:\n"
     "  usable_vram_floor_mb: 6500          # assumed with desktop apps running\n"
     "  single_job: true                    # one gpu-lock holder at a time\n"
-    "comfy:                                # ComfyUI adapter (T0-13)\n"
+    "render:                                # the render server adapter (T0-13)\n"
     "  base_url: http://127.0.0.1:8188\n"
     "  timeout_s: 1800\n"
-    "local_llm:                            # Ollama adapter (T0-13)\n"
+    "text_model:                            # Textgen adapter (T0-13)\n"
     "  base_url: http://127.0.0.1:11434\n"
-    "ffmpeg:\n"
-    "  root: D:\\Repos\\ffmpeg        # ffmpeg.exe lives in <root>\\bin\n"
+    "encoder:\n"
+    "  root: D:\\Repos\\encoder        # encoder.exe lives in <root>\\bin\n"
     "qa:                                    # QA v0, engine/qa\n"
     "  min_width: 512\n"
     "# roles below; an older writer wrapped this note and left card empty\n"
@@ -46,10 +47,11 @@ ROUTING = (
 )
 
 MANIFESTS = {
-    "comfy": ('identity = "comfy"\nversion = "1.0.0"\nframework = ">=1.11"\n[config]\nsection = "extensions.comfy"\n'
-              'schema = "comfy:Settings"\nlegacy_sections = ["comfy", "ffmpeg"]\n'),
-    "local_llm": ('identity = "local_llm"\nversion = "1.0.0"\nframework = ">=1.11"\n[config]\n'
-                  'section = "extensions.local_llm"\nschema = "local_llm:Settings"\nlegacy_sections = ["local_llm"]\n'),
+    "render": ('identity = "render"\nversion = "1.0.0"\nframework = ">=1.11"\n[config]\nsection = "extensions.render"\n'
+              'schema = "render:Settings"\nlegacy_sections = ["render", "encoder"]\n'),
+    "text_model": ('identity = "text_model"\nversion = "1.0.0"\nframework = ">=1.11"\n[config]\n'
+                   'section = "extensions.text_model"\nschema = "text_model:Settings"\n'
+                   'legacy_sections = ["text_model"]\n'),
 }
 MODULE = "def setup(registry):\n    raise RuntimeError('setup must not run during migrate')\n"
 
@@ -81,8 +83,8 @@ def test_the_dry_run_names_each_move_and_writes_nothing(tmp_path, newline):
     before = routing_of(layout)
     notes = [n for n in migrations.run(layout, dry_run=True) if "framework_version" not in n]
     assert notes == ["config/routing.yaml: gpu moved to resources.gpu (shared resource policy)",
-                     "config/routing.yaml: comfy, ffmpeg moved to extensions.comfy (extension comfy)",
-                     "config/routing.yaml: local_llm moved to extensions.local_llm (extension local_llm)"]
+                     "config/routing.yaml: render, encoder moved to extensions.render (extension render)",
+                     "config/routing.yaml: text_model moved to extensions.text_model (extension text_model)"]
     assert routing_of(layout) == before
 
 
@@ -96,12 +98,13 @@ def test_the_move_keeps_values_comments_line_endings_and_everything_else(tmp_pat
     assert (b"\r\n" in raw) is (newline == "\r\n") and (newline == "\n" or b"\n" not in raw.replace(b"\r\n", b""))
     doc = yaml.safe_load(text)
     assert doc["resources"] == {"gpu": before["gpu"]}
-    assert doc["extensions"] == {"comfy": {**before["comfy"], "ffmpeg": before["ffmpeg"]},
-                                 "local_llm": before["local_llm"]}
+    assert doc["extensions"] == {"render": {**before["render"], "encoder": before["encoder"]},
+                                 "text_model": before["text_model"]}
     assert doc["qa"] == before["qa"] and doc["capacity"] == before["capacity"] and doc["version"] == 1
-    assert not {"gpu", "comfy", "local_llm", "ffmpeg"} & set(doc)
-    for comment in ("# assumed with desktop apps running", "# one gpu-lock holder at a time", "# ComfyUI adapter",
-                    "# Ollama adapter", "# ffmpeg.exe lives in", "# QA v0, engine/qa", "# D-011",
+    assert not {"gpu", "render", "text_model", "encoder"} & set(doc)
+    for comment in ("# assumed with desktop apps running", "# one gpu-lock holder at a time",
+                    "# the render server adapter", "# Textgen adapter", "# encoder.exe lives in", "# QA v0, engine/qa",
+                    "# D-901",
                     "this comment mentions gpu, it is not moved"):
         assert comment in text, comment
     assert text.replace("\r\n", "\n").startswith(ROUTING.split("gpu:\n", 1)[0])    # untouched head, byte for byte
@@ -123,7 +126,7 @@ def test_the_values_an_extension_reads_are_the_same_before_and_after(tmp_path):
     from supervisor.ext import _config
     from supervisor.manifest import parse
     layout = project(tmp_path)
-    m = parse(MANIFESTS["comfy"], source="comfy.toml")
+    m = parse(MANIFESTS["render"], source="render.toml")
     with pytest.warns(DeprecationWarning):
         legacy = _config._assembled(layout, m)
     migrations.run(layout)
@@ -131,23 +134,23 @@ def test_the_values_an_extension_reads_are_the_same_before_and_after(tmp_path):
 
 
 def test_an_extension_already_moved_is_left_alone(tmp_path):
-    routing = ROUTING + "extensions:\n  comfy:\n    base_url: http://127.0.0.1:9999\n"
+    routing = ROUTING + "extensions:\n  render:\n    base_url: http://127.0.0.1:9999\n"
     layout = project(tmp_path, routing=routing)
     notes = migrations.run(layout, dry_run=True)
-    assert not any("extensions.comfy" in n for n in notes) and any("extensions.local_llm" in n for n in notes)
+    assert not any("extensions.render" in n for n in notes) and any("extensions.text_model" in n for n in notes)
 
 
 def test_an_extension_without_a_manifest_keeps_its_sections(tmp_path):
     layout = project(tmp_path, manifests={})
     migrations.run(layout)
     doc = yaml.safe_load(routing_of(layout))
-    assert {"comfy", "local_llm", "ffmpeg"} <= set(doc) and "extensions" not in doc and doc["resources"]["gpu"]
+    assert {"render", "text_model", "encoder"} <= set(doc) and "extensions" not in doc and doc["resources"]["gpu"]
 
 
 def test_a_flow_style_parent_falls_back_to_the_round_trip_and_still_moves_the_values():
     """`extensions: {}` cannot take block lines under it: the round trip moves the section instead, comments kept."""
-    out = yaml_edit.move_sections("extensions: {}\ncomfy:   # lane\n  a: 1\n", [("comfy", ("extensions", "comfy"))])
-    assert yaml.safe_load(out) == {"extensions": {"comfy": {"a": 1}}} and "# lane" in out
+    out = yaml_edit.move_sections("extensions: {}\nrender:   # lane\n  a: 1\n", [("render", ("extensions", "render"))])
+    assert yaml.safe_load(out) == {"extensions": {"render": {"a": 1}}} and "# lane" in out
 
 
 def test_the_move_refuses_a_destination_that_exists_and_checks_its_result():

@@ -67,10 +67,10 @@ def test_project_defaults_apply_without_a_file(tmp_path):
     assert project.extensions(layout) == []
 
 
-def test_template_contains_no_leftover_domain_or_history_references():
-    """The template is what a stranger clones: nothing from the project it was extracted from may remain."""
-    forbidden = ("persona", "comfy", "ollama", "influencer", "nudenet", "instagram", "AiInfluencer", "studio",
-                 "D-015", "D-016", "T0-", "TowerDefense")
+def test_template_contains_no_task_history_references():
+    """The template is what a stranger clones: no task ids from any project's history. A project's own words are
+    checked by gate G1d (tests/test_boundary_project_info.py) from a local list, never named here."""
+    forbidden = ("T0-",)
     hits = []
     for p in sorted(x for x in TEMPLATE.rglob("*") if x.is_file()):
         text = p.read_text(encoding="utf-8", errors="replace").lower()
@@ -78,9 +78,9 @@ def test_template_contains_no_leftover_domain_or_history_references():
     assert not hits, hits
 
 
-def test_framework_package_contains_no_leftover_history_references():
-    forbidden = ("persona", "comfy", "ollama", "influencer", "nudenet", "instagram", "AiInfluencer", "D-015", "D-016",
-                 "plan §", "review round")
+def test_framework_package_contains_no_history_references():
+    """Package code does not cite plan sections or review rounds as history. Projects' words: gate G1d."""
+    forbidden = ("plan §", "review round")
     root = Path(__file__).resolve().parents[1] / "supervisor"
     hits = []
     for p in sorted(root.rglob("*.py")) + sorted(root.rglob("*.html")):
@@ -241,7 +241,7 @@ def test_cost_lane_local_can_be_routed_to_an_extension_lane(fresh):
 def test_doctor_on_a_fresh_project_reports_project_state_and_routing(fresh):
     checks = {c.name: c for c in doctor.run(Layout(fresh))}
     assert checks["project"].ok and "Demo Project" in checks["project"].detail
-    assert str(Layout(fresh).root) in checks["project"].detail       # which tree doctor examined (PHASE4 F3)
+    assert str(Layout(fresh).root) in checks["project"].detail       # which tree doctor examined (1.8.4, F3)
     assert checks["state"].ok and checks["routing"].ok and checks["python"].ok
     assert checks["git"].ok is False                                  # not a repo yet: says so, does not crash
 
@@ -484,7 +484,7 @@ def _seed_task(tid, title):
 
 
 def test_task_import_dry_run_validates_and_writes_nothing(fresh, monkeypatch):
-    """PHASE4 F4: `task import --dry-run` reports what an import would create and refresh, runs the same validation,
+    """1.8.4, F4: `task import --dry-run` reports what an import would create and refresh, runs the same validation,
     and touches neither the task store nor the log, so it is safe while a supervisor runs."""
     monkeypatch.chdir(fresh)
     seed = fresh / "state" / "tasks_seed.yaml"
@@ -509,7 +509,7 @@ def test_task_import_dry_run_validates_and_writes_nothing(fresh, monkeypatch):
 
 
 def test_local_gpu_migration_rewrites_only_the_field_and_keeps_line_endings(fresh):
-    """PHASE4 F5: the 1.0.0 migration reported every file that mentions local_gpu (a note, the seed's header comment)
+    """1.8.4, F5: the 1.0.0 migration reported every file that mentions local_gpu (a note, the seed's header comment)
     on every run while writing identical text, and its write_text turned LF files into CRLF on Windows."""
     layout = Layout(fresh)
     make_task(layout, "G", status="IN_PROGRESS")

@@ -319,8 +319,7 @@ def log(layout: Layout, event: str, actor: str = "system", **fields):
               "actor": policy_mod.screen_log_identity(actor, layout),
               "event": policy_mod.screen_log_identity(event, layout),
               **policy_mod.redact_fields(fields, layout)}
-    with layout.log.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    store.append_line(layout.log, json.dumps(record, ensure_ascii=False))     # the log's own line endings
 
 
 # ------------------------------------------------------------------ the rule

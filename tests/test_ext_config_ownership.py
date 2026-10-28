@@ -3,7 +3,8 @@ config/routing.yaml, validated by the pydantic model its manifest names (`config
 invalid configuration is a load failure and leaves nothing registered. `ext.config()` and `ext.resources()` keep
 their phase-2 signatures:
 - `ext.config(layout, <identity>)` is the whole validated section;
-- `ext.config(layout, <legacy section>)` is the sub-section of that name (the Studio's comfy reads `ffmpeg` this way).
+- `ext.config(layout, <legacy section>)` is the sub-section of that name (an extension `render` reads `encoder`
+  this way).
 
 Until the migration has run (step 7), the values still come from the old top-level sections the manifest lists in
 `config.legacy_sections`, with a DeprecationWarning: the section named like the identity merges in at the top, any
@@ -24,7 +25,7 @@ from pydantic import BaseModel
 from supervisor import ext
 
 class Media(BaseModel):
-    binary: str = "ffmpeg"
+    binary: str = "encoder"
     threads: int = 2
 
 class Settings(BaseModel):
@@ -75,8 +76,8 @@ def test_the_extensions_own_section_is_read_validated_and_completed_by_its_schem
                                 "resources": {"gpu": {"usable_vram_floor_mb": 6500}}})
     assert reg.loaded == ["notes"] and not reg.errors
     assert read["whole"] == {"base_url": "http://127.0.0.1:9", "timeout_s": 30,
-                             "media": {"binary": "ffmpeg", "threads": 4}}
-    assert read["media"] == {"binary": "ffmpeg", "threads": 4}
+                             "media": {"binary": "encoder", "threads": 4}}
+    assert read["media"] == {"binary": "encoder", "threads": 4}
     assert read["resources"] == {"gpu": {"usable_vram_floor_mb": 6500}}
 
 

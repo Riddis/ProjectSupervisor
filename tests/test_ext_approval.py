@@ -81,25 +81,25 @@ def test_an_identifier_two_manifests_claim_refuses_both(tmp_path):
 
 
 def test_extensions_load_after_what_they_require_whatever_the_listed_order(tmp_path):
-    layout, order = project(tmp_path, {"bench": {"extra": '[requires]\nextensions = ["comfy"]\n'}, "comfy": {},
+    layout, order = project(tmp_path, {"bench": {"extra": '[requires]\nextensions = ["render"]\n'}, "render": {},
                                        "notes": {"manifest": False}})
     reg = extensions.load(layout)
-    assert reg.loaded == ["comfy", "bench", "notes"]
-    assert order.read_text().split() == ["comfy", "bench", "notes"]
+    assert reg.loaded == ["render", "bench", "notes"]
+    assert order.read_text().split() == ["render", "bench", "notes"]
 
 
 def test_a_requirement_project_yaml_does_not_list_is_refused(tmp_path):
-    layout, _order = project(tmp_path, {"bench": {"extra": '[requires]\nextensions = ["comfy"]\n'}})
+    layout, _order = project(tmp_path, {"bench": {"extra": '[requires]\nextensions = ["render"]\n'}})
     reg = extensions.load(layout)
-    assert not imported(tmp_path, "bench") and any("comfy" in e and "project.yaml" in e for e in reg.errors)
+    assert not imported(tmp_path, "bench") and any("render" in e and "project.yaml" in e for e in reg.errors)
 
 
 def test_a_dependency_that_did_not_load_refuses_its_dependants(tmp_path):
-    layout, _order = project(tmp_path, {"comfy": {"framework": ">=99"},
-                                        "bench": {"extra": '[requires]\nextensions = ["comfy"]\n'}})
+    layout, _order = project(tmp_path, {"render": {"framework": ">=99"},
+                                        "bench": {"extra": '[requires]\nextensions = ["render"]\n'}})
     reg = extensions.load(layout)
     assert not reg.loaded and not imported(tmp_path, "bench")
-    assert any(e.startswith("bench:") and "comfy" in e and "refused" in e for e in reg.errors)   # decided before import
+    assert any(e.startswith("bench:") and "render" in e and "refused" in e for e in reg.errors)  # decided before import
 
 
 def test_a_dependency_cycle_is_refused(tmp_path):

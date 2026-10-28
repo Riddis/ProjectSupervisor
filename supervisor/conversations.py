@@ -58,7 +58,7 @@ def _read_lines(path: Path) -> list[dict]:
 
 
 def _write_lines(path: Path, lines: list[dict]) -> None:
-    atomic_write_text(path, "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines))
+    store.write_text(path, "".join(json.dumps(l, ensure_ascii=False) + "\n" for l in lines))
 
 
 def _lock(layout: Layout) -> FileLock:
