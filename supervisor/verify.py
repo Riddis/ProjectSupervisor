@@ -240,6 +240,9 @@ def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list
     for p in changed_paths(before, after):
         if p in declared or p in skip or (ignore and contained(p, list(ignore), root)):
             continue
+        kinds = {(before.get(p) or {}).get("kind"), (after.get(p) or {}).get("kind")}
+        if kinds <= {"directory", "missing", None}:
+            continue                    # a folder appearing or going away is no delivery; its files are judged (1.13.0)
         (inside if contained(p, owned_paths, root) else outside).append(p)
     return inside, outside
 

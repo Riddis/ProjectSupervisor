@@ -25,6 +25,10 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Fixed: a new owned folder no longer fails the first delivery.** A task whose `owned_paths` named a folder that
+  did not exist yet failed its first verification with "undeclared changes inside owned paths: <folder>", and spent a
+  revision. The delivery manifest recorded the folder as missing before the job and as a directory after it, and
+  that counted as a write. Only file changes count now. A file replaced by a folder still does.
 - **Changed: `supervisor status` names the project and the lock's holder.** It first prints `project: <root>`, so a
   session working on a copy can confirm `SUPERVISOR_ROOT`. Then `lock: free`, or `lock: held by <owner>` for a loop
   holding `state/.lock`: a probe takes and releases the lock at once, and reads its owner sidecar when it cannot.
