@@ -98,7 +98,7 @@ def test_a_dry_run_writes_nothing(project):
     (shipped / "alpha" / "SKILL.md").write_text("---\nname: alpha\n---\nalpha v2\n", encoding="utf-8")
     record = (root / ".claude" / "supervisor-skills.json").read_bytes()
     done = {e.rel: e.state for e in skills.update(root, dry_run=True)}
-    assert done["alpha/SKILL.md"] == "updated"
+    assert done["alpha/SKILL.md"] == "would update"                     # says it did not write (trial finding)
     assert copy(root, "alpha/SKILL.md").read_text(encoding="utf-8").endswith("alpha v1\n")
     assert (root / ".claude" / "supervisor-skills.json").read_bytes() == record
 
@@ -144,3 +144,36 @@ def test_the_framework_ships_its_template_skills_through_this(tmp_path):
     assert found and set(found.values()) == {"current"}, found
     record = json.loads((root / ".claude" / "supervisor-skills.json").read_text(encoding="utf-8"))
     assert set(record["files"]) == set(found)                            # init recorded what it stamped
+
+
+def test_an_older_shipped_version_nobody_edited_is_outdated_not_edited(project, monkeypatch):
+    """Trial finding: a project made before the record existed holds a copy an earlier release shipped. Its hash is
+    in the history of shipped versions (supervisor/skills_history.json), so it is outdated, not edited."""
+    root, shipped = project
+    (root / ".claude" / "supervisor-skills.json").unlink()
+    old = "---\nname: alpha\n---\nalpha v0, as an earlier release shipped it\n"
+    copy(root, "alpha/SKILL.md").write_text(old, encoding="utf-8")
+    monkeypatch.setattr(skills, "history", lambda: {"alpha/SKILL.md": {skills._digest(old)}})
+    assert states(root)["alpha/SKILL.md"] == "outdated"
+    assert {e.rel: e.state for e in skills.update(root)}["alpha/SKILL.md"] == "updated"
+    assert copy(root, "alpha/SKILL.md").read_text(encoding="utf-8").endswith("alpha v1\n")
+
+
+def test_the_shipped_history_holds_what_earlier_releases_shipped():
+    """The file tools/skills_history.py writes from the release tags: every entry names a skill file and full hashes."""
+    found = skills.history()
+    assert "supervisor-setup/SKILL.md" in found
+    assert all(len(h) == 64 for hashes in found.values() for h in hashes)
+
+
+def test_an_update_commits_what_it_wrote(project):
+    """Trial finding: nothing committed the skills update wrote, so `git status` kept showing them."""
+    import subprocess
+    root, shipped = project
+    git = lambda *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=False)
+    git("init", "-q"); git("config", "user.email", "t@example.com"); git("config", "user.name", "t")
+    git("add", "-A"); git("commit", "-qm", "init")
+    (shipped / "alpha" / "SKILL.md").write_text("---\nname: alpha\n---\nalpha v2\n", encoding="utf-8")
+    skills.update(root)
+    assert git("log", "-1", "--format=%s").stdout.startswith("skills:")
+    assert git("status", "--porcelain", "--", ".claude").stdout.strip() == ""

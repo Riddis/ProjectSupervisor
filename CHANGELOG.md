@@ -21,7 +21,10 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
   - `skills update` installs the missing ones and replaces the outdated ones. It never touches an edited copy, which
     it flags for a merge by hand, nor a retired one.
   - Hashes ignore line endings. A project from before 1.13.0 has no record yet: an identical copy counts as current,
-    and a different one as edited.
+    a copy an earlier release shipped counts as outdated (`supervisor/skills_history.json`, written from the release
+    tags by `tools/skills_history.py`), and any other as edited.
+  - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
+    or "would update".
 - **Added: the project-side skills, wave 1** (`supervisor/template/.claude/skills/`, delivered by `supervisor init`
   and `supervisor skills update`):
   - `maintenance-window`: drain, confirm nothing is open, snapshot, the change, migrate, doctor, the suite, start

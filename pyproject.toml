@@ -35,7 +35,7 @@ include = ["supervisor*"]
 
 [tool.setuptools.package-data]
 supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "extension_template/**/*",
-              "ui/templates/**/*", "ui/static/**/*", "_vendor/*"]
+              "ui/templates/**/*", "ui/static/**/*", "_vendor/*", "skills_history.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

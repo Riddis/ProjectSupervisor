@@ -1,0 +1,8 @@
+{
+  "about": "sha256 of each template skill file as release tags shipped it (line endings ignored); written by tools/skills_history.py",
+  "files": {
+    "supervisor-setup/SKILL.md": [
+      "acb07a2823e1854632661f6f38d9b596c5e1b9078d545dc7e18224b0a4f83878"
+    ]
+  }
+}
