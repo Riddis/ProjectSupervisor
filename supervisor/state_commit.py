@@ -121,7 +121,7 @@ def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: s
         tasks_mod.log(layout, "state_commit_failed", "state_commit", error=err[:300])
         return {"status": "failed", "reason": f"git add: {err[:300]}"}
     message = (f"{title or 'state: the supervisor records (' + reason + ')'}\n\n"
-               f"Committed by the supervisor (checkpoint.state_commits): {len(files)} file(s) it keeps, only these.\n"
+               f"Committed by the supervisor (checkpoint.state_commits), these {len(files)} file(s) and nothing else:\n"
                + "".join(f"- {p}\n" for p in files[:40])
                + (f"- ... and {len(files) - 40} more\n" if len(files) > 40 else ""))
     code, out, err = _git(root, "commit", "-q", "-m", message, "--", *files)
