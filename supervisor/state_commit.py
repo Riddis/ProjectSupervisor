@@ -13,7 +13,9 @@ calls `maybe()`: at once after a checkpoint, otherwise at most every `checkpoint
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import time
 
 _now = time.time                               # patched in tests
@@ -29,12 +31,13 @@ STATE = "state"
 RECORD = "state_commit.json"                   # state/runtime/: when the last state commit was made
 
 
-def _git(root: Path, *args: str) -> tuple[int, str, str]:
+def _git(root: Path, *args: str, index: str | None = None) -> tuple[int, str, str]:
     """(exit code, stdout, stderr). Kept apart: git's warnings (line endings, say) go to stderr and must never be read
-    as file names."""
+    as file names. `index`: a git index file to use instead of the project's own (GIT_INDEX_FILE)."""
+    env = {**os.environ, "GIT_INDEX_FILE": index} if index else None
     try:
         proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=checkpoint.GIT_TIMEOUT_S, check=False)
+                              errors="replace", timeout=checkpoint.GIT_TIMEOUT_S, check=False, env=env)
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except (OSError, subprocess.SubprocessError) as exc:
         return 1, "", str(exc)[:300]
@@ -134,24 +137,54 @@ def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: s
         names = ", ".join(staged.split()[:5])
         tasks_mod.log(layout, "state_commit_skipped", "state_commit", reason="staged", paths=staged.split()[:20])
         return {"status": "skipped", "reason": f"staged by someone else: {names}"}
-    code, _out, err = _git(root, "add", "--", *files)
-    if code != 0:
-        tasks_mod.log(layout, "state_commit_failed", "state_commit", error=err[:300])
-        return {"status": "failed", "reason": f"git add: {err[:300]}"}
     message = (f"{title or 'state: the supervisor records (' + reason + ')'}\n\n"
                f"Committed by the supervisor (checkpoint.state_commits), these {len(files)} file(s) and nothing else:\n"
                + "".join(f"- {p}\n" for p in files[:40])
                + (f"- ... and {len(files) - 40} more\n" if len(files) > 40 else ""))
-    code, out, err = _git(root, "commit", "-q", "-m", message, "--", *files)
-    if code != 0:
-        if "nothing to commit" in out + err or "no changes added" in out + err:
+    out = _commit_in_own_index(root, files, message)
+    if out["status"] == "failed":
+        tasks_mod.log(layout, "state_commit_failed", "state_commit", error=out["reason"][:300])
+        return out
+    if out["status"] == "committed":
+        _remember(layout, out["commit"])
+        out["paths"] = files
+    return out
+
+
+def _commit_in_own_index(root: Path, files: list[str], message: str) -> dict:
+    """Commit `files` (their working-tree content, a deletion included) and nothing else, in a temporary index built
+    from HEAD (review 1.12.1 R2). The project's own index is touched only after the commit exists, and only for these
+    paths (`git reset -- <paths>`, which sets them to the new HEAD), so the owner's staging of other paths stays as it
+    was; when anything fails, the project's index is exactly as it was and a later attempt starts clean."""
+    fd, index = tempfile.mkstemp(prefix="state-commit-", suffix=".index")
+    os.close(fd)
+    os.unlink(index)                                       # git creates it: an empty file is not a valid index
+    try:
+        code, _out, err = _git(root, "read-tree", "HEAD", index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git read-tree: {err[:300]}"}
+        code, _out, err = _git(root, "add", "-A", "--", *files, index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git add: {err[:300]}"}
+        code, out, err = _git(root, "diff", "--cached", "--quiet", "HEAD", index=index)
+        if code == 0:
             return {"status": "unchanged"}
-        tasks_mod.log(layout, "state_commit_failed", "state_commit", error=(err or out)[:300])
-        return {"status": "failed", "reason": f"git commit: {(err or out)[:300]}"}
-    code, head, _err = _git(root, "rev-parse", "HEAD")
-    sha = head.strip() if code == 0 else None
-    _remember(layout, sha)
-    return {"status": "committed", "commit": sha, "paths": files}
+        code, out, err = _git(root, "commit", "-q", "-m", message, index=index)
+        if code != 0:
+            return {"status": "failed", "reason": f"git commit: {(err or out)[:300]}"}
+        code, head, _err = _git(root, "rev-parse", "HEAD")
+        sha = head.strip() if code == 0 else None
+        code, _out, err = _git(root, "reset", "-q", "--", *files)
+        if code not in (0, 1):                             # 1: "unstaged changes after reset" is only a report
+            return {"status": "committed", "commit": sha,
+                    "warning": f"committed, but the index was not updated for its paths: {err[:200]}"}
+        return {"status": "committed", "commit": sha}
+    finally:
+        for leftover in (index, index + ".lock"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
 
 
 def _record_path(layout: Layout) -> Path:

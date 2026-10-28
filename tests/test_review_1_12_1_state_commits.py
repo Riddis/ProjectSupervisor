@@ -1,9 +1,14 @@
-"""Review 1.12.1, round 1. State-commit defects the reviewer reproduced:
+"""Review 1.12.1, round 1. Two state-commit defects the reviewer reproduced:
 
 R1 (P1): a task may deliver a directory (the delivery manifest walks it), and the "not yet accepted" exclusion compared
 exact path strings, so a file inside a delivered directory was committed before the task's acceptance. The exclusion
 now covers everything under a delivered path, whatever form the path is written in (a trailing slash, a backslash,
-`./`, the project root itself), for state records and projections alike."""
+`./`, the project root itself), for state records and projections alike.
+
+R2 (P2): a failed commit (a pre-commit hook refusing it, say) left the files it had staged in the index, and every later
+attempt read them as someone else's staging and skipped. A state commit now builds its commit in a temporary index of
+its own and, once it has committed, sets only its paths in the project's index; when anything fails, the project's
+index is exactly as it was."""
 from __future__ import annotations
 
 import subprocess
@@ -66,3 +71,33 @@ def test_a_delivered_directory_holds_back_a_projection_inside_it_too(layout, rep
     inbox.create(layout, for_role="owner", subject="q", summary="s")
     out = state_commit.commit(layout, reason="probe")
     assert out["status"] == "committed" and "views/BOARD.md" not in out["paths"]
+
+
+def test_a_refused_commit_leaves_the_index_as_it_was_and_a_retry_commits(layout, repo):
+    """The reviewer's probe: a pre-commit hook refuses the first commit, then is removed."""
+    (repo / "owner.md").write_text("the owner's staged file\n")
+    git(repo, "add", "owner.md")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_bytes(b"#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    inbox.create(layout, for_role="owner", subject="q", summary="s")
+    first = state_commit.commit(layout, reason="probe")
+    assert first["status"] == "failed", first
+    assert git(repo, "diff", "--cached", "--name-only").stdout.split() == ["owner.md"]   # only the owner's staging
+    hook.unlink()
+    retry = state_commit.commit(layout, reason="probe")
+    assert retry["status"] == "committed", retry
+    assert any(p.startswith("state/inbox/") for p in retry["paths"])
+    assert git(repo, "diff", "--cached", "--name-only").stdout.split() == ["owner.md"]   # still the owner's, untouched
+    assert not in_head(repo, "owner.md")
+    assert git(repo, "status", "--porcelain", "--", "state").stdout.strip() == ""        # index and HEAD agree
+
+
+def test_after_a_commit_the_index_matches_it_for_its_paths(layout, repo):
+    inbox.create(layout, for_role="owner", subject="q", summary="s")
+    out = state_commit.commit(layout, reason="probe")
+    assert out["status"] == "committed"
+    for p in out["paths"]:
+        assert git(repo, "diff", "--cached", "--name-only", "--", p).stdout.strip() == "", p
+        assert git(repo, "diff", "--name-only", "--", p).stdout.strip() == "", p
