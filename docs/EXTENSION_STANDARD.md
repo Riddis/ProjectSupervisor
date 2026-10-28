@@ -118,7 +118,7 @@ in the extension's range. Each check prints `OK` or `FAIL`, and any `FAIL` exits
 | `framework` | the range includes the installed framework |
 | `imports` | the extension's source imports `supervisor.ext` only (and `supervisor.testing` in its tests) |
 | `import_side_effects` | importing the module in a fresh interpreter changes no shared registry |
-| `registrations` | `setup()`, against a staging registry that is never committed, registers exactly what `provides` declares |
+| `registrations` | `setup()`, against a staging registry that is never committed, registers exactly what `provides` declares; the registry holds each declared dependency's manifest, configuration schema and origin, so a dependency's function called from `setup()` reads its own configuration |
 | `idempotent` | a second `setup()` registers the same |
 | `config` | the project's section validates against the manifest's schema |
 
@@ -192,14 +192,28 @@ imported, so a refused extension never executes. Refused:
   cycle of them.
 
 Extensions load in `project.yaml`'s order, except that each one moves after the extensions it requires. One whose
-requirement did not load is refused before its import. A refusal counts as a load failure: a required extension's
-refusal blocks the loop.
+requirement is refused is refused too, and one whose requirement did not load is refused before its import. A refusal
+counts as a load failure: a required extension's refusal blocks the loop.
+
+The same approval decides what `supervisor migrate` and G5 may import: a refused extension directs no configuration
+move, and none of its migrations runs.
+
+A refused extension's modules cannot be imported by any path the framework sets up, for the rest of the process:
+- a sibling's `from . import <refused>`;
+- the `extensions/` package initializer;
+- a configuration schema or migration module;
+- an installed extension's entry-point module.
+
+The import fails with ImportError, saying the module belongs to a refused extension. This closes the import paths,
+and is not a sandbox: an accepted extension is trusted code.
 
 ## Loading: all or nothing
 
 `setup(registry)` registers into a staging area. The process-wide tables (lanes, python jobs, command kinds) are
 written only by one commit after `setup()` returns. Until then nothing outside the extension can see its
-registrations, not even another thread. Whatever fails, nothing the extension registered remains:
+registrations, not even another thread. The project's registry is published only once the whole load has finished:
+another thread asking for it meanwhile waits for the load, and `ext.config()` inside `setup()` reads the load in
+progress. Whatever fails, nothing the extension registered remains:
 - an exception in `setup()`;
 - a registration its manifest does not declare in `provides`;
 - a manifest that discovery refuses;
