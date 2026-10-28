@@ -3,6 +3,62 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.12.1 — 2026-10-28
+
+Fixes only, found by running a live project on 1.12.0:
+- the framework repository held project information;
+- the supervisor never committed its own records;
+- its state writers turned LF files into CRLF on Windows.
+
+**Migration:** none added. `supervisor migrate` records the new version, and now commits what it rewrote (see below).
+Its dry run on a project at 1.12.0 lists only `project.yaml: framework_version 1.12.0 → 1.12.1`.
+
+**Rollback** to v1.12.0, in a maintenance window: stop, check out `v1.12.0`, run `supervisor migrate` (it records 1.12.0
+again), `supervisor doctor`, start. Nothing 1.12.1 writes is new to 1.12.0. The state commits it made stay in the
+project's history, and they are ordinary commits.
+
+- **Fixed: no project information in the framework repository.** The framework repo never contains a project's files
+  or information. It held none of a project's files, but some of one project's information:
+  - `boundary.toml` listed its words, and the setup skill was designed to add every new project's words there;
+  - docs examples, CHANGELOG lines, test fixtures and comments used its names, decision ids and record names;
+  - the guard tests' forbidden-word lists were its vocabulary.
+
+  The examples and fixtures now use invented names, and the sentences are reworded.
+  - **Added: gate G1d** (`supervisor/boundary.py`). Every tracked text file is scanned for the words of each project,
+    read from a local file outside every repository: `SUPERVISOR_PROJECT_TERMS`, else
+    `~/.config/supervisor/project-terms.toml`, as `[projects.<name>] terms = [...]`. A hit is a violation, and so is a
+    `[projects]` table in `boundary.toml`. Without the local file, as in CI, G1d says it did not run, and CI keeps G1a
+    to G1c. The old word scan checked only `supervisor/` and never failed. It is gone, and so is the report's
+    `evidence` field; `skipped` lists the rules that could not run.
+  - The pre-commit hook runs G1d, and the framework-change and supervisor-setup skills say where the local list lives.
+- **Fixed: the supervisor commits its own records** (`supervisor/state_commit.py`). A checkpoint commits exactly a
+  completed task's accepted paths and its record. Nothing committed the rest the loop keeps in tracked files:
+  - the other task records, the inbox, issues, gates, applied commands, the seed and the decision records;
+  - the projections;
+  - a checkpoint's own final record (`committed` and the hash, written after its commit);
+  - what `supervisor migrate` rewrote.
+
+  A live project collected over a hundred uncommitted changes that way, while `docs/ARCHITECTURE.md` said "the rest
+  is committed by checkpoints".
+  - A state commit names its paths (`git commit -- <paths>`), so the owner's edits elsewhere, staged or not, stay as
+    they are.
+  - It commits `state/` and the projections only when something under `state/` changed: a projection carries a render
+    stamp, so projections alone would make a commit on every render.
+  - The loop makes one right after a checkpoint, and otherwise at most every `checkpoint.state_interval_minutes` (15).
+  - It never commits a path a task has delivered but not yet had accepted (its checkpoint does), nor a path someone
+    else has staged. It commits only in a project that is its own repository's top level.
+  - `supervisor migrate` commits the files it rewrote, as `migrate: framework <version>`. A config file that already
+    had uncommitted changes is left for the owner, and the note says so.
+  - `checkpoint.state_commits: false` (routing.yaml) turns all of this off.
+- **Fixed: the state writers keep each file's line endings.** The store (`store.write_new`, `store.update`), the
+  projections, decision records, conversations and the event log wrote with the platform's newline, so on Windows a
+  rewrite turned an LF file into CRLF. A one-line change then showed in git as the whole file changed: in one
+  project's task seed, 5222 lines showed as changed and 26 of them were real.
+  - `store.write_text()` and `store.append_line()` keep a file's own line endings, and a new file gets LF.
+  - A file that is CRLF now stays CRLF.
+- **Extension API (editorial): `log_event`.** Its documented example actor now uses an invented extension name
+  (the project information above). Nothing else in the API changed.
+
 ## 1.12.0 — 2026-10-28
 
 Phase 3 of the boundary plan (docs/BOUNDARY.md): the extension standard (docs/EXTENSION_STANDARD.md).
