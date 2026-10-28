@@ -45,8 +45,14 @@ project's history, and they are ordinary commits.
   - It commits `state/` and the projections only when something under `state/` changed: a projection carries a render
     stamp, so projections alone would make a commit on every render.
   - The loop makes one right after a checkpoint, and otherwise at most every `checkpoint.state_interval_minutes` (15).
-  - It never commits a path a task has delivered but not yet had accepted (its checkpoint does), nor a path someone
-    else has staged. It commits only in a project that is its own repository's top level.
+  - It never commits a path a task has delivered but not yet had accepted, nor anything under one (a task may
+    deliver a directory); that task's checkpoint commits them. Nor does it commit a path someone else has staged. It
+    commits only in a project that is its own repository's top level.
+  - It builds each commit in a temporary index of its own, and sets the project's index for its paths only once the
+    commit exists. A failed commit (a hook refusing it, say) leaves the project's index exactly as it was.
+  - Limits: the loop owns the files under `state/`, so an edit someone makes inside one of them by hand is committed
+    with the loop's. The staged-path check is made before the commit, so someone staging one of those paths at that
+    very moment is not detected.
   - `supervisor migrate` commits the files it rewrote, as `migrate: framework <version>`. A config file that already
     had uncommitted changes is left for the owner, and the note says so.
   - `checkpoint.state_commits: false` (routing.yaml) turns all of this off.

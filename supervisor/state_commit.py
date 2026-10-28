@@ -4,10 +4,11 @@ this module commits it: the other task records, the inbox, issues, gates, applie
 records, the projections, a checkpoint's final record (written after its commit) and what `supervisor migrate`
 rewrote. Before 1.12.1 nothing committed them, so a live project collected them as uncommitted changes.
 
-A state commit names its paths (`git commit -- <paths>`), so the owner's edits elsewhere, staged or not, are never
-swept in. It commits `state/` and the projections only when something under `state/` changed: a projection carries a
-render stamp, and projections alone would make a commit on every render. It leaves out a path a task has delivered but
-not yet had accepted (its checkpoint commits that), and stops when someone else has staged one of its paths. The loop
+A state commit takes exactly its paths, through a temporary index of its own, so the owner's edits elsewhere, staged
+or not, are never swept in, and a failed commit leaves the project's index as it was. It commits `state/` and the
+projections only when something under `state/` changed: a projection carries a render stamp, and projections alone
+would make a commit on every render. It leaves out a path a task has delivered but not yet had accepted, and
+everything under one (its checkpoint commits that), and stops when someone else has staged one of its paths. The loop
 calls `maybe()`: at once after a checkpoint, otherwise at most every `checkpoint.state_interval_minutes` (15).
 `checkpoint.state_commits: false` (routing.yaml) turns it off, for migrate too."""
 from __future__ import annotations
