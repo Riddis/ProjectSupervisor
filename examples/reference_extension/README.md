@@ -5,6 +5,17 @@
 fixture, not framework code: it is not shipped in the `supervisor` package, and `tests/test_hook_contracts.py` loads
 it as a project would to check each hook's contract.
 
-To try it in a project: copy `reference/` to the project's `extensions/reference/`, add `reference` under
-`extensions:` in `project.yaml`, and optionally a `reference:` section in `config/routing.yaml` (see the package
-docstring). Its page is at `/reference` in the Control Center.
+It follows the extension standard (`docs/EXTENSION_STANDARD.md`):
+- `reference/supervisor-extension.toml` declares everything `setup()` registers.
+- `reference/config.py` is the schema of its `extensions.reference` section.
+- This folder's `pyproject.toml` builds it as the package `supervisor-ext-reference`, entry point `reference`.
+
+`supervisor extension check reference` (gate G5) proves it conforms. CI installs it as a wheel and as an editable
+install into a fresh environment (job "G5 reference extension").
+
+To try it in a project, do either of these, then list `reference` under `extensions:` in `project.yaml`:
+- `pip install examples/reference_extension` into the project's environment;
+- copy `reference/` to the project's `extensions/reference/`.
+
+Optionally add an `extensions.reference` section to `config/routing.yaml` (see the package docstring). Its page is
+at `/reference` in the Control Center.

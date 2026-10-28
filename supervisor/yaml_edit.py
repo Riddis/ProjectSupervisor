@@ -17,6 +17,7 @@ import io
 
 import yaml
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.representer import RoundTripRepresenter
 
 
@@ -252,6 +253,138 @@ def dump_whole(text: str, doc: dict) -> str:
     buf = io.StringIO()
     rt.dump(_unshared(doc), buf)
     return buf.getvalue()
+
+
+def _block_end(lines: list[str], start: int, value) -> int:
+    """The line after the last one of a block that starts at `start` and holds `value` (a composed node). Trailing blank
+    lines and comments at column 0 stay where they are: they read as the heading of what follows."""
+    mark = value.end_mark
+    end = mark.line + (1 if mark.column > 0 else 0)
+    while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].startswith("#")):
+        end -= 1
+    return end
+
+
+def _node_at(root, path: tuple[str, ...]):
+    """(key node, value node) at `path` in a composed document, or None."""
+    node, found = root, None
+    for key in path:
+        if not isinstance(node, yaml.MappingNode):
+            return None
+        match = [(k, v) for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == key]
+        if not match:
+            return None
+        found = match[0]
+        node = found[1]
+    return found
+
+
+def _move_one_text(text: str, src: str, dst: tuple[str, ...], unit: int) -> str | None:
+    """`text` with top-level block section `src` cut out and re-indented under `dst`, every other line untouched;
+    None when the shapes are not plain block mappings this can move by lines."""
+    lines = text.split("\n")
+    root = yaml.compose(text)
+    entry = _node_at(root, (src,))
+    if entry is None:
+        return text
+    key, value = entry
+    start = key.start_mark.line
+    if key.start_mark.column != 0 or not lines[start].startswith(f"{src}:"):
+        return None
+    end = _block_end(lines, start, value)
+    rest, body = lines[start][len(src) + 1:], lines[start + 1:end]
+    remaining = lines[:start] + lines[end:]
+    rest_root = yaml.compose("\n".join(remaining))
+    depth = 0                                           # how much of the destination's parent path exists already
+    while depth < len(dst) - 1 and _node_at(rest_root, dst[:depth + 1]) is not None:
+        depth += 1
+    if depth:
+        parent_key, parent_value = _node_at(rest_root, dst[:depth])
+        if not isinstance(parent_value, yaml.MappingNode) or parent_value.flow_style:
+            return None
+        if _node_at(rest_root, dst) is not None:
+            return None
+        at = _block_end(remaining, parent_key.start_mark.line, parent_value)
+        column = parent_key.start_mark.column + unit
+    else:
+        at, column = start, 0
+    new = [" " * (column + i * unit) + f"{k}:" for i, k in enumerate(dst[depth:-1])]
+    indent = column + (len(dst) - 1 - depth) * unit
+    new.append(" " * indent + f"{dst[-1]}:{rest}")
+    new += [(" " * indent + line) if line.strip() else line for line in body]
+    return "\n".join(remaining[:at] + new + remaining[at:])
+
+
+def move_sections(text: str, moves: list[tuple[str, tuple[str, ...]]]) -> str:
+    """`text` with each top-level section `src` moved to the key path `dst`, in order. The moved section keeps its
+    comments, the one on its key line included, and a new top-level key takes the place of the first section moved
+    under it. Intermediate mappings are created as needed. A section that is absent is skipped.
+
+    The move is made on lines: the section is cut out and re-indented under its destination, and every other line
+    stays byte for byte. Only when the shapes do not allow that (a flow-style parent, say) is it made by ruamel's
+    round trip, which keeps comments but may rewrite other lines' layout. Refused (EditRefused) before anything is
+    written:
+    - a destination that exists already;
+    - a path through something that is not a mapping;
+    - a result that does not read back as the same data moved."""
+    expected = _unshared(yaml.safe_load(text))
+    if not isinstance(expected, dict):
+        raise EditRefused("the file is not a mapping")
+    for src, dst in moves:
+        if src not in expected:
+            continue
+        node = expected
+        for key in dst[:-1]:
+            node = node.setdefault(key, {})
+            if not isinstance(node, dict):
+                raise EditRefused(f"cannot move {src} to {'.'.join(dst)}: {key} is not a mapping")
+        if dst[-1] in node:
+            raise EditRefused(f"cannot move {src} to {'.'.join(dst)}: it exists already")
+        node[dst[-1]] = expected.pop(src)
+    unit = _indents(text)[0]
+    by_lines: str | None = text
+    for src, dst in moves:
+        by_lines = _move_one_text(by_lines, src, dst, unit) if by_lines is not None else None
+    if by_lines is not None and _reads_as(by_lines, expected):
+        return by_lines
+    return _move_round_trip(text, moves, expected)
+
+
+def _move_round_trip(text: str, moves: list[tuple[str, tuple[str, ...]]], expected: dict) -> str:
+    """move_sections through ruamel's round trip, for shapes the line move cannot handle."""
+    rt = _round_trip(text)
+    doc = rt.load(text)
+    if not isinstance(doc, CommentedMap):
+        raise EditRefused("the file is not a mapping")
+    for src, dst in moves:
+        if src not in doc:
+            continue
+        position = list(doc.keys()).index(src)
+        key_comment = doc.ca.items.pop(src, None)
+        value = doc.pop(src)
+        parent = doc
+        for key in dst[:-1]:
+            if key not in parent:
+                child = CommentedMap()
+                if parent is doc:
+                    doc.insert(min(position, len(doc)), key, child)
+                else:
+                    parent[key] = child
+            parent = parent[key]
+            if not isinstance(parent, dict):
+                raise EditRefused(f"cannot move {src} to {'.'.join(dst)}: {key} is not a mapping")
+        if parent is doc:
+            doc.insert(min(position, len(doc)), dst[-1], value)
+        else:
+            parent[dst[-1]] = value
+        if key_comment is not None:
+            parent.ca.items[dst[-1]] = key_comment
+    buf = io.StringIO()
+    rt.dump(doc, buf)
+    out = buf.getvalue()
+    if not _reads_as(out, expected):
+        raise EditRefused("the moved file does not read back as the same values moved; nothing was written")
+    return out
 
 
 def edit(text: str, doc: dict) -> str:

@@ -42,6 +42,9 @@ On the exact commit to be tagged (a clean checkout, nothing uncommitted — chec
   CHANGELOG (it prints the comparison and each classification; a shallow clone is an error, not a pass);
 - **G3** CI green on Linux and Windows for this commit; on the workstation also `tools\test_windows.ps1`, and keep
   `runs/pytest_windows.txt` for the review;
+- **G5** (from 1.12.0) the CI job "G5 reference extension" green for this commit. A minor or major release also
+  raises the reference extension's manifest range (`examples/reference_extension/reference/supervisor-extension.toml`)
+  when the reference uses what this release adds;
 - `supervisor migrate --dry-run` and `supervisor migrate` on a copy of a project at the previous version: the
   dry run lists exactly what the CHANGELOG says, the apply changes that, a second run reports nothing.
 

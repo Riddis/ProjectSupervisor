@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supervisor-framework"
-version = "1.11.0"
+version = "1.12.0"
 description = "Run a project with AI agents under a deterministic Python supervisor and an owner-facing Control Center"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -20,6 +20,7 @@ dependencies = [
   "pillow>=10.3",
   "requests>=2.31",
   "jsonschema>=4.21",
+  "packaging>=23.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +34,8 @@ supervisor = "supervisor.cli:main"
 include = ["supervisor*"]
 
 [tool.setuptools.package-data]
-supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "ui/templates/**/*", "ui/static/**/*", "_vendor/*"]
+supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "extension_template/**/*",
+              "ui/templates/**/*", "ui/static/**/*", "_vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

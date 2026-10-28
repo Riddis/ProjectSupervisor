@@ -12,9 +12,11 @@ repo:
 phases:
   0: "Foundations"
 
-# Project-specific Python under extensions/ (a module name per entry); see the framework's
-# docs/FRAMEWORK_VS_EXTENSION.md. An extension imports only supervisor.ext (docs/EXTENSION_API.md) and registers
-# everything in setup(). `supervisor extension new <name>` scaffolds one and lists it here.
+# Extensions by identity: a project module extensions/<name>.py, or an installed extension package (entry point
+# group supervisor.extensions). Each has a manifest, supervisor-extension.toml, read before anything is imported
+# (the framework's docs/EXTENSION_STANDARD.md). An extension imports only supervisor.ext (docs/EXTENSION_API.md) and
+# registers everything in setup(). `supervisor extension new <name>` scaffolds one with its manifest and lists it
+# here; `supervisor extension check <name>` proves it conforms.
 extensions: []
 
 ui:

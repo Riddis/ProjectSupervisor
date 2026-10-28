@@ -5,18 +5,25 @@ processes so they import the new code (the loop is stopped first — `supervisor
 state lock — and started again through `supervisor.launcher`; the Control Center exits with RESTART_EXIT_CODE,
 which its launcher turns into a restart).
 
+A checkout detached at a release tag (a live project's runtime worktree, docs/UPDATING.md "Pinned checkouts") is
+never pulled: the check fetches origin's tags and reports a newer `vX.Y.Z` release, which the project takes in a
+maintenance window, and `apply` refuses it (since 1.12.0; before, the check compared HEAD with a missing `origin/HEAD`
+and every launch printed git's error).
+
 Everything here is fail-soft: no remote, no network, no git, or a dirty clone all produce a `Status` that says why
 nothing can be done, never an exception out of a launch path."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import __version__
@@ -26,6 +33,7 @@ RESTART_EXIT_CODE = 3            # same convention as the loop's reload: the lau
 FETCH_TIMEOUT_S = 20
 CHECK_TTL_S = 300                # a check younger than this is reused instead of fetching again
 _VERSION_FILE = "supervisor/__init__.py"
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
 @dataclass
@@ -48,10 +56,20 @@ class Status:
     remote_version: str = ""
     migration_hint: bool = False              # the remote CHANGELOG mentions a migration since HEAD
     checked_at: float = 0.0
+    head: str = ""                            # the commit checked: a status describes this checkout in this state
+    pinned: bool = False                      # detached HEAD: a release-tag checkout, never pulled
+    pinned_tag: str = ""                      # the release tag HEAD is at
+    newer_release: str = ""                   # the newest release tag above it, if any
+    refresh_error: str = ""                   # a kept pinned result: why the latest refresh failed
 
     @property
     def available(self) -> bool:
         return self.ok and self.behind > 0
+
+    @property
+    def checked_iso(self) -> str:
+        """When the check ran, as an ISO UTC stamp (the UI shows it in local time)."""
+        return datetime.fromtimestamp(self.checked_at, timezone.utc).isoformat() if self.checked_at else ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -119,25 +137,58 @@ def _remote_version(cwd: Path, ref: str) -> str:
     return ""
 
 
+def _release(tag: str) -> tuple[int, int, int] | None:
+    """(major, minor, patch) of a release tag `vX.Y.Z`; None for any other tag name."""
+    m = _RELEASE_TAG.match(tag)
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
+
 def _cache_path(layout: Layout | None) -> Path | None:
     return (layout.runtime / "update_check.json") if layout is not None else None
 
 
+def _identity(fw: Path) -> tuple[str, str, str]:
+    """(path, branch, HEAD commit) of the checkout as it is now; branch is "HEAD" when detached."""
+    code, branch = _git(["rev-parse", "--abbrev-ref", "HEAD"], fw, timeout=10)
+    code2, head = _git(["rev-parse", "HEAD"], fw, timeout=10)
+    return str(fw), branch.strip() if code == 0 else "", head.strip() if code2 == 0 else ""
+
+
+def describes_checkout(status: Status) -> bool:
+    """Whether `status` was taken of the framework checkout as it is now: same path, branch and HEAD. A check from
+    before a `git checkout <tag>` (or any other move) says nothing about the checkout now (review 1.11.1 F1)."""
+    path, branch, head = _identity(framework_dir())
+    return bool(head) and (status.framework_dir, status.branch, status.head) == (path, branch, head)
+
+
 def check(layout: Layout | None = None, fetch: bool = True, max_age_s: float = CHECK_TTL_S) -> Status:
-    """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`."""
+    """Fetch origin and report how far the installed clone is behind. Cached per project for `max_age_s`, and only
+    while the checkout is still where it was checked (describes_checkout). Without a fetch, a pinned checkout's last
+    result from origin is served whatever its age (`checked_at` says when): a pinned check cannot ask origin
+    without the network. A failed check returns its failure but does not replace that result: the result stays
+    cached with the failure noted in `refresh_error` (review 1.11.1 R2-2: one refresh without the network erased
+    the release the overview showed)."""
     cache = _cache_path(layout)
+    prior = None
     if cache is not None and cache.exists():
         try:
             prior = Status.from_dict(json.loads(cache.read_text(encoding="utf-8")))
-            if prior.ok and time.time() - prior.checked_at < max_age_s:
-                return prior
         except (OSError, ValueError, TypeError):
-            pass
+            prior = None
+    if prior is not None and prior.ok and describes_checkout(prior):
+        if time.time() - prior.checked_at < max_age_s or (prior.pinned and not fetch):
+            return prior
+    else:
+        prior = None                                        # nothing worth keeping for this checkout
     status = _check(fetch)
+    record = status
+    if not status.ok and prior is not None and prior.pinned:
+        prior.refresh_error = status.reason
+        record = prior
     if cache is not None:
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(json.dumps(status.to_dict()), encoding="utf-8")
+            cache.write_text(json.dumps(record.to_dict()), encoding="utf-8")
         except OSError:
             pass
     return status
@@ -154,10 +205,13 @@ def _check(fetch: bool) -> Status:
         st.reason = f"git: {branch}"
         return st
     st.branch = branch
+    st.head = _identity(fw)[2]
     code, remote = _git(["remote", "get-url", "origin"], fw, timeout=10)
     if code != 0:
         st.reason = "no `origin` remote configured on the framework clone"
         return st
+    if branch == "HEAD":
+        return _check_pinned(fw, st, fetch)
     if fetch:
         code, out = _git(["fetch", "--quiet", "origin", branch], fw)
         if code != 0:
@@ -182,10 +236,69 @@ def _check(fetch: bool) -> Status:
     return st
 
 
+def _check_pinned(fw: Path, st: Status, fetch: bool) -> Status:
+    """A detached checkout: the release it runs, and the newest release origin publishes, compared by version
+    number (v1.10.0 is above v1.9.0). Tags other than `vX.Y.Z` are not releases. Both come from origin's own list
+    (`git ls-remote --tags`, each tag peeled to its commit), never from the local tags: a runtime worktree shares
+    those with its development clone, where a tag may exist that was never pushed, on another commit (review 1.11.1
+    F2) or on this one (R2-1). The release the checkout runs is the newest one origin publishes at HEAD's commit;
+    when origin publishes none there, the check says so and announces nothing. Only the newer release's objects are
+    fetched, for its changelog; no local ref is created or moved, and nothing here moves HEAD. Without a fetch there
+    is no fresh word from origin: check() serves the last result instead."""
+    st.pinned = True
+    if not fetch:
+        st.reason = "origin's releases have not been checked yet"
+        return st
+    code, listed = _git(["ls-remote", "--tags", "origin"], fw)
+    if code != 0:
+        st.reason = f"could not list origin's tags (offline?): {listed[-200:]}"
+        return st
+    published: dict[str, str] = {}                           # release tag -> the commit it marks
+    for line in listed.splitlines():
+        target, _, ref = line.partition("\t")
+        ref = ref.strip()
+        name = ref.removeprefix("refs/tags/").removesuffix("^{}")
+        if _release(name) and (ref.endswith("^{}") or name not in published):
+            published[name] = target.strip()                 # an annotated tag's peeled line names its commit
+    newest = max(published, key=_release, default=None)
+    here = [name for name, commit in published.items() if commit == st.head]
+    if not here:
+        code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
+        local = sorted((t for t in at.split() if _release(t)), key=_release) if code == 0 else []
+        st.reason = ((f"the framework checkout is detached at {', '.join(local)}, but origin publishes no release at "
+                      "this commit" if local else
+                      "the framework checkout is detached but not at a release tag (vX.Y.Z); `supervisor doctor` "
+                      "fails it")
+                     + (f"; the newest release origin publishes is {newest}" if newest else "")
+                     + ": check out a published release tag")
+        return st
+    st.pinned_tag = max(here, key=_release)
+    if newest and _release(newest) > _release(st.pinned_tag):
+        st.newer_release = newest
+        st.remote_version = newest[1:]
+        code, _out = _git(["fetch", "--quiet", "--no-tags", "origin", f"refs/tags/{newest}"], fw)
+        if code == 0:                                        # into the object store only: no ref is written
+            code, diff = _git(["diff", f"HEAD..{published[newest]}", "--", "CHANGELOG.md"], fw, timeout=10)
+            st.migration_hint = code == 0 and "migration" in diff.lower()
+    st.ok = True
+    return st
+
+
 def describe(status: Status) -> list[str]:
     """Human lines for the console and the Control Center."""
     if not status.ok:
         return [f"update check skipped: {status.reason}"]
+    if status.pinned:
+        if not status.newer_release:
+            return [f"framework {status.installed_version} is pinned at {status.pinned_tag}, the newest release"]
+        lines = [f"framework release {status.newer_release} is available; this checkout is pinned at {status.pinned_tag}",
+                 ("  take it in a maintenance window: drain, stop, in the framework checkout "
+                  f"`git fetch origin tag {status.newer_release}` and `git checkout {status.newer_release}`, migrate, "
+                  "doctor, start (docs/UPDATING.md, \"Pinned checkouts\"); the updater never moves a pinned checkout")]
+        if status.migration_hint:
+            lines.append("  note: the changelog mentions a migration; run `supervisor migrate --dry-run`, then "
+                         "`supervisor migrate`")
+        return lines
     if not status.behind:
         return [f"framework {status.installed_version} is up to date with origin/{status.branch}"]
     head = f"framework update available: {status.behind} commit(s) on origin/{status.branch}"
@@ -264,6 +377,20 @@ def apply(layout: Layout, status: Status | None = None, reinstall: bool = True, 
     out = Applied(ok=False)
     if not status.ok:
         out.error = status.reason
+        return out
+    # The checkout as it is now decides, not the status handed in: a status from before the checkout was pinned
+    # still says "branch, N behind" (review 1.11.1 F1). Nothing is stopped or pulled before these two checks.
+    _path, branch_now, _head = _identity(fw)
+    if status.pinned or branch_now == "HEAD":
+        pinned_at = status.pinned_tag if status.pinned else "a detached HEAD"
+        out.error = (f"the framework checkout is pinned at {pinned_at}"
+                     + (f"; take {status.newer_release} in a maintenance window" if status.newer_release else
+                        "; take a release in a maintenance window")
+                     + " (docs/UPDATING.md, \"Pinned checkouts\"); nothing was changed")
+        return out
+    if not describes_checkout(status):
+        out.error = ("the framework checkout changed since this update check (another branch or commit); nothing was "
+                     "changed: check again")
         return out
     if status.dirty:
         out.error = "framework clone has uncommitted changes; commit or stash them first"

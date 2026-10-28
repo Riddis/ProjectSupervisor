@@ -22,6 +22,23 @@ path — never by putting the directory on `sys.path` — so two projects' `shar
 extension called `json` is the project's file, not the stdlib. Modules inside one project's `extensions/` can
 import each other with relative imports (`from . import helpers`).
 
+Loading is transactional (1.12.0, boundary plan phase 3). setup() registers into a staging area: the process-wide
+tables (lanes, python jobs, command kinds) are written only by one commit after setup() returns, and the project's
+registry is put back as it was when anything fails. The failures are an exception in setup(), a registration the
+extension's manifest (`supervisor-extension.toml`, supervisor.manifest) does not declare, a manifest discovery refuses
+(supervisor.discovery), or an import error. Then nothing the extension registered remains, and a module that failed is
+dropped from sys.modules. An extension without a manifest still loads, staged the same way, and is listed in
+`registry.unmanifested`.
+
+Approval comes first. Every configured extension is discovered, and what its manifest decides is settled before any
+extension module is imported, so a refused extension never executes:
+- the framework range;
+- identifiers that are built into the framework;
+- identifiers another manifest claims too (both are refused);
+- `requires.extensions` that project.yaml does not list, or a cycle among them.
+
+Extensions then load after the ones they require, and one whose requirement did not load is refused.
+
 Failure: a configured extension that does not load is recorded in `registry.errors`. Unless the entry says
 `required: false`, that failure also BLOCKS the loop and every packet (`assert_loaded`): an extension is usually a
 protection (a packet screen, a lane with its own checks), and a protection that silently fell away is worse than a
@@ -33,20 +50,25 @@ a project about something completely different belongs in the framework instead 
 from __future__ import annotations
 
 import ast
+import contextlib
+import copy
+import dataclasses
 import functools
 import hashlib
 import importlib
+import importlib.abc
 import importlib.machinery
 import importlib.util
 import re
 import sys
+import threading
 import traceback
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import project
+from . import discovery, project
 from ._vendor.contract import atomic_json, read_json
 from .paths import Layout
 
@@ -153,6 +175,7 @@ class InternalImport:
 class Registry:
     layout: Layout
     doctor_checks: list[Callable] = field(default_factory=list)
+    doctor_check_owners: list[str] = field(default_factory=list)   # the extension of each doctor check, same order
     ui_routers: list[tuple[Any, str, str]] = field(default_factory=list)
     overview_panels: list[Callable] = field(default_factory=list)
     packet_screens: list[Callable] = field(default_factory=list)
@@ -174,12 +197,69 @@ class Registry:
     internal_imports: list[InternalImport] = field(default_factory=list)   # deprecated imports in extension sources
     errors: list[str] = field(default_factory=list)             # every failure, required or not (doctor shows all)
     blocking: list[str] = field(default_factory=list)           # failures of required extensions: "<name>: <why>"
+    unmanifested: list[str] = field(default_factory=list)       # loaded without a manifest (1.12.x: a warning)
+    manifests: dict[str, Any] = field(default_factory=dict)     # extension -> its Manifest, when it has one
+    config_schemas: dict[str, Any] = field(default_factory=dict)  # extension -> the pydantic model of its section
 
     _setting_up: str | None = None                              # the extension whose setup(registry) is running
 
     def __post_init__(self) -> None:
         self.projection_paths |= known_projection_paths(self.layout)
         self._rendered_keys: set[str] = set()
+        # While load() runs an extension's setup(): the process-wide writes it asked for, applied by _commit(), and
+        # what it registered, (manifest kind, identifier), checked against its manifest. None outside setup().
+        self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
+        self._registered: list[tuple[str, str]] | None = None
+
+    @property
+    def identity(self) -> str | None:
+        """The identity of the extension whose setup() is running (its manifest's, which is the name project.yaml
+        uses), or None outside setup()."""
+        return self._setting_up
+
+    # ---------------------------------------------------------------- staging (1.12.0)
+
+    def _note(self, kind: str, identifier: str) -> None:
+        if self._registered is not None:
+            self._registered.append((kind, identifier))
+
+    def _staged(self, table: str, name: str):
+        """What this setup() already asked to write under `name` in a process-wide table, or None."""
+        entry = (self._pending or {}).get((table, name))
+        return entry[0] if entry is not None else None
+
+    def _write(self, table: str, name: str, obj, origin: str, owner: str) -> None:
+        """A process-wide write: held until the commit while setup() runs, applied at once otherwise."""
+        if self._pending is not None:
+            self._pending[(table, name)] = (obj, origin, owner)
+        else:
+            _apply(table, name, obj, origin, owner)
+
+    def _commit(self) -> None:
+        for (table, name), (obj, origin, owner) in (self._pending or {}).items():
+            _apply(table, name, obj, origin, owner)
+        self._pending = None
+
+    def _snapshot(self) -> dict:
+        """Every field a setup() can change, copied deep enough to put back: lists and sets copied, dicts copied
+        with their set values (projection declarations). Generic over the dataclass, so a field added later is
+        covered without anyone remembering to."""
+        out = {}
+        for f in dataclasses.fields(self):
+            if f.name in _OUTCOME_FIELDS:
+                continue
+            value = getattr(self, f.name)
+            if isinstance(value, dict):
+                value = {k: (set(v) if isinstance(v, set) else v) for k, v in value.items()}
+            elif isinstance(value, (list, set)):
+                value = copy.copy(value)
+            out[f.name] = value
+        return out
+
+    def _restore(self, snapshot: dict) -> None:
+        for name, value in snapshot.items():
+            setattr(self, name, value)
+        self._pending = None
 
     def _write_record(self, rec: dict) -> None:
         try:
@@ -250,19 +330,18 @@ class Registry:
         that also registers at import, as before 1.11.0), and so is the extension that registered a name registering
         it again after a reload; a name another lane already has, built in or another extension's, is an error,
         never an overwrite: the new lane would take over that lane's jobs."""
-        from .adapters.base import REGISTRY, register
+        from .adapters.base import REGISTRY
         name = getattr(adapter, "name", None)
         if not isinstance(name, str) or not name:
             raise ExtensionError(f"an adapter needs a non-empty string `name`, got {adapter!r}")
         owner = self._setting_up or "?"
         current = REGISTRY.get(name)
-        if current is not None and current is not adapter and _taken(name, _extension_adapters, _ever_adapters,
-                                                                      self._origin()):
+        if (self._staged("adapter", name) is None and current is not None and current is not adapter
+                and _taken(name, _extension_adapters, _ever_adapters, self._origin())):
             raise ExtensionError(f"adapter name {name!r} is already registered {_holder(name, current, _extension_adapters)}")
-        register(adapter)
+        self._write("adapter", name, adapter, self._origin(), owner)   # now, or at the commit
         self.adapters[name] = owner
-        _extension_adapters[name] = (self._origin(), owner)
-        _ever_adapters.add(name)
+        self._note("adapters", name)
 
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this extension reads with `supervisor.ext.config()`; nothing else of the file is
@@ -282,16 +361,20 @@ class Registry:
             self.config_owners[name] = owner
 
     def doctor_check(self, fn: Callable) -> None:
-        self.doctor_checks.append(fn)
+        self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it
+        self.doctor_check_owners.append(self._setting_up or "?")
 
     def ui_router(self, router, label: str, path: str) -> None:
         self.ui_routers.append((router, label, path))
+        self._note("routes", str(path))
 
     def overview_panel(self, fn: Callable) -> None:
         self.overview_panels.append(fn)
+        self._note("hooks", "overview_panel")
 
     def packet_screen(self, fn: Callable) -> None:
         self.packet_screens.append(fn)
+        self._note("hooks", "packet_screen")
 
     def projection(self, fn: Callable, path: str | None = None, name: str | None = None) -> None:
         """`path` (root-relative) declares the file up front; otherwise it is learned from the first render. Either
@@ -309,6 +392,7 @@ class Registry:
         while key in self._projection_keys:
             key, n = f"{base}#{n}", n + 1
         self._projection_keys.append(key)
+        self._note("projections", key.split(":", 1)[1].split("#", 1)[0])
         if path:
             rel = Path(path).as_posix()
             self._declared.setdefault(key, set()).add(rel)
@@ -334,6 +418,7 @@ class Registry:
 
     def cli(self, app, name: str) -> None:
         self.cli_apps.append((app, name))
+        self._note("cli", str(name))
 
     def python_job(self, name: str, fn: Callable) -> None:
         """A deterministic job for `job: {adapter: python, fn: <name>, params: {...}}`, `fn(root, run_dir, **params)
@@ -346,12 +431,12 @@ class Registry:
             raise ExtensionError(f"python job {name!r}: fn must be callable, got {fn!r}")
         owner = self._setting_up or "?"
         current = JOBS.get(name)
-        if current is not None and current is not fn and _taken(name, _extension_jobs, _ever_jobs, self._origin()):
+        if (self._staged("python_job", name) is None and current is not None and current is not fn
+                and _taken(name, _extension_jobs, _ever_jobs, self._origin())):
             raise ExtensionError(f"python job {name!r} is already registered {_holder(name, current, _extension_jobs)}")
-        JOBS[name] = fn
+        self._write("python_job", name, fn, self._origin(), owner)
         self.python_jobs[name] = owner
-        _extension_jobs[name] = (self._origin(), owner)
-        _ever_jobs.add(name)
+        self._note("python_jobs", name)
 
     def _origin(self) -> str:
         """Who is registering, for name ownership: the source file of the extension being set up (one file is one
@@ -369,11 +454,12 @@ class Registry:
         if not kind or not isinstance(kind, str):
             raise ExtensionError(f"command kind must be a non-empty string, got {kind!r}")
         current = commands_mod.HANDLERS.get(kind)
-        if current is not None and current is not fn and _extension_commands.get(kind) != self._origin():
+        if (self._staged("command", kind) is None and current is not None and current is not fn
+                and _extension_commands.get(kind) != self._origin()):
             raise ExtensionError(f"command kind {kind!r} is already registered")      # the same source file may again
-        commands_mod.HANDLERS[kind] = fn
+        self._write("command", kind, fn, self._origin(), self._setting_up or "?")
         self.commands[kind] = fn
-        _extension_commands[kind] = self._origin()
+        self._note("commands", kind)
 
     def inbox_kind(self, kind: str, label: str, page: str | None = None, answerable: bool = False,
                    show_evidence: bool = True, score_keys: tuple[str, ...] | list[str] = ()) -> None:
@@ -390,6 +476,7 @@ class Registry:
         self.inbox_kinds[kind] = InboxKind(kind, str(label), page, bool(answerable), bool(show_evidence),
                                            tuple(str(k) for k in score_keys))
         self.inbox_kind_owners[kind] = self._setting_up or "?"
+        self._note("inbox_kinds", kind)
 
     def template_dir(self, path) -> None:
         """A directory of Jinja templates for an extension's Control Center pages. Loaded *after* the framework's own
@@ -400,6 +487,7 @@ class Registry:
             raise ExtensionError(f"template_dir {p} is not a directory")
         if p not in self.template_dirs:
             self.template_dirs.append(p)
+        self._note("hooks", "template_dir")
 
     def static_dir(self, path, prefix: str) -> None:
         """Static files served at `/static/<prefix>/...` (the framework's own live under `/static/` directly)."""
@@ -412,6 +500,7 @@ class Registry:
         if any(pre == prefix for pre, _ in self.static_dirs):
             raise ExtensionError(f"static prefix {prefix!r} is already registered")
         self.static_dirs.append((prefix, p))
+        self._note("static", prefix)
 
     def blocking_reason(self) -> str | None:
         """Why the loop must not run, or None: names every required extension that failed to load."""
@@ -420,7 +509,12 @@ class Registry:
         return "required extension(s) failed to load: " + "; ".join(self.blocking)
 
 
-_registries: dict[str, Registry] = {}
+_registries: dict[str, Registry] = {}                       # published: loads that have finished
+# Loads in progress, by (project root, thread): only that thread sees its registry before it is published, so
+# ext.config() in a setup() reads it, and no other thread ever gets an unfinished one (review 1.12.0 R2). G5's
+# staging registry is registered here the same way.
+_loading: dict[tuple[str, int], Registry] = {}
+_load_lock = threading.RLock()                               # one load at a time; other threads wait for its result
 _extension_commands: dict[str, str] = {}                     # command kind -> origin that registered it (process)
 # Name ownership, since the last reset(): lane / python job name -> (origin, extension) that registered it.
 _extension_adapters: dict[str, tuple[str, str]] = {}
@@ -438,6 +532,239 @@ def _taken(name: str, owners: dict[str, tuple[str, str]], ever: set[str], origin
     if name in owners:
         return owners[name][0] != origin
     return name not in ever
+
+
+# Registry fields that record the outcome of a load rather than what a setup() registered: not put back on failure.
+_OUTCOME_FIELDS = frozenset({"layout", "loaded", "errors", "blocking", "internal_imports", "unmanifested",
+                             "_setting_up"})
+
+
+def _apply(table: str, name: str, obj, origin: str, owner: str) -> None:
+    """Write one process-wide registration: a lane, a python job or a command kind, with who owns the name."""
+    if table == "adapter":
+        from .adapters.base import register
+        register(obj)
+        _extension_adapters[name] = (origin, owner)
+        _ever_adapters.add(name)
+    elif table == "python_job":
+        from .adapters.python import JOBS
+        JOBS[name] = obj
+        _extension_jobs[name] = (origin, owner)
+        _ever_jobs.add(name)
+    elif table == "command":
+        from . import commands as commands_mod
+        commands_mod.HANDLERS[name] = obj
+        _extension_commands[name] = origin
+    else:                                                  # pragma: no cover - a programming error
+        raise ValueError(f"unknown process-wide table {table!r}")
+
+
+def _built_in(kind: str) -> set[str]:
+    """The identifiers of `kind` the framework itself registers (never through an extension's registry)."""
+    if kind == "adapters":
+        from .adapters import REGISTRY
+        return {n for n in REGISTRY if n not in _ever_adapters}
+    if kind == "python_jobs":
+        from .adapters.python import JOBS
+        return {n for n in JOBS if n not in _ever_jobs}
+    if kind == "commands":
+        from . import commands as commands_mod
+        return {k for k in commands_mod.HANDLERS if k not in _extension_commands}
+    if kind == "inbox_kinds":
+        from . import inbox as inbox_mod
+        return set(inbox_mod.BUILTIN_KINDS)
+    return set()
+
+
+def _approve(finds: dict) -> dict[str, str]:
+    """{extension: why it is refused} for what the manifests decide before any import: the framework range, built-in
+    identifiers, identifiers two manifests claim (both refused: which one is meant is the owner's call), and
+    requires.extensions that project.yaml does not list."""
+    refused: dict[str, str] = {}
+    claims: dict[tuple[str, str], list[str]] = {}
+    for name, found in finds.items():
+        m = found.manifest
+        if m is None:
+            continue
+        why = m.unsupported_reason()
+        if why:
+            refused[name] = why
+            continue
+        for kind, identifiers in m.provides.items():
+            if kind == "hooks":
+                continue
+            builtin = _built_in(kind)
+            for identifier in identifiers:
+                if identifier in builtin:
+                    refused.setdefault(name, f"its manifest claims {kind} {identifier!r}, which is built into the "
+                                             f"framework")
+                claims.setdefault((kind, identifier), []).append(name)
+        if m.config is not None:
+            from .ext._config import framework_sections
+            owned = sorted(set(m.config.legacy_sections) & framework_sections())
+            if owned:
+                refused.setdefault(name, f"its config.legacy_sections name {', '.join(owned)}, which the "
+                                         f"framework owns")
+            for section in m.config.legacy_sections:
+                claims.setdefault(("config.legacy_sections", section), []).append(name)
+        unlisted = [d for d in m.requires.extensions if d not in finds]
+        if unlisted:
+            refused.setdefault(name, f"it requires {', '.join(unlisted)}, which project.yaml does not list")
+    for (kind, identifier), names in claims.items():
+        if len(names) > 1:
+            for name in names:
+                others = ", ".join(n for n in names if n != name)
+                refused.setdefault(name, f"{kind} {identifier!r} is claimed by the manifests of {name} and {others}")
+    return refused
+
+
+@dataclass(frozen=True)
+class Approval:
+    """What the manifests decide before any extension is imported (approval()): each configured name's discovery,
+    the names refused with why, and the load order (project.yaml's, each extension after what it requires)."""
+    finds: dict
+    refused: dict[str, str]
+    entries: list[tuple[str, bool]]
+
+    def approved(self) -> list:
+        """The manifests of the extensions with one that are not refused, in load order."""
+        return [self.finds[n].manifest for n, _r in self.entries
+                if n not in self.refused and not self.finds[n].problems and self.finds[n].manifest is not None]
+
+
+# The refusal guard's state, by project root (review 1.12.0 R2-2): approval depends on a project's configuration, so
+# one project's refusal of an installed extension says nothing about another project using the same package.
+_refused_modules: dict[str, dict[str, str]] = {}             # module name -> {project root: why it refused it}
+_accepted_modules: dict[str, set[str]] = {}                  # installed module name -> project roots accepting it
+_importing = threading.local()                               # .roots: the projects this thread imports for
+
+
+@contextlib.contextmanager
+def importing_for(layout: Layout):
+    """The imports made in this block are made for project `layout` (its load, G5, migrate): the refusal guard
+    applies that project's approval, and no other project's."""
+    roots = _importing.__dict__.setdefault("roots", [])
+    roots.append(_guard_key(layout))
+    try:
+        yield
+    finally:
+        roots.pop()
+
+
+def _guard_key(layout: Layout) -> str:
+    return str(Path(layout.root).resolve())
+
+
+class _RefusalGuard(importlib.abc.MetaPathFinder):
+    """Refuses importing the module of a refused configured extension, by any path (review 1.12.0 R3): a sibling's
+    `from . import <refused>`, the extensions/ package initializer, a schema or migration module. Without it the
+    loader skipped only its own import, and the refused module's import-time code still ran.
+
+    A refused module stays closed to imports made for the project that refused it, and to those made for any project
+    that does not accept it. Outside any project (a lazy import at run time), it stays closed unless a project in this
+    process accepts it: that project's own lazy imports then work. A project-local module is named under its
+    project's namespace, so only its own project ever accepts it. Discovery's spec lookup (no import) is let by, so
+    a refusal never hides a package's manifest from the approval of another project.
+
+    A module already imported is not looked up again (Python does not ask a finder), so the loader and G5 check a
+    refusal themselves before any setup()."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if getattr(discovery.spec_lookup, "active", False):
+            return None                                    # discovery's import-free lookup, not an import (R3-1)
+        roots = getattr(_importing, "roots", None)
+        root = roots[-1] if roots else None
+        for name, by_root in list(_refused_modules.items()):
+            if not by_root or not (fullname == name or fullname.startswith(name + ".")):
+                continue
+            accepted = _accepted_modules.get(name, set())
+            if (root in accepted) if root is not None else bool(accepted):
+                continue
+            why = by_root.get(root) or next(iter(by_root.values()))
+            raise ImportError(f"{fullname} belongs to a refused extension: {why}", name=fullname)
+        return None
+
+
+_GUARD = _RefusalGuard()
+
+
+def guard_refused(layout: Layout, plan: "Approval") -> None:
+    """Close the import paths to every extension `plan` refused, for the rest of the process (until reset()): its
+    project-local module under the project's namespace, and an installed one's module. The project's earlier
+    decisions are replaced by this one, and other projects' are kept."""
+    if _GUARD not in sys.meta_path:
+        sys.meta_path.insert(0, _GUARD)
+    key = _guard_key(layout)
+    for by_root in _refused_modules.values():
+        by_root.pop(key, None)
+    for roots in _accepted_modules.values():
+        roots.discard(key)
+    for name, found in plan.finds.items():
+        installed = found.source in ("installed", "module")
+        if name in plan.refused:
+            names = {f"{_package_name(layout)}.{name}"} | ({found.module or name} if installed else set())
+            for module in names:
+                _refused_modules.setdefault(module, {})[key] = plan.refused[name]
+        elif installed and not found.problems:
+            _accepted_modules.setdefault(found.module or name, set()).add(key)
+
+
+def approval(layout: Layout) -> Approval:
+    """Import-free approval of every configured extension, shared by the loader and `supervisor migrate` (review
+    1.12.0 R1). A name is refused for a discovery problem, an excluded framework range, a built-in or doubly claimed
+    identifier or legacy section, an unlisted requirement, a requires cycle, or requiring a refused extension. Setup
+    failures are not decided here: they happen later, in load()."""
+    entries = specs(layout)
+    finds = {name: discovery.find(layout, name) for name, _required in entries}
+    refused = _approve(finds)
+    for name, found in finds.items():
+        if found.problems:
+            refused.setdefault(name, "; ".join(found.problems))
+    entries, cycle = _load_order(entries, finds)
+    for name in cycle:
+        refused.setdefault(name, f"its requires.extensions form a cycle ({' -> '.join(cycle)}); nothing in it loads")
+    for name, _required in entries:                        # load order: a requirement is decided before its users
+        m = finds[name].manifest
+        bad = [d for d in (m.requires.extensions if m else ()) if d in refused]
+        if bad and name not in refused:
+            refused[name] = f"it requires {', '.join(bad)}, which is refused"
+    return Approval(finds, refused, entries)
+
+
+def _load_order(entries: list[tuple[str, bool]], finds: dict) -> tuple[list[tuple[str, bool]], list[str]]:
+    """project.yaml's order, each extension moved only as far as the ones it requires make it (the first listed
+    extension whose requirements are all placed goes next), and the names caught in a requires cycle (placed last:
+    approval refuses them)."""
+    requires = {name: [d for d in (finds[name].manifest.requires.extensions if finds[name].manifest else ())
+                       if d in finds] for name, _ in entries}
+    placed: list[tuple[str, bool]] = []
+    done: set[str] = set()
+    waiting = list(entries)
+    while waiting:
+        ready = next((e for e in waiting if all(d in done for d in requires[e[0]])), None)
+        if ready is None:
+            break
+        placed.append(ready)
+        done.add(ready[0])
+        waiting.remove(ready)
+    cycle = [name for name, _ in waiting]
+    return placed + waiting, cycle
+
+
+def _undeclared(m, registered: list[tuple[str, str]]) -> list[str]:
+    """What setup() registered that manifest `m` does not declare in `provides`."""
+    out = []
+    for kind, identifier in registered:
+        if identifier not in m.provides.get(kind, ()):
+            out.append(f"{kind} {identifier!r}" if kind != "hooks" else f"the {identifier} hook (provides.hooks)")
+    return sorted(set(out))
+
+
+def _drop_modules(before: set[str], names: tuple[str, ...]) -> None:
+    """Forget the modules an extension's failed load added, so the next load imports them afresh."""
+    for key in [k for k in sys.modules if k not in before]:
+        if any(key == n or key.startswith(n + ".") for n in names):
+            del sys.modules[key]
 
 
 def _holder(name: str, current, owners: dict[str, tuple[str, str]]) -> str:
@@ -502,9 +829,30 @@ def _ensure_package(layout: Layout) -> str | None:
     return pkg_name
 
 
-def _import(layout: Layout, name: str):
+def import_named_module(layout: Layout, module: str):
+    """A module a manifest names (its config schema's, its migrations), resolved like an extension name: the
+    project's extensions/ first (under its namespace), else an installed module."""
+    ext_dir = Path(layout.extensions)
+    rel = Path(*module.split("."))
+    if ext_dir.is_dir() and ((ext_dir / rel).with_suffix(".py").exists() or (ext_dir / rel / "__init__.py").exists()):
+        return importlib.import_module(f"{_ensure_package(layout)}.{module}")
+    return importlib.import_module(module)
+
+
+def _import_schema(layout: Layout, spec: str):
+    """The class a manifest's `config.schema` names (`module:Class`)."""
+    module, _, cls = spec.partition(":")
+    mod = import_named_module(layout, module)
+    schema = getattr(mod, cls, None)
+    if schema is None or not hasattr(schema, "model_validate"):
+        raise ExtensionError(f"config.schema {spec!r}: {cls} is not a pydantic model in {module}")
+    return schema
+
+
+def _import(layout: Layout, name: str, module: str | None = None):
     """The project's `extensions/<name>.py` (loaded by file path under the project's namespace) or, when the
-    project has no such file, an installed dotted module. The project's file always wins over an installed name."""
+    project has no such file, an installed module: `module` when discovery found one (an entry point names its own
+    module, e.g. `supervisor_ext_notes` for identity `notes`), else the dotted name itself."""
     if not _valid_name(name):
         raise ExtensionError(f"invalid extension name {name!r}: use identifiers (letters, digits, underscore), dotted for packages")
     ext_dir = Path(layout.extensions)
@@ -513,7 +861,7 @@ def _import(layout: Layout, name: str):
         pkg_name = _ensure_package(layout)
         return importlib.import_module(f"{pkg_name}.{name}")
     try:
-        return importlib.import_module(name)              # an installed package; never via a sys.path mutation
+        return importlib.import_module(module or name)    # an installed package; never via a sys.path mutation
     except ModuleNotFoundError as exc:
         if exc.name in (name, name.split(".")[0]):
             raise ExtensionError(f"{layout.extensions / rel.with_suffix('.py')} not found and no installed module {name!r}") from None
@@ -523,13 +871,44 @@ def _import(layout: Layout, name: str):
 def load(layout: Layout) -> Registry:
     """Import and set up every extension listed in project.yaml, once per project root per process. A broken
     extension is recorded in `registry.errors` (shown by doctor); a broken *required* one is also recorded in
-    `registry.blocking`, and the loop and the packet screens refuse to proceed until it is fixed (`assert_loaded`)."""
+    `registry.blocking`, and the loop and the packet screens refuse to proceed until it is fixed (`assert_loaded`).
+
+    The registry is published only when the load has finished. Another thread calling load() meanwhile waits for it;
+    the loading thread itself, re-entering through ext.config() in a setup(), gets the registry in progress. A load
+    that does not finish (interrupted by SystemExit or KeyboardInterrupt, or an error outside an extension's own
+    load) is published as blocking, never as complete, and the exception goes on (review 1.12.0 R2-3)."""
     key = str(layout.root)
+    me = threading.get_ident()
+    own = _loading.get((key, me))
+    if own is not None:
+        return own
     reg = _registries.get(key)
     if reg is not None:
         return reg
-    reg = Registry(layout)
-    _registries[key] = reg
+    with _load_lock:
+        reg = _registries.get(key)
+        if reg is not None:
+            return reg                                     # finished while this thread waited
+        reg = Registry(layout)
+        _loading[(key, me)] = reg
+        try:
+            with importing_for(layout):
+                _load_into(layout, reg)
+        except BaseException as exc:
+            cause = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            how = "was interrupted by" if not isinstance(exc, Exception) else "stopped on an unexpected"
+            why = f"extension loading {how} {cause}, so it did not finish; restart the process"
+            reg.errors.append(why)
+            reg.blocking.append(why)
+            raise
+        finally:
+            _loading.pop((key, me), None)
+            _registries[key] = reg
+        return reg
+
+
+def _load_into(layout: Layout, reg: Registry) -> None:
+    """load()'s work on the unpublished registry `reg`."""
     if project.exists(layout):
         _doc, note = project._read_raw(project.path(layout))
         if note:
@@ -538,14 +917,36 @@ def load(layout: Layout) -> Registry:
             # unreadable file blocks exactly like a required extension that failed to import.
             reg.errors.append(f"project.yaml: {note}")
             reg.blocking.append(f"project.yaml: {note} (its extensions: list cannot be read)")
-            return reg
+            return
     modules = []
-    for name, required in specs(layout):
+    plan = approval(layout)
+    guard_refused(layout, plan)                            # before the first import, the package initializer's too
+    finds, refused = plan.finds, plan.refused
+    for name, required in plan.entries:
+        snapshot = reg._snapshot()
+        before = set(sys.modules)
+        reg._pending, reg._registered = {}, []
+        found = None
         try:
-            mod = _import(layout, name)
+            found = finds[name]
+            if found.problems:
+                raise ExtensionError("; ".join(found.problems))
+            if name in refused:
+                raise ExtensionError(refused[name] + " (refused before import)")
+            missing = [d for d in (found.manifest.requires.extensions if found.manifest else ()) if d not in reg.loaded]
+            if missing:
+                raise ExtensionError(f"it requires {', '.join(missing)}, which did not load (refused before import)")
+            mod = _import(layout, name, found.module)
             modules.append(mod)
             if getattr(mod, "__file__", None):
                 reg.origins[name] = str(Path(mod.__file__).resolve())
+            if found.manifest is not None:
+                reg.manifests[name] = found.manifest
+                if found.manifest.config is not None:     # validated before setup(): invalid config keeps nothing
+                    from .ext import _config
+                    schema = _import_schema(layout, found.manifest.config.schema)
+                    reg.config_schemas[name] = schema
+                    _config.validated(layout, found.manifest, schema)
             setup = getattr(mod, "setup", None)
             if setup is None:
                 raise ExtensionError(f"no setup(registry) function in {getattr(mod, '__file__', None) or mod.__name__}")
@@ -554,18 +955,35 @@ def load(layout: Layout) -> Registry:
                 setup(reg)
             finally:
                 reg._setting_up = None
+            if found.manifest is not None:
+                extra = _undeclared(found.manifest, reg._registered)
+                if extra:
+                    raise ExtensionError(f"setup() registered what {found.manifest.source} does not declare in "
+                                         f"provides: {', '.join(extra)}; nothing of it was kept")
+            else:
+                reg.unmanifested.append(name)
+            reg._commit()
             reg.loaded.append(name)
-        except Exception as exc:                            # noqa: BLE001 - recorded; a required one blocks the loop
+        except BaseException as exc:                        # noqa: BLE001 - recorded; a required one blocks the loop
+            reg._restore(snapshot)                         # an interrupted setup() keeps nothing either (R2-3)
+            schema_module = (found.manifest.config.schema.split(":", 1)[0]
+                             if found is not None and found.manifest is not None and found.manifest.config else name)
+            installed = found.module if found is not None and found.module else name
+            _drop_modules(before, (f"{_package_name(layout)}.{name}", name, installed,
+                                   f"{_package_name(layout)}.{schema_module}", schema_module))
+            if not isinstance(exc, Exception):
+                raise                                      # load() publishes the registry as blocking
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]
             reg.errors.append(f"{name}: {why}")
             if required:
                 reg.blocking.append(f"{name}: {why}")
             else:
                 _report_optional_failure(layout, name, why)
+        finally:
+            reg._pending, reg._registered = None, None
     reg._reconcile(set(reg.loaded))
     reg.internal_imports = internal_imports(layout, modules)
     _warn_internal_imports(layout, reg.internal_imports)
-    return reg
 
 
 def _internal_names(tree: ast.AST) -> list[tuple[int, str]]:
@@ -665,13 +1083,20 @@ def _owning_extension(module: str | None, file: str | None, names: list[str], ex
     return None
 
 
+def visible_registry(layout: Layout) -> Registry | None:
+    """The registry this thread sees for `layout`, without loading: its own load in progress (or G5's staging
+    registry), else the published one. Not another thread's unfinished load (review 1.12.0 R2)."""
+    key = str(layout.root)
+    return _loading.get((key, threading.get_ident())) or _registries.get(key)
+
+
 def calling_extension(layout: Layout) -> str | None:
     """The configured extension whose code is running on this thread: the nearest caller whose module is one of the
     project's extensions. A helper module counts for the extension that calls it. Until phase 3 gives extensions
     an identity, this is how supervisor.ext knows who is asking (its config sections, the actor of its log lines)."""
     names = [name for name, _required in specs(layout)]
     ext_dir = Path(layout.extensions).resolve()
-    reg = _registries.get(str(layout.root))
+    reg = visible_registry(layout)
     origins = [(Path(f), n) for n, f in (reg.origins.items() if reg else ()) if n in names]
     frame = sys._getframe(1)
     while frame is not None:
@@ -730,6 +1155,9 @@ def reset() -> None:
     the same extension) may register them again. `forget_registrations()` (supervisor.testing.reset) drops the
     lanes and jobs too, like a fresh process."""
     _registries.clear()
+    _loading.clear()
+    _refused_modules.clear()
+    _accepted_modules.clear()
     _warned.clear()
     _extension_adapters.clear()
     _extension_jobs.clear()
@@ -758,7 +1186,9 @@ def forget_registrations() -> None:
 
 # Run by import_side_effects() in a fresh interpreter: import every framework module first (so what they register
 # at their own import is not blamed on the extension), snapshot the process-wide registries, import the extension
-# module the way the loader does, and print which entries the import added, replaced or removed.
+# module the way the loader does, and print which entries the import added, replaced or removed. The project's
+# approval and refusal guard are set up before that import, as in the loader: nothing it imports may run a refused
+# extension (review 1.12.0 R2-1).
 _SIDE_EFFECTS_PROBE = """
 import importlib, json, pkgutil, sys
 import supervisor
@@ -778,8 +1208,15 @@ def snapshot():
     return {"adapters": {k: id(v) for k, v in REGISTRY.items()}, "python_jobs": {k: id(v) for k, v in JOBS.items()},
             "commands": {k: id(v) for k, v in commands.HANDLERS.items()}}
 
+layout = Layout(sys.argv[1])
+plan = extensions.approval(layout)
+if sys.argv[2] in plan.refused:
+    raise SystemExit(f"ImportError: {sys.argv[2]} is refused: {plan.refused[sys.argv[2]]}")
+extensions.guard_refused(layout, plan)
 before = snapshot()
-extensions._import(Layout(sys.argv[1]), sys.argv[2])
+from supervisor import discovery
+with extensions.importing_for(layout):
+    extensions._import(layout, sys.argv[2], discovery.find(layout, sys.argv[2]).module)
 after = snapshot()
 changed = {k: sorted(n for n in before[k].keys() | after[k].keys() if before[k].get(n) != after[k].get(n))
            for k in before}
@@ -792,7 +1229,7 @@ def import_side_effects(layout: Layout, name: str, timeout_s: float = 120) -> di
     """What importing extension `name` (as the loader would) changes in the process-wide registries, measured in a
     fresh interpreter: {"adapters": [...], "python_jobs": [...], "commands": [...]}, each the names added, replaced
     or removed. All empty for an extension that registers only in setup(). Raises ExtensionError when the module
-    does not import."""
+    does not import, and when the project's approval refuses it or what it imports."""
     import json
     import os
     import subprocess
@@ -812,21 +1249,28 @@ def import_side_effects(layout: Layout, name: str, timeout_s: float = 120) -> di
 
 
 def scaffold_module(layout: Layout, name: str) -> Path:
-    """Write a starter extension module under extensions/ (used by `supervisor extension new <name>`)."""
-    if not name.isidentifier():
-        raise ExtensionError(f"invalid extension name {name!r}: letters, digits and underscores only")
+    """Write a starter extension module under extensions/ and its manifest beside it (used by `supervisor extension
+    new <name>`); neither is overwritten. As written, both pass `supervisor extension check <name>`."""
+    from . import scaffold
+    if not scaffold.IDENTITY.match(name):
+        raise ExtensionError(f"invalid extension name {name!r}: lower case letters, digits and _, starting with a "
+                             f"letter (it is the extension's identity)")
     layout.extensions.mkdir(parents=True, exist_ok=True)
     init = layout.extensions / "__init__.py"
     if not init.exists():
         init.write_text("", encoding="utf-8")
     p = layout.extensions / f"{name}.py"
+    manifest_path = p.with_suffix(".toml")
+    if not manifest_path.exists():
+        manifest_path.write_text(scaffold.local_manifest(name), encoding="utf-8")
     if p.exists():
         return p
     p.write_text(f'''"""{name}: a project extension (see docs/FRAMEWORK_VS_EXTENSION.md in the framework repo).
 
 Registered in project.yaml under `extensions: [{name}]`. Everything here is specific to THIS project.
 Import only from `supervisor.ext` (the public extension API, docs/EXTENSION_API.md in the framework repo), and
-register only inside setup(): importing this module must change nothing.
+register only inside setup(): importing this module must change nothing. Declare what setup() registers in
+{name}.toml beside this file (`supervisor extension check {name}` proves the two agree).
 """
 from __future__ import annotations
 

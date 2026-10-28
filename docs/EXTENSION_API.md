@@ -38,6 +38,7 @@ Extensions never construct one.
 | Hook | Registers |
 |---|---|
 | `layout` | the project's `Layout` (an attribute, not a hook) |
+| `identity` | the identity of the extension being set up: its manifest's `identity`, which is the name `project.yaml` uses (an attribute, since 1.12.0). Build namespaced identifiers from it, e.g. `registry.python_job(registry.identity + "_sync", fn)` |
 | `config_sections(*names)` | the `config/routing.yaml` sections this extension reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
@@ -82,16 +83,34 @@ def render_config(layout):
 
 ### `config`
 
-`config(layout, section) -> dict`: the `section` of `config/routing.yaml`, parsed for this call: a copy, so
-changing it changes nothing, and a later call sees the file as it is then. `{}` when the file or the section is
-absent. Raises `ExtensionError` when:
+`config(layout, section) -> dict`: the calling extension's configuration, parsed for this call: a copy, so changing
+it changes nothing, and a later call sees the file as it is then.
+
+**An extension whose manifest has a `config` table** (`docs/EXTENSION_STANDARD.md`, since 1.12.0) owns
+`extensions.<identity>` in `config/routing.yaml`:
+- `config(layout, <identity>)` is that whole section, validated by the pydantic model the manifest names, with the
+  model's defaults filled in.
+- `config(layout, <name>)` for a name in the manifest's `config.legacy_sections` is the sub-section of that name
+  (`{}` when absent).
+
+Until `supervisor migrate` has moved them, the values are read from the old top-level sections in
+`config.legacy_sections`, with a `DeprecationWarning`. The section named like the identity merges in at the top,
+and any other nests under its own name. A section that does not match the model is an `ExtensionError` naming every
+field. At load, that failure leaves nothing of the extension registered.
+
+**Any other extension** reads the top-level `section` it declared with `registry.config_sections()`, as in 1.11.0.
+`{}` when the file or the section is absent.
+
+Raises `ExtensionError` when:
 
 - the caller is not an extension's code. The caller is the configured extension whose module is running: a module
   listed under `extensions:` in `project.yaml` (recognised by its source file, so the same file imported under another
   name, as a project's tests may, is the same extension), or a helper module it calls, which reads for that
   extension;
-- the calling extension did not declare `section` with `registry.config_sections()`, including a section another
+- the section is not the calling extension's: with a manifest `config` table, neither its identity nor one of its
+  `config.legacy_sections`; otherwise not declared with `registry.config_sections()`, including a section another
   extension declared and one the framework owns;
+- the section does not match the manifest's model;
 - the section is not a mapping, or `routing.yaml` is not valid YAML.
 
 `registry.config_sections(*names)` takes routing.yaml keys (letters, digits, `_`, `-`). It refuses a framework
@@ -101,9 +120,12 @@ owner.
 
 ### `resources`
 
-`resources(layout) -> dict`: the shared resource policy, open to every extension: `{"gpu": {...}}`, a copy of
-`routing.yaml`'s `gpu` section (`{}` when absent), parsed for this call. Phase 3 moves it to `resources.gpu`; this
-shape stays.
+`resources(layout) -> dict`: the shared resource policy, `{"gpu": {...}}`, a copy parsed for this call. It is read
+from `routing.yaml`'s `resources.gpu` (since 1.12.0), else from the old top-level `gpu` section with a
+`DeprecationWarning` until `supervisor migrate` has moved it, and is `{}` inside when both are absent.
+
+An extension with a manifest sees only the resources it declares in `requires.resources`: without `gpu` there, the
+result is `{}`. An extension without a manifest sees all of it, as in 1.11.0.
 
 ## Project paths
 

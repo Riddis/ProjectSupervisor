@@ -23,10 +23,17 @@ person, or names a vendor outside the listed files.
 An extension imports one thing from the framework, the public extension API `supervisor.ext`, whose every name,
 signature and behaviour is in `docs/EXTENSION_API.md`; `examples/reference_extension/` uses all of it.
 
-`project.yaml` lists modules under `extensions:`; each is loaded from the project's `extensions/<name>.py` (or, when
-the project has no such file, imported as an installed dotted module) and its `setup(registry)` is called once per
-process — by the CLI, the loop and the Control Center alike. `supervisor extension new <name>` scaffolds one and
-registers it.
+`project.yaml` lists extensions under `extensions:` by identity. Each is one of these:
+- a project-local module `extensions/<name>.py` (or package folder);
+- an installed package that declares an entry point in the group `supervisor.extensions`, such as the shared
+  extension packages from 1.12.0.
+
+Either way its manifest, `supervisor-extension.toml`, declares what it is, which framework versions it supports and
+what it registers (`docs/EXTENSION_STANDARD.md`, 1.12.0). The manifest is read before anything is imported, and
+`setup(registry)` is called once per process (by the CLI, the loop and the Control Center alike), all or nothing.
+
+`supervisor extension new <name>` scaffolds a project-local one with its manifest and lists it. `--package` creates
+the standard package instead, and `supervisor extension check <name>` (gate G5) proves either conforms.
 
 ```yaml
 extensions:
@@ -97,9 +104,11 @@ What the registry offers (`supervisor/extensions.py`):
 | `static_dir(path, prefix)` | files served at `/static/<prefix>/...` (your `review.js`, a stylesheet, icons). One path segment per prefix; the framework's own assets stay directly under `/static/`. |
 
 Extensions may read their own section of `config/policy.yaml` through `supervisor.policy.section("my_section")`
-and the sections of `config/routing.yaml` they declare with `registry.config_sections(...)`, through
-`supervisor.ext.config(layout, section)`; the shared resource policy (routing.yaml's `gpu`) through
-`supervisor.ext.resources(layout)` (1.11.0, `docs/EXTENSION_API.md`). `supervisor.ext.gpu` (`free_mb`, `used_mb`,
+and their own configuration through `supervisor.ext.config(layout, <identity>)`. From 1.12.0 that is
+`extensions.<identity>` in `config/routing.yaml`, validated by the schema the manifest names. An extension without a
+manifest reads the sections it declares with `registry.config_sections(...)`. They read the shared resource policy
+(`resources.gpu`) through `supervisor.ext.resources(layout)` (`docs/EXTENSION_API.md`); `supervisor migrate` moves
+the pre-1.12.0 top-level sections there. `supervisor.ext.gpu` (`free_mb`, `used_mb`,
 `total_mb`, `available`) is the shared nvidia-smi probe for lanes, checks and panels that need to know what the card
 has free; it never raises.
 

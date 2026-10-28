@@ -48,13 +48,16 @@ app.add_typer(extension_app, name="extension")
 app.add_typer(boundary_app, name="boundary")
 
 
-def _layout() -> Layout:
+def _layout(load: bool = True) -> Layout:
+    """The project here. `load=False` sets no extension up: `supervisor migrate` must work while an extension fails to
+    load (1.12.0), and its migrations need only the manifests."""
     root = find_root()
     if root is None:
         raise typer.BadParameter(str(NoProject("no project.yaml found here or above; run `supervisor init <dir>` "
                                                "or set SUPERVISOR_ROOT")))
     layout = Layout(root).ensure()
-    extensions_mod.load(layout)
+    if load:
+        extensions_mod.load(layout)
     return layout
 
 
@@ -82,10 +85,10 @@ def _echo_cmd(outcome: dict, task_id: str) -> None:
         typer.echo(f"warning: {w}")
 
 
-def _writer() -> Layout:
+def _writer(load: bool = True) -> Layout:
     """For commands that mutate state/ directly: refuse while a supervisor holds the lock (single-writer rule)."""
     from .locks import holder
-    layout = _layout()
+    layout = _layout(load=load)
     h = holder(layout.lock)
     if h is not None:
         raise typer.BadParameter(f"a supervisor holds state/.lock ({h.get('owner')}); use `supervisor cmd <kind> <json>` "
@@ -127,7 +130,7 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
 def migrate(dry_run: bool = typer.Option(False, help="report what would change without writing")):
     """Bring a project's state and config up to the installed framework version (idempotent)."""
     from . import migrations
-    layout = _writer()
+    layout = _writer(load=False)
     try:
         notes = migrations.run(layout, dry_run=dry_run)
     except migrations.MigrationError as exc:
@@ -364,9 +367,32 @@ def extension_list():
         typer.echo("no extensions configured (project.yaml `extensions:`)")
 
 
+@extension_app.command("check")
+def extension_check_cmd(name: str):
+    """Gate G5: whether extension <name> conforms to the standard (docs/EXTENSION_STANDARD.md). Never runs its tests."""
+    from . import extension_check
+    findings = extension_check.run(_layout(load=False), name)
+    for f in findings:
+        typer.echo(f"{'OK  ' if f.ok else 'FAIL'} {f.name}: {f.detail}")
+    raise typer.Exit(0 if all(f.ok for f in findings) else 1)
+
+
 @extension_app.command("new")
-def extension_new(name: str):
-    """Scaffold extensions/<name>.py and list it in project.yaml."""
+def extension_new(name: str,
+                  package: bool = typer.Option(False, "--package", help="create the standard extension package "
+                                               "(supervisor-ext-<name>/) instead of a project-local module"),
+                  directory: Path = typer.Option(None, "--dir", help="where --package creates it (default: here)")):
+    """Scaffold extensions/<name>.py with its manifest and list it in project.yaml; with --package, the standard
+    extension package in its own folder (docs/EXTENSION_STANDARD.md)."""
+    if package:
+        from . import scaffold
+        try:
+            root = scaffold.package(directory or Path.cwd(), name)
+        except (ValueError, FileExistsError) as exc:
+            raise typer.BadParameter(str(exc)) from None
+        typer.echo(f"created {root}: `pip install -e {root}` into a project's environment, list {name!r} under "
+                   f"extensions: in its project.yaml, then `supervisor extension check {name}` there")
+        return
     layout = _layout()
     p = extensions_mod.scaffold_module(layout, name)
     doc = dict(project_mod.load(layout))
@@ -417,6 +443,9 @@ def _launch_update_check(layout: Layout, interactive: bool) -> None:
         typer.echo(updates.describe(status)[0])
         return
     if not status.available:
+        if status.newer_release:                            # a pinned checkout: told, never offered a pull
+            for line in updates.describe(status):
+                typer.echo(line)
         return
     if not interactive:
         for line in updates.describe(status):

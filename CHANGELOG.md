@@ -3,6 +3,206 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.12.0 — 2026-10-28
+
+Phase 3 of the boundary plan (docs/BOUNDARY.md): the extension standard (docs/EXTENSION_STANDARD.md).
+- **Manifests:** every extension has a manifest, `supervisor-extension.toml`, read before anything it ships is
+  imported.
+- **Installed packages:** they are found through the entry point group `supervisor.extensions`.
+- **Loading** is approved first (framework range, collisions, requirements), then all or nothing.
+- **Configuration:** an extension owns `extensions.<identity>`, validated by its schema; the shared resource policy
+  is `resources.gpu`.
+- **Gate G5,** `supervisor extension check`, proves an extension conforms, and `extension new --package` scaffolds
+  the standard package.
+
+Also: the update check on a pinned framework checkout, carried from the unreleased 1.11.1. A minor release:
+everything that works on 1.11.0 keeps working, with warnings (owner decision D1).
+
+**Migration:** `supervisor migrate` moves configuration to its owners, keeping comments and every other line of
+`config/routing.yaml` as written:
+- `gpu` to `resources.gpu`;
+- each configured extension's manifest's `config.legacy_sections` into `extensions.<identity>`.
+
+Then the migrations extension manifests name run. Its dry run lists each move. Running it is not required: the old
+sections are still read, with a DeprecationWarning and a doctor WARN. The update-check cache gains fields that 1.11.0
+discards.
+
+**Rollback** to v1.11.0, in a maintenance window: restore the snapshot of `config/`, `state/` and `project.yaml`
+taken before `supervisor migrate`. v1.11.0 does not read `extensions.<identity>` or `resources.gpu`. Then check out
+`v1.11.0`, run `supervisor migrate` (it records 1.11.0 again) and `supervisor doctor`, and start. Manifests are
+ignored by 1.11.0. An extension that calls `registry.identity` does not load there. Once work has run on 1.12.0,
+reconcile first (rollback B).
+
+**Extension authors:**
+- Add a manifest beside your module (`extensions/<name>.toml`) or in your package. It declares everything `setup()`
+  registers, with the identifiers older than the namespace rule as `legacy_ids`.
+- Name a pydantic schema for your section, and list the old top-level sections as `config.legacy_sections`.
+- Run `supervisor extension check <name>`.
+
+An extension without a manifest still loads in 1.12.x, with a doctor WARN; a later major release requires one.
+
+**Review:** the G4 review covers `v1.11.0..` this release commit, including the carried pinned-checkout commits.
+Astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1 of the 1.12.0 review, on
+`f8b0e52`, closed the pinned-checkout findings R2-1 and R2-2 and found four issues in the extension standard. Round 2,
+on `92caa7c`, closed two of them and found three gaps in the other two. Each is fixed below with regression tests.
+
+- **Added: the extension manifest** (`supervisor/manifest.py`, `docs/EXTENSION_STANDARD.md`).
+  `supervisor-extension.toml` declares an extension's identity, its version, the framework versions it supports,
+  what it registers (`provides`, with `legacy_ids`), its configuration section and schema, what it requires, and
+  its migrations.
+  - It is read without importing anything the extension ships.
+  - Parsing is strict, and every problem is reported at once.
+  - The framework range is compared by version number.
+  - The loader does not read manifests yet.
+  - New dependency: `packaging` (version ranges, PEP 440), already present wherever pip is.
+- **Added: discovery without import** (`supervisor/discovery.py`). Each name in `project.yaml: extensions` is found
+  with its manifest, executing nothing the extension ships:
+  - project-local, beside the module or inside the package folder;
+  - installed, through the entry point group `supervisor.extensions` and the distribution's file list, or, for an
+    editable install, beside the package `find_spec` locates.
+
+  The same name from two sources is refused, and so is a manifest naming another identity. An extension without a
+  manifest is found as legacy.
+- **Changed: loading is all or nothing** (`supervisor/extensions.py`). `setup()` registers into a staging area, and
+  the lanes, python jobs and command kinds reach the process-wide tables only in one commit after it returns.
+  Nothing an extension registered remains, required or optional, when any of these happens:
+  - `setup()` raises;
+  - `setup()` registers something its manifest does not declare;
+  - discovery refuses its manifest;
+  - its import fails.
+
+  The project's registry is put back exactly, and the module is dropped from `sys.modules`. Before, whatever
+  `setup()` registered before failing stayed. The loader now finds each extension through discovery: the same name
+  from two sources is refused, where a project-local file used to win silently. `registry.manifests` and
+  `registry.unmanifested` list who has a manifest.
+- **Added: approval before import.** From the manifests alone, before any extension module is imported, the loader
+  refuses:
+  - an extension whose framework range excludes the installed framework;
+  - a manifest claiming a built-in identifier;
+  - an identifier two manifests claim (both are refused);
+  - a `requires.extensions` entry `project.yaml` does not list, or a cycle.
+
+  Extensions load after the ones they require, and one whose requirement did not load is refused. Refusals are load
+  failures: a required one blocks the loop.
+- **Extension API: `Registry.identity`.** During `setup()`, `registry.identity` is the identity of the extension
+  being set up: its manifest's `identity`, which discovery holds equal to the name `project.yaml` uses. An
+  extension builds its namespaced identifiers from it. The `Registry` section of `docs/EXTENSION_API.md` gains
+  the attribute; this is a compatible addition.
+- **Extension API: `config` and `resources`, configuration ownership.** An extension whose manifest has a `config`
+  table owns `extensions.<identity>` in `routing.yaml`, validated by its pydantic model before `setup()` runs.
+  Invalid configuration is a load failure that leaves nothing registered. `config(layout, <identity>)` is the
+  validated section, and `config(layout, <legacy section>)` a part of it. Until `supervisor migrate` moves
+  them, values are read from the old top-level sections in `config.legacy_sections` (new manifest field),
+  with a DeprecationWarning.
+
+  `resources()` reads `resources.gpu`, else the old `gpu` (warned), and an extension with a manifest sees
+  only what it declares in `requires.resources`. Extensions without a manifest see no change, and the
+  signatures are unchanged.
+- **Added: the configuration move and extension migrations** (`supervisor/migrations.py`, `supervisor/yaml_edit.py`).
+  `supervisor migrate` moves routing.yaml's `gpu` to `resources.gpu`, and each configured extension's
+  `config.legacy_sections` into `extensions.<identity>`: the section named like the identity at the top, any other
+  nested under its own name. Both are driven by the manifests discovery reads, so no extension code runs.
+  - `yaml_edit.move_sections` cuts each section's lines and re-indents them under the destination. Comments move
+    with the lines, the one on the key line included, and every other line stays byte for byte, in the file's own
+    line endings.
+  - Where lines cannot be moved (a flow-style parent), a comment-keeping round trip is used instead.
+  - Either way the result must read back as the same values moved, or nothing is written.
+
+  Then the migrations each manifest names (`migrations = "<module>"`, exposing `MIGRATIONS`) run, importing only
+  that module, never `setup()`. Rollback: the maintenance window's snapshot. v1.11.0 does not read the new places.
+- **Changed: doctor and migrate do not depend on loading.** `supervisor migrate` no longer sets extensions up.
+  `supervisor doctor` gains the check `extension_manifests` (G6), read from the manifests alone:
+  - FAIL for a refused manifest or an excluded framework range;
+  - WARN for an extension without a manifest, or for configuration not yet moved.
+
+  An extension's doctor check must report a name its manifest declares in `provides.doctor_checks`.
+- **Added: gate G5, `supervisor extension check <name>`** (`supervisor/extension_check.py`). It checks whether
+  one extension conforms to the standard:
+  - its manifest;
+  - its framework range;
+  - imports of `supervisor.ext` only;
+  - no registration at import (in a fresh interpreter);
+  - `setup()` registering exactly what `provides` declares, the same on a second run, against a staging registry
+    never committed;
+  - its configuration against the schema.
+
+  It never runs the extension's tests.
+- **Added: `supervisor extension new <name> --package`**, the standard extension package from
+  `supervisor/extension_template/`. It holds `pyproject.toml` with the entry point, the package with its manifest
+  and a pydantic config model, a generated conformance test, a behaviour test, a README and a CHANGELOG. It passes
+  G5 and its own suite as generated.
+- **Changed: `supervisor extension new <name>`** writes the manifest beside the module, and accepts only an identity
+  the manifest accepts (lower case, digits, `_`).
+- **Changed: the reference extension is a package** (`examples/reference_extension/`). It gains a manifest, a
+  pydantic schema for `extensions.reference` and a `pyproject.toml` (entry point `reference`). Its projection is
+  named `reference_notes`, so every identifier it registers is namespaced. It passes G5.
+- **Added: CI job "G5 reference extension"** (`tools/ci_installed_extension.py`). In a fresh environment with the
+  framework built rather than editable, it installs the reference extension as a wheel, with its source moved out
+  of reach, and then as an editable install. Each time it shows that:
+  - the extension is found through its entry point;
+  - it loads, and passes `supervisor extension check`;
+  - it completes a task on its lane.
+
+  A package generated by `supervisor extension new --package` runs its complete suite. It is a required check from
+  this release.
+- **Fixed (review 1.12.0 R1): `supervisor migrate` follows approval.** Migrate used discovery alone, so an
+  extension the loader refuses (an excluded framework range, a claimed identifier) still directed configuration moves
+  and had its migration module imported. Loader and migrate now share one import-free approval,
+  `extensions.approval()`. An extension requiring a refused one is refused too. A `setup()` failure is not a refusal:
+  migrate never runs `setup()`.
+- **Fixed (review 1.12.0 R2): an unfinished load is private.** The registry was published before its extensions were
+  set up, so another thread could read a half-loaded project as loaded. It is now published when the load finishes,
+  under a reentrant load lock that other threads wait on. `ext.config()` inside `setup()` reads the load in progress,
+  and G5's staging registry is visible only to its own thread.
+- **Fixed (review 1.12.0 R3): a refused extension's code does not run.** The loader skipped only its own import, so a
+  sibling's `from . import <refused>`, the package initializer or a schema module still ran the refused module. An
+  import-system guard now refuses those modules, from before the first import until `testing.reset()`.
+- **Fixed (review 1.12.0 R4): G5 sets an extension up with its dependencies' context.** G5's staging registry knew
+  only the extension checked, so a dependency's function called from `setup()` failed to read the dependency's
+  configuration and resources. It now holds each declared dependency's manifest, schema and origin, transitively,
+  and reports a refused dependency.
+- **Fixed (review 1.12.0 round 2, R2-1): G5 runs no code of a refused extension.** G5 guarded only its own process,
+  and started the fresh interpreter for `import_side_effects` before looking at the approval. It now reports a refused
+  target as "not run: refused before import" without importing it, even when another project already imported it.
+  The fresh interpreter takes the project's approval and guard before its first import.
+- **Fixed (review 1.12.0 round 2, R2-2): a refusal belongs to its project.** The guard banned a refused installed
+  module for the whole process, so a project whose own approval accepts that package could not load it after another
+  project refused it. Imports made for a project (its load, G5, migrate) now follow that project's approval. Outside
+  any project, a refused installed module stays closed unless a project in the process accepts it. Round 3 (R3-1):
+  discovery's import-free spec lookup for an editable install passes the guard by, so a refusal elsewhere no longer
+  hides the package's manifest from an accepting project.
+- **Fixed (review 1.12.0 round 2, R2-3): a load that does not finish blocks.** A load interrupted by SystemExit or
+  KeyboardInterrupt, or broken outside an extension's own handler, was published as complete. The interrupted
+  extension is now rolled back, and the registry is published as blocking until the process restarts.
+- **Fixed: an installed extension is imported by its entry point's module.** Discovery reports the module the entry
+  point names (`supervisor_ext_notes` for identity `notes`), and the loader, G5 and the import-side-effect probe
+  import that. Before, they imported the identity as a module name.
+- **Fixed: the update check on a pinned checkout** (`supervisor/updates.py`). A live project runs a framework
+  worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). The check treated detached `HEAD` as a
+  branch named `HEAD` and compared it with `origin/HEAD`, which a worktree of a development clone does not have.
+  Every launch printed "update check skipped: origin/HEAD unknown: fatal: ambiguous argument…", and nothing
+  reported a newer release.
+  - A detached checkout is now *pinned*. Both releases come from origin's own tag list (`git ls-remote --tags`,
+    each tag peeled to its commit) and are compared by version number (v1.10.0 is above v1.9.0):
+    - the release it runs is the newest one origin publishes at its commit;
+    - the newer release is the newest one origin publishes.
+
+    Other tag names are not releases, and neither is a tag that exists only locally, wherever it points. When
+    origin publishes no release at the commit, the check says so and announces nothing. It fetches only the newer
+    release's objects, writing no local ref, and says whether its changelog mentions a migration.
+  - Without a fetch (the overview), the last result from origin is shown, with the time of that check. A failed
+    refresh does not erase it: the overview adds "the latest refresh failed (<reason>)".
+  - The launch check says nothing when the checkout is pinned at the newest release. It names a newer release and
+    the maintenance-window steps, `git fetch origin tag vX.Y.Z` included, and never offers a pull.
+  - The Control Center's overview shows "Framework release available" with no Update button.
+  - `apply` (`supervisor update`, `/overview/update`) inspects the checkout itself. It refuses a detached checkout,
+    and a status that no longer describes the checkout (another branch or commit), whatever status it is given, and
+    changes nothing. A cached check is reused only while the checkout is still at the branch and commit it was taken
+    of.
+  - A detached checkout not at a release tag is reported plainly; `supervisor doctor` already fails it.
+  - docs/UPDATING.md and the framework-change skill add `git fetch origin tag vX.Y.Z` before the checkout, since the
+    check no longer creates the tag locally.
+
 ## 1.11.0 — 2026-10-27
 
 Phase 2 of the boundary plan (docs/BOUNDARY.md): the public extension API `supervisor.ext`, gate G2 recording its

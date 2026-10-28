@@ -1,0 +1,17 @@
+"""G5: `supervisor extension check {{ identity }}` in a temporary project that uses this extension. The check proves
+conformance only; the other tests prove behaviour."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+from supervisor import testing
+
+
+def test_supervisor_extension_check_passes(tmp_path):
+    layout = testing.project(tmp_path, extensions=["{{ identity }}"], routing={"extensions": {"{{ identity }}": {}}})
+    env = {**os.environ, "SUPERVISOR_ROOT": str(layout.root), "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run([sys.executable, "-m", "supervisor", "extension", "check", "{{ identity }}"],
+                            cwd=str(layout.root), env=env, capture_output=True, text=True, timeout=300, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr

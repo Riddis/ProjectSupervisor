@@ -14,7 +14,7 @@ the framework never names a project. Read `docs/BOUNDARY.md` and `docs/FRAMEWORK
 Answer before writing code, and keep the answer for the pull request (G7):
 
 - **Rule 1:** would a project about something completely different want this? Yes → framework, continue here.
-  Some projects → an extension package (from 1.12.0; until then the project's `extensions/`). Only this project →
+  Some projects → an extension package (`supervisor extension new <name> --package`, `docs/EXTENSION_STANDARD.md`). Only this project →
   the project's `extensions/`, `config/` or `agents/`: stop here and do it there.
 - **Rule 3, for a new or changed hook:** name its second user — a generic use beyond the project asking. With
   only one user the project solves it in its extension.
@@ -77,7 +77,8 @@ the framework.
 
 A change reaches projects only as a tagged release: **framework-release** cuts it (version, changelog, review,
 tag). Projects take the tag in a maintenance window — drain until no job record is open and no command queued,
-stop, move their framework checkout to the tag (`git -C <runtime worktree> checkout vX.Y.Z`), reinstall only if
+stop, move their framework checkout to the tag (`git -C <runtime worktree> fetch origin tag vX.Y.Z`, then
+`git -C <runtime worktree> checkout vX.Y.Z`), reinstall only if
 dependencies changed, `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start. Never `git
 pull` a project's framework checkout: doctor refuses an untagged or dirty one, by design.
 

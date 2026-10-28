@@ -215,3 +215,258 @@ def test_pip_failure_with_empty_output_fails_the_update(world, live_loop, monkey
     monkeypatch.setattr(updates, "_child", lambda args, lay: (0, "", ""))
     res = updates.apply(layout, updates.check(layout, fetch=True, max_age_s=0), reinstall=True)
     assert not res.ok and "pip install -e" in res.error and "exit 1" in res.error and live_loop["spawned"] == []
+
+
+# ---------------------------------------------------------------- a pinned runtime checkout (1.11.1)
+# A live project runs a worktree detached at a release tag (docs/UPDATING.md, "Pinned checkouts"). Before 1.11.1 the
+# check compared HEAD with `origin/HEAD`, which does not exist, and every launch printed git's error.
+
+def tag(cwd: Path, name: str) -> None:
+    git(cwd, "tag", "-a", name, "-m", name)
+
+
+@pytest.fixture
+def pinned(world):
+    """The clone detached at v1.0.0, the way a project's runtime checkout is pinned. A runtime worktree of a
+    development clone has no `origin/HEAD` (only `git clone` sets one): removed, as it is there."""
+    tag(world["author"], "v1.0.0")
+    git(world["author"], "push", "-q", "origin", "v1.0.0")
+    git(world["clone"], "fetch", "-q", "--tags", "origin")
+    git(world["clone"], "checkout", "-q", "v1.0.0")
+    git(world["clone"], "remote", "set-head", "origin", "--delete")
+    return world
+
+
+def release(author: Path, version: str, migration: bool = False) -> None:
+    push_update(author, version=version, migration=migration)
+    tag(author, f"v{version}")
+    git(author, "push", "-q", "origin", f"v{version}")
+
+
+def test_a_pinned_checkout_at_the_newest_release_is_up_to_date_without_a_git_error(pinned):
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned and st.pinned_tag == "v1.0.0" and not st.newer_release and not st.available
+    lines = updates.describe(st)
+    assert "v1.0.0" in lines[0] and "newest release" in lines[0]
+    assert not any("origin/HEAD" in line or "fatal" in line for line in lines)
+
+
+def test_a_pinned_checkout_reports_a_newer_release_and_never_offers_a_pull(pinned):
+    release(pinned["author"], "1.1.0", migration=True)
+    push_update(pinned["author"], version="1.2.0-dev")                  # an untagged commit is not a release
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned and st.newer_release == "v1.1.0" and st.remote_version == "1.1.0"
+    assert st.migration_hint and not st.available and st.behind == 0
+    text = "\n".join(updates.describe(st))
+    assert "v1.0.0" in text and "v1.1.0" in text and "maintenance window" in text
+    assert "git fetch origin tag v1.1.0" in text                       # the check no longer creates the tag locally
+    asked = []
+    assert updates.prompt_and_apply(pinned["layout"], st, ask=asked.append, echo=lambda _l: None) is None
+    assert asked == []                                                  # nothing to say yes to
+    head = git(pinned["clone"], "rev-parse", "HEAD")
+    res = updates.apply(pinned["layout"], st, reinstall=False)
+    assert not res.ok and "pinned" in res.error and "v1.1.0" in res.error and res.steps == []
+    assert git(pinned["clone"], "rev-parse", "HEAD") == head
+
+
+def test_the_newest_release_is_chosen_by_version_number_not_by_name(pinned):
+    for version in ("1.9.0", "1.10.0"):
+        release(pinned["author"], version)
+    tag(pinned["author"], "pre-release-notes")                          # not a vX.Y.Z tag: ignored
+    git(pinned["author"], "push", "-q", "origin", "pre-release-notes")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.newer_release == "v1.10.0" and st.remote_version == "1.10.0"
+
+
+def test_a_detached_checkout_not_at_a_release_tag_says_so_plainly(pinned):
+    push_update(pinned["author"])
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "checkout", "-q", "FETCH_HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert not st.ok and not st.available and "not at a release tag" in st.reason
+    assert "origin/HEAD" not in st.reason and "fatal" not in st.reason
+
+
+def test_the_launch_check_is_silent_when_pinned_to_the_newest_release_and_names_a_newer_one(pinned, capsys):
+    from supervisor import cli
+    cli._launch_update_check(pinned["layout"], interactive=True)
+    assert capsys.readouterr().out == ""
+    release(pinned["author"], "1.1.0")
+    (pinned["layout"].runtime / "update_check.json").unlink()
+    cli._launch_update_check(pinned["layout"], interactive=True)
+    out = capsys.readouterr().out
+    assert "v1.1.0" in out and "maintenance window" in out and "[y/N]" not in out
+
+
+def test_the_overview_names_a_newer_release_for_a_pinned_checkout_without_an_update_button(pinned, monkeypatch):
+    from fastapi.testclient import TestClient
+    from supervisor.ui.app import create_app
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    monkeypatch.setattr("supervisor.ui.app._start_update_checker", lambda layout: None)
+    updates.check(layout, fetch=True, max_age_s=0)
+    page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
+    assert page.status_code == 200 and "v1.1.0" in page.text and "maintenance window" in page.text
+    assert "Update now" not in page.text and "Origin last checked" in page.text
+
+
+# ---------------------------------------------------------------- review 1.11.1 F1: a status from before the pin
+
+@pytest.fixture
+def pinned_after_a_branch_check(world, monkeypatch):
+    """A real branch check that finds a pull (a release, then an untagged development commit), cached; then the
+    clone is pinned at v1.0.0 within the cache's lifetime. Stopping the loop is recorded, never performed."""
+    tag(world["author"], "v1.0.0")
+    git(world["author"], "push", "-q", "origin", "v1.0.0")
+    release(world["author"], "1.1.0")
+    push_update(world["author"], version="1.2.0-dev")
+    branch_status = updates.check(world["layout"], fetch=True, max_age_s=0)
+    assert branch_status.available and not branch_status.pinned
+    git(world["clone"], "fetch", "-q", "--tags", "origin")
+    git(world["clone"], "checkout", "-q", "v1.0.0")
+    stops = []
+    monkeypatch.setattr(updates, "_stop_loop", lambda layout, out, timeout_s: stops.append(True) or True)
+    return {**world, "branch_status": branch_status, "stops": stops, "head": git(world["clone"], "rev-parse", "HEAD")}
+
+
+def test_the_cached_check_is_not_reused_once_the_checkout_is_pinned(pinned_after_a_branch_check):
+    w = pinned_after_a_branch_check
+    st = updates.check(w["layout"], fetch=True)                         # the launch path: the default cache age
+    assert st.pinned and st.pinned_tag == "v1.0.0" and not st.available
+    asked = []
+    assert updates.prompt_and_apply(w["layout"], st, ask=asked.append, echo=lambda _l: None) is None
+    assert asked == []
+
+
+@pytest.mark.parametrize("supplied", [True, False], ids=["status-from-before-the-pin", "fresh-check"])
+def test_apply_refuses_a_detached_checkout_whatever_status_it_is_given(pinned_after_a_branch_check, supplied):
+    w = pinned_after_a_branch_check
+    res = updates.apply(w["layout"], w["branch_status"] if supplied else None, reinstall=False)
+    assert not res.ok and "pinned" in res.error and res.steps == []
+    assert w["stops"] == [] and git(w["clone"], "rev-parse", "HEAD") == w["head"]
+
+
+def test_apply_refuses_a_status_for_another_state_of_the_checkout(world, monkeypatch):
+    """Still on the branch, but HEAD moved since the check: the status no longer describes this checkout."""
+    push_update(world["author"])
+    st = updates.check(world["layout"], fetch=True, max_age_s=0)
+    assert st.available
+    (world["clone"] / "local.txt").write_text("x\n", encoding="utf-8")
+    git(world["clone"], "add", "local.txt")
+    git(world["clone"], "commit", "-q", "-m", "local work")
+    stops = []
+    monkeypatch.setattr(updates, "_stop_loop", lambda layout, out, timeout_s: stops.append(True) or True)
+    res = updates.apply(world["layout"], st, reinstall=False)
+    assert not res.ok and "changed since" in res.error and res.steps == [] and stops == []
+
+
+# ---------------------------------------------------------------- review 1.11.1 F2: only what origin publishes
+
+def test_an_unpublished_local_tag_is_not_a_release_and_the_published_one_is_found(pinned):
+    """A runtime worktree shares its tags with the development clone: a tag made there and never pushed is not a
+    release. The check also leaves the clone's own tags as they were."""
+    release(pinned["author"], "1.1.0")
+    push_update(pinned["author"], version="9.0.0-dev")
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "tag", "-a", "v9.0.0", "-m", "local only", "FETCH_HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.newer_release == "v1.1.0" and st.remote_version == "1.1.0"
+    assert "v9.0.0" not in "\n".join(updates.describe(st))
+    assert git(pinned["clone"], "tag", "--list", "v1.1.0") == ""
+
+
+def test_without_a_fetch_a_pinned_checkout_shows_its_last_check_of_origin_and_never_its_local_tags(pinned):
+    """The overview reads the check without fetching. It shows the last result taken from origin, however old, with
+    its time; with none yet, it shows no release (and never one read from the local tags)."""
+    release(pinned["author"], "1.1.0")
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")              # v1.1.0 is now a local tag as well
+    cache = pinned["layout"].runtime / "update_check.json"
+    st = updates.check(pinned["layout"], fetch=False, max_age_s=0)
+    assert not st.ok and not st.newer_release and "origin" in st.reason
+    fresh = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert fresh.newer_release == "v1.1.0"
+    old = fresh.to_dict() | {"checked_at": fresh.checked_at - 86400}
+    cache.write_text(__import__("json").dumps(old), encoding="utf-8")
+    last = updates.check(pinned["layout"], fetch=False)
+    assert last.newer_release == "v1.1.0" and last.checked_at == old["checked_at"]
+
+
+# ---------------------------------------------------------------- review 1.11.1 R2-1: the release the checkout is at
+
+def test_an_unpublished_tag_at_the_pinned_commit_does_not_hide_a_published_release(pinned):
+    """A local-only v8.0.0 on the very commit the checkout is pinned at: the checkout still runs v1.0.0, the release
+    origin publishes at that commit, and v1.1.0 is still newer."""
+    release(pinned["author"], "1.1.0")
+    git(pinned["clone"], "tag", "-a", "v8.0.0", "-m", "local alias", "HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned_tag == "v1.0.0" and st.newer_release == "v1.1.0"
+    assert "v8.0.0" not in "\n".join(updates.describe(st))
+
+
+def test_a_checkout_at_a_tag_origin_does_not_publish_says_so_and_names_the_newest_release(pinned):
+    """Detached at a commit only a local tag marks: which release this is cannot be established, and the check says
+    so instead of announcing (or hiding) anything."""
+    release(pinned["author"], "1.1.0")
+    push_update(pinned["author"], version="5.0.0-dev")
+    git(pinned["clone"], "fetch", "-q", "origin", "main")
+    git(pinned["clone"], "checkout", "-q", "FETCH_HEAD")
+    git(pinned["clone"], "tag", "-a", "v5.0.0", "-m", "local only", "HEAD")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert not st.ok and not st.newer_release
+    assert "origin publishes no release at this commit" in st.reason and "v1.1.0" in st.reason
+
+
+def test_a_lightweight_release_tag_is_recognised_as_the_pinned_release(pinned):
+    """`ls-remote` lists a lightweight tag by its commit alone (no peeled line); it is still the release here."""
+    push_update(pinned["author"], version="1.2.0")
+    git(pinned["author"], "tag", "v1.2.0")
+    git(pinned["author"], "push", "-q", "origin", "v1.2.0")
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")
+    git(pinned["clone"], "checkout", "-q", "v1.2.0")
+    st = updates.check(pinned["layout"], fetch=True, max_age_s=0)
+    assert st.ok and st.pinned_tag == "v1.2.0" and not st.newer_release
+
+
+# ---------------------------------------------------------------- review 1.11.1 R2-2: a failed refresh
+
+def test_a_failed_refresh_keeps_the_last_result_from_origin(pinned, monkeypatch):
+    """The Control Center refreshes at start and every 30 minutes (fetch=True, max_age_s=0). One refresh without
+    the network must not erase what the last good check found: the refresh reports its failure, and the overview's
+    read still shows the release, with the good check's time and a note that the latest refresh failed."""
+    from fastapi.testclient import TestClient
+    from supervisor.ui.app import create_app
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    good = updates.check(layout, fetch=True, max_age_s=0)
+    assert good.newer_release == "v1.1.0"
+    real_git = updates._git
+    monkeypatch.setattr(updates, "_git", lambda args, cwd, timeout=updates.FETCH_TIMEOUT_S:
+                        (128, "fatal: unable to access origin: offline") if args[0] == "ls-remote"
+                        else real_git(args, cwd, timeout))
+    failed = updates.check(layout, fetch=True, max_age_s=0)
+    assert not failed.ok and "offline" in failed.reason
+    shown = updates.check(layout, fetch=False)
+    assert shown.ok and shown.newer_release == "v1.1.0" and shown.checked_at == good.checked_at
+    assert "offline" in shown.refresh_error
+    monkeypatch.setattr("supervisor.ui.app._start_update_checker", lambda layout: None)
+    page = TestClient(create_app(layout), base_url="http://127.0.0.1").get("/overview")
+    assert "v1.1.0" in page.text and "Origin last checked" in page.text and "latest refresh failed" in page.text
+    monkeypatch.setattr(updates, "_git", real_git)
+    again = updates.check(layout, fetch=True, max_age_s=0)                # back online: the note goes
+    assert again.ok and again.newer_release == "v1.1.0" and not again.refresh_error
+
+
+def test_a_failed_refresh_never_keeps_a_result_for_another_state_of_the_checkout(pinned, monkeypatch):
+    """The kept result must still describe the checkout (review 1.11.1 F1): after a move, a failed refresh leaves
+    nothing to show."""
+    release(pinned["author"], "1.1.0")
+    layout = pinned["layout"]
+    assert updates.check(layout, fetch=True, max_age_s=0).newer_release == "v1.1.0"
+    git(pinned["clone"], "fetch", "-q", "--tags", "origin")              # the check itself writes no local tag
+    git(pinned["clone"], "checkout", "-q", "v1.1.0")
+    real_git = updates._git
+    monkeypatch.setattr(updates, "_git", lambda args, cwd, timeout=updates.FETCH_TIMEOUT_S:
+                        (128, "offline") if args[0] == "ls-remote" else real_git(args, cwd, timeout))
+    assert not updates.check(layout, fetch=True, max_age_s=0).ok
+    shown = updates.check(layout, fetch=False)
+    assert not shown.ok and not shown.newer_release
