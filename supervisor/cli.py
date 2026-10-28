@@ -147,8 +147,15 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
 def status():
     """Print the live state summary: reads the store and `state/runtime/supervisor.json`, writes nothing (STATE.md is
     `supervisor render`'s job). Before 1.10.0 this rendered STATE.md, so a read command rewrote a file while the loop
-    held `state/.lock`, and with no runtime record passed it always reported the loop as not running."""
+    held `state/.lock`, and with no runtime record passed it always reported the loop as not running. It first names the
+    project it reads and whether a loop holds `state/.lock` (1.13.0): a probe that takes and releases the lock at
+    once, and reads its owner sidecar when it cannot."""
+    from . import locks
     layout = _reader()
+    typer.echo(f"project: {layout.root}")
+    held = locks.holder(layout.lock) if layout.lock.exists() else None
+    typer.echo("lock: free" if held is None else f"lock: held by {held.get('owner', 'unknown')}"
+               + (f" on {held['host']}" if held.get("host") else ""))
     typer.echo("\n".join(render.state_lines(layout, runtime=runtime.read(layout))).rstrip())
 
 

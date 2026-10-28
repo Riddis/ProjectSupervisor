@@ -25,6 +25,10 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Changed: `supervisor status` names the project and the lock's holder.** It first prints `project: <root>`, so a
+  session working on a copy can confirm `SUPERVISOR_ROOT`. Then `lock: free`, or `lock: held by <owner>` for a loop
+  holding `state/.lock`: a probe takes and releases the lock at once, and reads its owner sidecar when it cannot.
+  Before, no command said whether a loop held the lock, and the file stays after the loop stops.
 - **Added: contract warnings** (`tasks.contract_warnings`). `supervisor task import` (and its `--dry-run`),
   `supervisor task create` and `supervisor check` now warn when a contract asks for something the project cannot give:
   - an `owner_role` or `reviewer` that routing.yaml does not configure;
