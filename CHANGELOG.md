@@ -25,6 +25,9 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Added: `SUPERVISOR_RUN_DIR` for process jobs.** A `process` job must write `result.json` into its run folder,
+  and it could find that folder only as the parent of `$SUPERVISOR_PROGRESS_FILE`. The adapter now names the folder
+  itself. `docs/TASK_CONTRACT.md` says what the job writes, and how a python job's `fn` is registered.
 - **Fixed: the template.**
   - Its `.gitignore` ignores `secrets/*` but keeps `secrets/README.md`, so that note reaches a new project's first
     commit.

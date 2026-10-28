@@ -156,6 +156,8 @@ class ProcessAdapter(Adapter):
 
     def env(self, spec):
         return {**os.environ, "SUPERVISOR_ATTEMPT": str(spec.get("attempt_id", "")),   # lets recover() find an untracked child
+                # where the job writes result.json (1.13.0); before, only the progress file's parent said so
+                **({"SUPERVISOR_RUN_DIR": str(spec["run_dir"])} if spec.get("run_dir") else {}),
                 **progress_env(spec)}
 
     def on_timeout(self, spec, handle) -> None:
