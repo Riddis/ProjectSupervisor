@@ -12,6 +12,16 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
   `reconcile()` collected) waited for the first running iteration. PAUSE and DRAIN iterations now checkpoint and
   commit too, since a commit launches nothing. A drain that completes commits its last records at once, before the
   loop stops.
+- **Added: `supervisor skills status` and `supervisor skills update`** (`supervisor/skills.py`). The framework's
+  skills reach a project when `supervisor init` stamps the template. Until now a later release's newer skills never
+  did.
+  - `supervisor init` records the hash of each skill file it writes in `.claude/supervisor-skills.json`.
+  - `skills status` reports each shipped skill as current, missing, outdated (unedited, but the template moved on),
+    edited (changed in the project) or retired (no longer shipped).
+  - `skills update` installs the missing ones and replaces the outdated ones. It never touches an edited copy, which
+    it flags for a merge by hand, nor a retired one.
+  - Hashes ignore line endings. A project from before 1.13.0 has no record yet: an identical copy counts as current,
+    and a different one as edited.
 
 ## 1.12.1 — 2026-10-28
 

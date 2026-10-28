@@ -37,4 +37,6 @@ def stamp(target: Path, name: str, force: bool = False) -> list[Path]:
     for d in ("state/tasks", "state/decisions", "state/issues", "state/inbox", "state/commands/applied",
               "state/runtime/jobs", "state/conversations", "runs", "secrets", "uploads", "docs/plan", "docs/runbooks"):
         (target / d).mkdir(parents=True, exist_ok=True)
+    from . import skills                                   # what it wrote, so `supervisor skills update` knows (1.13.0)
+    skills.record_written(target, written)
     return written

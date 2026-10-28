@@ -76,6 +76,7 @@ files = [
   "supervisor/review.py",
   "supervisor/scheduler.py",
   "supervisor/settings.py",
+  "supervisor/skills.py",                 # names the agent CLI's skills folder, .claude/skills (1.13.0)
   "supervisor/template/CLAUDE.md",
   "supervisor/template/_dot_claude/skills/supervisor-setup/SKILL.md",
   "supervisor/template/agents/schemas/delivery.json",

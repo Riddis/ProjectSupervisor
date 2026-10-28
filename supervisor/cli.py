@@ -41,11 +41,13 @@ gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
 extension_app = typer.Typer(help="project extensions (extensions/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
+skills_app = typer.Typer(help="the framework's skills in this project: status and update")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(extension_app, name="extension")
 app.add_typer(boundary_app, name="boundary")
+app.add_typer(skills_app, name="skills")
 
 
 def _layout(load: bool = True) -> Layout:
@@ -354,6 +356,22 @@ def boundary_check(root: str = typer.Option("", help="framework checkout (defaul
     supervisor/ (docs/BOUNDARY.md). Exit 0 clean, 1 violations, 2 when it cannot run. Needs no project."""
     from . import boundary
     raise typer.Exit(boundary.run(Path(root) if root else None, as_json=as_json, echo=typer.echo))
+
+
+@skills_app.command("status")
+def skills_status():
+    """Each skill the framework ships (or shipped) and its state here: current, missing, outdated, edited, retired."""
+    from . import skills
+    for e in skills.status(_layout(load=False).root):
+        typer.echo(f"{e.state:<9} {e.rel}" + (f"  ({e.detail})" if e.detail else ""))
+
+
+@skills_app.command("update")
+def skills_update(dry_run: bool = typer.Option(False, help="report what would change without writing")):
+    """Install missing skills and replace the ones nobody edited; an edited one is left, to merge by hand."""
+    from . import skills
+    for e in skills.update(_layout(load=False).root, dry_run=dry_run):
+        typer.echo(f"{e.state:<9} {e.rel}" + (f"  ({e.detail})" if e.detail else ""))
 
 
 @extension_app.command("list")
