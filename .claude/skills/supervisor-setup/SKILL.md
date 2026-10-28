@@ -57,8 +57,12 @@ it stamps generic defaults that the following steps adapt. Steps 1–4 and 7–9
 - Tasks: each one must pass `supervisor check` (dependencies exist, no cycles, model-lane tasks declare
   `owned_paths`). Phase 0 always ends with a task whose artifact is the project's own runbook
   (`docs/runbooks/<project>.md`: how to run, test, and recover it).
-- Extensions: scaffold with `supervisor extension new <name>`; implement what the owner described; anything unknown
-  becomes a `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance.
+- Extensions: first look for an existing extension package that does the job (the framework's catalog index,
+  once it exists, or a package the owner names), and install it rather than write a new one. Otherwise follow the
+  framework's `extension-new` skill: `supervisor extension new <name>` writes the module and its manifest in the
+  standard shape (`docs/EXTENSION_STANDARD.md`); implement what the owner described; anything unknown becomes a
+  `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. Each extension
+  passes `supervisor extension check <name>` (G5) before the setup commit.
 - Decision records: `D-001-project-setup.md` plus one per numbered decision in plan §7; front matter
   `id/date/title/status: accepted/decided_by: owner`.
 - Project code stays in the project. If the interview shows the owner also needs a framework change (a generic
@@ -68,6 +72,11 @@ it stamps generic defaults that the following steps adapt. Steps 1–4 and 7–9
   project's distinctive words (its name, its extensions' identities, its own terms) to the local project-terms file,
   `~/.config/supervisor/project-terms.toml` (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every repository:
   G1d fails any of them in the framework repo, which never holds a project's files or information.
+- The project's own skills: `supervisor init` stamped the framework's project-side skills into `.claude/skills/`
+  (maintenance-window, rehearsal, project-upgrade, project-restore, runtime-diagnose, task-author, stuck-task,
+  role-change). Leave them as shipped; `supervisor skills status` says whether they are current, and later
+  releases bring newer ones with `supervisor skills update`. A skill only this project needs goes beside them
+  under its own name.
 - Finish with `supervisor doctor`, `supervisor check`, `supervisor render`, and the single setup commit. Report the
   doctor output verbatim; a FAIL you cannot fix becomes an owner task.
 

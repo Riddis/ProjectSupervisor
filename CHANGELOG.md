@@ -22,6 +22,29 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     it flags for a merge by hand, nor a retired one.
   - Hashes ignore line endings. A project from before 1.13.0 has no record yet: an identical copy counts as current,
     and a different one as edited.
+- **Added: the project-side skills, wave 1** (`supervisor/template/.claude/skills/`, delivered by `supervisor init`
+  and `supervisor skills update`):
+  - `maintenance-window`: drain, confirm nothing is open, snapshot, the change, migrate, doctor, the suite, start
+    paused;
+  - `rehearsal`: the change and its rollback on a copy, never with real lanes;
+  - `project-upgrade`: a new release, from reading its CHANGELOG to `supervisor skills update`;
+  - `project-restore`: rollback A, or B with the owner deciding on the work done since;
+  - `runtime-diagnose`: read-only evidence, the failing layer, a supported recovery or a reproducible issue;
+  - `task-author`: the contract fields that decide whether a task can work;
+  - `stuck-task`: why one task stopped, and how it continues through owner commands;
+  - `role-change`: card, routing and schemas in agreement.
+- **Added: the contributor skills** (the framework repo's `.claude/skills/`):
+  - `extension-new`: rule 1, the standard shape, G5;
+  - `extension-promote`: one copy afterwards, identifiers kept, the project switched in the same change;
+  - `extension-release`: test the built wheel against the oldest and newest framework in range, and identify the
+    artifact;
+  - `boundary-review`: the G7 questions and every gate re-run.
+
+  `supervisor-setup` now looks for an existing package before writing an extension, holds each extension to G5,
+  and leaves the shipped skills as they are. `catalog-review` waits for the catalog index (phase 6).
+- **Tests:** `tests/test_skill_catalog.py` checks every planned skill: its place, its front matter, the checks it ends
+  with, that every `supervisor` command it names exists, and that it holds no machine path or host.
+- **Fixed (docs):** the runbooks show `supervisor cmd <kind> --payload '<json>'`, the form the CLI takes.
 
 ## 1.12.1 — 2026-10-28
 
