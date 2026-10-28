@@ -15,7 +15,7 @@
   finish), `resume`, `stop`, `reload`, `drain [--shutdown]`. These queue command files in `state/commands/`; the loop
   applies them within one iteration (≤ 5 s; immediately via the wake file). With no loop running the CLI applies
   them directly.
-- Any other owner action is also a command: `supervisor cmd task.note '{"task_id":"T0-01","note":"..."}'`,
+- Any other owner action is also a command: `supervisor cmd task.note --payload '{"task_id":"T0-01","note":"..."}'`,
   `task.set_priority`, `task.set_status`, `task.approve`, `gate.ack`, `gate.set`, `capacity.reset`,
   `lane.reset` (`{"lane": "<adapter>"}`), `owner_task.set_status`, `agent.terminate`, `agent.note`, `conversation.*`, `system.shutdown[_cancel]`.
 - Jobs: every attempt has `state/runtime/jobs/<task>.a<n>.json` (PREPARED → SUBMITTED → RUNNING → DONE/FAILED). On
