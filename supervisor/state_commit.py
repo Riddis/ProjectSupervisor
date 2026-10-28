@@ -185,7 +185,8 @@ def _commit_in_own_index(root: Path, files: list[str], message: str) -> dict:
             return {"status": "failed", "reason": f"git commit: {(err or out)[:300]}"}
         code, head, _err = _git(root, "rev-parse", "HEAD")
         sha = head.strip() if code == 0 else None
-        code, _out, err = _git(root, "reset", "-q", "--", *files)
+        target = sha or "HEAD"                             # the commit just made, named rather than implied
+        code, _out, err = _git(root, "reset", "-q", target, "--", *files)
         if code not in (0, 1):                             # 1: "unstaged changes after reset" is only a report
             return {"status": "committed", "commit": sha,
                     "warning": f"committed, but the index was not updated for its paths: {err[:200]}"}
