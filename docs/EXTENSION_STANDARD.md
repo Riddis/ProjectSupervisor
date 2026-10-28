@@ -226,7 +226,11 @@ A module already imported is not looked up again, so the loader and G5 check a r
 written only by one commit after `setup()` returns. Until then nothing outside the extension can see its
 registrations, not even another thread. The project's registry is published only once the whole load has finished:
 another thread asking for it meanwhile waits for the load, and `ext.config()` inside `setup()` reads the load in
-progress. Whatever fails, nothing the extension registered remains:
+progress. A load that does not finish (a `setup()` raising SystemExit or KeyboardInterrupt, or an error outside an
+extension's own load) rolls the interrupted extension back and is published as blocking, never as complete: the
+loop and the packet screens refuse to proceed until the process restarts.
+
+Whatever fails, nothing the extension registered remains:
 - an exception in `setup()`;
 - a registration its manifest does not declare in `provides`;
 - a manifest that discovery refuses;

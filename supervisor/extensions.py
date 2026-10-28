@@ -869,7 +869,9 @@ def load(layout: Layout) -> Registry:
     `registry.blocking`, and the loop and the packet screens refuse to proceed until it is fixed (`assert_loaded`).
 
     The registry is published only when the load has finished. Another thread calling load() meanwhile waits for it;
-    the loading thread itself, re-entering through ext.config() in a setup(), gets the registry in progress."""
+    the loading thread itself, re-entering through ext.config() in a setup(), gets the registry in progress. A load
+    that does not finish (interrupted by SystemExit or KeyboardInterrupt, or an error outside an extension's own
+    load) is published as blocking, never as complete, and the exception goes on (review 1.12.0 R2-3)."""
     key = str(layout.root)
     me = threading.get_ident()
     own = _loading.get((key, me))
@@ -887,6 +889,13 @@ def load(layout: Layout) -> Registry:
         try:
             with importing_for(layout):
                 _load_into(layout, reg)
+        except BaseException as exc:
+            cause = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            how = "was interrupted by" if not isinstance(exc, Exception) else "stopped on an unexpected"
+            why = f"extension loading {how} {cause}, so it did not finish; restart the process"
+            reg.errors.append(why)
+            reg.blocking.append(why)
+            raise
         finally:
             _loading.pop((key, me), None)
             _registries[key] = reg
@@ -950,13 +959,15 @@ def _load_into(layout: Layout, reg: Registry) -> None:
                 reg.unmanifested.append(name)
             reg._commit()
             reg.loaded.append(name)
-        except Exception as exc:                            # noqa: BLE001 - recorded; a required one blocks the loop
-            reg._restore(snapshot)
+        except BaseException as exc:                        # noqa: BLE001 - recorded; a required one blocks the loop
+            reg._restore(snapshot)                         # an interrupted setup() keeps nothing either (R2-3)
             schema_module = (found.manifest.config.schema.split(":", 1)[0]
                              if found is not None and found.manifest is not None and found.manifest.config else name)
             installed = found.module if found is not None and found.module else name
             _drop_modules(before, (f"{_package_name(layout)}.{name}", name, installed,
                                    f"{_package_name(layout)}.{schema_module}", schema_module))
+            if not isinstance(exc, Exception):
+                raise                                      # load() publishes the registry as blocking
             why = str(exc) if isinstance(exc, ExtensionError) else traceback.format_exc(limit=3).strip().splitlines()[-1]
             reg.errors.append(f"{name}: {why}")
             if required:
