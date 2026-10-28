@@ -207,9 +207,10 @@ def _extension_migrations(layout: Layout, dry_run: bool) -> list[str]:
         if not m.migrations:
             continue
         try:
-            module = extensions.import_named_module(layout, m.migrations)
-            for migration in getattr(module, "MIGRATIONS", []):
-                notes += [f"{m.identity}: {n}" for n in migration(layout, dry_run)]
+            with extensions.importing_for(layout):        # its imports follow this project's approval
+                module = extensions.import_named_module(layout, m.migrations)
+                for migration in getattr(module, "MIGRATIONS", []):
+                    notes += [f"{m.identity}: {n}" for n in migration(layout, dry_run)]
         except store.CannotKeep:
             raise
         except Exception as exc:                            # named and stopped, never half-reported

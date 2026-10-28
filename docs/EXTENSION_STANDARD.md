@@ -208,7 +208,17 @@ A refused extension's modules cannot be imported by any path the framework sets 
 - an installed extension's entry-point module.
 
 The import fails with ImportError, saying the module belongs to a refused extension. This closes the import paths,
-and is not a sandbox: an accepted extension is trusted code.
+and is not a sandbox: an accepted extension is trusted code. Importing a file under another name (for example
+`extensions.bad` with the project on `sys.path`) is not covered.
+
+A refusal belongs to the project whose approval made it. In a process with several projects, an installed
+extension one project refuses still loads for a project that accepts it:
+- imports made for a project (its load, G5, `supervisor migrate`) follow that project's approval;
+- outside any project (a lazy import at run time), a refused installed module stays closed unless a project in the
+  process accepts it.
+
+A module already imported is not looked up again, so the loader and G5 check a refusal themselves before any
+`setup()`.
 
 ## Loading: all or nothing
 

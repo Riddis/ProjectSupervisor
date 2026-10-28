@@ -50,6 +50,7 @@ a project about something completely different belongs in the framework instead 
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
 import dataclasses
 import functools
@@ -631,18 +632,51 @@ class Approval:
                 if n not in self.refused and not self.finds[n].problems and self.finds[n].manifest is not None]
 
 
-_refused_modules: dict[str, str] = {}                        # module name -> why its extension was refused
+# The refusal guard's state, by project root (review 1.12.0 R2-2): approval depends on a project's configuration, so
+# one project's refusal of an installed extension says nothing about another project using the same package.
+_refused_modules: dict[str, dict[str, str]] = {}             # module name -> {project root: why it refused it}
+_accepted_modules: dict[str, set[str]] = {}                  # installed module name -> project roots accepting it
+_importing = threading.local()                               # .roots: the projects this thread imports for
+
+
+@contextlib.contextmanager
+def importing_for(layout: Layout):
+    """The imports made in this block are made for project `layout` (its load, G5, migrate): the refusal guard
+    applies that project's approval, and no other project's."""
+    roots = _importing.__dict__.setdefault("roots", [])
+    roots.append(_guard_key(layout))
+    try:
+        yield
+    finally:
+        roots.pop()
+
+
+def _guard_key(layout: Layout) -> str:
+    return str(Path(layout.root).resolve())
 
 
 class _RefusalGuard(importlib.abc.MetaPathFinder):
     """Refuses importing the module of a refused configured extension, by any path (review 1.12.0 R3): a sibling's
     `from . import <refused>`, the extensions/ package initializer, a schema or migration module. Without it the
-    loader skipped only its own import, and the refused module's import-time code still ran."""
+    loader skipped only its own import, and the refused module's import-time code still ran.
+
+    A refused module stays closed to imports made for the project that refused it, and to those made for any project
+    that does not accept it. Outside any project (a lazy import at run time), it stays closed unless a project in this
+    process accepts it: that project's own lazy imports then work. A project-local module is named under its
+    project's namespace, so only its own project ever accepts it. A module already imported is not looked up again
+    (Python does not ask a finder), so the loader and G5 check a refusal themselves before any setup()."""
 
     def find_spec(self, fullname, path=None, target=None):
-        for name, why in _refused_modules.items():
-            if fullname == name or fullname.startswith(name + "."):
-                raise ImportError(f"{fullname} belongs to a refused extension: {why}", name=fullname)
+        roots = getattr(_importing, "roots", None)
+        root = roots[-1] if roots else None
+        for name, by_root in list(_refused_modules.items()):
+            if not by_root or not (fullname == name or fullname.startswith(name + ".")):
+                continue
+            accepted = _accepted_modules.get(name, set())
+            if (root in accepted) if root is not None else bool(accepted):
+                continue
+            why = by_root.get(root) or next(iter(by_root.values()))
+            raise ImportError(f"{fullname} belongs to a refused extension: {why}", name=fullname)
         return None
 
 
@@ -651,16 +685,23 @@ _GUARD = _RefusalGuard()
 
 def guard_refused(layout: Layout, plan: "Approval") -> None:
     """Close the import paths to every extension `plan` refused, for the rest of the process (until reset()): its
-    project-local module under the project's namespace, and an installed one's module."""
+    project-local module under the project's namespace, and an installed one's module. The project's earlier
+    decisions are replaced by this one, and other projects' are kept."""
     if _GUARD not in sys.meta_path:
         sys.meta_path.insert(0, _GUARD)
-    for name, why in plan.refused.items():
-        found = plan.finds.get(name)
-        names = {f"{_package_name(layout)}.{name}"}
-        if found is not None and found.source in ("installed", "module"):
-            names.add(found.module or name)
-        for module in names:
-            _refused_modules[module] = why
+    key = _guard_key(layout)
+    for by_root in _refused_modules.values():
+        by_root.pop(key, None)
+    for roots in _accepted_modules.values():
+        roots.discard(key)
+    for name, found in plan.finds.items():
+        installed = found.source in ("installed", "module")
+        if name in plan.refused:
+            names = {f"{_package_name(layout)}.{name}"} | ({found.module or name} if installed else set())
+            for module in names:
+                _refused_modules.setdefault(module, {})[key] = plan.refused[name]
+        elif installed and not found.problems:
+            _accepted_modules.setdefault(found.module or name, set()).add(key)
 
 
 def approval(layout: Layout) -> Approval:
@@ -844,7 +885,8 @@ def load(layout: Layout) -> Registry:
         reg = Registry(layout)
         _loading[(key, me)] = reg
         try:
-            _load_into(layout, reg)
+            with importing_for(layout):
+                _load_into(layout, reg)
         finally:
             _loading.pop((key, me), None)
             _registries[key] = reg
@@ -1099,6 +1141,7 @@ def reset() -> None:
     _registries.clear()
     _loading.clear()
     _refused_modules.clear()
+    _accepted_modules.clear()
     _warned.clear()
     _extension_adapters.clear()
     _extension_jobs.clear()
@@ -1156,7 +1199,8 @@ if sys.argv[2] in plan.refused:
 extensions.guard_refused(layout, plan)
 before = snapshot()
 from supervisor import discovery
-extensions._import(layout, sys.argv[2], discovery.find(layout, sys.argv[2]).module)
+with extensions.importing_for(layout):
+    extensions._import(layout, sys.argv[2], discovery.find(layout, sys.argv[2]).module)
 after = snapshot()
 changed = {k: sorted(n for n in before[k].keys() | after[k].keys() if before[k].get(n) != after[k].get(n))
            for k in before}

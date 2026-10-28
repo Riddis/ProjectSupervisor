@@ -38,6 +38,11 @@ class Finding:
 
 def run(layout: Layout, name: str) -> list[Finding]:
     """Every check, in CHECKS order, for extension `name` of the project at `layout`."""
+    with extensions.importing_for(layout):                 # its imports follow this project's approval (R2-2)
+        return _run(layout, name)
+
+
+def _run(layout: Layout, name: str) -> list[Finding]:
     out: dict[str, Finding] = {}
     plan = extensions.approval(layout)
     extensions.guard_refused(layout, plan)                 # nothing it imports may run a refused sibling
