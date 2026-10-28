@@ -46,7 +46,8 @@ project's history, and they are ordinary commits.
     stamp, so projections alone would make a commit on every render.
   - The loop makes one right after a checkpoint, and otherwise at most every `checkpoint.state_interval_minutes` (15).
   - It never commits a path a task has delivered but not yet had accepted, nor anything under one (a task may
-    deliver a directory); that task's checkpoint commits them. Nor does it commit a path someone else has staged. It
+    deliver a directory). Each path is resolved as the delivery manifest resolves it, so `state/./decisions` or
+    `state//decisions` covers `state/decisions/`. That task's checkpoint commits them. Nor does it commit a path someone else has staged. It
     commits only in a project that is its own repository's top level.
   - It builds each commit in a temporary index of its own, and sets the project's index for its paths only once the
     commit exists. A failed commit (a hook refusing it, say) leaves the project's index exactly as it was.
