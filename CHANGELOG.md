@@ -25,6 +25,10 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Fixed: pytest checks in a fresh project.** Verification gives each pytest run its own
+  `--basetemp=runs/pytest_tmp/<tag>`. Nothing created `runs/pytest_tmp/`, and pytest creates the basetemp but never a
+  missing parent. So in a new project every task with a pytest check failed verification. The parent is created
+  first now.
 - **Added: `SUPERVISOR_RUN_DIR` for process jobs.** A `process` job must write `result.json` into its run folder,
   and it could find that folder only as the parent of `$SUPERVISOR_PROGRESS_FILE`. The adapter now names the folder
   itself. `docs/TASK_CONTRACT.md` says what the job writes, and how a python job's `fn` is registered.
