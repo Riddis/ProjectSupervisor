@@ -43,6 +43,9 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     `my_lane`.
   - `docs/BOUNDARY.md` says what G1d scans: every file git tracks, or without git, every file but caches, `runs/`
     and `.git/`.
+- **Fixed: G1d checks a new file before it is added.** It read only what git tracks, so a new file in uncommitted
+  work was never checked, and a clean G1d prints nothing. It now also reads every untracked file git does not
+  ignore.
 - **Fixed: a new owned folder no longer fails the first delivery.** A task whose `owned_paths` named a folder that
   did not exist yet failed its first verification with "undeclared changes inside owned paths: <folder>", and spent a
   revision. The delivery manifest recorded the folder as missing before the job and as a directory after it, and

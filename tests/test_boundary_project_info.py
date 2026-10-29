@@ -87,13 +87,24 @@ def test_words_match_whole_words_only(tmp_path, monkeypatch):
     assert g1d(boundary.check(root, user_names=[])) == []
 
 
-def test_untracked_files_are_not_scanned(tmp_path, monkeypatch):
-    """Only what the repository holds: a contributor's untracked scratch file is not in the repo."""
+def test_ignored_files_are_not_scanned(tmp_path, monkeypatch):
+    """A contributor's scratch file in an ignored folder never reaches the repository."""
     terms_file(tmp_path, monkeypatch)
-    root = framework(tmp_path, {})
+    root = framework(tmp_path, {".gitignore": "runs/\n"})
     (root / "runs").mkdir()
     (root / "runs" / "notes.txt").write_text("zorblax\n", encoding="utf-8")
     assert g1d(boundary.check(root, user_names=[])) == []
+
+
+def test_a_new_file_not_yet_added_is_scanned(tmp_path, monkeypatch):
+    """1.13.0, a skill-trial finding (boundary-review, round 2): G1d read only what git tracks, so a new file in
+    uncommitted work was never checked, and a clean G1d says nothing. Untracked files that are not ignored count
+    too: they are what the next commit adds."""
+    terms_file(tmp_path, monkeypatch)
+    root = framework(tmp_path, {})
+    (root / "docs").mkdir(exist_ok=True)
+    (root / "docs" / "NEW.md").write_text("A zorblax example.\n", encoding="utf-8")
+    assert g1d(boundary.check(root, user_names=[])) == [("docs/NEW.md", 1, "zorblax")]
 
 
 def test_without_git_every_file_but_caches_and_runs_is_scanned(tmp_path, monkeypatch):
