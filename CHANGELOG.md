@@ -24,6 +24,12 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   open job record planted as the loop leaves one), `settle`, `plan`, `inbox_item`, `make_inbox_item`, `answer` and
   `loop_lock`. They are what porting the first packages' tests needed (docs/EXTENSION_API.md, "Testing
   extensions"). The module stays unstable.
+- **Added: `tools/ci_installed_extension.py --config <file>`, `--python-job <name>` and `--workdir <folder>`.**
+  The installed-package proof (G5 in CI) now serves a package whose config has a required field (`--config`
+  writes the extension's section) and a package without a lane (`--python-job` completes a task on a python job
+  it registers). Its temporary project goes in a `g5-installed-*` folder under the current folder (or
+  `--workdir`), never the system's temporary folder, removed after a pass and kept after a failure. CI's G5 job
+  also completes the reference extension's python job.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 

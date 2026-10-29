@@ -53,14 +53,17 @@ artifact (version and hash) that was tested, and nothing else.
      - pass `supervisor extension check <identity>` (G5);
      - complete a task on its lane, if it has one.
 
-     The framework repository's `tools/ci_installed_extension.py <identity> [--lane <adapter>]` does these steps.
-     It is not in the framework wheel: run the copy from the framework tag under test (a `git worktree add` at the
-     tag, as for its wheel). It configures `extensions.<identity>` as empty, so a package whose config has a
-     required field cannot pass it; test that package by hand, as below.
-     For an extension without a lane, or by hand: a disposable project (`testing.project(tmp_path,
-     extensions=["<identity>"], routing={"extensions": {"<identity>": {...}}})`), a task from `testing.make_task`
-     with `job={"adapter": "python", "fn": "<its python job>"}` (or a call of its command), then `testing.drive`
-     until `state/tasks/<id>.yaml` says COMPLETE.
+     The framework repository's `tools/ci_installed_extension.py <identity> [--lane <adapter>] [--python-job
+     <name>] [--config <file>] [--workdir <folder>]` does these steps. It is not in the framework wheel: run the
+     copy from the framework tag under test (a `git worktree add` at the tag, as for its wheel); its options need
+     framework 1.14.0 or later. `--config` is a YAML file written as `extensions.<identity>`, for a package whose
+     config has a required field (without it the section is empty). `--python-job` completes a task on a python
+     job the package registers, for a package without a lane. Its temporary project goes under `--workdir` (default:
+     the current folder), is removed when it passes and kept, and named, when it fails.
+     By hand: a disposable project (`testing.project(tmp_path, extensions=["<identity>"], routing={"extensions":
+     {"<identity>": {...}}})`), a task from `testing.make_task` with `job={"adapter": "python", "fn": "<its python
+     job>"}` (or a call of its command), then `testing.drive` until `testing.task(layout, "<id>").status` is
+     COMPLETE.
    - Run the package's own suite against the installed wheel: copy its `tests/` folder to an empty place and run it
      there, so the source cannot be imported.
 5. Repeat step 4 with the **newest** framework release in the range.
