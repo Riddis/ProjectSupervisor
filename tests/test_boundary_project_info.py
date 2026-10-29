@@ -307,15 +307,16 @@ def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monk
     terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
     own = tmp_path / "supervisor_plugin_quuxify-1.0.0-py3-none-any.whl"
     other = tmp_path / "supervisor_plugin_other-1.0.0-py3-none-any.whl"
-    for wheel in (own, other):
+    for wheel, dist in ((own, "supervisor-plugin-quuxify"), (other, "supervisor-plugin-other")):
         with zipfile.ZipFile(wheel, "w") as z:
             z.writestr("supervisor_plugin_quuxify/__init__.py", "NAME = 'quuxify'  # zorblax\n")
+            z.writestr(f"{wheel.name.split('-')[0]}-1.0.0.dist-info/METADATA", f"Name: {dist}\nVersion: 1.0.0\n")
     assert hits(boundary.scan_words(own, terms, allowed=allowed)) == [
         (f"{own.name}!supervisor_plugin_quuxify/__init__.py", 1, "zorblax")]
     assert len(hits(boundary.scan_words(other, terms, allowed=allowed))) == 3
     sdist = tmp_path / "supervisor-plugin-quuxify-1.0.0.tar.gz"
     with tarfile.open(sdist, "w:gz") as t:
-        data = b"Summary: the quuxify lane\n"
+        data = b"Name: supervisor-plugin-quuxify\nSummary: the quuxify lane\n"
         info = tarfile.TarInfo("supervisor-plugin-quuxify-1.0.0/PKG-INFO")
         info.size = len(data)
         t.addfile(info, io.BytesIO(data))
@@ -340,3 +341,58 @@ def test_a_malformed_allowance_stops_the_check(tmp_path, monkeypatch, text):
     terms_file(tmp_path, monkeypatch, text)
     with pytest.raises(boundary.ConfigError, match="packages"):
         boundary.load_package_allowances()
+
+
+# ---------------------------------------------------------------- review 2.0.0 R1: the allowance stays in its package
+# It matched any packages/<distribution> pair at any depth, any folder named after the distribution, and any archive
+# whose file name began like it. It now holds for packages/<distribution>/ at the top of the git repository the files
+# are in, and for an archive whose wheel or sdist file name AND its own metadata name that distribution.
+
+def test_a_lookalike_path_gets_no_allowance(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {
+        "docs/packages/supervisor-plugin-quuxify/README.md": "quuxify\n",
+        "examples/supervisor-plugin-quuxify/README.md": "quuxify\n",
+        "packages/supervisor-plugin-quuxify/README.md": "quuxify\n",
+    })
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("docs/packages/supervisor-plugin-quuxify/README.md", 1, "quuxify") in found
+    assert ("examples/supervisor-plugin-quuxify/README.md", 1, "quuxify") in found
+    assert not any(path.startswith("packages/") for path, _l, _w in found)
+
+
+def test_a_folder_named_like_the_package_outside_its_place_gets_no_allowance(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
+    root = package(tmp_path, {"elsewhere/supervisor-plugin-quuxify/README.md": "quuxify\n",
+                              "docs/packages/supervisor-plugin-quuxify/README.md": "quuxify\n"})
+    for folder in (root / "elsewhere" / "supervisor-plugin-quuxify",
+                   root / "docs" / "packages" / "supervisor-plugin-quuxify"):
+        assert hits(boundary.scan_words(folder, terms, allowed=allowed)) == [("README.md", 1, "quuxify")], folder
+    loose = tmp_path / "loose" / "packages" / "supervisor-plugin-quuxify"           # no git repository at all
+    loose.mkdir(parents=True)
+    (loose / "README.md").write_text("quuxify\n", encoding="utf-8")
+    assert hits(boundary.scan_words(loose, terms, allowed=allowed)) == [("README.md", 1, "quuxify")]
+
+
+def test_a_lookalike_archive_gets_no_allowance(tmp_path, monkeypatch):
+    import zipfile
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
+    member = "supervisor_plugin_quuxify/__init__.py"
+    cases = {
+        "supervisor-plugin-quuxify-2-extra.zip": None,                         # not a wheel or sdist name
+        "supervisor_plugin_quuxify-1.0.0-py3-none-any.whl": "supervisor-plugin-other",    # metadata says other
+    }
+    for name, meta in cases.items():
+        archive = tmp_path / name
+        with zipfile.ZipFile(archive, "w") as z:
+            z.writestr(member, "NAME = 'quuxify'\n")
+            if meta:
+                z.writestr("supervisor_plugin_quuxify-1.0.0.dist-info/METADATA", f"Name: {meta}\n")
+        assert (f"{name}!{member}", 1, "quuxify") in hits(boundary.scan_words(archive, terms, allowed=allowed)), name
+    nameless = tmp_path / "nameless" / "supervisor_plugin_quuxify-1.0.0-py3-none-any.whl"   # no metadata at all
+    nameless.parent.mkdir()
+    with zipfile.ZipFile(nameless, "w") as z:
+        z.writestr(member, "NAME = 'quuxify'\n")
+    assert (f"{nameless.name}!{member}", 1, "quuxify") in hits(boundary.scan_words(nameless, terms, allowed=allowed))

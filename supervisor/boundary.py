@@ -393,19 +393,72 @@ def load_package_allowances(path: Path | None = None) -> dict[str, dict[str, lis
     return out
 
 
-def _allowed_here(target: Path, rel: str, allowed: dict[str, list[str]]) -> set[str]:
-    """The words a project allows in this file: its package's own name, inside packages/<distribution>/ (or that
-    folder scanned on its own) or in that distribution's archive."""
-    if not allowed:
+_SDIST_VERSION = re.compile(r"\d+(\.\d+)*((a|b|rc|\.post|\.dev)\d+)*")
+
+
+def _repository_prefix(folder: Path) -> str | None:
+    """The folder's path inside its git repository (`packages/x/`, "" at the top), or None outside one."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(folder), "rev-parse", "--show-prefix"], capture_output=True, text=True,
+                             check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _archive_distribution(archive: Path) -> str | None:
+    """The distribution an archive is, or None: a wheel (`<dist>-<version>[-<build>]-<py>-<abi>-<platform>.whl`) or
+    an sdist (`<dist>-<version>.tar.gz`) whose file name and own metadata (the wheel's `*.dist-info/METADATA`, the
+    sdist's `<top>/PKG-INFO`) both name it (review 2.0.0 R1: a name that only began like it was enough)."""
+    import tarfile
+    import zipfile
+    name = archive.name
+    if name.endswith(".whl") and len(name[:-4].split("-")) in (5, 6) and zipfile.is_zipfile(archive):
+        dist = name[:-4].split("-")[0]
+        with zipfile.ZipFile(archive) as z:
+            meta = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/METADATA", n)]
+            text = z.read(meta[0]).decode("utf-8", "replace") if len(meta) == 1 else ""
+    elif name.endswith(".tar.gz") and "-" in name and tarfile.is_tarfile(archive):
+        dist, version = name[:-7].rsplit("-", 1)
+        if not _SDIST_VERSION.fullmatch(version):
+            return None
+        with tarfile.open(archive) as tar:
+            info = next((m for m in tar.getmembers() if m.isfile() and m.name == f"{name[:-7]}/PKG-INFO"), None)
+            f = tar.extractfile(info) if info is not None else None
+            text = f.read().decode("utf-8", "replace") if f else ""
+    else:
+        return None
+    declared = re.search(r"^Name:[ \t]*(\S+)[ \t]*$", text, re.MULTILINE)
+    if declared is None or _distribution(declared.group(1)) != _distribution(dist):
+        return None
+    return _distribution(dist)
+
+
+def _allowance_scope(target: Path) -> tuple[str, str] | None:
+    """Where a scan target stands for the allowance: ("folder", its path inside its git repository) or
+    ("archive", its distribution), or None when no allowance can apply."""
+    if target.is_dir():
+        prefix = _repository_prefix(target)
+        return ("folder", prefix) if prefix is not None else None
+    dist = _archive_distribution(target)
+    return ("archive", dist) if dist else None
+
+
+def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, list[str]]) -> set[str]:
+    """The words a project allows in this file: its package's own name, inside `packages/<distribution>/` at the top
+    of the git repository the file is in, or in that distribution's own wheel or sdist. Nothing else: not a
+    lookalike path deeper in the tree, a folder named like the package elsewhere, a folder outside git, or an
+    archive whose file name or metadata names another distribution (review 2.0.0 R1)."""
+    if not allowed or scope is None:
         return set()
-    if not target.is_dir():
-        m = re.match(r"(.+?)-\d", target.name)
-        words = allowed.get(_distribution(m.group(1))) if m else None
-        return {w.lower() for w in words or []}
-    parts = [target.name, *rel.split("/")]
-    dists = {_distribution(parts[0])} | {_distribution(parts[i + 1]) for i in range(len(parts) - 2)
-                                         if parts[i] == "packages"}
-    return {w.lower() for d in dists for w in allowed.get(d, [])}
+    kind, where = scope
+    if kind == "archive":
+        return {w.lower() for w in allowed.get(where, [])}
+    parts = (where + rel).split("/")
+    if len(parts) < 3 or parts[0] != "packages":
+        return set()
+    return {w.lower() for w in allowed.get(_distribution(parts[1]), [])}
 
 
 def repository_files(root: Path) -> list[Path]:
@@ -484,6 +537,7 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
     if not target.exists():
         raise ConfigError(f"{target}: no such folder or archive")
     rules = [(project, rx) for project, words in terms.items() if (rx := _term_re(words)) is not None]
+    scope = _allowance_scope(target) if any(allowed.values() for allowed in (allowed or {}).values()) else None
     out = []
     for rel, data in _members(target):
         try:
@@ -491,7 +545,7 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
         except UnicodeDecodeError:
             lines = []
         for project, rx in rules:
-            ok = _allowed_here(target, rel.split("!", 1)[-1], (allowed or {}).get(project) or {})
+            ok = _allowed_here(scope, rel.split("!", 1)[-1], (allowed or {}).get(project) or {})
             detail = f"a word of project {project!r} in {where or target.name}"
             out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)
                     if m.group(0).lower() not in ok]
