@@ -12,7 +12,8 @@ Software does software; agents do judgement; the owner decides.
 Supervisor/                 the framework (this repo) — generic, installed into every project
   supervisor/               the Python package: loop, store, gates, review, inbox, adapters, Control Center
   supervisor/template/      what `supervisor init` stamps into a new project
-  .claude/skills/           the setup skill (interview → plan → approval → scaffold)
+  .claude/skills/           the contributor skills: setup (interview → plan → approval → scaffold), framework
+                            change and release, migrations, extensions, boundary review
   docs/                     how it works, how to extend it, runbooks
 
 <your project>/             a thin project folder — everything specific to one project
@@ -77,6 +78,8 @@ project folder.
 - `docs/TASK_CONTRACT.md` — task, gate, decision, issue, inbox and owner-task records.
 - `docs/FRAMEWORK_VS_EXTENSION.md` — what goes in the framework, what goes in a project, how extensions work.
 - `docs/SETUP_INTERVIEW.md` — the project setup interview (system-agnostic; the skill wraps it).
+- Project-side skills (maintenance window, rehearsal, upgrade, restore, diagnosis, tasks, roles) reach a project
+  with `supervisor init`; `supervisor skills status` and `supervisor skills update` keep them current.
 - `docs/UPDATING.md` — updating the framework under running projects (the launch-time check and **Update now**); versioning and migrations.
 - `docs/runbooks/` — supervisor loop, Control Center, Claude/Codex/API lanes, policy, environment.
 - `CHANGELOG.md`.

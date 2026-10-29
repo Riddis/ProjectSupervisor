@@ -31,6 +31,11 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `priority` | higher first among eligible tasks |
 | `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}` (it runs in the project root and ends by writing `result.json`, `{status, artifacts, notes}`, into the folder `$SUPERVISOR_RUN_DIR` names; a python `fn` is one an extension registers with `registry.python_job(name, fn)` in its `setup()`), `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}` (ACCEPT, APPROVE or free text completes it; any other answer fails it with the answer as the note), or an extension lane |
 
+Since 1.13.0 `task import` (and its `--dry-run`), `task create` and `supervisor check` also **warn** about a
+contract the project cannot serve: an `owner_role` or `reviewer` routing does not configure or has made inactive, a
+check outside `verification.allowed_test_commands`, and a `job` whose adapter or python `fn` nothing registers (the
+project's extensions are loaded first). `supervisor check` warns only about open tasks.
+
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
 changes), `delivery` (`digest`, `verification`, `reviews[]`, `approvals[]`, all bound to the digest of the current
 artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `forced`, `rev`, `created`, `updated`.

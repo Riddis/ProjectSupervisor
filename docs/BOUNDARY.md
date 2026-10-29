@@ -57,6 +57,9 @@ walk contributors through them; no gate depends on a skill being used.
 | 1.12.0 onward | all seven | — |
 | `framework-change`, `framework-release` | G1, G2 (from 1.11.0), G3, G7; G4 for a release | G5 and G6 apply only through the reference extensions G3 loads |
 | `migration-author` | the gates of the change it is part of, plus its own checklist | — |
+| `extension-new`, `extension-promote`, `extension-release` | G5 (for a package, across its framework range), G6 as the project's doctor, G7 for the package's own review; the project's suite after a switch | G1 to G4: they gate the framework repository, which these skills do not change (a needed hook is `framework-change` first) |
+| `boundary-review` | every gate the reviewed change needs, re-run, and G7's questions answered | — |
+| the project-side skills (`supervisor init`, `supervisor skills update`) | G6 (doctor) and the project's own suite, in the project | G1 to G5 and G7: they gate the framework and extension repositories, not a project |
 
 ## Running the gates locally
 
