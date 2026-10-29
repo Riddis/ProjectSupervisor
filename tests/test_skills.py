@@ -103,6 +103,16 @@ def test_a_dry_run_writes_nothing(project):
     assert (root / ".claude" / "supervisor-skills.json").read_bytes() == record
 
 
+def test_a_dry_run_names_a_missing_skill_as_would_install(project):
+    """1.13.0 printed "would installe" (the past tense cut by one letter; rehearsal finding)."""
+    root, shipped = project
+    (shipped / "gamma").mkdir()
+    (shipped / "gamma" / "SKILL.md").write_text("---\nname: gamma\n---\ngamma v1\n", encoding="utf-8")
+    done = {e.rel: e.state for e in skills.update(root, dry_run=True)}
+    assert done["gamma/SKILL.md"] == "would install"
+    assert not copy(root, "gamma/SKILL.md").exists()
+
+
 def test_line_endings_do_not_count_as_an_edit(project):
     root, shipped = project
     p = copy(root, "alpha/SKILL.md")

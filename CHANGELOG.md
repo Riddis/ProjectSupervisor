@@ -3,6 +3,11 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **Fixed: `supervisor skills update --dry-run` said "would installe"** for a skill it would install (the past
+  tense cut by one letter). It says "would install" and "would update".
+
 ## 1.13.0 — 2026-10-29
 
 Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills. The project-side skills reach a project with
