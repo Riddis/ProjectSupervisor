@@ -393,7 +393,10 @@ def _loop_control(layout, payload, actor):
                 "loop.drain": "DRAIN"}[payload["_kind"]]
     extra = {"shutdown_on_drain": bool(payload.get("shutdown"))} if decision == "DRAIN" else {}
     if decision == "RELOAD":                       # the loop comes back with the decision it had (1.13.0)
-        before = runtime.read(layout).get("decision")
+        doc = runtime.read(layout)
+        before = doc.get("decision")
+        if before == "RELOAD":                     # one still pending: keep the decision it saved (review R1)
+            before = doc.get("after_reload")
         extra["after_reload"] = before if before in ("PAUSE", "DRAIN") else "RUN"
     runtime.set_decision(layout, decision, actor, **extra)
     out = {"decision": decision, **extra}

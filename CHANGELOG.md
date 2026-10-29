@@ -42,7 +42,8 @@ ordinary state commits.
 - **Fixed: `supervisor reload` keeps a paused loop paused.** The reload command replaced the decision with RELOAD,
   and the loop came back with RUN. A project left PAUSED for the owner, as every maintenance window leaves it, then
   started dispatching on a reload. The command now records the decision it replaced (`after_reload`), and the loop
-  restores it, also when it starts on a RELOAD it never finished: PAUSE stays PAUSE, DRAIN stays DRAIN.
+  restores it, also when it starts on a RELOAD it never finished: PAUSE stays PAUSE, DRAIN stays DRAIN. A second
+  reload requested before the first is done keeps the decision the first one saved.
 - **Fixed: pytest checks in a fresh project.** Verification gives each pytest run its own
   `--basetemp=runs/pytest_tmp/<tag>`. Nothing created `runs/pytest_tmp/`, and pytest creates the basetemp but never a
   missing parent. So in a new project every task with a pytest check failed verification. The parent is created
