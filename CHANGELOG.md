@@ -30,6 +30,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   it registers). Its temporary project goes in a `g5-installed-*` folder under the current folder (or
   `--workdir`), never the system's temporary folder, removed after a pass and kept after a failure. CI's G5 job
   also completes the reference extension's python job.
+- **Added: extension packages may live in this repository, under `packages/<distribution>/`**, each a
+  distribution of its own (its `pyproject.toml`, version, CHANGELOG and tests) and released with its own tag
+  `<identity>-vX.Y.Z`. The framework's wheel still holds `supervisor*` only. CI gains a job per package
+  (`tools/ci_package.py`): the framework's wheel built from the oldest release in the package's `framework` range
+  and from HEAD, the package's wheel, a fresh environment, the installed proof and the package's own suite with no
+  source on the path. A generated package names its python job for that job in `[tool.supervisor.ci]`. The G5 job
+  proves the path on a package scaffolded in the runner.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 

@@ -25,3 +25,8 @@ include = ["{{ package }}*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# What CI drives on the installed wheel when this package lives under the framework repository's packages/
+# (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its extensions.<identity> section.
+[tool.supervisor.ci]
+python_job = "{{ identity }}_hello"

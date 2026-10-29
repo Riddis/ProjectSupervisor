@@ -76,6 +76,14 @@ def test_the_package_has_the_standard_shape(tmp_path, monkeypatch):
 
 
 
+def test_the_package_names_its_python_job_for_the_framework_repositorys_ci(tmp_path, monkeypatch):
+    """1.14.0: a package kept under the framework repository's packages/ gets a CI job (tools/ci_package.py), which
+    drives what `[tool.supervisor.ci]` names; the generated package names the python job its setup() registers."""
+    dist = scaffold_package(tmp_path, monkeypatch, "lab_notes")
+    meta = tomllib.loads((dist / "pyproject.toml").read_text(encoding="utf-8"))
+    assert meta["tool"]["supervisor"]["ci"] == {"python_job": "lab_notes_hello"}
+
+
 def test_the_package_ignores_its_build_output(tmp_path, monkeypatch):
     """1.13.0, a skill-trial finding (extension-new, round 2): a build or an editable install in the package's
     repository left build/ and the egg-info untracked, so the scaffold ships a .gitignore for them."""
