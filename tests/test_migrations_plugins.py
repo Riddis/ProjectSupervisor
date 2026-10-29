@@ -179,3 +179,24 @@ def test_a_manifest_that_still_reads_the_old_names_stops_migrate_before_any_writ
     with pytest.raises(migrations.MigrationError, match="alpha.toml"):
         migrations.run(lay)
     assert snapshot(lay.root) == before
+
+
+# The same class as R3: project.yaml may list a plugin by the old folder's dotted name (`extensions.alpha`, imported
+# with the project folder on the path in 1.13.0). After the move that import fails, and which new name it takes
+# (`alpha` or `plugins.alpha`) changes how the plugin is identified, so migrate refuses it, naming the entry, before
+# anything is written. A dotted name the old folder does not hold is an installed module and is left as it is.
+
+def test_a_plugin_listed_by_the_old_folders_dotted_name_stops_migrate_before_any_write(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "project.yaml").write_bytes(PROJECT.replace("- alpha\r\n", "- {name: extensions.alpha}\r\n").encode())
+    before = snapshot(lay.root)
+    with pytest.raises(migrations.MigrationError, match="extensions.alpha"):
+        migrations.run(lay)
+    assert snapshot(lay.root) == before
+
+
+def test_a_dotted_name_the_old_folder_does_not_hold_is_left_alone(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "project.yaml").write_bytes(PROJECT.replace("- beta\r\n", "- beta\r\n- extensions.elsewhere\r\n").encode())
+    notes = migrations.run(lay, dry_run=True)
+    assert "project.yaml: extensions renamed plugins" in notes

@@ -305,6 +305,22 @@ def _old_code(layout: Layout, moved: Path) -> list[str]:
     return out
 
 
+def _dotted_old_entries(layout: Layout, folder: Path) -> list[str]:
+    """project.yaml entries naming a module of the old folder by its dotted name (`extensions.<name>`, imported with
+    the project folder on the path before 2.0.0). A dotted name the folder does not hold is an installed module."""
+    doc = project.raw(layout)
+    entries = doc.get("extensions") if "extensions" in doc else doc.get("plugins")
+    out = []
+    for entry in entries if isinstance(entries, list) else []:
+        name = str((entry.get("name") or entry.get("module") or "") if isinstance(entry, dict) else entry or "")
+        rest = name.strip()[len("extensions."):] if name.strip().startswith("extensions.") else ""
+        rel = Path(*rest.split(".")) if rest else None
+        if rel and folder.is_dir() and ((folder / rel).with_suffix(".py").is_file()
+                                        or (folder / rel / "__init__.py").is_file()):
+            out.append(name.strip())
+    return out
+
+
 def _out_of_range(folder: Path) -> list[str]:
     """Local manifests whose `framework` range leaves out this framework: the plugin does not load. A range is its
     author's promise, so it is named, never widened."""
@@ -337,6 +353,11 @@ def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
         raise MigrationError("the project has both extensions/ and plugins/ (2.0.0 renamed extensions/ to "
                              "plugins/): merge them into plugins/ by hand, then run `supervisor migrate` again")
     folder = old if move else new
+    dotted = _dotted_old_entries(layout, folder)
+    if dotted:                                               # decided before anything is written (review 2.0.0)
+        raise MigrationError(f"project.yaml lists {', '.join(dotted)} by the old folder's dotted name, which no longer "
+                             f"imports once extensions/ is plugins/: list each by its bare name (or plugins.<name>) "
+                             f"by hand, then run `supervisor migrate` again")
     manifests = []
     if folder.is_dir():
         clash = sorted(p.parent.name for p in folder.glob("*/supervisor-extension.toml")
