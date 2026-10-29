@@ -138,3 +138,44 @@ def test_a_package_with_both_manifest_names_stops_the_migration_before_any_write
     with pytest.raises(migrations.MigrationError, match="both supervisor-extension.toml and supervisor-plugin.toml"):
         migrations.run(lay)
     assert snapshot(lay.root) == before
+
+
+# Review 2.0.0 R3 (partial report): valid TOML in another form (a quoted key, an inline table, a dotted key) was left
+# with the old names; migrate still recorded 2.0.0 and the plugin then refused to load. Every form a manifest may
+# take is renamed, and a manifest that still reads the old names afterwards stops migrate before anything is written.
+HEAD_LINES = 'identity = "alpha"\r\nversion = "1.0.0"\r\nframework = ">=1.12,<3"\r\n'
+PROVIDES = '\r\n[provides]\r\ndoctor_checks = ["alpha"]\r\n'
+CONFIG_TABLE = '\r\n[config]\r\nsection = "extensions.alpha"\r\nschema = "alpha_settings:Settings"\r\n'
+REQUIRES_TABLE = '\r\n[requires]\r\nextensions = ["beta"]\r\n'
+
+FORMS = {
+    "quoted key": HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\n"extensions" = ["beta"]\r\n',
+    "literal-quoted key": HEAD_LINES + PROVIDES + CONFIG_TABLE + "\r\n[requires]\r\n'extensions' = [\"beta\"]\r\n",
+    "inline requires": HEAD_LINES + 'requires = { extensions = ["beta"] }\r\n' + PROVIDES + CONFIG_TABLE,
+    "dotted requires": HEAD_LINES + 'requires.extensions = ["beta"]\r\n' + PROVIDES + CONFIG_TABLE,
+    "inline config": (HEAD_LINES + "config = { section = 'extensions.alpha', schema = \"alpha_settings:Settings\" }\r\n"
+                      + PROVIDES + REQUIRES_TABLE),
+    "spaced table header": HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[ requires ]\r\n  extensions   = ["beta"]\r\n',
+}
+
+
+@pytest.mark.parametrize("form", sorted(FORMS))
+def test_every_form_of_the_old_names_in_a_manifest_is_renamed_and_the_plugin_loads(tmp_path, form):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(FORMS[form].encode())
+    migrations.run(lay)
+    text = (lay.root / "plugins" / "alpha.toml").read_bytes().decode()
+    assert "extensions" not in text and "\r\n" in text
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+
+def test_a_manifest_that_still_reads_the_old_names_stops_migrate_before_any_write(tmp_path):
+    lay = old_project(tmp_path)
+    escaped = HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\n"\\u0065xtensions" = ["beta"]\r\n'
+    (lay.root / "extensions" / "alpha.toml").write_bytes(escaped.encode())
+    before = snapshot(lay.root)
+    with pytest.raises(migrations.MigrationError, match="alpha.toml"):
+        migrations.run(lay)
+    assert snapshot(lay.root) == before

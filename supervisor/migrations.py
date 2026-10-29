@@ -222,8 +222,34 @@ def _plugin_migrations(layout: Layout, dry_run: bool) -> list[str]:
 
 
 _OLD_KEY = re.compile(r"^extensions(?=[ \t]*:)", re.MULTILINE)
-_OLD_REQUIRES = re.compile(r"^([ \t]*)extensions(?=[ \t]*=)", re.MULTILINE)
+# A manifest's old names in each form TOML allows: the key in [requires] (bare or quoted), the dotted key
+# `requires.extensions`, the inline table `requires = { extensions = [...] }`, and the config section's value.
+_OLD_REQUIRES = re.compile(r"""^([ \t]*)(["']?)extensions\2(?=[ \t]*=)""", re.MULTILINE)
+_OLD_DOTTED = re.compile(r"""^([ \t]*requires[ \t]*\.[ \t]*)(["']?)extensions\2(?=[ \t]*=)""", re.MULTILINE)
+_OLD_INLINE = re.compile(r"""^([ \t]*requires[ \t]*=[ \t]*\{.*)$""", re.MULTILINE)
+_OLD_INLINE_KEY = re.compile(r"""([{,][ \t]*)(["']?)extensions\2(?=[ \t]*=)""")
 _OLD_SECTION = re.compile(r"""(["'])extensions\.""")
+
+
+def _renamed_manifest(text: str) -> str:
+    text = _OLD_REQUIRES.sub(r"\1\2plugins\2", text)
+    text = _OLD_DOTTED.sub(r"\1\2plugins\2", text)
+    text = _OLD_INLINE.sub(lambda m: _OLD_INLINE_KEY.sub(r"\1\2plugins\2", m.group(1)), text)
+    return _OLD_SECTION.sub(r"\1plugins.", text)
+
+
+def _still_old(text: str) -> bool:
+    """Whether a rewritten manifest still reads the old names (a form no rule above renames), so the plugin would
+    not load after migrate recorded 2.0.0 (review 2.0.0). A manifest TOML cannot read is doctor's to report."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return False
+    requires, config = doc.get("requires"), doc.get("config")
+    return ((isinstance(requires, dict) and "extensions" in requires)
+            or (isinstance(config, dict) and str(config.get("section") or "").startswith("extensions.")))
+
+
 _OLD_IMPORT = re.compile(r"^[ \t]*(?:from|import)[ \t]+(?:supervisor\.ext\b|extensions\b)|"
                          r"^[ \t]*from[ \t]+supervisor[ \t]+import[ \t]+[^\n]*\bext\b", re.MULTILINE)
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "runs", "state", "__pycache__"}
@@ -322,7 +348,11 @@ def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
         for p in sorted([*folder.glob("*.toml"), *folder.glob("*/supervisor-extension.toml"),
                          *folder.glob("*/supervisor-plugin.toml")]):
             text = p.read_text(encoding="utf-8")
-            changed = _OLD_SECTION.sub(r"\1plugins.", _OLD_REQUIRES.sub(r"\1plugins", text))
+            changed = _renamed_manifest(text)
+            if _still_old(changed):                          # decided before anything is written
+                raise MigrationError(f"{p.relative_to(layout.root).as_posix()}: its `[requires] extensions` or "
+                                     f"`section = \"extensions.<identity>\"` is in a form migrate cannot rename: "
+                                     f"rename it plugins by hand, then run `supervisor migrate` again")
             if changed != text or p.name == "supervisor-extension.toml":
                 manifests.append((p.relative_to(folder), text, changed))
     notes = [f"{path.relative_to(layout.root).as_posix()}: extensions renamed plugins" for path, _t in keys]
