@@ -3,9 +3,23 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 1.13.0 — 2026-10-29
 
-Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
+Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills. The project-side skills reach a project with
+`supervisor init` and, from now on, `supervisor skills update`; the contributor skills live in the framework repo.
+Each skill was followed by a fresh session on a throwaway project, and what those trials found is fixed below.
+
+**Migration:** none added. `supervisor migrate` records the new version; its dry run on a project at 1.12.1 lists
+only `project.yaml: framework_version 1.12.1 → 1.13.0`. After it, `supervisor skills status` shows the skills this
+release ships, and `supervisor skills update` installs them (the project-upgrade skill).
+
+**Rollback** to v1.12.1, in a maintenance window: stop, check out `v1.12.1`, run `supervisor migrate` (it records
+1.12.1 again), restore the skills folder from the window's snapshot (1.12.1 has no `skills` command, and ignores
+`.claude/supervisor-skills.json`), `supervisor doctor`, start. Nothing else 1.13.0 writes is new to 1.12.1: the
+reload's `after_reload` field in the runtime record is ignored there, and the commits made while paused are
+ordinary state commits.
+
+**Extension API:** unchanged (G2 compared with v1.12.1).
 
 - **Changed: commits go on while the loop is paused or draining.** In 1.12.1 only a running iteration checkpointed
   accepted work and committed the loop's records, so the records made while paused (an owner's command, the work
