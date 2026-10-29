@@ -43,6 +43,9 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     `my_lane`.
   - `docs/BOUNDARY.md` says what G1d scans: every file git tracks, or without git, every file but caches, `runs/`
     and `.git/`.
+  - The extension package scaffold (`supervisor extension new --package`) ships a `.gitignore` for `build/`,
+    `dist/`, `*.egg-info/` and caches, which a build or an editable install in the package's repository left
+    untracked.
 - **Fixed: G1d checks a new file before it is added.** It read only what git tracks, so a new file in uncommitted
   work was never checked, and a clean G1d prints nothing. It now also reads every untracked file git does not
   ignore.
