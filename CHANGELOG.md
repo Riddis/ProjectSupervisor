@@ -37,8 +37,8 @@ ordinary state commits.
   - Hashes ignore line endings. A project from before 1.13.0 has no record yet: an identical copy counts as current,
     a copy an earlier release shipped counts as outdated (`supervisor/skills_history.json`, written from the release
     tags by `tools/skills_history.py`), and any other as edited.
-  - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
-    or "would update".
+  - `skills update` commits what it wrote and nothing else: no record under `state/`, no projection, and no file
+    someone else staged. Its dry run says "would install" or "would update".
 - **Fixed: `supervisor reload` keeps a paused loop paused.** The reload command replaced the decision with RELOAD,
   and the loop came back with RUN. A project left PAUSED for the owner, as every maintenance window leaves it, then
   started dispatching on a reload. The command now records the decision it replaced (`after_reload`), and the loop

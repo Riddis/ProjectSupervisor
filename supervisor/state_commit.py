@@ -128,21 +128,28 @@ def _own_repository(root: Path) -> bool:
         return False
 
 
-def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: str | None = None) -> dict:
-    """Commit the loop's records now (and `extra` root-relative files, as migrate does). {"status": "committed",
-    "commit", "paths"} or {"status": "unchanged"} or {"status": "skipped", "reason"}."""
+def commit(layout: Layout, reason: str, extra: list[str] | None = None, title: str | None = None,
+           only: list[str] | None = None) -> dict:
+    """Commit the loop's records now (and `extra` root-relative files, as migrate does). With `only`, commit those
+    root-relative files and nothing else: no record under state/, no projection (`skills update`; review 1.13.0 R2).
+    {"status": "committed", "commit", "paths"} or {"status": "unchanged"} or {"status": "skipped", "reason"}."""
     if not settings(layout)["enabled"]:
         return {"status": "skipped", "reason": "checkpoint.state_commits is off"}
     root = layout.root
     if not _own_repository(root):
         return {"status": "skipped", "reason": "not a git repository"}
     delivered = _not_yet_accepted(layout)
-    state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered, root)]
-    extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered, root)] if extra else []
-    if not state_files and not extra_files:
-        return {"status": "unchanged"}
-    files = sorted(set(state_files) | set(extra_files)
-                   | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered, root)})
+    if only is not None:
+        files = sorted({p for p in changed(layout, list(only)) if not _held_back(p, delivered, root)} if only else ())
+        if not files:
+            return {"status": "unchanged"}
+    else:
+        state_files = [p for p in changed(layout, [STATE]) if not _held_back(p, delivered, root)]
+        extra_files = [p for p in changed(layout, list(extra)) if not _held_back(p, delivered, root)] if extra else []
+        if not state_files and not extra_files:
+            return {"status": "unchanged"}
+        files = sorted(set(state_files) | set(extra_files)
+                       | {p for p in changed(layout, projections(layout)) if not _held_back(p, delivered, root)})
     code, staged, _err = _git(root, "diff", "--cached", "--name-only", "--", *files)
     if code == 0 and staged.strip():
         names = ", ".join(staged.split()[:5])

@@ -154,7 +154,7 @@ def _commit(root: Path, paths: list[str]) -> None:
     from . import state_commit
     from .paths import Layout
     try:
-        state_commit.commit(Layout(root), reason="skills update", extra=paths,
+        state_commit.commit(Layout(root), reason="skills update", only=paths,
                             title=f"skills: the framework's skills from {__version__}")
     except Exception:                                       # noqa: BLE001 - the files are written either way
         pass

@@ -177,3 +177,28 @@ def test_an_update_commits_what_it_wrote(project):
     skills.update(root)
     assert git("log", "-1", "--format=%s").stdout.startswith("skills:")
     assert git("status", "--porcelain", "--", ".claude").stdout.strip() == ""
+
+
+def test_an_update_commits_only_what_it_wrote(project):
+    """Review 1.13.0 R2 (P2): the update's commit also took every changed record under state/ and every changed
+    projection, though it promises to commit only the skill files it wrote and its record. Unrelated state, a changed
+    projection and an owner's staged file stay as they were."""
+    import subprocess
+    root, shipped = project
+    git = lambda *a: subprocess.run(["git", "-C", str(root), *a], capture_output=True, text=True, check=False)
+    (root / "state").mkdir()
+    (root / "state" / "unrelated.txt").write_text("before\n", encoding="utf-8", newline="\n")
+    (root / "STATE.md").write_text("before\n", encoding="utf-8", newline="\n")
+    (root / "notes.txt").write_text("before\n", encoding="utf-8", newline="\n")
+    git("init", "-q"); git("config", "user.email", "t@example.com"); git("config", "user.name", "t")
+    git("add", "-A"); git("commit", "-qm", "init")
+    (root / "state" / "unrelated.txt").write_text("after\n", encoding="utf-8", newline="\n")
+    (root / "STATE.md").write_text("after\n", encoding="utf-8", newline="\n")
+    (root / "notes.txt").write_text("staged\n", encoding="utf-8", newline="\n")
+    git("add", "notes.txt")
+    (shipped / "alpha" / "SKILL.md").write_text("---\nname: alpha\n---\nalpha v2\n", encoding="utf-8")
+    skills.update(root)
+    committed = git("show", "--pretty=", "--name-only", "HEAD").stdout.split()
+    assert sorted(committed) == [".claude/skills/alpha/SKILL.md", ".claude/supervisor-skills.json"], committed
+    status = git("status", "--porcelain").stdout.splitlines()
+    assert " M state/unrelated.txt" in status and " M STATE.md" in status and "M  notes.txt" in status, status
