@@ -1,18 +1,18 @@
-"""Finding an extension and reading its manifest without executing anything it ships (boundary plan phase 3;
-docs/EXTENSION_STANDARD.md, "Where the manifest lives").
+"""Finding a plugin and reading its manifest without executing anything it ships (boundary plan phase 3;
+docs/PLUGIN_STANDARD.md, "Where the manifest lives").
 
-For a name in project.yaml `extensions:`, `find()` looks in two places:
-- **Project-local:** `extensions/<name>.py` with `extensions/<name>.toml` beside it, or the package folder
-  `extensions/<name>/` with `supervisor-extension.toml` inside.
-- **Installed:** a distribution whose entry point in the group `supervisor.extensions` has that name. Its manifest is
+For a name in project.yaml `plugins:`, `find()` looks in two places:
+- **Project-local:** `plugins/<name>.py` with `plugins/<name>.toml` beside it, or the package folder
+  `plugins/<name>/` with `supervisor-plugin.toml` inside.
+- **Installed:** a distribution whose entry point in the group `supervisor.plugins` has that name. Its manifest is
   read from the distribution's file list. For an editable install, whose file list shows only its finder, it is read
   beside the origin `importlib.util.find_spec` reports for the entry point's top-level package; finding a top-level
   package's spec does not execute it.
 
-A project-local extension wins only when nothing is installed under the same name. The same identity from two
-sources is refused, not chosen silently (owner decision D5). An extension found without a manifest is `legacy`: 1.12.x
-still loads it, with a warning (D1). Nothing here imports an extension, and nothing raises for a bad extension:
-problems are returned, so the loader and doctor can report each extension on its own."""
+A project-local plugin wins only when nothing is installed under the same name. The same identity from two
+sources is refused, not chosen silently (owner decision D5). A plugin found without a manifest is `legacy`: 1.12.x
+still loads it, with a warning (D1). Nothing here imports a plugin, and nothing raises for a bad plugin:
+problems are returned, so the loader and doctor can report each plugin on its own."""
 from __future__ import annotations
 
 import dataclasses
@@ -26,7 +26,7 @@ from pathlib import Path
 from . import manifest as manifest_mod
 from .paths import Layout
 
-GROUP = "supervisor.extensions"
+GROUP = "supervisor.plugins"
 
 
 @dataclass(frozen=True)
@@ -45,19 +45,19 @@ class Found:
 
 
 def find(layout: Layout, name: str) -> Found:
-    """Where the extension `name` is and what its manifest says. Executes nothing the extension ships."""
+    """Where the plugin `name` is and what its manifest says. Executes nothing the plugin ships."""
     if not name or not all(part.isidentifier() for part in name.split(".")):
-        return Found(name, None, problems=(f"invalid extension name {name!r}: use identifiers, dotted for packages",))
+        return Found(name, None, problems=(f"invalid plugin name {name!r}: use identifiers, dotted for packages",))
     local = _local(layout, name)
     points = _entry_points(name)
     if local is not None and points:
         others = ", ".join(sorted({p.value for p in points}))
         return Found(name, None, problems=(
-            (f"extension {name!r} is found in two places: {local[0]} and the installed package {others}; remove "
+            (f"plugin {name!r} is found in two places: {local[0]} and the installed package {others}; remove "
              f"one or rename it (one identity, one source)"),))
     if len(points) > 1:
         return Found(name, None, problems=(
-            f"extension {name!r} is installed twice: {', '.join(sorted(p.value for p in points))}",))
+            f"plugin {name!r} is installed twice: {', '.join(sorted(p.value for p in points))}",))
     if local is not None:
         location, manifest_path = local
         return _with_manifest(Found(name, "local", location), manifest_path)
@@ -66,15 +66,15 @@ def find(layout: Layout, name: str) -> Found:
     spec = _top_level_spec(name.split(".")[0])
     if spec is not None:
         return Found(name, "module", Path(spec.origin) if spec.origin and "." not in name else None, module=name)
-    expected = Path(layout.extensions) / Path(*name.split(".")).with_suffix(".py")
+    expected = Path(layout.plugins) / Path(*name.split(".")).with_suffix(".py")
     return Found(name, None, problems=(
-        (f"extension {name!r} not found: no {expected}, no package folder there, no entry point {name!r} in the "
+        (f"plugin {name!r} not found: no {expected}, no package folder there, no entry point {name!r} in the "
          f"group {GROUP!r} and no installed module"),))
 
 
 def _local(layout: Layout, name: str) -> tuple[Path, Path] | None:
-    """(module file or package folder, where its manifest would be) for a project-local extension, else None."""
-    ext_dir = Path(layout.extensions)
+    """(module file or package folder, where its manifest would be) for a project-local plugin, else None."""
+    ext_dir = Path(layout.plugins)
     rel = Path(*name.split("."))
     module, package = (ext_dir / rel).with_suffix(".py"), ext_dir / rel
     if module.is_file():
@@ -103,7 +103,7 @@ def _installed(name: str, ep: importlib.metadata.EntryPoint) -> Found:
         package = Path(next(iter(spec.submodule_search_locations))).joinpath(*parts[1:])
         return _with_manifest(Found(name, "installed", package, module=module), package / manifest_mod.FILENAME)
     return Found(name, "installed", module=module, problems=(
-        (f"extension {name!r}: the entry point names {module!r}, but neither the distribution's file list nor the "
+        (f"plugin {name!r}: the entry point names {module!r}, but neither the distribution's file list nor the "
          f"installed package shows its {manifest_mod.FILENAME}"),))
 
 
@@ -130,8 +130,8 @@ def _with_manifest(found: Found, manifest_path: Path) -> Found:
     if not manifest_path.is_file():
         if found.source == "installed":
             return dataclasses.replace(found, problems=(
-                f"extension {found.name!r}: no {manifest_mod.FILENAME} in {found.location}",))
-        return found                                      # a project-local extension without one: legacy (D1)
+                f"plugin {found.name!r}: no {manifest_mod.FILENAME} in {found.location}",))
+        return found                                      # a project-local plugin without one: legacy (D1)
     try:
         m = manifest_mod.load(manifest_path)
     except manifest_mod.ManifestError as exc:

@@ -119,7 +119,7 @@ class CodexCliAdapter(ProcessAdapter):
         return super().submit(spec)
 
     def agent_handle(self, layout: Layout) -> dict:
-        """For supervisor.ext.agent_lane: what an extension needs to launch this agent itself, under this lane's
+        """For supervisor.plugin.agent_lane: what a plugin needs to launch this agent itself, under this lane's
         environment rules (the executable, the configured model, a callable returning the scrubbed environment)."""
         return {"executable": executable(layout), "model": (routing(layout).get(self.engine) or {}).get("model"),
                 "environment": lambda: codex_env(layout)}

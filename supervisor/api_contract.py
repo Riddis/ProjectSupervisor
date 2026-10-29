@@ -1,24 +1,24 @@
-"""Gate G2: the public extension API's recorded contract (docs/BOUNDARY.md).
+"""Gate G2: the public plugin API's recorded contract (docs/BOUNDARY.md).
 
-`supervisor.ext.__all__` is the contract. Every name in it is recorded in docs/extension_api.json with its kind and
+`supervisor.plugin.__all__` is the contract. Every name in it is recorded in docs/plugin_api.json with its kind and
 signature: parameters (name, kind, default, annotation) and return annotation for a function; constructor, public
 bases, public methods, properties and fields for a class; public functions and classes for a module; type and value
-for data. docs/EXTENSION_API.md is the human half and names every one of them.
+for data. docs/PLUGIN_API.md is the human half and names every one of them.
 
-    python -m supervisor.api_contract record     # write docs/extension_api.json from the code
+    python -m supervisor.api_contract record     # write docs/plugin_api.json from the code
     python -m supervisor.api_contract check      # G2
 
-`check` fails when the code and docs/extension_api.json differ (record it again, in the same commit), when a public
-name has no section of its own in docs/EXTENSION_API.md (a `### `name`` heading with text), and, once a release tag
+`check` fails when the code and docs/plugin_api.json differ (record it again, in the same commit), when a public
+name has no section of its own in docs/PLUGIN_API.md (a `### `name`` heading with text), and, once a release tag
 carries a contract, when a difference from that tag breaks the version rule. Both halves of the contract are compared
 with the tag's: the recorded signatures, where a removal or a change that breaks a caller needs a major version
 (after a minor release of deprecation warnings, which the reviewer checks) and an addition or a compatible change at
 least a minor version; and each name's documented section, where a change (types, data shapes, semantics, error
-cases) cannot be proved compatible by a program, so the CHANGELOG's newest section classifies it in an "Extension API"
+cases) cannot be proved compatible by a program, so the CHANGELOG's newest section classifies it in a "Plugin API"
 entry naming the name: marked "(editorial)" (any version), "(breaking)" (a major version) or neither (a compatible
 change, at least a minor version). Every change needs that entry. The previous contract is read with `git show` from
 the newest framework release tag (`vX.Y.Z`, never a package's `<identity>-vX.Y.Z`) in HEAD's history, both
-docs/extension_api.json and docs/EXTENSION_API.md; a shallow clone cannot supply it and fails instead of passing
+docs/plugin_api.json and docs/PLUGIN_API.md; a shallow clone cannot supply it and fails instead of passing
 unchecked.
 """
 from __future__ import annotations
@@ -34,8 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FORMAT = 1
-CONTRACT_FILE = "docs/extension_api.json"
-DOC_FILE = "docs/EXTENSION_API.md"
+CONTRACT_FILE = "docs/plugin_api.json"
+DOC_FILE = "docs/PLUGIN_API.md"
 CHANGELOG_FILE = "CHANGELOG.md"
 INTERNAL = ("supervisor",)                 # classes defined here are the framework's: their members are contract
 
@@ -344,7 +344,7 @@ def _newest_section(changelog: str) -> str:
 
 
 def _sections(doc: str) -> dict[str, str]:
-    """Each documented name's section of docs/EXTENSION_API.md, whitespace collapsed: the text under a `### `name``
+    """Each documented name's section of docs/PLUGIN_API.md, whitespace collapsed: the text under a `### `name``
     heading, up to the next heading of level 1 to 3."""
     out: dict[str, str] = {}
     name, lines = None, []
@@ -373,8 +373,8 @@ def _entries(section: str) -> list[str]:
 
 def _classification(section: str, name: str) -> str | None:
     """How the newest CHANGELOG section classifies a documented change to `name`: "editorial", "breaking",
-    "compatible", or None when no "Extension API" entry names it."""
-    found = [e for e in _entries(section) if "Extension API" in e and _mentions(e, name)]
+    "compatible", or None when no "Plugin API" entry names it."""
+    found = [e for e in _entries(section) if "Plugin API" in e and _mentions(e, name)]
     if not found:
         return None
     if any("(breaking)" in e for e in found):
@@ -391,8 +391,8 @@ def _listed(items: list[tuple[str, str]], limit: int = 6) -> str:
 
 def check(current: dict, recorded: dict | None, baseline: dict | None, *, version: str,
           baseline_version: str | None, changelog: str, api_doc: str | None, baseline_doc: str | None = None) -> Result:
-    """G2 over already-loaded inputs: `current` from the code, `recorded` from docs/extension_api.json, `api_doc`
-    docs/EXTENSION_API.md, `baseline` and `baseline_doc` the same two from the last release tag (None when it has
+    """G2 over already-loaded inputs: `current` from the code, `recorded` from docs/plugin_api.json, `api_doc`
+    docs/PLUGIN_API.md, `baseline` and `baseline_doc` the same two from the last release tag (None when it has
     none), `version` the framework version of this commit."""
     r = Result()
     if recorded is None:
@@ -432,19 +432,19 @@ def check(current: dict, recorded: dict | None, baseline: dict | None, *, versio
             r.notes.append(f"unchanged since {baseline_version}")
         return r
     if cur == base:
-        r.notes.append(f"the extension API changed since {baseline_version}: the release commit raises at least the "
+        r.notes.append(f"the plugin API changed since {baseline_version}: the release commit raises at least the "
                        f"minor version")
     elif cur[:2] == base[:2]:
-        r.problems.append(f"the extension API changed since {baseline_version}, so {version} cannot be a patch "
+        r.problems.append(f"the plugin API changed since {baseline_version}, so {version} cannot be a patch "
                           f"release: raise at least the minor version")
-    if "Extension API" not in section:
-        r.problems.append(f"{CHANGELOG_FILE}: the newest section has no \"Extension API\" line for the changes since "
+    if "Plugin API" not in section:
+        r.problems.append(f"{CHANGELOG_FILE}: the newest section has no \"Plugin API\" line for the changes since "
                           f"{baseline_version} ({_listed(d.breaking + d.changes)})")
     else:
         unnamed = sorted({n for n, _w in d.breaking + d.changes if not _mentions(section, n)})
         if unnamed:
             r.problems.append(f"{CHANGELOG_FILE}: the newest section does not name {', '.join(unnamed)}, changed in "
-                              f"the extension API since {baseline_version}")
+                              f"the plugin API since {baseline_version}")
     return r
 
 
@@ -464,7 +464,7 @@ def _documented_changes(r: Result, baseline: dict, current: dict, baseline_doc: 
         kind = _classification(changelog_section, name)
         if kind is None:
             r.problems.append(f"the documented contract of `{name}` changed since {baseline_version} ({DOC_FILE}): "
-                              f"name it in an \"Extension API\" entry of the {CHANGELOG_FILE}'s newest section, marked "
+                              f"name it in a \"Plugin API\" entry of the {CHANGELOG_FILE}'s newest section, marked "
                               f"(editorial), (breaking) or neither for a compatible change")
             continue
         r.notes.append(f"documented contract of `{name}` changed since {baseline_version}, classified {kind}: the "
@@ -500,7 +500,7 @@ def contract_at(root: Path, tag: str) -> dict | None:
 
 
 def document_at(root: Path, tag: str) -> str | None:
-    """The docs/EXTENSION_API.md a tag carries, or None when it has none."""
+    """The docs/PLUGIN_API.md a tag carries, or None when it has none."""
     shown = _git(root, "show", f"{tag}:{DOC_FILE}")
     return shown.stdout if shown.returncode == 0 else None
 
@@ -531,14 +531,14 @@ def _read(path: Path) -> str | None:
 
 def run(command: str, against: str = "auto", echo=print) -> int:
     """CLI body. Exit 0 OK, 1 the check failed, 2 it could not run."""
-    # Imported here, statically (G1 allows dynamic loading only in the extension loader): `record` and `check` need
+    # Imported here, statically (G1 allows dynamic loading only in the plugin loader): `record` and `check` need
     # the framework importable, the rest of this module does not.
     import supervisor
-    from supervisor import ext as module
+    from supervisor import plugin as module
     try:
         current = describe(module)
     except ContractError as exc:
-        echo(f"extension API contract: {exc}")
+        echo(f"plugin API contract: {exc}")
         return 2
     root = Path(module.__file__).resolve().parents[2]
     target = root / CONTRACT_FILE
@@ -546,7 +546,7 @@ def run(command: str, against: str = "auto", echo=print) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "w", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(current, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
-        echo(f"extension API contract: recorded {len(current['names'])} name(s) in {CONTRACT_FILE}")
+        echo(f"plugin API contract: recorded {len(current['names'])} name(s) in {CONTRACT_FILE}")
         return 0
     try:
         if against == "none":
@@ -562,7 +562,7 @@ def run(command: str, against: str = "auto", echo=print) -> int:
                        changelog=_read(root / CHANGELOG_FILE) or "", api_doc=_read(root / DOC_FILE),
                        baseline_doc=baseline_doc)
     except (ContractError, ValueError) as exc:
-        echo(f"extension API contract: {exc}")
+        echo(f"plugin API contract: {exc}")
         return 2
     for p in result.problems:
         echo(p)
@@ -571,7 +571,7 @@ def run(command: str, against: str = "auto", echo=print) -> int:
     since = ("no comparison" if against == "none" else "no release tag" if tag is None
              else f"compared with {tag}" if baseline is not None else f"{tag} carries no contract")
     status = "OK" if result.ok else f"{len(result.problems)} problem(s)"
-    echo(f"extension API contract: {status} ({len(current['names'])} name(s); {since})")
+    echo(f"plugin API contract: {status} ({len(current['names'])} name(s); {since})")
     return 0 if result.ok else 1
 
 

@@ -1,5 +1,5 @@
 """`project.yaml`: the one file that makes a directory a supervisor project. Read-mostly; the setup skill and
-`supervisor init` write it, the framework reads it (name, phase labels, extensions, framework version)."""
+`supervisor init` write it, the framework reads it (name, phase labels, plugins, framework version)."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -12,7 +12,7 @@ from . import __version__, store, yaml_edit
 from .paths import Layout
 
 # `write` changes only what differs (supervisor.yaml_edit): project.yaml is born from the commented template, and
-# the comments and the owner's layout are what most owners read, so an update (migration, `extension new`) keeps
+# the comments and the owner's layout are what most owners read, so an update (migration, `plugin new`) keeps
 # them.
 
 DEFAULTS: dict[str, Any] = {
@@ -21,7 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "framework_version": __version__,
     "repo": {"path": ".", "remote": None, "default_branch": "main"},
     "phases": {},            # {0: "Environment", 1: "Foundations", ...} — labels only; gating lives in state/gates.yaml
-    "extensions": [],        # import paths relative to extensions/ (e.g. "my_adapter") or dotted module names
+    "plugins": [],           # import paths relative to plugins/ (e.g. "my_adapter") or dotted module names
     "ui": {"port": 8790, "title": None},
     "owner": {"name": "owner"},
 }
@@ -120,11 +120,11 @@ def phase_labels(layout: Layout) -> dict[int, str]:
     return out
 
 
-def extensions(layout: Layout) -> list[str]:
-    """Configured extension names. Entries are a bare name or a mapping with `name` (and `required`, see
-    supervisor.extensions.specs); this returns the names only."""
+def plugins(layout: Layout) -> list[str]:
+    """Configured plugin names. Entries are a bare name or a mapping with `name` (and `required`, see
+    supervisor.plugins.specs); this returns the names only."""
     names = []
-    for x in load(layout).get("extensions") or []:
+    for x in load(layout).get("plugins") or []:
         name = x.get("name") if isinstance(x, dict) else x
         if name:
             names.append(str(name))
@@ -142,7 +142,7 @@ def write(layout: Layout, doc: dict) -> Path:
     """Write project.yaml (full document) changing only what differs: the changed values' tokens when only existing
     values changed (migrate's framework_version), else a round trip that keeps comments, long lines, `null` and the
     file's indentation (supervisor.yaml_edit). Atomic, in the file's own line endings. Used by migrations and
-    `supervisor extension new`; `supervisor init` stamps the template instead."""
+    `supervisor plugin new`; `supervisor init` stamps the template instead."""
     p = path(layout)
     p.parent.mkdir(parents=True, exist_ok=True)
     text = p.read_bytes().decode("utf-8") if p.is_file() else ""

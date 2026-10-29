@@ -1,9 +1,0 @@
-"""The configuration this extension owns: `extensions.{{ identity }}` in a project's config/routing.yaml, validated by
-this model before setup() runs. Read it with `supervisor.ext.config(layout, "{{ identity }}")`."""
-from __future__ import annotations
-
-from pydantic import BaseModel
-
-
-class Settings(BaseModel):
-    greeting: str = "hello"

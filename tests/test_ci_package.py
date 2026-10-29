@@ -1,4 +1,4 @@
-"""tools/ci_package.py: the CI of the extension packages kept in this repository under packages/<distribution>/
+"""tools/ci_package.py: the CI of the plugin packages kept in this repository under packages/<distribution>/
 (1.14.0, decision D2 of the boundary plan's phase 5). Each package is tested against the oldest framework release in
 its manifest's range and against HEAD; a package's own tag (`<identity>-vX.Y.Z`) is never taken for a framework
 release. The `run` step (wheels, a fresh environment, the installed proof, the suite) runs in CI on a package
@@ -28,12 +28,12 @@ def git(repo: Path, *args: str) -> None:
 
 
 def add_package(repo: Path, identity: str, framework: str, ci_table: str = "") -> Path:
-    dist = repo / "packages" / f"supervisor-ext-{identity}"
-    pkg = dist / f"supervisor_ext_{identity}"
+    dist = repo / "packages" / f"supervisor-plugin-{identity}"
+    pkg = dist / f"supervisor_plugin_{identity}"
     pkg.mkdir(parents=True)
-    (dist / "pyproject.toml").write_text(f'[project]\nname = "supervisor-ext-{identity}"\nversion = "1.0.0"\n{ci_table}',
+    (dist / "pyproject.toml").write_text(f'[project]\nname = "supervisor-plugin-{identity}"\nversion = "1.0.0"\n{ci_table}',
                                          encoding="utf-8")
-    (pkg / "supervisor-extension.toml").write_text(
+    (pkg / "supervisor-plugin.toml").write_text(
         f'identity = "{identity}"\nversion = "1.0.0"\nframework = "{framework}"\n', encoding="utf-8")
     (dist / "tests").mkdir()
     return dist
@@ -59,16 +59,16 @@ def test_each_package_runs_against_its_oldest_framework_release_and_head(ci, rep
     add_package(repo, "beta", ">=1.3,<2")            # the oldest release in range is 1.10.0 (by number, not name)
     (repo / "packages" / "README.md").write_text("what lives here\n", encoding="utf-8")
     assert ci.matrix(repo) == {"include": [
-        {"package": "supervisor-ext-alpha", "framework": "v1.2.0"},
-        {"package": "supervisor-ext-alpha", "framework": "HEAD"},
-        {"package": "supervisor-ext-beta", "framework": "v1.10.0"},
-        {"package": "supervisor-ext-beta", "framework": "HEAD"},
+        {"package": "supervisor-plugin-alpha", "framework": "v1.2.0"},
+        {"package": "supervisor-plugin-alpha", "framework": "HEAD"},
+        {"package": "supervisor-plugin-beta", "framework": "v1.10.0"},
+        {"package": "supervisor-plugin-beta", "framework": "HEAD"},
     ]}
 
 
 def test_a_package_tag_is_never_its_oldest_framework(ci, repo):
     add_package(repo, "gamma", ">=1.4,<1.9")         # only the package tag v1-v1.5.0 looks like it is in range
-    assert ci.matrix(repo) == {"include": [{"package": "supervisor-ext-gamma", "framework": "HEAD"}]}
+    assert ci.matrix(repo) == {"include": [{"package": "supervisor-plugin-gamma", "framework": "HEAD"}]}
 
 
 def test_without_packages_the_matrix_is_empty(ci, repo):
@@ -95,9 +95,9 @@ def test_a_package_names_its_lane_python_job_and_config_for_ci(ci, repo):
 
 def test_a_folder_without_exactly_one_manifest_is_refused(ci, repo):
     dist = add_package(repo, "alpha", ">=1.2,<2")
-    (dist / "tests" / "supervisor-extension.toml").write_text("identity = 'fixture'\n", encoding="utf-8")
+    (dist / "tests" / "supervisor-plugin.toml").write_text("identity = 'fixture'\n", encoding="utf-8")
     assert ci.manifest(dist)["identity"] == "alpha"                 # a test fixture's manifest does not count
     (dist / "other").mkdir()
-    (dist / "other" / "supervisor-extension.toml").write_text("identity = 'two'\n", encoding="utf-8")
+    (dist / "other" / "supervisor-plugin.toml").write_text("identity = 'two'\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="expected one"):
         ci.manifest(dist)

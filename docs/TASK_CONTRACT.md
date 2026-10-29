@@ -29,12 +29,12 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `approval_note` | what the owner should look at when approving |
 | `cost_category` | `deterministic` / `local` / `claude` / `codex` / `human` / `mixed` / `paid` → default adapter via `routing.yaml cost_lanes` |
 | `priority` | higher first among eligible tasks |
-| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}` (it runs in the project root and ends by writing `result.json`, `{status, artifacts, notes}`, into the folder `$SUPERVISOR_RUN_DIR` names; a python `fn` is one an extension registers with `registry.python_job(name, fn)` in its `setup()`), `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}` (ACCEPT, APPROVE or free text completes it; any other answer fails it with the answer as the note), or an extension lane |
+| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}` (it runs in the project root and ends by writing `result.json`, `{status, artifacts, notes}`, into the folder `$SUPERVISOR_RUN_DIR` names; a python `fn` is one a plugin registers with `registry.python_job(name, fn)` in its `setup()`), `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}` (ACCEPT, APPROVE or free text completes it; any other answer fails it with the answer as the note), or a plugin lane |
 
 Since 1.13.0 `task import` (and its `--dry-run`), `task create` and `supervisor check` also **warn** about a
 contract the project cannot serve: an `owner_role` or `reviewer` routing does not configure or has made inactive, a
 check outside `verification.allowed_test_commands`, and a `job` whose adapter or python `fn` neither the framework
-nor an extension's manifest (`provides`) declares. No extension is set up for this, so `task import --dry-run` and
+nor a plugin's manifest (`provides`) declares. No plugin is set up for this, so `task import --dry-run` and
 `supervisor check` write nothing. `supervisor check` warns only about open tasks.
 
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
@@ -63,7 +63,7 @@ is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
 
 Nothing stops silently. A worker that ends **BLOCKED** goes straight to that diagnosis (no blind retry of the same
 brief). An agent run that ends FAILED/PARTIAL, crashes, times out or is lost gets the normal revision budget. A
-deterministic lane (process/python/extension adapters) that FAILED is retried by the stall sweep after the grace
+deterministic lane (process/python/plugin adapters) that FAILED is retried by the stall sweep after the grace
 period, which doubles as its back-off. The failure detail always carries the worker's own notes and the head of its
 `HANDOFF.md`. An owner REJECT/MORE_LIKE on a `human` task stands and is never retried.
 

@@ -21,16 +21,16 @@ REPO = Path(__file__).resolve().parents[1]
 FRAMEWORK = REPO / ".claude" / "skills"
 TEMPLATE = REPO / "supervisor" / "template" / "_dot_claude" / "skills"
 
-FRAMEWORK_SKILLS = {"framework-change", "framework-release", "migration-author", "supervisor-setup", "extension-new",
-                    "extension-promote", "extension-release", "boundary-review"}
+FRAMEWORK_SKILLS = {"framework-change", "framework-release", "migration-author", "supervisor-setup", "plugin-new",
+                    "plugin-promote", "plugin-release", "boundary-review"}
 TEMPLATE_SKILLS = {"supervisor-setup", "maintenance-window", "rehearsal", "project-upgrade", "project-restore",
                    "runtime-diagnose", "task-author", "stuck-task", "role-change"}
 
 # What each phase 4 skill's "Checks it ends with" must name (the plan's "Which gates apply" table).
 ENDS_WITH = {
-    "extension-new": ["supervisor extension check", "G5"],
-    "extension-promote": ["supervisor extension check", "G5"],
-    "extension-release": ["G5", "sha256"],
+    "plugin-new": ["supervisor plugin check", "G5"],
+    "plugin-promote": ["supervisor plugin check", "G5"],
+    "plugin-release": ["G5", "sha256"],
     "boundary-review": ["G1", "G1d", "G2", "G3", "G5", "G7"],
     "maintenance-window": ["supervisor doctor", "G6", "test suite"],
     "rehearsal": ["supervisor doctor", "G6", "test suite"],

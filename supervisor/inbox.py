@@ -24,7 +24,7 @@ DEFAULT_RESPONSES = ["ACCEPT", "REJECT", "MODIFY", "REDO"]
 # Owner approval of a delivery (tasks with human_approval=required). The loop opens one `approval` item per
 # (task, delivery digest) once verification and every required review have passed; answering it is what writes the
 # digest-bound ApprovalRecord that tasks._evaluate() demands.
-# Kinds the framework itself creates or renders with a fixed meaning; an extension claims others (registry.inbox_kind).
+# Kinds the framework itself creates or renders with a fixed meaning; a plugin claims others (registry.inbox_kind).
 BUILTIN_KINDS = ("gate", "decision", "approval", "spend", "policy", "question")
 APPROVAL_KIND = "approval"
 APPROVAL_RESPONSES = ["APPROVE", "REJECT", "MODIFY"]
@@ -125,33 +125,33 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
 
 
 def kind_info(layout: Layout | None, kind: str | None):
-    """The extension's InboxKind claiming `kind`, or None for a built-in or unclaimed kind."""
+    """The plugin's InboxKind claiming `kind`, or None for a built-in or unclaimed kind."""
     if layout is None or not kind:
         return None
-    from . import extensions
-    return extensions.load(layout).inbox_kinds.get(str(kind))
+    from . import plugins
+    return plugins.load(layout).inbox_kinds.get(str(kind))
 
 
 def ownership_unknown(layout: Layout | None, kind: str | None) -> str | None:
     """Why the owner of `kind` cannot be established, or None. A kind that is neither built in nor claimed while a
-    required extension failed to load may well belong to that extension — its `inbox_kind()` registration never ran —
-    so the generic path must fail closed: answering the item would skip the per-option validation the extension
-    enforces, and rendering it would show rows the extension keeps blind. Built-in kinds are unaffected (their
+    required plugin failed to load may well belong to that plugin — its `inbox_kind()` registration never ran —
+    so the generic path must fail closed: answering the item would skip the per-option validation the plugin
+    enforces, and rendering it would show rows the plugin keeps blind. Built-in kinds are unaffected (their
     recovery actions stay available)."""
     if layout is None or not kind or str(kind) in BUILTIN_KINDS:
         return None
-    from . import extensions
-    reg = extensions.load(layout)
+    from . import plugins
+    reg = plugins.load(layout)
     if str(kind) in reg.inbox_kinds or not reg.blocking:
         return None
-    return (f"kind {kind!r} cannot be answered or shown in full: a required extension failed to load "
-            f"({'; '.join(reg.blocking)}) and may own this kind; fix the extension (`supervisor doctor`)")
+    return (f"kind {kind!r} cannot be answered or shown in full: a required plugin failed to load "
+            f"({'; '.join(reg.blocking)}) and may own this kind; fix the plugin (`supervisor doctor`)")
 
 
-def owned_by_extension(layout: Layout | None, doc: dict) -> str | None:
-    """Why the generic answer path may not close this item, or None: an extension claimed its kind with
-    `answerable=False`, so only that extension's own code (`answer(..., internal=True)`) finalises it — or the kind's
-    owner cannot be established because a required extension failed to load (`ownership_unknown`)."""
+def owned_by_plugin(layout: Layout | None, doc: dict) -> str | None:
+    """Why the generic answer path may not close this item, or None: a plugin claimed its kind with
+    `answerable=False`, so only that plugin's own code (`answer(..., internal=True)`) finalises it — or the kind's
+    owner cannot be established because a required plugin failed to load (`ownership_unknown`)."""
     unknown = ownership_unknown(layout, doc.get("kind"))
     if unknown:
         return f"{doc.get('id')}: {unknown}"
@@ -159,7 +159,7 @@ def owned_by_extension(layout: Layout | None, doc: dict) -> str | None:
     if info is None or info.answerable:
         return None
     page = info.page_for(str(doc.get("id") or ""))
-    return (f"{doc.get('id')}: a {info.kind} item is finalised by its extension"
+    return (f"{doc.get('id')}: a {info.kind} item is finalised by its plugin"
             + (f" (open {page})" if page else "") + ", not answered directly")
 
 
@@ -167,8 +167,8 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
           command_id: str | None = None, internal: bool = False) -> dict:
     """Validate and record an answer; idempotent by command_id (a retried command must not raise "already answered").
 
-    `internal=True` is for the code of the extension that owns the item's kind (registry.inbox_kind with
-    `answerable=False`): it carries per-option verdicts only that extension knows how to finalise, so the generic path
+    `internal=True` is for the code of the plugin that owns the item's kind (registry.inbox_kind with
+    `answerable=False`): it carries per-option verdicts only that plugin knows how to finalise, so the generic path
     — this function as called by the command handler and the Control Center form — refuses to close one out from
     under it."""
     response = (response or "").strip()
@@ -185,7 +185,7 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
                 return doc
             raise InboxError(f"{item_id}: already {doc.get('status')}")
         if not internal:
-            refusal = owned_by_extension(layout, doc)
+            refusal = owned_by_plugin(layout, doc)
             if refusal:
                 raise InboxError(refusal)
         allowed = doc.get("allowed_responses") or DEFAULT_RESPONSES

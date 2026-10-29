@@ -127,15 +127,15 @@ def setup(registry):
 """
 
 
-def _with_extension(layout, code, name="extra"):
-    from supervisor import extensions, project
-    (layout.root / "extensions").mkdir(parents=True, exist_ok=True)
-    (layout.root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
+def _with_plugin(layout, code, name="extra"):
+    from supervisor import plugins, project
+    (layout.root / "plugins").mkdir(parents=True, exist_ok=True)
+    (layout.root / "plugins" / f"{name}.py").write_text(code, encoding="utf-8")
     doc = dict(project.load(layout))
     doc["name"] = doc.get("name") or "proj"
-    doc["extensions"] = [name]
+    doc["plugins"] = [name]
     project.write(layout, doc)
-    extensions.reset()
+    plugins.reset()
 
 
 def _tree(root):
@@ -151,14 +151,14 @@ def _tree(root):
 
 
 def test_a_cold_status_process_leaves_the_whole_project_unchanged(store):
-    """Review 1.10.0 round 5: `supervisor status` in a fresh process, with an extension that declares a projection
+    """Review 1.10.0 round 5: `supervisor status` in a fresh process, with a plugin that declares a projection
     not yet recorded and with state/.lock held by another process, changes no file anywhere in the project."""
     import os
     import subprocess
     import sys
     from pathlib import Path
     (store.root / "source.txt").write_text("v1", encoding="utf-8")
-    _with_extension(store, EXTRA)
+    _with_plugin(store, EXTRA)
     assert not (store.runtime / "projection_paths.json").exists()
     store.runtime.mkdir(parents=True, exist_ok=True)
     (store.runtime / "supervisor.json").write_text(json.dumps({"status": "RUNNING", "pid": 4242}), encoding="utf-8")
@@ -180,12 +180,12 @@ def test_a_cold_status_process_leaves_the_whole_project_unchanged(store):
 
 
 def test_a_registered_projection_is_serialized_like_the_built_in_ones(store, monkeypatch):
-    """Review 1.10.0 round 5: two render_all calls overlap on an extension projection; the one that started first
+    """Review 1.10.0 round 5: two render_all calls overlap on a plugin projection; the one that started first
     and read the old source cannot land after the one that read the new source."""
-    from supervisor import extensions
+    from supervisor import plugins
     (store.root / "source.txt").write_text("OLD", encoding="utf-8")
-    _with_extension(store, EXTRA)
-    reg = extensions.load(store)
+    _with_plugin(store, EXTRA)
+    reg = plugins.load(store)
     [real] = reg.projections
     stalled, release, second_done = threading.Event(), threading.Event(), threading.Event()
 
@@ -220,7 +220,7 @@ def test_a_projection_may_call_a_built_in_renderer_without_waiting_on_itself(sto
     """The render lock is reentrant within a thread: a projection that renders STATE.md itself does not block on
     the lock its own call already holds."""
     import time
-    _with_extension(store, """
+    _with_plugin(store, """
 def setup(registry):
     def combined(layout):
         from supervisor import render
@@ -243,7 +243,7 @@ cli = typer.Typer()
 
 @cli.command("hello")
 def hello():
-    typer.echo("hello from the extension")
+    typer.echo("hello from the plugin")
 
 def setup(registry):
     def extra(layout):
@@ -258,18 +258,18 @@ def setup(registry):
 @pytest.fixture
 def cli_store(store, monkeypatch):
     from supervisor import cli
-    _with_extension(store, CLI_EXT)
-    monkeypatch.setattr(cli, "_extensions_cli", {}, raising=False)     # a fresh process: nothing built yet
+    _with_plugin(store, CLI_EXT)
+    monkeypatch.setattr(cli, "_plugins_cli", {}, raising=False)     # a fresh process: nothing built yet
     store.runtime.mkdir(parents=True, exist_ok=True)
     (store.runtime / "supervisor.json").write_text(json.dumps({"status": "RUNNING", "pid": 4242}), encoding="utf-8")
     return store
 
 
 @pytest.mark.parametrize("how", ["app_call", "cli_runner"])
-def test_status_sets_up_no_extension_however_the_cli_is_invoked(cli_store, capsys, how):
+def test_status_sets_up_no_plugin_however_the_cli_is_invoked(cli_store, capsys, how):
     """Review 1.10.0 round 6: importing the CLI and calling `app(args=["status"])` (or a test runner) used to load
-    the extensions at import and write their projection record while state/.lock was held."""
-    from supervisor import cli, extensions
+    the plugins at import and write their projection record while state/.lock was held."""
+    from supervisor import cli, plugins
     lock = FileLock(cli_store.lock, owner="loop").acquire()
     try:
         before = _tree(cli_store.root)
@@ -287,19 +287,19 @@ def test_status_sets_up_no_extension_however_the_cli_is_invoked(cli_store, capsy
         lock.release()
     assert "**Supervisor:** RUNNING (pid 4242" in output
     assert after == before
-    assert extensions.loaded(cli_store.root) is None and not cli._extensions_cli
+    assert plugins.loaded(cli_store.root) is None and not cli._plugins_cli
 
 
-def test_an_extension_command_group_is_found_when_asked_for(cli_store):
+def test_a_plugin_command_group_is_found_when_asked_for(cli_store):
     from supervisor import cli
     result = CliRunner().invoke(cli.app, ["echo", "hello"])
     assert result.exit_code == 0, result.output
-    assert "hello from the extension" in result.output
+    assert "hello from the plugin" in result.output
     assert "echo" in CliRunner().invoke(cli.app, ["--help"]).output
 
 
 def test_importing_the_cli_and_calling_app_status_in_a_fresh_process_changes_nothing(cli_store):
-    """The reviewer's probe: a new process imports the CLI (which used to discover extensions at import, keyed on
+    """The reviewer's probe: a new process imports the CLI (which used to discover plugins at import, keyed on
     sys.argv) and calls `app(args=["status"])` with state/.lock held."""
     import os
     import subprocess
@@ -325,12 +325,12 @@ def test_importing_the_cli_and_calling_app_status_in_a_fresh_process_changes_not
 # ------------------------------------------------------------------ review 1.10.0 round 7
 
 def _cli_project(root, ext_name, command):
-    """A minimal project at `root` whose one extension registers the command group `command`."""
+    """A minimal project at `root` whose one plugin registers the command group `command`."""
     from supervisor import project
     from supervisor.paths import Layout
     layout = Layout(root).ensure()
-    (root / "extensions").mkdir(parents=True, exist_ok=True)
-    (root / "extensions" / f"{ext_name}.py").write_text(f"""
+    (root / "plugins").mkdir(parents=True, exist_ok=True)
+    (root / "plugins" / f"{ext_name}.py").write_text(f"""
 import typer
 cli = typer.Typer()
 
@@ -341,17 +341,17 @@ def hello():
 def setup(registry):
     registry.cli(cli, "{command}")
 """, encoding="utf-8")
-    project.write(layout, {"name": ext_name, "framework_version": "1.10.0", "extensions": [ext_name]})
+    project.write(layout, {"name": ext_name, "framework_version": "1.10.0", "plugins": [ext_name]})
     return layout
 
 
-def test_switching_projects_switches_their_extension_commands(tmp_path, monkeypatch):
+def test_switching_projects_switches_their_plugin_commands(tmp_path, monkeypatch):
     """Review 1.10.0 round 7: one process, two projects; the second must not keep the first one's command groups."""
-    from supervisor import cli, extensions
-    monkeypatch.setattr(cli, "_extensions_cli", {})
+    from supervisor import cli, plugins
+    monkeypatch.setattr(cli, "_plugins_cli", {})
     a = _cli_project(tmp_path / "a", "alpha_ext", "alpha")
     b = _cli_project(tmp_path / "b", "beta_ext", "beta")
-    extensions.reset()
+    plugins.reset()
     runner = CliRunner()
     monkeypatch.setenv("SUPERVISOR_ROOT", str(a.root))
     assert "hello from alpha" in runner.invoke(cli.app, ["alpha", "hello"]).output
@@ -362,24 +362,24 @@ def test_switching_projects_switches_their_extension_commands(tmp_path, monkeypa
     assert "beta" in help_b and "alpha" not in help_b
 
 
-def test_a_reloaded_registry_rebuilds_the_extension_commands(tmp_path, monkeypatch):
-    from supervisor import cli, extensions
-    monkeypatch.setattr(cli, "_extensions_cli", {})
+def test_a_reloaded_registry_rebuilds_the_plugin_commands(tmp_path, monkeypatch):
+    from supervisor import cli, plugins
+    monkeypatch.setattr(cli, "_plugins_cli", {})
     a = _cli_project(tmp_path / "a", "alpha_ext", "alpha")
-    extensions.reset()
+    plugins.reset()
     monkeypatch.setenv("SUPERVISOR_ROOT", str(a.root))
     runner = CliRunner()
     assert "hello from alpha" in runner.invoke(cli.app, ["alpha", "hello"]).output
-    (a.root / "extensions" / "alpha_ext.py").write_text(
-        (a.root / "extensions" / "alpha_ext.py").read_text(encoding="utf-8").replace('"alpha")', '"gamma")'),
+    (a.root / "plugins" / "alpha_ext.py").write_text(
+        (a.root / "plugins" / "alpha_ext.py").read_text(encoding="utf-8").replace('"alpha")', '"gamma")'),
         encoding="utf-8")
-    extensions.reset()                                                          # the registry is reloaded
+    plugins.reset()                                                          # the registry is reloaded
     assert "hello from alpha" in runner.invoke(cli.app, ["gamma", "hello"]).output
     assert runner.invoke(cli.app, ["alpha", "hello"]).exit_code != 0
 
 
 def test_running_the_cli_module_directly_shows_help(store):
-    """Review 1.10.0 round 7: `python -m supervisor.cli --help` ran main() before the extension lookup was defined."""
+    """Review 1.10.0 round 7: `python -m supervisor.cli --help` ran main() before the plugin lookup was defined."""
     import os
     import subprocess
     import sys

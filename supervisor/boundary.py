@@ -1,9 +1,9 @@
 """Framework boundary check (gate G1 of docs/BOUNDARY.md): narrow, testable rules over the `supervisor/` package, so
 "is this generic?" is answered by code and not by memory.
 
-  G1a  no static import of a project or extension module: a module may import the standard library, `supervisor`
+  G1a  no static import of a project or plugin module: a module may import the standard library, `supervisor`
        itself and the third-party packages the framework declares; dynamic loading is allowed only in the files
-       listed as loaders (the extension loader is the one sanctioned path to project code);
+       listed as loaders (the plugin loader is the one sanctioned path to project code);
   G1b  no project-specific literals: drive-letter or home-directory paths, non-loopback hosts in URLs or IP
        literals, e-mail addresses and the user names the check is given;
   G1c  no model or vendor names outside the explicit list of files that legitimately carry them (the agent
@@ -13,7 +13,7 @@
        file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
        in `boundary.toml`; without that file, as in CI, G1d reports that it did not run. File names count (1.14.0).
 
-`--words <target>` runs only G1d's word list over any other folder or built archive (an extension package's
+`--words <target>` runs only G1d's word list over any other folder or built archive (a plugin package's
 repository or folder and its wheel, 1.14.0); there a missing word list fails the scan instead of skipping it.
 
 Every exception is an explicit entry in `boundary.toml` at the framework root, so a new one is a reviewed change.
@@ -221,7 +221,7 @@ def check_imports(root: Path, files: list[Path], cfg: dict) -> list[Finding]:
                 out.append(Finding("G1a", rel, line, "", how))
             elif module.split(".")[0] not in allowed:
                 out.append(Finding("G1a", rel, line, module, f"{how} of a module the framework does not own or "
-                                                             "declare (a project or extension module?)"))
+                                                             "declare (a project or plugin module?)"))
     return out
 
 
@@ -357,11 +357,11 @@ def _distribution(name: str) -> str:
 
 def load_package_allowances(path: Path | None = None) -> dict[str, dict[str, list[str]]] | None:
     """{project: {distribution: [words]}} from the local file's `[projects.<name>.packages]` tables, or None when
-    there is no file. A project word that is also the public name of an extension package kept under packages/ (an
+    there is no file. A project word that is also the public name of a plugin package kept under packages/ (an
     identity the project's saved state already uses) may be allowed there:
 
         [projects.<name>.packages]
-        supervisor-ext-<name> = ["<word>"]
+        supervisor-plugin-<name> = ["<word>"]
 
     It is allowed only inside `packages/<distribution>/` (or that folder scanned on its own) and in that
     distribution's wheel or sdist; everywhere else it is still a hit. Each word must be one of the project's own."""
@@ -503,7 +503,7 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
 
 def words(targets: list[Path], echo=print) -> int:
     """CLI body of `python -m supervisor.boundary --words <target>...` and `supervisor boundary words`: the project
-    words scan over an extension package's repository or folder and its built wheel (extension-release). Exit 0
+    words scan over a plugin package's repository or folder and its built wheel (plugin-release). Exit 0
     clean, 1 hits, 2 when the scan cannot run: without the local word list a release check has not passed."""
     terms, allowed = load_project_terms(), load_package_allowances()
     if terms is None:
@@ -601,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable report")
     ap.add_argument("--words", action="append", metavar="TARGET",
                     help="only the project words scan (G1d's local word list) over this folder or built archive, "
-                         "for example an extension package and its wheel; repeatable")
+                         "for example a plugin package and its wheel; repeatable")
     args = ap.parse_args(argv)
     if args.words:
         return words([Path(t) for t in args.words])

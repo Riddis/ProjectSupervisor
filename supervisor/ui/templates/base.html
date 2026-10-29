@@ -24,7 +24,7 @@
     {% for path, label, icon_id in [('/overview','Overview','01'),('/inbox','Inbox','02'),('/roadmap','Roadmap','03'),('/tasks','Tasks','04'),('/agents','Agents','05'),('/chat','Chat','06'),('/log','Log','07'),('/owner-tasks','Owner tasks','08'),('/settings','Settings','09')] %}
     <a href="{{ path }}"{% if request.url.path == path or request.url.path.startswith(path + '/') %} class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon(path[1:]) }}</span>{{ label }}{% if path == '/inbox' and n %}<span class="badge">{{ n }}</span>{% endif %}</a>
     {% endfor %}
-    {% for path, label in extension_nav(request) %}
+    {% for path, label in plugin_nav(request) %}
     <a href="{{ path }}"{% if request.url.path == path or request.url.path.startswith(path + '/') %} class="active" aria-current="page"{% endif %}><span class="nav-icon">{{ icon('settings') }}</span>{{ label }}</a>
     {% endfor %}
   </nav>

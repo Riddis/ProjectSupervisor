@@ -1,0 +1,2 @@
+/* The reference plugin's stylesheet, served at /static/reference/reference.css. */
+.reference-note { border-left: 3px solid var(--accent, #6b7cff); padding-left: 0.75rem; margin-bottom: 1rem; }

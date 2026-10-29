@@ -7,7 +7,7 @@ import time
 import yaml
 from typer.testing import CliRunner
 
-from supervisor import extensions, tasks
+from supervisor import plugins, tasks
 from supervisor.cli import app
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
@@ -21,7 +21,7 @@ CHILD = ("import json, os, pathlib; a = os.environ['SUPERVISOR_ATTEMPT']; t = a.
 
 def test_init_doctor_and_one_task_to_complete(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_ROOT", raising=False)
-    extensions.reset()
+    plugins.reset()
     runner = CliRunner()
     target = tmp_path / "smoke"
     r = runner.invoke(app, ["init", str(target), "--name", "Smoke"])

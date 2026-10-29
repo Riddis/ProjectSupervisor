@@ -167,8 +167,8 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
     - one that is inactive (`active: false`), which parks the task until the role is activated;
     - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
-    - a `job` whose adapter, or whose python `fn`, neither the framework nor an extension's manifest provides, which
-      would fail only when it ran. No extension is set up for this (`_registered_lanes`).
+    - a `job` whose adapter, or whose python `fn`, neither the framework nor a plugin's manifest provides, which
+      would fail only when it ran. No plugin is set up for this (`_registered_lanes`).
     Warnings, not errors: a project whose seed already holds one keeps importing."""
     from . import gate, verify
     roles = gate.routing_doc(layout).get("roles")
@@ -206,14 +206,14 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
 
 
 def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
-    """The adapter and python job names the framework registers, plus those each configured extension's manifest
+    """The adapter and python job names the framework registers, plus those each configured plugin's manifest
     declares (`provides`, which G5 holds to what its setup() registers), and a note for the warning naming any
-    extension whose names could not be read. Import-free: no extension is set up, so `task import --dry-run` and
+    plugin whose names could not be read. Import-free: no plugin is set up, so `task import --dry-run` and
     `supervisor check` write nothing (review 1.13.0 round 2)."""
-    from . import extensions
-    lanes, python_jobs = extensions._built_in("adapters"), extensions._built_in("python_jobs")
+    from . import plugins
+    lanes, python_jobs = plugins._built_in("adapters"), plugins._built_in("python_jobs")
     unread = []
-    found = extensions.approval(layout)
+    found = plugins.approval(layout)
     for name, _required in found.entries:
         m = found.finds[name].manifest
         if name in found.refused or m is None:
@@ -560,7 +560,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
         if paths:
             # the delivery's own paths replace the previous delivery's (a review freezes on them; accumulated stale
             # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never
-            # count — the built-in views and every projection an extension registered (verify.excluded_files), so
+            # count — the built-in views and every projection a plugin registered (verify.excluded_files), so
             # a rendered file is never frozen as a review input.
             doc["paths"] = sorted({str(x) for x in paths if not volatile_state(str(x))
                                    and str(x) not in volatile})

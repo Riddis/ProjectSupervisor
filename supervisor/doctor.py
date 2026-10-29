@@ -1,5 +1,5 @@
 """`supervisor doctor`: read-only health checks of a project and the tools its lanes need. Never installs or starts
-anything; a FAIL says what to do. Extensions add their own checks through `registry.doctor_check`."""
+anything; a FAIL says what to do. Plugins add their own checks through `registry.doctor_check`."""
 from __future__ import annotations
 
 import shutil
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from . import __version__, extensions, project
+from . import __version__, plugins, project
 from .paths import Layout
 
 
@@ -169,35 +169,35 @@ check_claude_cli = _lane_check("claude_cli", ("claude", "claude.exe"), "install 
 check_codex_cli = _lane_check("codex_cli", ("codex", "codex.exe"), "install the Codex CLI and sign in")
 
 
-def check_extensions(layout: Layout) -> Check:
-    reg = extensions.load(layout)
+def check_plugins(layout: Layout) -> Check:
+    reg = plugins.load(layout)
     if reg.blocking:
-        return Check("extensions", False, ("LOOP BLOCKED until fixed (or `required: false` in project.yaml): "
+        return Check("plugins", False, ("LOOP BLOCKED until fixed (or `required: false` in project.yaml): "
                                            + "; ".join(reg.errors))[:300])
     if reg.errors:
-        return Check("extensions", False, ("optional extension(s) not loaded: " + "; ".join(reg.errors))[:300])
-    return Check("extensions", True, ", ".join(reg.loaded) or "none configured")
+        return Check("plugins", False, ("optional plugin(s) not loaded: " + "; ".join(reg.errors))[:300])
+    return Check("plugins", True, ", ".join(reg.loaded) or "none configured")
 
 
-def check_extension_manifests(layout: Layout) -> Check:
-    """Gate G6, from the manifests alone (no extension is loaded, so this holds when loading fails).
+def check_plugin_manifests(layout: Layout) -> Check:
+    """Gate G6, from the manifests alone (no plugin is loaded, so this holds when loading fails).
 
     FAIL: a manifest discovery refuses, or a framework range that excludes this framework.
 
     WARN:
-    - an extension without a manifest: it loads in 1.12.x, and a later major release requires one;
-    - configuration still in the old top-level sections, which `supervisor migrate` moves to `extensions.<identity>`
+    - a plugin without a manifest: it loads in 1.12.x, and a later major release requires one;
+    - configuration still in the old top-level sections, which `supervisor migrate` moves to `plugins.<identity>`
       and `resources.gpu`."""
     from . import discovery
-    from .ext._config import _routing
-    specs = extensions.specs(layout)
+    from .plugin._config import _routing
+    specs = plugins.specs(layout)
     if not specs:
-        return Check("extension_manifests", True, "none configured")
+        return Check("plugin_manifests", True, "none configured")
     try:
         doc = _routing(layout)
     except Exception:                                       # noqa: BLE001 - check_routing reports an unreadable file
         doc = {}
-    owned = doc.get("extensions") if isinstance(doc.get("extensions"), dict) else {}
+    owned = doc.get("plugins") if isinstance(doc.get("plugins"), dict) else {}
     fails, legacy, unmoved, listed = [], [], [], []
     for name, _required in specs:
         found = discovery.find(layout, name)
@@ -216,29 +216,29 @@ def check_extension_manifests(layout: Layout) -> Check:
     if "gpu" in doc and "gpu" not in shared:
         unmoved.append("gpu")
     if fails:
-        return Check("extension_manifests", False, "; ".join(fails)[:300])
+        return Check("plugin_manifests", False, "; ".join(fails)[:300])
     warns = []
     if legacy:
-        warns.append(f"without a manifest (supervisor-extension.toml; a later major release requires one): "
+        warns.append(f"without a manifest (supervisor-plugin.toml; a later major release requires one): "
                      f"{', '.join(legacy)}")
     if unmoved:
         warns.append(f"configuration in the old routing.yaml sections {', '.join(unmoved)}: run `supervisor migrate`")
     if warns:
-        return Check("extension_manifests", True, "; ".join(warns + ([", ".join(listed)] if listed else []))[:300],
+        return Check("plugin_manifests", True, "; ".join(warns + ([", ".join(listed)] if listed else []))[:300],
                      warn=True)
-    return Check("extension_manifests", True, ", ".join(listed))
+    return Check("plugin_manifests", True, ", ".join(listed))
 
 
-def check_extension_imports(layout: Layout) -> Check:
-    """Gate G6, deprecation window: extensions import supervisor.ext only (docs/EXTENSION_API.md). An import of a
+def check_plugin_imports(layout: Layout) -> Check:
+    """Gate G6, deprecation window: plugins import supervisor.plugin only (docs/PLUGIN_API.md). An import of a
     framework internal is a WARN naming file and line; a later major release makes it a FAIL."""
-    found = extensions.load(layout).internal_imports
+    found = plugins.load(layout).internal_imports
     if not found:
-        return Check("extension_imports", True, "extensions import supervisor.ext only")
+        return Check("plugin_imports", True, "plugins import supervisor.plugin only")
     shown = "; ".join(f"{f.file}:{f.line} {f.module}" for f in found[:8])
     more = f" (+{len(found) - 8} more)" if len(found) > 8 else ""
-    return Check("extension_imports", True, f"{len(found)} import(s) of framework internals, deprecated since 1.11.0 "
-                 f"(import supervisor.ext; a later major release refuses them): {shown}{more}", warn=True)
+    return Check("plugin_imports", True, f"{len(found)} import(s) of framework internals, deprecated since 1.11.0 "
+                 f"(import supervisor.plugin; a later major release refuses them): {shown}{more}", warn=True)
 
 
 def check_policy(layout: Layout) -> Check:
@@ -255,26 +255,26 @@ def check_policy(layout: Layout) -> Check:
 
 
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_extensions, check_extension_manifests,
-          check_extension_imports]
+          check_git, check_claude_cli, check_codex_cli, check_plugins, check_plugin_manifests,
+          check_plugin_imports]
 
 
 def run(layout: Layout) -> list[Check]:
-    """The framework's checks, then each extension's. A check registered by an extension with a manifest must report
+    """The framework's checks, then each plugin's. A check registered by a plugin with a manifest must report
     a name its manifest declares in `provides.doctor_checks` (names are known only when a check runs); any other
     name is a FAIL."""
     out = [fn(layout) for fn in CHECKS]
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     for i, fn in enumerate(reg.doctor_checks):
         try:
             check = fn(layout)
         except Exception as exc:                            # noqa: BLE001
-            out.append(Check(getattr(fn, "__name__", "extension"), False, f"check crashed: {exc}"[:200]))
+            out.append(Check(getattr(fn, "__name__", "plugin"), False, f"check crashed: {exc}"[:200]))
             continue
         owner = reg.doctor_check_owners[i] if i < len(reg.doctor_check_owners) else None
         m = reg.manifests.get(owner) if owner else None
         if m is not None and isinstance(check, Check) and check.name not in m.provides.get("doctor_checks", ()):
-            check = Check(check.name, False, f"extension {owner!r} reported the check {check.name!r}, which its "
+            check = Check(check.name, False, f"plugin {owner!r} reported the check {check.name!r}, which its "
                           f"manifest does not declare in provides.doctor_checks")
         out.append(check)
     return out

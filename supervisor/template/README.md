@@ -27,9 +27,9 @@ lane, and parks anything that needs a human in the owner's inbox. The owner work
 
 ## Layout
 
-`project.yaml` identity, phase labels, extensions · `docs/plan/` the approved plan · `docs/runbooks/` project
+`project.yaml` identity, phase labels, plugins · `docs/plan/` the approved plan · `docs/runbooks/` project
 runbooks · `state/` authoritative tasks/gates/decisions/issues/inbox · `agents/` role cards and schemas · `config/`
-routing and policy · `extensions/` project-specific Python the framework loads · `tools/` scripts · `runs/`,
+routing and policy · `plugins/` project-specific Python the framework loads · `tools/` scripts · `runs/`,
 `secrets/`, `uploads/` git-ignored.
 
 Rendered files (`STATE.md`, `TASKS.md`, `ISSUES.md`, `DECISIONS.md`, `HUMAN_INBOX.md`, `OWNER_TASKS.md`) are
@@ -43,4 +43,4 @@ projections of `state/` and must not be edited by hand.
 - Phase gates (`state/gates.yaml`) open only on PASSED plus what the gate declares: evidence links
   (`evidence_required`) and an owner acknowledgement (`owner_ack_required`) — an agent cannot pass an owner gate;
   the owner acknowledges it in the Control Center or with `supervisor gate ack <id>`.
-- Framework code lives in the Supervisor repo; anything specific to this project lives here (`extensions/` for code).
+- Framework code lives in the Supervisor repo; anything specific to this project lives here (`plugins/` for code).

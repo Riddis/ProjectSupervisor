@@ -1,13 +1,13 @@
 # Changelog
 
-All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
+All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
 ## Unreleased
 
 - **Fixed: `supervisor skills update --dry-run` said "would installe"** for a skill it would install (the past
   tense cut by one letter). It says "would install" and "would update".
-- **Fixed: a package's tag is never taken for a framework release.** Extension packages kept in this repository tag
+- **Fixed: a package's tag is never taken for a framework release.** Plugin packages kept in this repository tag
   their releases `<identity>-vX.Y.Z`; only `vX.Y.Z` is a framework release. `supervisor doctor` read any tag at the
   runtime checkout's HEAD as its release (a package released on the framework's merge commit could stand in for
   it, and a checkout at a package tag alone passed), G2 compared with the nearest `v[0-9]*` tag (a package `v2`
@@ -16,28 +16,28 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 - **Added: the project words scan for any repository: `supervisor boundary words <target>...`** (also
   `python -m supervisor.boundary --words <target>`). G1d's local word list over any folder (what git tracks or would
   add there, else every file) or built archive (a wheel with its `METADATA`, an sdist), file names included. An
-  extension package's folder and its wheel hold no project's information either; extension-release runs it. Unlike
+  plugin package's folder and its wheel hold no project's information either; plugin-release runs it. Unlike
   G1d in the framework check, it fails (exit 2) without the local word list: a release check that did not run has
   not passed.
-- **Added: `supervisor.testing` read helpers** for an extension package's own tests, which may use only
-  `supervisor.ext` and `supervisor.testing`: `load`, `registered_lane`, `task`, `job`, `jobs`, `running_job` (an
+- **Added: `supervisor.testing` read helpers** for a plugin package's own tests, which may use only
+  `supervisor.plugin` and `supervisor.testing`: `load`, `registered_lane`, `task`, `job`, `jobs`, `running_job` (an
   open job record planted as the loop leaves one), `settle`, `plan`, `inbox_item`, `make_inbox_item`, `answer` and
-  `loop_lock`. They are what porting the first packages' tests needed (docs/EXTENSION_API.md, "Testing
-  extensions"). The module stays unstable.
-- **Added: `tools/ci_installed_extension.py --config <file>`, `--python-job <name>` and `--workdir <folder>`.**
+  `loop_lock`. They are what porting the first packages' tests needed (docs/PLUGIN_API.md, "Testing
+  plugins"). The module stays unstable.
+- **Added: `tools/ci_installed_plugin.py --config <file>`, `--python-job <name>` and `--workdir <folder>`.**
   The installed-package proof (G5 in CI) now serves a package whose config has a required field (`--config`
-  writes the extension's section) and a package without a lane (`--python-job` completes a task on a python job
+  writes the plugin's section) and a package without a lane (`--python-job` completes a task on a python job
   it registers). Its temporary project goes in a `g5-installed-*` folder under the current folder (or
   `--workdir`), never the system's temporary folder, removed after a pass and kept after a failure. CI's G5 job
-  also completes the reference extension's python job.
-- **Added: extension packages may live in this repository, under `packages/<distribution>/`**, each a
+  also completes the reference plugin's python job.
+- **Added: plugin packages may live in this repository, under `packages/<distribution>/`**, each a
   distribution of its own (its `pyproject.toml`, version, CHANGELOG and tests) and released with its own tag
   `<identity>-vX.Y.Z`. The framework's wheel still holds `supervisor*` only. CI gains a job per package
   (`tools/ci_package.py`): the framework's wheel built from the oldest release in the package's `framework` range
   and from HEAD, the package's wheel, a fresh environment, the installed proof and the package's own suite with no
   source on the path. A generated package names its python job for that job in `[tool.supervisor.ci]`. The G5 job
-  proves the path on a package scaffolded in the runner. docs/EXTENSION_STANDARD.md ("Where a package lives"),
-  `packages/README.md` and the extension skills describe both homes (here, or a repository of its own) and the
+  proves the path on a package scaffolded in the runner. docs/PLUGIN_STANDARD.md ("Where a package lives"),
+  `packages/README.md` and the plugin skills describe both homes (here, or a repository of its own) and the
   release tag for each; `.github/CODEOWNERS` names the reviewer for `packages/`.
 - **Added: a package's own name may be allowed in that package.** A package promoted from a project keeps its
   identity, which can be one of the project's words. The local word list's `[projects.<name>.packages]` table

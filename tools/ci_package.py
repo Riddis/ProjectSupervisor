@@ -1,4 +1,4 @@
-"""CI for the extension packages kept in this repository (packages/<distribution>/, docs/EXTENSION_STANDARD.md,
+"""CI for the plugin packages kept in this repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md,
 "Packages in the framework repository"), from 1.14.0.
 
     python tools/ci_package.py matrix [--github-output <file>]
@@ -12,14 +12,14 @@ prints the GitHub Actions matrix as JSON, or writes `matrix=` and `count=` to `-
 1. the framework's wheel is built from that ref (`git archive`, never the working tree), and the package's wheel
    from a copy of its folder, both in the work folder;
 2. a fresh virtual environment there gets the framework wheel with its `dev` and `ui` extras, then the package's;
-3. tools/ci_installed_extension.py proves it installed (found, loaded, G5, a task on its lane or python job), with
+3. tools/ci_installed_plugin.py proves it installed (found, loaded, G5, a task on its lane or python job), with
    the options the package's pyproject.toml gives under `[tool.supervisor.ci]`: `lane`, `python_job`, and a
-   `config` table written as its `extensions.<identity>` section;
+   `config` table written as its `plugins.<identity>` section;
 4. the package's `tests/` folder, copied to an empty folder, runs there against the installed wheel, its temporary
    files in the work folder (never the system's temporary folder, which a sandboxed runner may refuse).
 
 Exits non-zero, naming the step, on any failure. The project words scan (`supervisor boundary words`) needs the
-owner's local word list, so it is a release check (extension-release), not a CI step."""
+owner's local word list, so it is a release check (plugin-release), not a CI step."""
 from __future__ import annotations
 
 import argparse
@@ -45,11 +45,11 @@ def packages(root: Path | None = None) -> list[Path]:
 
 
 def manifest(package: Path) -> dict:
-    """The package's supervisor-extension.toml (inside its Python package, not under tests/ or build/)."""
-    found = [p for p in package.rglob("supervisor-extension.toml")
+    """The package's supervisor-plugin.toml (inside its Python package, not under tests/ or build/)."""
+    found = [p for p in package.rglob("supervisor-plugin.toml")
              if not {"tests", "build", "dist"} & set(p.relative_to(package).parts)]
     if len(found) != 1:
-        raise SystemExit(f"{package}: expected one supervisor-extension.toml, found {len(found)}")
+        raise SystemExit(f"{package}: expected one supervisor-plugin.toml, found {len(found)}")
     return tomllib.loads(found[0].read_text(encoding="utf-8"))
 
 
@@ -131,8 +131,8 @@ def run(package: Path, framework: str, workdir: Path) -> int:
     opts = ci_options(package)
     out = work / "run"
     out.mkdir()
-    tool = out / "ci_installed_extension.py"
-    shutil.copy2(ROOT / "tools" / "ci_installed_extension.py", tool)
+    tool = out / "ci_installed_plugin.py"
+    shutil.copy2(ROOT / "tools" / "ci_installed_plugin.py", tool)
     cmd = [str(py), str(tool), identity, "--workdir", str(out)]
     if opts.get("lane"):
         cmd += ["--lane", str(opts["lane"])]

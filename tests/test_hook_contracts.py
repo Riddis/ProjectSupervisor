@@ -1,6 +1,6 @@
-"""Hook contracts (phase 2 step 7): the reference extension (examples/reference_extension/reference), copied into a
+"""Hook contracts (phase 2 step 7): the reference plugin (examples/reference_plugin/reference), copied into a
 temporary project and loaded through the real loader as a project would, uses every registry hook through
-supervisor.ext only. Each hook's contract is checked through it, and a hook added to ext.Registry without a check
+supervisor.plugin only. Each hook's contract is checked through it, and a hook added to plugin.Registry without a check
 here fails test_every_documented_hook_is_exercised."""
 from __future__ import annotations
 
@@ -12,27 +12,27 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from supervisor import doctor, ext, extensions, inbox, policy, render, tasks, testing
+from supervisor import doctor, plugin, plugins, inbox, policy, render, tasks, testing
 from supervisor.adapters import REGISTRY
 from supervisor.adapters.python import JOBS
 from supervisor.models.task import TaskStatus
 
 REPO = Path(__file__).resolve().parents[1]
-REFERENCE = REPO / "examples" / "reference_extension" / "reference"
-ROUTING = {"extensions": {"reference": {"forbidden_word": "CLASSIFIED"}},
+REFERENCE = REPO / "examples" / "reference_plugin" / "reference"
+ROUTING = {"plugins": {"reference": {"forbidden_word": "CLASSIFIED"}},
            "resources": {"gpu": {"usable_vram_floor_mb": 4000}}}
 
 
 def routing_with(reference: dict) -> dict:
-    return {**ROUTING, "extensions": {"reference": reference}}
+    return {**ROUTING, "plugins": {"reference": reference}}
 
 
 @pytest.fixture
 def lay(layout):
-    shutil.copytree(REFERENCE, layout.extensions / "reference", ignore=shutil.ignore_patterns("__pycache__"))
-    testing.add_extensions(layout, {}, entries=["reference"])
+    shutil.copytree(REFERENCE, layout.plugins / "reference", ignore=shutil.ignore_patterns("__pycache__"))
+    testing.add_plugins(layout, {}, entries=["reference"])
     write_routing(layout, ROUTING)
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert reg.errors == [] and reg.loaded == ["reference"], reg.errors
     yield layout
     testing.reset()
@@ -45,7 +45,7 @@ def write_routing(layout, doc):
 
 
 def note(layout, subject="first") -> str:
-    """A note, as one of the extension's jobs would open it."""
+    """A note, as one of the plugin's jobs would open it."""
     return inbox.create(layout, for_role="owner", subject=subject, summary="annotate me", kind="reference_note")["id"]
 
 
@@ -53,17 +53,17 @@ def log_lines(layout) -> list[dict]:
     return [json.loads(line) for line in layout.log.read_text(encoding="utf-8").splitlines()]
 
 
-# ---------------------------------------------------------------- the extension itself
+# ---------------------------------------------------------------- the plugin itself
 
-def test_the_reference_extension_imports_only_the_public_api():
-    public = ("supervisor.ext", "supervisor.testing")
+def test_the_reference_plugin_imports_only_the_public_api():
+    public = ("supervisor.plugin", "supervisor.testing")
     seen = 0
     for path in REFERENCE.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Import):
                 targets = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and not node.level and node.module == "supervisor":
-                targets = [f"supervisor.{a.name}" for a in node.names]   # from supervisor import ext
+                targets = [f"supervisor.{a.name}" for a in node.names]   # from supervisor import plugin
             elif isinstance(node, ast.ImportFrom) and not node.level:
                 targets = [node.module or ""]
             else:
@@ -80,16 +80,16 @@ def test_importing_any_of_its_modules_registers_nothing(lay, module):
     assert testing.import_side_effects(lay, module) == {"adapters": [], "python_jobs": [], "commands": []}
 
 
-def test_the_reference_extension_passes_g5(lay):
-    """Gate G5 (`supervisor extension check reference`): its manifest declares exactly what setup() registers."""
-    from supervisor import extension_check
+def test_the_reference_plugin_passes_g5(lay):
+    """Gate G5 (`supervisor plugin check reference`): its manifest declares exactly what setup() registers."""
+    from supervisor import plugin_check
     testing.reset()
-    found = extension_check.run(lay, "reference")
+    found = plugin_check.run(lay, "reference")
     assert all(f.ok for f in found), {f.name: f.detail for f in found if not f.ok}
 
 
 def test_every_documented_hook_is_exercised(lay):
-    reg = extensions.load(lay)
+    reg = plugins.load(lay)
     registered = {
         "config_sections": reg.config_owners == {"reference": "reference"},
         "adapter": reg.adapters == {"reference_lane": "reference"} and "reference_lane" in REGISTRY,
@@ -105,8 +105,8 @@ def test_every_documented_hook_is_exercised(lay):
         "template_dir": [p.name for p in reg.template_dirs] == ["templates"],
         "static_dir": [prefix for prefix, _p in reg.static_dirs] == ["reference"],
     }
-    hooks = sorted(n for n, v in vars(ext.Registry).items() if not n.startswith("_") and callable(v))
-    assert hooks == sorted(registered), "a hook in ext.Registry has no contract check here (or one went away)"
+    hooks = sorted(n for n, v in vars(plugin.Registry).items() if not n.startswith("_") and callable(v))
+    assert hooks == sorted(registered), "a hook in plugin.Registry has no contract check here (or one went away)"
     assert all(registered.values()), [h for h, ok in registered.items() if not ok]
 
 
@@ -140,7 +140,7 @@ def test_python_job_runs_through_the_python_lane(lay):
 
 def test_doctor_check_reports_through_doctor(lay):
     agent = next(name for name, a in REGISTRY.items() if hasattr(a, "agent_handle"))
-    write_routing(lay, routing_with({**ROUTING["extensions"]["reference"], "agent_lane": agent}))
+    write_routing(lay, routing_with({**ROUTING["plugins"]["reference"], "agent_lane": agent}))
     check = next(c for c in doctor.run(lay) if c.name == "reference")
     assert check.ok and "GPU floor 4000" in check.detail and f"agent lane {agent}" in check.detail
     write_routing(lay, routing_with({"agent_lane": "no_such_lane"}))
@@ -157,7 +157,7 @@ def test_overview_panel_reaches_the_overview(lay):
 
 def test_packet_screen_refuses_a_brief(lay):
     policy.assert_packet_clean("an ordinary brief", lay, "packet")
-    with pytest.raises(policy.PolicyViolation, match="reference extension"):
+    with pytest.raises(policy.PolicyViolation, match="reference plugin"):
         policy.assert_packet_clean("this is CLASSIFIED", lay, "packet")
 
 
@@ -166,7 +166,7 @@ def test_projection_renders_a_view_verification_ignores(lay):
     paths = render.render_all(lay)
     assert any(p.name == "REFERENCE.md" for p in paths)
     assert "(open): 0 annotations" in (lay.root / "REFERENCE.md").read_text(encoding="utf-8")
-    assert "REFERENCE.md" in extensions.load(lay).projection_paths
+    assert "REFERENCE.md" in plugins.load(lay).projection_paths
 
 
 def test_cli_group_runs_as_a_supervisor_command(lay):
@@ -177,16 +177,16 @@ def test_cli_group_runs_as_a_supervisor_command(lay):
     assert "1 open notes" in result.output
 
 
-def test_command_and_inbox_kind_the_note_is_the_extensions_to_change_and_close(lay):
+def test_command_and_inbox_kind_the_note_is_the_plugins_to_change_and_close(lay):
     item = note(lay)
-    with pytest.raises(inbox.InboxError, match="finalised by its extension"):
+    with pytest.raises(inbox.InboxError, match="finalised by its plugin"):
         inbox.answer(lay, item, "DONE")                              # the generic path may not close it
-    first = ext.submit_command(lay, "reference.note", {"item_id": item, "text": "looks right"}, command_id="n-1")
-    again = ext.submit_command(lay, "reference.note", {"item_id": item, "text": "looks right"}, command_id="n-1")
+    first = plugin.submit_command(lay, "reference.note", {"item_id": item, "text": "looks right"}, command_id="n-1")
+    again = plugin.submit_command(lay, "reference.note", {"item_id": item, "text": "looks right"}, command_id="n-1")
     assert first["result"] == {"annotations": 1} and again["replayed"]
     assert len(inbox.load(lay, item)["notes"]) == 1
     assert next(e for e in log_lines(lay) if e["event"] == "reference_note")["actor"] == "reference:owner-ui"
-    closed = ext.submit_command(lay, "reference.close", {"item_id": item})
+    closed = plugin.submit_command(lay, "reference.close", {"item_id": item})
     assert closed["result"] == {"status": "answered"} and inbox.load(lay, item)["answer"]["response"] == "DONE"
 
 

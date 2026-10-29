@@ -34,8 +34,8 @@ supervisor = "supervisor.cli:main"
 include = ["supervisor*"]
 
 [tool.setuptools.package-data]
-supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "extension_template/**/*",
-              "extension_template/**/.*",
+supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "plugin_template/**/*",
+              "plugin_template/**/.*",
               "ui/templates/**/*", "ui/static/**/*", "_vendor/*", "skills_history.json"]
 
 [tool.pytest.ini_options]

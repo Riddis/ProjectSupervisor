@@ -19,10 +19,10 @@ TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
-def use_extension_templates(dirs) -> None:
-    """Make the extension template directories (registry.template_dir) available to the shared environment. The
-    framework's own folder stays first in the ChoiceLoader: an extension page can `{% extends "base.html" %}` and
-    include the partials, but an extension file can never replace a framework template of the same name."""
+def use_plugin_templates(dirs) -> None:
+    """Make the plugin template directories (registry.template_dir) available to the shared environment. The
+    framework's own folder stays first in the ChoiceLoader: a plugin page can `{% extends "base.html" %}` and
+    include the partials, but a plugin file can never replace a framework template of the same name."""
     import jinja2
     extra = [str(Path(d)) for d in dirs]
     loaders = [jinja2.FileSystemLoader(str(TEMPLATES_DIR))]
@@ -53,16 +53,16 @@ def _project_name(request: Request) -> str:
         return "Project"
 
 
-def _extension_nav(request: Request) -> list[tuple[str, str]]:
-    from .. import extensions as extensions_mod
+def _plugin_nav(request: Request) -> list[tuple[str, str]]:
+    from .. import plugins as plugins_mod
     from . import auth as auth_mod
     try:
-        return [(path, label) for _router, label, path in extensions_mod.load(auth_mod.get_layout(request)).ui_routers]
+        return [(path, label) for _router, label, path in plugins_mod.load(auth_mod.get_layout(request)).ui_routers]
     except Exception:                                       # noqa: BLE001
         return []
 
 
-templates.env.globals["extension_nav"] = _extension_nav
+templates.env.globals["plugin_nav"] = _plugin_nav
 
 
 def _live_meta(request: Request) -> dict:

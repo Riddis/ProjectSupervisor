@@ -1,7 +1,7 @@
-"""1.14.0: extension packages live in the framework repository (packages/<distribution>/, docs/EXTENSION_STANDARD.md)
+"""1.14.0: plugin packages live in the framework repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md)
 and each package release is tagged `<identity>-vX.Y.Z`. Only `vX.Y.Z` tags are framework releases. A package tag
 never counts as one: not in the pinned update check, not as the release a runtime checkout runs (doctor), not as the
-previous release G2 compares the extension API with, and not in the skills history.
+previous release G2 compares the plugin API with, and not in the skills history.
 
 An identity starts with a lowercase letter, so `vision-v1.0.0` (identity `vision`) and `v2-v1.0.0` (identity `v2`)
 are package tags that a `v*` or `v[0-9]*` pattern would take."""
@@ -86,7 +86,7 @@ def _commit(repo: Path, files: dict[str, str], message: str, *tags: str) -> None
 def test_g2_compares_with_the_last_framework_release_not_a_later_package_tag(tmp_path):
     repo = _repo(tmp_path)
     released = {"format": 1, "names": {}}
-    _commit(repo, {"docs/extension_api.json": json.dumps(released)}, "framework release", "v1.0.0")
+    _commit(repo, {"docs/plugin_api.json": json.dumps(released)}, "framework release", "v1.0.0")
     for name in PACKAGE_TAGS:
         _commit(repo, {f"packages/{name}.txt": name}, name, name)
     assert api_contract.previous_contract(repo) == ("v1.0.0", released)

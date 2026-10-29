@@ -24,7 +24,7 @@ Read, if present: `project.yaml`, `README.md`, `docs/plan/PROJECT_PLAN.md`, `con
 template — untouched placeholders, the template's comments intact — is *not* a decision: its values are the defaults
 you offer). If the folder is
 not a supervisor project yet, do **not** run `supervisor init` now: init stamps `config/`, `agents/`, `state/gates.yaml`
-and `extensions/` with generic defaults, and nothing but the plan is written before approval (Stage 3 step 0 runs it).
+and `plugins/` with generic defaults, and nothing but the plan is written before approval (Stage 3 step 0 runs it).
 
 ## Stage 1 — the interview
 
@@ -59,7 +59,7 @@ record it.
 **6. Any tool, service, device or resource the agents must drive that is not a CLI or git?**
 E.g. a renderer, a simulator, a database, a hardware device, an external API, a browser. For each: how it is invoked,
 whether only one job may use it at a time, what a health check looks like, what credentials it needs. Decides:
-`extensions/` modules to scaffold (`supervisor extension new <name>`), `cost_lanes.local`, `limits.max_resource_jobs`,
+`plugins/` modules to scaffold (`supervisor plugin new <name>`), `cost_lanes.local`, `limits.max_resource_jobs`,
 doctor checks, `secrets/` entries, owner tasks for installs/logins. Default: none.
 
 **7. Who are the roles?**
@@ -88,7 +88,7 @@ owned paths, reviewers, acceptance sentence. Ask the owner to edit. Decides: `st
 **11. What does the tracker need to show that the standard records do not?**
 E.g. a field per task (an estimate, a client, a component), an extra projection (a weekly digest), an extra
 Control Center panel (a build status). Decides: extra task fields (tasks accept extra keys; name them in the plan so
-agents fill them), `extensions/` projections/panels. Default: nothing extra.
+agents fill them), `plugins/` projections/panels. Default: nothing extra.
 
 **12. Owner tasks and open questions.**
 Logins, installs, purchases, decisions the owner still owes. Decides: `state/owner_tasks.yaml`, plan §8.
@@ -117,7 +117,7 @@ author directly.
 
 0. *CLI* — if there is no `project.yaml`: `supervisor init <folder> --name "<name>"` (ask for the name if it is not
    obvious). This stamps generic defaults for everything below; the approved plan may still change any of them.
-1. `project.yaml`: `name`, `description`, `repo`, `phases` (labels), `ui.port`, `extensions` (names only; modules
+1. `project.yaml`: `name`, `description`, `repo`, `phases` (labels), `ui.port`, `plugins` (names only; modules
    come in step 6).
 2. `config/routing.yaml`: roles (adapter/model/effort/tools/card/active/active_from/result_kinds/review/fallback),
    `capacity`, `limits`, `verification.allowed_test_commands`, `claude.bash_allow`, `codex.model`, `cost_lanes`.
@@ -125,7 +125,7 @@ author directly.
    lines you do not cross; no model or vendor names). Remove cards for roles the owner dropped; keep schemas.
 4. `state/gates.yaml` from §5 of the plan; `state/owner_tasks.yaml` from §8.
 5. `state/tasks_seed.yaml` from the phase-0 task list in §5 of the plan; then *CLI* `supervisor task import`.
-6. *CLI* `supervisor extension new <name>` for each resource from Q6, then fill the adapter/check skeleton with what is known,
+6. *CLI* `supervisor plugin new <name>` for each resource from Q6, then fill the adapter/check skeleton with what is known,
    leave a `TODO` for what is not, add a task in phase 0 to finish and prove it.
 7. `state/decisions/D-001-project-setup.md` recording the approved plan (date, the owner's answers that constrain
    later work), and one record per numbered decision in plan §7.

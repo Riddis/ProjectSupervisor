@@ -1,0 +1,9 @@
+"""The configuration this plugin owns: `plugins.{{ identity }}` in a project's config/routing.yaml, validated by
+this model before setup() runs. Read it with `supervisor.plugin.config(layout, "{{ identity }}")`."""
+from __future__ import annotations
+
+from pydantic import BaseModel
+
+
+class Settings(BaseModel):
+    greeting: str = "hello"

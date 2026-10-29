@@ -1,7 +1,7 @@
-"""NVIDIA GPU memory probe (nvidia-smi), shared by every extension or tool that needs to know what the card has
+"""NVIDIA GPU memory probe (nvidia-smi), shared by every plugin or tool that needs to know what the card has
 free before it starts something — a renderer lane's preflight, a doctor check, an overview panel, a benchmark.
 Never raises: a missing or erroring nvidia-smi reads as "unknown" (None), so a machine without the driver on PATH
-degrades to no preflight rather than a crash. Nothing here decides policy; routing.yaml and the extensions do."""
+degrades to no preflight rather than a crash. Nothing here decides policy; routing.yaml and the plugins do."""
 from __future__ import annotations
 
 import subprocess

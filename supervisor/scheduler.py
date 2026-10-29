@@ -9,7 +9,7 @@ from .paths import Layout
 
 DEFAULT_LIMITS = gate.DEFAULT_LIMITS
 MODEL_LANES = gate.MODEL_LANES
-# Default adapter per cost category; config/routing.yaml `cost_lanes` overrides any entry (an extension lane for
+# Default adapter per cost category; config/routing.yaml `cost_lanes` overrides any entry (a plugin lane for
 # `local`, say). Selection order (`adapter_name`): the task's own `job.adapter`; else, when the cost lane is a model
 # lane, the owner role's configured lane (`roles.<owner_role>.adapter`); else the cost lane. The role entry is where
 # the setup skill records which provider a role runs on, so a task that keeps the default `cost_category: claude`

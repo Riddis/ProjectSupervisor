@@ -110,8 +110,8 @@ PROJECT = ("# project.yaml - what makes this folder a supervisor project.\r\n"
            "  path: .\r\n"
            "  remote: null\r\n"
            "\r\n"
-           "# every extension is required\r\n"
-           "extensions:\r\n"
+           "# every plugin is required\r\n"
+           "plugins:\r\n"
            "  - {name: alpha, required: true}\r\n"
            "  - {name: beta, required: true}\r\n"
            "\r\n"
@@ -144,10 +144,10 @@ def test_project_write_of_a_new_value_changes_only_that_value(layout, project_fi
 
 
 def test_a_structural_change_keeps_the_rest_of_project_yaml_as_written(layout, project_file):
-    """`supervisor extension new` appends to the list: a round trip, which must not reflow, blank nulls or move items."""
+    """`supervisor plugin new` appends to the list: a round trip, which must not reflow, blank nulls or move items."""
     from supervisor import project
     doc = yaml.safe_load(PROJECT)
-    doc["extensions"].append("gamma")
+    doc["plugins"].append("gamma")
     project.write(layout, doc)
     raw = project_file.read_bytes().decode("utf-8")
     assert yaml.safe_load(raw) == doc
@@ -155,26 +155,26 @@ def test_a_structural_change_keeps_the_rest_of_project_yaml_as_written(layout, p
     assert f'description: "{DESCRIPTION}"\r\n' in raw                            # not reflowed
     assert "  remote: null\r\n" in raw and "  title: null\r\n" in raw             # null stays null
     assert ("  - {name: alpha, required: true}\r\n  - {name: beta, required: true}\r\n  - gamma\r\n") in raw
-    assert "# every extension is required" in raw and "# checked by `supervisor doctor`" in raw
+    assert "# every plugin is required" in raw and "# checked by `supervisor doctor`" in raw
 
 
 def test_project_write_without_a_file_writes_the_document(layout):
     from supervisor import project
     layout.project_file.unlink(missing_ok=True)
-    project.write(layout, {"name": "fresh", "extensions": ["a"], "remote": None})
-    assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == {"name": "fresh", "extensions": ["a"],
+    project.write(layout, {"name": "fresh", "plugins": ["a"], "remote": None})
+    assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == {"name": "fresh", "plugins": ["a"],
                                                                                 "remote": None}
 
 
 # ---------------------------------------------------------------- aliases (review 1.11.0 F1)
 
 def test_an_aliased_list_edited_on_one_key_keeps_the_other(layout):
-    """`backup_extensions: *enabled` shares the list with `extensions`: appending to one must not change, or be undone
+    """`backup_plugins: *enabled` shares the list with `plugins`: appending to one must not change, or be undone
     by, the other. 1.10.1 wrote two lists; 38c254b lost the appended item on both."""
     from supervisor import project
-    layout.project_file.write_bytes(b"name: demo\nextensions: &enabled [alpha]\nbackup_extensions: *enabled\n")
+    layout.project_file.write_bytes(b"name: demo\nplugins: &enabled [alpha]\nbackup_plugins: *enabled\n")
     project._load_cached.cache_clear()
-    wanted = {"name": "demo", "extensions": ["alpha", "gamma"], "backup_extensions": ["alpha"]}
+    wanted = {"name": "demo", "plugins": ["alpha", "gamma"], "backup_plugins": ["alpha"]}
     project.write(layout, wanted)
     assert yaml.safe_load(layout.project_file.read_text(encoding="utf-8")) == wanted
 
@@ -210,15 +210,15 @@ def test_a_write_that_breaks_an_alias_keeps_strings_the_reader_would_retype(layo
     7240390's whole-document fallback wrote `title: on` unquoted and read back `True`. Strings in values, keys and
     lists must stay strings."""
     from supervisor import project
-    lines = ["name: demo", "extensions: &enabled [alpha]", "backup_extensions: *enabled", "ui:",
+    lines = ["name: demo", "plugins: &enabled [alpha]", "backup_plugins: *enabled", "ui:",
              '  title: "on" # keep this string']
     lines += [f'  "{s}": key' for s in AMBIGUOUS]
     lines += ["modes: [" + ", ".join(f'"{s}"' for s in AMBIGUOUS) + "]"]
     layout.project_file.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
     project._load_cached.cache_clear()
     wanted = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
-    wanted["backup_extensions"] = ["alpha"]
-    wanted["extensions"] = ["alpha", "gamma"]
+    wanted["backup_plugins"] = ["alpha"]
+    wanted["plugins"] = ["alpha", "gamma"]
     assert wanted["ui"]["title"] == "on" and all(s in wanted["ui"] for s in AMBIGUOUS)
     project.write(layout, wanted)
     assert yaml_edit.same(yaml.safe_load(layout.project_file.read_text(encoding="utf-8")), wanted)
@@ -242,7 +242,7 @@ def test_a_write_no_candidate_can_verify_is_refused_and_the_file_stays(layout, p
     monkeypatch.setattr(yaml_edit, "dump_round_trip", lambda text, doc: "wrong: document\n")
     monkeypatch.setattr(yaml_edit, "dump_whole", lambda text, doc: "wrong: document\n")
     doc = yaml.safe_load(PROJECT)
-    doc["extensions"].append("gamma")
+    doc["plugins"].append("gamma")
     with pytest.raises(yaml_edit.EditRefused):
         project.write(layout, doc)
     assert project_file.read_bytes() == before

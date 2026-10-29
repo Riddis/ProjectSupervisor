@@ -1,6 +1,6 @@
-"""Test helpers for extensions: UNSTABLE.
+"""Test helpers for plugins: UNSTABLE.
 
-Packaged and project extensions write their behaviour tests against these helpers. Unlike `supervisor.ext`, this
+Packaged and project plugins write their behaviour tests against these helpers. Unlike `supervisor.plugin`, this
 module carries no compatibility promise: it may change in any release, minor ones included, and gate G2 does not
 record it. It is promoted from the framework's own test fixtures, which use it too.
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import yaml
 
-from . import extensions as _extensions
+from . import plugins as _plugins
 from . import project as _project
 from . import store
 from ._vendor.contract import CapacityDeferred
@@ -35,14 +35,14 @@ _GATES = {"phases": {0: {"requires": []}, 1: {"requires": ["G0"]}, 9: {"requires
           "gates": {"G0": {"status": "OPEN", "phase": 0}, "G6": {"status": "OPEN", "phase": 6}}}
 
 
-def project(root: str | Path, *, name: str | None = None, extensions: list | None = None,
+def project(root: str | Path, *, name: str | None = None, plugins: list | None = None,
             modules: dict[str, str] | None = None, files: dict[str, str] | None = None,
             routing: dict | None = None, policy: dict | None = None) -> Layout:
     """A temporary project at `root`: the state folders, an open phase 0 (state/gates.yaml), no owner tasks.
-    `modules` writes `extensions/<name>.py` for each source and lists them in project.yaml (or list `extensions`
+    `modules` writes `plugins/<name>.py` for each source and lists them in project.yaml (or list `plugins`
     yourself, e.g. with `required: false`); `files` writes root-relative text files; `routing` and `policy` write
-    config/routing.yaml and config/policy.yaml. project.yaml is written only when `name`, `extensions` or `modules`
-    is given. Loaded extensions are forgotten (`reset()`), so the next load reads this project."""
+    config/routing.yaml and config/policy.yaml. project.yaml is written only when `name`, `plugins` or `modules`
+    is given. Loaded plugins are forgotten (`reset()`), so the next load reads this project."""
     lay = Layout(Path(root)).ensure()
     (lay.state / "gates.yaml").write_text(yaml.safe_dump(_GATES), encoding="utf-8")
     (lay.state / "owner_tasks.yaml").write_text("owner_tasks: []\n", encoding="utf-8")
@@ -54,26 +54,26 @@ def project(root: str | Path, *, name: str | None = None, extensions: list | Non
         if doc is not None:
             lay.config.mkdir(parents=True, exist_ok=True)
             (lay.config / key).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
-    if name is not None or extensions is not None or modules:
+    if name is not None or plugins is not None or modules:
         _write_modules(lay, modules or {})
         doc = {"name": name or "proj"}
-        doc["extensions"] = list(extensions) if extensions is not None else list(modules or {})
+        doc["plugins"] = list(plugins) if plugins is not None else list(modules or {})
         _project.write(lay, doc)
-    _extensions.reset()
+    _plugins.reset()
     return lay
 
 
 def _write_modules(lay: Layout, modules: dict[str, str]) -> None:
     for name, source in modules.items():
-        path = lay.extensions / (name.replace(".", "/") + ".py")
+        path = lay.plugins / (name.replace(".", "/") + ".py")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
 
 
-def add_extensions(layout: Layout, modules: dict[str, str], entries: list | None = None,
+def add_plugins(layout: Layout, modules: dict[str, str], entries: list | None = None,
                    files: dict[str, str] | None = None) -> Layout:
-    """Write `extensions/<name>.py` for each module (and root-relative `files`), list `entries` (default: the
-    modules) in project.yaml, keeping its other keys, and forget loaded extensions."""
+    """Write `plugins/<name>.py` for each module (and root-relative `files`), list `entries` (default: the
+    modules) in project.yaml, keeping its other keys, and forget loaded plugins."""
     _write_modules(layout, modules)
     for rel, text in (files or {}).items():
         path = layout.root / rel
@@ -81,9 +81,9 @@ def add_extensions(layout: Layout, modules: dict[str, str], entries: list | None
         path.write_text(text, encoding="utf-8")
     doc = dict(_project.load(layout)) if _project.exists(layout) else {}
     doc["name"] = doc.get("name") or "proj"
-    doc["extensions"] = list(entries) if entries is not None else list(modules)
+    doc["plugins"] = list(entries) if entries is not None else list(modules)
     _project.write(layout, doc)
-    _extensions.reset()
+    _plugins.reset()
     return layout.ensure()
 
 
@@ -175,9 +175,9 @@ def ui_client(layout: Layout, csrf: str = CSRF):
 
 
 def load(layout: Layout):
-    """Set the project's extensions up as the loop does (their lanes, checks, kinds and commands registered).
+    """Set the project's plugins up as the loop does (their lanes, checks, kinds and commands registered).
     Returns the loader's registry: `.loaded` and `.errors` say what loaded."""
-    return _extensions.load(layout)
+    return _plugins.load(layout)
 
 
 def registered_lane(name: str) -> Adapter:
@@ -236,7 +236,7 @@ def plan(layout: Layout) -> list[tuple[str, str]]:
 
 
 def inbox_item(layout: Layout, item_id: str) -> dict:
-    """One inbox item as stored (any kind). Raises supervisor.ext.InboxError when there is none."""
+    """One inbox item as stored (any kind). Raises supervisor.plugin.InboxError when there is none."""
     from . import inbox
     return inbox.load(layout, item_id)
 
@@ -244,7 +244,7 @@ def inbox_item(layout: Layout, item_id: str) -> dict:
 def make_inbox_item(layout: Layout, *, kind: str = "question", subject: str = "subject", summary: str = "summary",
                     allowed_responses: list[str] | None = None, for_role: str = "owner", **fields) -> dict:
     """An open inbox item of `kind` for `for_role`, with any other field (`items=[...]`, `rows=[...]`) written on it
-    under the inbox lock, as an extension's code or an agent's request would leave it. Returns it as stored."""
+    under the inbox lock, as a plugin's code or an agent's request would leave it. Returns it as stored."""
     from . import inbox
     item = inbox.create(layout, for_role=for_role, subject=subject, summary=summary, kind=kind,
                         allowed_responses=allowed_responses)
@@ -256,7 +256,7 @@ def make_inbox_item(layout: Layout, *, kind: str = "question", subject: str = "s
 
 def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str = "owner") -> dict:
     """The owner's generic answer to an inbox item, the path the inbox page and `inbox.answer` take (not an owning
-    extension's close_owned_item): a kind claimed with `answerable=False` refuses it with InboxError."""
+    plugin's close_owned_item): a kind claimed with `answerable=False` refuses it with InboxError."""
     from . import inbox
     return inbox.answer(layout, item_id, response, note=note, by=by)
 
@@ -264,19 +264,19 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
 @contextlib.contextmanager
 def loop_lock(layout: Layout) -> Iterator[None]:
     """Hold the project's state lock for the block, as a running loop does: an owner command submitted meanwhile
-    (supervisor.ext.submit_command, a Control Center action) is queued for the loop, not applied."""
+    (supervisor.plugin.submit_command, a Control Center action) is queued for the loop, not applied."""
     from .locks import FileLock
     with FileLock(layout.lock, owner="test loop"):
         yield
 
 
 def import_side_effects(layout: Layout, name: str) -> dict[str, list[str]]:
-    """What importing extension `name` registers by itself, measured in a fresh interpreter (all lists empty for an
-    extension that registers only in setup()). See `supervisor.extensions.import_side_effects`."""
-    return _extensions.import_side_effects(layout, name)
+    """What importing plugin `name` registers by itself, measured in a fresh interpreter (all lists empty for an
+    plugin that registers only in setup()). See `supervisor.plugins.import_side_effects`."""
+    return _plugins.import_side_effects(layout, name)
 
 
 def reset() -> None:
-    """Forget loaded extensions and the lanes, python jobs and commands they registered, like a fresh process."""
-    _extensions.reset()
-    _extensions.forget_registrations()
+    """Forget loaded plugins and the lanes, python jobs and commands they registered, like a fresh process."""
+    _plugins.reset()
+    _plugins.forget_registrations()

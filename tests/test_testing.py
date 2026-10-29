@@ -1,4 +1,4 @@
-"""supervisor.testing (phase 2 step 6): the explicitly unstable helpers an extension's tests use - a temporary project,
+"""supervisor.testing (phase 2 step 6): the explicitly unstable helpers a plugin's tests use - a temporary project,
 an in-process fake lane, a loop driver, a Control Center test client and the import side-effect probe - promoted from
 this suite's own fixtures, which now use them too."""
 from __future__ import annotations
@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from supervisor import extensions, jobs, tasks, testing
-from supervisor.ext import InboxError, submit_command
+from supervisor import plugins, jobs, tasks, testing
+from supervisor.plugin import InboxError, submit_command
 from supervisor.models.task import TaskStatus
 
 EXT = '''
-from supervisor.ext import Check
+from supervisor.plugin import Check
 
 def setup(registry):
     registry.doctor_check(lambda layout: Check("probe", True, "ok"))
@@ -27,24 +27,24 @@ def test_a_temporary_project_has_the_state_a_loop_needs(tmp_path):
     assert lay.tasks.is_dir() and lay.runs.is_dir() and not lay.project_file.exists()
 
 
-def test_a_temporary_project_with_extensions_config_and_files(tmp_path):
+def test_a_temporary_project_with_plugins_config_and_files(tmp_path):
     lay = testing.project(tmp_path / "p", name="Demo", modules={"probe": EXT}, routing={"probe": {"a": 1}},
                           policy={"channels": {}}, files={"docs/a.md": "hello"})
     doc = yaml.safe_load(lay.project_file.read_text(encoding="utf-8"))
-    assert doc["name"] == "Demo" and doc["extensions"] == ["probe"]
+    assert doc["name"] == "Demo" and doc["plugins"] == ["probe"]
     assert yaml.safe_load((lay.config / "routing.yaml").read_text(encoding="utf-8")) == {"probe": {"a": 1}}
     assert (lay.config / "policy.yaml").is_file() and (lay.root / "docs" / "a.md").read_text(encoding="utf-8") == "hello"
-    reg = extensions.load(lay)
+    reg = plugins.load(lay)
     assert reg.loaded == ["probe"] and reg.errors == []
     testing.reset()
 
 
-def test_add_extensions_keeps_the_rest_of_project_yaml(tmp_path):
+def test_add_plugins_keeps_the_rest_of_project_yaml(tmp_path):
     lay = testing.project(tmp_path / "p", name="Demo")
-    testing.add_extensions(lay, {"probe": EXT})
+    testing.add_plugins(lay, {"probe": EXT})
     doc = yaml.safe_load(lay.project_file.read_text(encoding="utf-8"))
-    assert doc["name"] == "Demo" and doc["extensions"] == ["probe"]
-    assert extensions.load(lay).loaded == ["probe"]
+    assert doc["name"] == "Demo" and doc["plugins"] == ["probe"]
+    assert plugins.load(lay).loaded == ["probe"]
     testing.reset()
 
 
@@ -95,7 +95,7 @@ def test_the_import_probe_is_offered(tmp_path):
 
 
 # ---------------------------------------------------------------- read helpers (1.14.0)
-# An extension package's tests may use only supervisor.ext and supervisor.testing (G5). Porting the first packages'
+# A plugin package's tests may use only supervisor.plugin and supervisor.testing (G5). Porting the first packages'
 # tests showed what they read: the stored task a lane is handed, the job records, an open job record planted the
 # way the loop leaves one, one settle pass, the scheduler's next picks, the inbox items of a claimed kind and the
 # owner's generic answer, and the state lock a running loop holds. The tests below use nothing else.
@@ -103,7 +103,7 @@ def test_the_import_probe_is_offered(tmp_path):
 LANE_EXT = '''
 from pathlib import Path
 
-from supervisor.ext import Adapter, Result
+from supervisor.plugin import Adapter, Result
 
 
 class Slow(Adapter):

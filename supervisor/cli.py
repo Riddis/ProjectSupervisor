@@ -12,7 +12,7 @@ from typer.core import TyperGroup
 from . import __version__
 from . import commands as commands_mod
 from . import doctor as doctor_mod
-from . import extensions as extensions_mod
+from . import plugins as plugins_mod
 from . import gates as gates_mod
 from . import inbox as inbox_mod
 from . import project as project_mod
@@ -21,17 +21,17 @@ from . import tasks as tasks_mod
 from .paths import Layout, NoProject, find_root
 
 class _Commands(TyperGroup):
-    """The top-level command group. Extension command groups (`registry.cli`) are looked up only when a name is not a
+    """The top-level command group. Plugin command groups (`registry.cli`) are looked up only when a name is not a
     built-in command, or when the whole list is wanted (`--help`), however the CLI is invoked (a process, `app(...)`,
     a test runner): resolving a built-in command — `status` above all, which must change nothing — never sets up an
-    extension. Before 1.10.0 they were attached when this module was imported."""
+    plugin. Before 1.10.0 they were attached when this module was imported."""
 
     def get_command(self, ctx, name):
-        return super().get_command(ctx, name) or _extension_group().get_command(ctx, name)
+        return super().get_command(ctx, name) or _plugin_group().get_command(ctx, name)
 
     def list_commands(self, ctx):
         own = super().list_commands(ctx)
-        return own + [n for n in _extension_group().list_commands(ctx) if n not in own]
+        return own + [n for n in _plugin_group().list_commands(ctx) if n not in own]
 
 
 app = typer.Typer(help="Supervisor: run a project with AI agents under a deterministic supervisor and a Control Center.",
@@ -39,19 +39,19 @@ app = typer.Typer(help="Supervisor: run a project with AI agents under a determi
 task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
-extension_app = typer.Typer(help="project extensions (extensions/*.py, listed in project.yaml)")
+plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
-app.add_typer(extension_app, name="extension")
+app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
 
 
 def _layout(load: bool = True) -> Layout:
-    """The project here. `load=False` sets no extension up: `supervisor migrate` must work while an extension fails to
+    """The project here. `load=False` sets no plugin up: `supervisor migrate` must work while a plugin fails to
     load (1.12.0), and its migrations need only the manifests."""
     root = find_root()
     if root is None:
@@ -59,12 +59,12 @@ def _layout(load: bool = True) -> Layout:
                                                "or set SUPERVISOR_ROOT")))
     layout = Layout(root).ensure()
     if load:
-        extensions_mod.load(layout)
+        plugins_mod.load(layout)
     return layout
 
 
 def _reader() -> Layout:
-    """For read-only commands (`status`): the project as it is — no directories created (`Layout.ensure`), no extension
+    """For read-only commands (`status`): the project as it is — no directories created (`Layout.ensure`), no plugin
     set up (setup is project code and may write; loading also reconciles state/runtime/projection_paths.json)."""
     root = find_root()
     if root is None:
@@ -110,7 +110,7 @@ def version():
 def init(directory: str = typer.Argument(".", help="project folder to create or fill (must be empty or have no project.yaml)"),
          name: str = typer.Option("", help="project name (defaults to the folder name)"),
          force: bool = typer.Option(False, help="write template files even if the folder already has a project.yaml")):
-    """Create a thin project from the framework's template: project.yaml, config/, agents/, state/, docs/, extensions/,
+    """Create a thin project from the framework's template: project.yaml, config/, agents/, state/, docs/, plugins/,
     start scripts. Nothing project-specific is decided here — the setup skill (or you) fills the template in."""
     from . import template, updates
     target = Path(directory).resolve()
@@ -168,7 +168,7 @@ def render_cmd():
 
 @app.command()
 def doctor():
-    """Health checks: project.yaml, Python, state store, routing/role cards, git, agent CLIs, extensions."""
+    """Health checks: project.yaml, Python, state store, routing/role cards, git, agent CLIs, plugins."""
     checks = doctor_mod.run(_layout())
     for c in checks:
         typer.echo(f"{'FAIL' if not c.ok else 'WARN' if c.warn else 'OK  '} {c.name}: {c.detail}")
@@ -179,7 +179,7 @@ def doctor():
 def check():
     """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
     not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs.
-    Reads only: no extension is set up and nothing is created (review 1.13.0)."""
+    Reads only: no plugin is set up and nothing is created (review 1.13.0)."""
     layout = _reader()
     tasks = tasks_mod.load_all(layout)
     errors = tasks_mod.validate_graph(tasks)
@@ -216,7 +216,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     Goes through the command queue, so it also works while a supervisor is running (it applies it next iteration)."""
     ids = [s for s in update_contracts.split(",") if s]
     if dry_run:
-        layout = _reader()                         # reads only: no extension set up, nothing created (review 1.13.0)
+        layout = _reader()                         # reads only: no plugin set up, nothing created (review 1.13.0)
         try:
             res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
         except (ValueError, tasks_mod.TaskError) as exc:
@@ -315,7 +315,7 @@ def task_note(task_id: str, note: str, actor: str = "owner"):
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.note", {"task_id": task_id, "note": note}, actor), task_id)
 
 
-# ------------------------------------------------------------------ inbox, gates, extensions
+# ------------------------------------------------------------------ inbox, gates, plugins
 
 @inbox_app.command("list")
 def inbox_list(for_role: str = ""):
@@ -365,7 +365,7 @@ def gate_ack(gate_id: str, note: str = "", actor: str = "owner"):
 @boundary_app.command("check")
 def boundary_check(root: str = typer.Option("", help="framework checkout (default: the one running)"),
                    as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
-    """G1: no project or extension import, no project-specific literal, no vendor name outside the listed files in
+    """G1: no project or plugin import, no project-specific literal, no vendor name outside the listed files in
     supervisor/ (docs/BOUNDARY.md). Exit 0 clean, 1 violations, 2 when it cannot run. Needs no project."""
     from . import boundary
     raise typer.Exit(boundary.run(Path(root) if root else None, as_json=as_json, echo=typer.echo))
@@ -373,7 +373,7 @@ def boundary_check(root: str = typer.Option("", help="framework checkout (defaul
 
 @boundary_app.command("words")
 def boundary_words(targets: list[str] = typer.Argument(..., help="folders or built archives (a wheel, an sdist)")):
-    """G1d's project words scan over any repository, folder or built archive, file names included: an extension
+    """G1d's project words scan over any repository, folder or built archive, file names included: a plugin
     package and its wheel hold no project's information either. Uses the local word list
     (~/.config/supervisor/project-terms.toml). Exit 0 clean, 1 hits, 2 when it cannot run (no word list)."""
     from . import boundary
@@ -396,34 +396,34 @@ def skills_update(dry_run: bool = typer.Option(False, help="report what would ch
         typer.echo(f"{e.state:<9} {e.rel}" + (f"  ({e.detail})" if e.detail else ""))
 
 
-@extension_app.command("list")
-def extension_list():
-    reg = extensions_mod.load(_layout())
+@plugin_app.command("list")
+def plugin_list():
+    reg = plugins_mod.load(_layout())
     for name in reg.loaded:
         typer.echo(f"loaded {name}")
     for err in reg.errors:
         typer.echo(f"ERROR {err}")
     if not reg.loaded and not reg.errors:
-        typer.echo("no extensions configured (project.yaml `extensions:`)")
+        typer.echo("no plugins configured (project.yaml `plugins:`)")
 
 
-@extension_app.command("check")
-def extension_check_cmd(name: str):
-    """Gate G5: whether extension <name> conforms to the standard (docs/EXTENSION_STANDARD.md). Never runs its tests."""
-    from . import extension_check
-    findings = extension_check.run(_layout(load=False), name)
+@plugin_app.command("check")
+def plugin_check_cmd(name: str):
+    """Gate G5: whether plugin <name> conforms to the standard (docs/PLUGIN_STANDARD.md). Never runs its tests."""
+    from . import plugin_check
+    findings = plugin_check.run(_layout(load=False), name)
     for f in findings:
         typer.echo(f"{'OK  ' if f.ok else 'FAIL'} {f.name}: {f.detail}")
     raise typer.Exit(0 if all(f.ok for f in findings) else 1)
 
 
-@extension_app.command("new")
-def extension_new(name: str,
-                  package: bool = typer.Option(False, "--package", help="create the standard extension package "
-                                               "(supervisor-ext-<name>/) instead of a project-local module"),
+@plugin_app.command("new")
+def plugin_new(name: str,
+                  package: bool = typer.Option(False, "--package", help="create the standard plugin package "
+                                               "(supervisor-plugin-<name>/) instead of a project-local module"),
                   directory: Path = typer.Option(None, "--dir", help="where --package creates it (default: here)")):
-    """Scaffold extensions/<name>.py with its manifest and list it in project.yaml; with --package, the standard
-    extension package in its own folder (docs/EXTENSION_STANDARD.md)."""
+    """Scaffold plugins/<name>.py with its manifest and list it in project.yaml; with --package, the standard
+    plugin package in its own folder (docs/PLUGIN_STANDARD.md)."""
     if package:
         from . import scaffold
         try:
@@ -431,15 +431,15 @@ def extension_new(name: str,
         except (ValueError, FileExistsError) as exc:
             raise typer.BadParameter(str(exc)) from None
         typer.echo(f"created {root}: `pip install -e {root}` into a project's environment, list {name!r} under "
-                   f"extensions: in its project.yaml, then `supervisor extension check {name}` there")
+                   f"plugins: in its project.yaml, then `supervisor plugin check {name}` there")
         return
     layout = _layout()
-    p = extensions_mod.scaffold_module(layout, name)
+    p = plugins_mod.scaffold_module(layout, name)
     doc = dict(project_mod.load(layout))
-    exts = list(doc.get("extensions") or [])
+    exts = list(doc.get("plugins") or [])
     if name not in exts:
         exts.append(name)
-        doc["extensions"] = exts
+        doc["plugins"] = exts
         project_mod.write(layout, doc)
     typer.echo(f"{p} ready; registered in project.yaml")
 
@@ -551,7 +551,7 @@ def cmd(kind: str, payload: str = "{}", actor: str = "owner"):
 
 @app.command()
 def supervisor():
-    """Show runtime state. Reads only: no extension set up (review 1.13.0)."""
+    """Show runtime state. Reads only: no plugin set up (review 1.13.0)."""
     typer.echo(json.dumps(runtime.read(_reader()), indent=2))
 
 
@@ -572,28 +572,28 @@ def main():
     app()
 
 
-_extensions_cli: dict[str, tuple[object, TyperGroup]] = {}    # project root -> (its registry, its command groups)
+_plugins_cli: dict[str, tuple[object, TyperGroup]] = {}    # project root -> (its registry, its command groups)
 
 
-def _extension_group():
-    """The current project's extension command groups as one click group, built on first use (see _Commands). Kept
-    per project root and only while that root's extension registry is the one they were built from: another project
-    (SUPERVISOR_ROOT or the working directory changed) or a reloaded registry (extensions.reset) builds them again.
+def _plugin_group():
+    """The current project's plugin command groups as one click group, built on first use (see _Commands). Kept
+    per project root and only while that root's plugin registry is the one they were built from: another project
+    (SUPERVISOR_ROOT or the working directory changed) or a reloaded registry (plugins.reset) builds them again.
     Each is mounted exactly as `app.add_typer(ext_app, name=name)` would mount it."""
     root = find_root()
     key = str(Layout(root).root) if root is not None else ""
-    cached = _extensions_cli.get(key)
-    if cached is not None and (root is None or extensions_mod.loaded(root) is cached[0]):
+    cached = _plugins_cli.get(key)
+    if cached is not None and (root is None or plugins_mod.loaded(root) is cached[0]):
         return cached[1]
     holder = typer.Typer()
     reg = None
     if root is not None:
         try:
-            reg = extensions_mod.load(Layout(root))
-        except Exception as exc:                            # noqa: BLE001 - a broken extension must not break the CLI
-            print(f"warning: extensions not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
-        for err in (reg.errors if reg else []):             # a failed extension's `supervisor <name>` group is absent: say so
-            print(f"warning: extension not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
+            reg = plugins_mod.load(Layout(root))
+        except Exception as exc:                            # noqa: BLE001 - a broken plugin must not break the CLI
+            print(f"warning: plugins not loaded, their command groups are missing from this CLI: {exc}", file=sys.stderr)
+        for err in (reg.errors if reg else []):             # a failed plugin's `supervisor <name>` group is absent: say so
+            print(f"warning: plugin not loaded ({err}); its commands are missing from this CLI", file=sys.stderr)
         for ext_app, name in (reg.cli_apps if reg else []):
             try:
                 holder.add_typer(ext_app, name=name)
@@ -602,9 +602,9 @@ def _extension_group():
     try:
         group = typer.main.get_group(holder) if holder.registered_groups else TyperGroup(name=None)
     except Exception as exc:                                # noqa: BLE001
-        print(f"warning: extension command groups could not be built: {exc}", file=sys.stderr)
+        print(f"warning: plugin command groups could not be built: {exc}", file=sys.stderr)
         group = TyperGroup(name=None)
-    _extensions_cli[key] = (reg, group)
+    _plugins_cli[key] = (reg, group)
     return group
 
 

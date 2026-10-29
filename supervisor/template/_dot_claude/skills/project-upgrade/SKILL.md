@@ -1,6 +1,6 @@
 ---
 name: project-upgrade
-description: Take a new framework release (or a new extension package version) into this project - read what it changes, rehearse it, move the framework checkout to the new tag in a maintenance window, migrate, bring the project's framework skills up to date, and start paused. Use when the user says "upgrade the framework", "take vX.Y.Z", "a new release is out", "/project-upgrade", or the Control Center reports a newer release.
+description: Take a new framework release (or a new plugin package version) into this project - read what it changes, rehearse it, move the framework checkout to the new tag in a maintenance window, migrate, bring the project's framework skills up to date, and start paused. Use when the user says "upgrade the framework", "take vX.Y.Z", "a new release is out", "/project-upgrade", or the Control Center reports a newer release.
 ---
 
 # Taking a new framework release
@@ -24,7 +24,7 @@ From the new tag's `CHANGELOG.md` section, write down:
   means rollback A of the window (the previous tag plus the snapshot);
 - any changed dependency: `git -C <framework checkout> diff <current tag> <new tag> -- pyproject.toml`. If one
   changed, the environment is reinstalled from the project's lock, by the project's own install procedure;
-- anything the project must change itself (an extension using an API that changed, a config value that moved).
+- anything the project must change itself (a plugin using an API that changed, a config value that moved).
 
 If the project must change too, that change is made and tested on a branch first, and merged in the window.
 

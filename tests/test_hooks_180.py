@@ -1,6 +1,6 @@
-"""Framework 1.8.0: the extension hooks a project with its own heavy resource, review pages and content rules
-needs — resource lock by cost category, extension command kinds, extension-owned inbox kinds, job-aware packet
-screens, extension templates and static files, the shared GPU probe — and the fixes that ride along."""
+"""Framework 1.8.0: the plugin hooks a project with its own heavy resource, review pages and content rules
+needs — resource lock by cost category, plugin command kinds, plugin-owned inbox kinds, job-aware packet
+screens, plugin templates and static files, the shared GPU probe — and the fixes that ride along."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from supervisor import commands, doctor, extensions, gate, gpu, inbox, jobs, policy, project, scheduler, tasks
+from supervisor import commands, doctor, plugins, gate, gpu, inbox, jobs, policy, project, scheduler, tasks
 from supervisor.adapters import REGISTRY
 from supervisor.loop import Supervisor
 from supervisor.paths import Layout
@@ -23,18 +23,18 @@ CSRF = "test-csrf-value"
 
 
 def _configure(root: Path, entries: list, modules: dict[str, str], files: dict[str, str] | None = None) -> Layout:
-    (root / "extensions").mkdir(parents=True, exist_ok=True)
+    (root / "plugins").mkdir(parents=True, exist_ok=True)
     for name, code in modules.items():
-        (root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
+        (root / "plugins" / f"{name}.py").write_text(code, encoding="utf-8")
     for rel, text in (files or {}).items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(text, encoding="utf-8")
     doc = dict(project.load(Layout(root)))
     doc["name"] = doc.get("name") or "proj"
-    doc["extensions"] = entries
+    doc["plugins"] = entries
     project.write(Layout(root), doc)
-    extensions.reset()
+    plugins.reset()
     return Layout(root).ensure()
 
 
@@ -113,19 +113,19 @@ def setup(registry):
 '''
 
 
-def test_an_extension_command_kind_is_applied_like_a_builtin(layout):
+def test_a_plugin_command_kind_is_applied_like_a_builtin(layout):
     _configure(layout.root, ["counter"], {"counter": COMMAND_EXT})
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert "counter.bump" in reg.commands and "counter.bump" in commands.HANDLERS
     out = commands.submit_or_apply(layout, "counter.bump", {}, actor="owner-ui")
     assert out["ok"] and out["result"] == {"bumped": True}
     assert (layout.root / "bumped.txt").read_text(encoding="utf-8").endswith(" owner-ui")
 
 
-def test_an_extension_cannot_hijack_a_builtin_command_kind(layout):
+def test_a_plugin_cannot_hijack_a_builtin_command_kind(layout):
     code = COMMAND_EXT.replace('"counter.bump"', '"inbox.answer"')
     _configure(layout.root, ["hijack"], {"hijack": code})
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert reg.loaded == [] and "already registered" in reg.errors[0]
     assert commands.HANDLERS["inbox.answer"].__name__ == "_inbox_answer"
 
@@ -158,13 +158,13 @@ def _labelling_item(layout):
                                          {"image": "b.png", "identity_mean": 0.12, "hands": 0.9}]})
 
 
-def test_an_extension_owned_kind_is_closed_only_by_the_extension(layout):
+def test_a_plugin_owned_kind_is_closed_only_by_the_plugin(layout):
     _configure(layout.root, ["rounds"], {"rounds": ROUNDS_EXT})
     item = _labelling_item(layout)
-    with pytest.raises(inbox.InboxError, match="finalised by its extension.*grid"):
+    with pytest.raises(inbox.InboxError, match="finalised by its plugin.*grid"):
         inbox.answer(layout, item["id"], "ACCEPT")
     out = commands.submit_or_apply(layout, "inbox.answer", {"item_id": item["id"], "response": "ACCEPT"}, "owner")
-    assert not out["ok"] and "finalised by its extension" in out["error"]
+    assert not out["ok"] and "finalised by its plugin" in out["error"]
     assert inbox.load(layout, item["id"])["status"] == "open"
     out = commands.submit_or_apply(layout, "grid.submit", {"item_id": item["id"]}, "owner-ui")
     assert out["ok"] and inbox.load(layout, item["id"])["status"] == "answered"
@@ -185,17 +185,17 @@ def test_the_inbox_page_hides_blind_scores_links_the_page_and_drops_the_form(lay
     assert f'action="/inbox/{spot["id"]}/answer"' in html                 # answerable kinds keep the form
     assert "<td>3</td>" in html                                           # and show their evidence
     r = client.post(f"/inbox/{item['id']}/answer", data={"csrf_token": CSRF, "response": "ACCEPT"}, follow_redirects=False)
-    assert r.status_code == 400 and "finalised by its extension" in r.text
+    assert r.status_code == 400 and "finalised by its plugin" in r.text
     assert client.get(f"/grid/{item['id']}").json() == {"item": item["id"]}
 
 
 def test_builtin_kinds_cannot_be_claimed_and_a_kind_is_claimed_once(layout):
     code = ROUNDS_EXT.replace('"labelling"', '"approval"')
     _configure(layout.root, ["rounds"], {"rounds": code})
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert reg.loaded == [] and "built in" in reg.errors[0]
     _configure(layout.root, ["rounds"], {"rounds": ROUNDS_EXT.replace('"spotcheck"', '"labelling"')})
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert reg.loaded == [] and "already claimed" in reg.errors[0]
 
 
@@ -278,15 +278,15 @@ GALLERY_HTML = '''{% extends "base.html" %}
 '''
 
 
-def test_an_extension_page_extends_the_framework_base_and_serves_its_own_assets(layout):
+def test_a_plugin_page_extends_the_framework_base_and_serves_its_own_assets(layout):
     _configure(layout.root, ["pages"], {"pages": PAGE_EXT},
-               files={"extensions/templates/gallery.html": GALLERY_HTML,
-                      "extensions/templates/base.html": "HIJACKED",
-                      "extensions/static/gallery.js": "console.log('gallery');"})
+               files={"plugins/templates/gallery.html": GALLERY_HTML,
+                      "plugins/templates/base.html": "HIJACKED",
+                      "plugins/static/gallery.js": "console.log('gallery');"})
     client = _client(layout)
     html = client.get("/gallery").text
     assert "3 pictures" in html and 'id="gallery-panel"' in html
-    assert "HIJACKED" not in html and "<nav" in html                     # the framework's base.html, not the extension's
+    assert "HIJACKED" not in html and "<nav" in html                     # the framework's base.html, not the plugin's
     assert 'href="/gallery"' in html                                     # sidebar entry from ui_router
     r = client.get("/static/gallery/gallery.js")
     assert r.status_code == 200 and "gallery" in r.text
@@ -296,12 +296,12 @@ def test_an_extension_page_extends_the_framework_base_and_serves_its_own_assets(
 
 def test_template_and_static_registrations_are_validated(layout):
     bad = PAGE_EXT.replace('registry.static_dir(HERE / "static", "gallery")', 'registry.static_dir(HERE / "static", "a/b")')
-    _configure(layout.root, ["pages"], {"pages": bad}, files={"extensions/templates/x.html": "", "extensions/static/x.js": ""})
-    reg = extensions.load(layout)
+    _configure(layout.root, ["pages"], {"pages": bad}, files={"plugins/templates/x.html": "", "plugins/static/x.js": ""})
+    reg = plugins.load(layout)
     assert reg.loaded == [] and "one path segment" in reg.errors[0]
     bad = PAGE_EXT.replace('HERE / "templates"', 'HERE / "nowhere"')
-    _configure(layout.root, ["pages"], {"pages": bad}, files={"extensions/static/x.js": ""})
-    reg = extensions.load(layout)
+    _configure(layout.root, ["pages"], {"pages": bad}, files={"plugins/static/x.js": ""})
+    reg = plugins.load(layout)
     assert reg.loaded == [] and "not a directory" in reg.errors[0]
 
 
@@ -322,24 +322,24 @@ def test_gpu_probe_reads_nvidia_smi_and_never_raises(monkeypatch):
 
 # ------------------------------------------------------------------ fixes
 
-def test_a_failed_optional_extension_is_logged_not_only_shown_by_doctor(layout, capsys):
+def test_a_failed_optional_plugin_is_logged_not_only_shown_by_doctor(layout, capsys):
     _configure(layout.root, [{"name": "opt", "required": False}], {"opt": "import nosuchmodule_xyz\n"})
-    reg = extensions.load(layout)
+    reg = plugins.load(layout)
     assert reg.loaded == [] and reg.errors and not reg.blocking
     events = [json.loads(l) for l in layout.log.read_text(encoding="utf-8").splitlines()]
-    hits = [e for e in events if e["event"] == "extension_error"]
-    assert len(hits) == 1 and hits[0]["extension"] == "opt" and hits[0]["required"] is False
+    hits = [e for e in events if e["event"] == "plugin_error"]
+    assert len(hits) == 1 and hits[0]["plugin"] == "opt" and hits[0]["required"] is False
     assert "did not load" in capsys.readouterr().err
-    extensions.load(layout)                                              # cached: not logged twice per process
-    assert sum(1 for l in layout.log.read_text(encoding="utf-8").splitlines() if "extension_error" in l) == 1
+    plugins.load(layout)                                              # cached: not logged twice per process
+    assert sum(1 for l in layout.log.read_text(encoding="utf-8").splitlines() if "plugin_error" in l) == 1
 
 
-def test_a_broken_extension_cli_group_is_reported_on_stderr(layout, capsys, monkeypatch):
+def test_a_broken_plugin_cli_group_is_reported_on_stderr(layout, capsys, monkeypatch):
     _configure(layout.root, ["bad"], {"bad": "import nosuchmodule_xyz\n"})
     from supervisor import cli
     monkeypatch.setattr(cli, "find_root", lambda: layout.root)
-    monkeypatch.setattr(cli, "_extensions_cli", {})                 # built on first use (1.10.0)
-    cli._extension_group()
+    monkeypatch.setattr(cli, "_plugins_cli", {})                 # built on first use (1.10.0)
+    cli._plugin_group()
     err = capsys.readouterr().err
     assert "bad" in err and "missing from this CLI" in err
 
@@ -363,19 +363,19 @@ def test_doctor_reports_the_framework_checkout_and_refuses_a_dirty_or_untagged_o
 
 # ------------------------------------------------------------------ 1.8.1: review findings on 1.8.0
 
-def test_an_owned_item_stays_closed_to_the_generic_path_after_its_extension_stops_loading(layout):
-    """A required extension that fails to import never registers its inbox kinds. Its existing items must not become
-    answerable through the generic path (that skips the extension's per-option validation), and the inbox page must
-    not reveal rows the extension keeps blind. Built-in kinds keep working so the owner can still act on them."""
+def test_an_owned_item_stays_closed_to_the_generic_path_after_its_plugin_stops_loading(layout):
+    """A required plugin that fails to import never registers its inbox kinds. Its existing items must not become
+    answerable through the generic path (that skips the plugin's per-option validation), and the inbox page must
+    not reveal rows the plugin keeps blind. Built-in kinds keep working so the owner can still act on them."""
     _configure(layout.root, ["rounds"], {"rounds": ROUNDS_EXT})
     item = _labelling_item(layout)
-    _configure(layout.root, ["rounds"], {"rounds": "import nosuchmodule_xyz\n" + ROUNDS_EXT})   # the extension breaks
-    reg = extensions.load(layout)
+    _configure(layout.root, ["rounds"], {"rounds": "import nosuchmodule_xyz\n" + ROUNDS_EXT})   # the plugin breaks
+    reg = plugins.load(layout)
     assert reg.blocking and "labelling" not in reg.inbox_kinds
-    with pytest.raises(inbox.InboxError, match="cannot be answered.*required extension failed"):
+    with pytest.raises(inbox.InboxError, match="cannot be answered.*required plugin failed"):
         inbox.answer(layout, item["id"], "ACCEPT")
     out = commands.submit_or_apply(layout, "inbox.answer", {"item_id": item["id"], "response": "ACCEPT"}, "owner")
-    assert not out["ok"] and "required extension failed" in out["error"]
+    assert not out["ok"] and "required plugin failed" in out["error"]
     assert inbox.load(layout, item["id"])["status"] == "open"
     gate_item = inbox.create(layout, for_role="owner", subject="g", summary="g", kind="gate",
                              allowed_responses=["APPROVE", "REJECT"])
@@ -383,14 +383,14 @@ def test_an_owned_item_stays_closed_to_the_generic_path_after_its_extension_stop
     client = _client(layout)
     html = client.get("/inbox").text
     assert "0.91" not in html and "identity_mean" not in html                            # still blind
-    assert f'action="/inbox/{item["id"]}/answer"' not in html and "required extension failed" in html
+    assert f'action="/inbox/{item["id"]}/answer"' not in html and "required plugin failed" in html
     r = client.post(f"/inbox/{item['id']}/answer", data={"csrf_token": CSRF, "response": "ACCEPT"}, follow_redirects=False)
-    assert r.status_code == 400 and "required extension failed" in r.text
+    assert r.status_code == 400 and "required plugin failed" in r.text
     assert inbox.load(layout, item["id"])["status"] == "open"
 
 
-def test_an_unclaimed_kind_with_every_extension_loaded_is_an_ordinary_item(layout):
-    """No blocking failure: a kind nobody claims (an extension removed on purpose) is generic data, answerable."""
+def test_an_unclaimed_kind_with_every_plugin_loaded_is_an_ordinary_item(layout):
+    """No blocking failure: a kind nobody claims (a plugin removed on purpose) is generic data, answerable."""
     _configure(layout.root, [], {})
     item = inbox.create(layout, for_role="owner", subject="old", summary="orphan", kind="labelling")
     assert inbox.ownership_unknown(layout, "labelling") is None

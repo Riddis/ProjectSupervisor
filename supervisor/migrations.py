@@ -1,9 +1,9 @@
 """State/config migrations between framework versions. Each migration is idempotent and records nothing but the new
 `framework_version` in project.yaml. `supervisor doctor` reports a mismatch; `supervisor migrate` applies these.
 
-After the framework's own, `supervisor migrate` runs the migrations each configured extension's manifest names
+After the framework's own, `supervisor migrate` runs the migrations each configured plugin's manifest names
 (`migrations = "<module>"`, a module exposing MIGRATIONS with the same `(layout, dry_run) -> notes` contract). Only
-that module is imported, never the extension's setup(); an extension whose framework range excludes this framework
+that module is imported, never the plugin's setup(); a plugin whose framework range excludes this framework
 is skipped (it does not load either)."""
 from __future__ import annotations
 
@@ -134,12 +134,12 @@ def _approval_responses(layout: Layout, dry_run: bool) -> list[str]:
 
 
 def _configured_manifests(layout: Layout) -> list:
-    """The manifests of the configured extensions the loader's import-free approval accepts (extensions.approval).
+    """The manifests of the configured plugins the loader's import-free approval accepts (plugins.approval).
     A manifest the loader would refuse directs no config move and has no migration imported (review 1.12.0 R1); an
-    extension that only fails in setup() is not refused here, since migrate never runs setup()."""
-    from . import extensions
-    plan = extensions.approval(layout)
-    extensions.guard_refused(layout, plan)                 # an approved migration cannot import a refused one
+    plugin that only fails in setup() is not refused here, since migrate never runs setup()."""
+    from . import plugins
+    plan = plugins.approval(layout)
+    plugins.guard_refused(layout, plan)                 # an approved migration cannot import a refused one
     return plan.approved()
 
 
@@ -164,10 +164,10 @@ def _resources_gpu(layout: Layout, dry_run: bool) -> list[str]:
     return ["config/routing.yaml: gpu moved to resources.gpu (shared resource policy)"]
 
 
-def _extension_config(layout: Layout, dry_run: bool) -> list[str]:
-    """Each configured extension's `config.legacy_sections` -> `extensions.<identity>` (1.12.0): the section named like
+def _plugin_config(layout: Layout, dry_run: bool) -> list[str]:
+    """Each configured plugin's `config.legacy_sections` -> `plugins.<identity>` (1.12.0): the section named like
     the identity at the top, any other nested under its own name. Comments move with them. Driven by the manifests
-    discovery reads; no extension code runs. An extension whose section already exists is left alone."""
+    discovery reads; no plugin code runs. A plugin whose section already exists is left alone."""
     cfg = layout.config / "routing.yaml"
     if not cfg.exists():
         return []
@@ -180,46 +180,46 @@ def _extension_config(layout: Layout, dry_run: bool) -> list[str]:
         return []
     notes = []
     for m in _configured_manifests(layout):
-        owned = doc.get("extensions")
+        owned = doc.get("plugins")
         if m.config is None or (isinstance(owned, dict) and m.identity in owned) \
                 or (owned is not None and not isinstance(owned, dict)):
             continue
         present = [s for s in m.config.legacy_sections if s in doc]
         if not present:
             continue
-        moves = [(m.identity, ("extensions", m.identity))] if m.identity in present else []
-        moves += [(s, ("extensions", m.identity, s)) for s in present if s != m.identity]
+        moves = [(m.identity, ("plugins", m.identity))] if m.identity in present else []
+        moves += [(s, ("plugins", m.identity, s)) for s in present if s != m.identity]
         text = yaml_edit.move_sections(text, moves)
         doc = yaml.safe_load(text)
-        notes.append(f"config/routing.yaml: {', '.join(present)} moved to extensions.{m.identity} "
-                     f"(extension {m.identity})")
+        notes.append(f"config/routing.yaml: {', '.join(present)} moved to plugins.{m.identity} "
+                     f"(plugin {m.identity})")
     if notes and not dry_run:
         store.rewrite_text(cfg, text)
     return notes
 
 
-def _extension_migrations(layout: Layout, dry_run: bool) -> list[str]:
-    """The migrations each configured extension's manifest names, after the framework's. Notes are prefixed with the
-    extension's identity; a failing one stops the run with MigrationError naming it."""
-    from . import extensions
+def _plugin_migrations(layout: Layout, dry_run: bool) -> list[str]:
+    """The migrations each configured plugin's manifest names, after the framework's. Notes are prefixed with the
+    plugin's identity; a failing one stops the run with MigrationError naming it."""
+    from . import plugins
     notes = []
     for m in _configured_manifests(layout):
         if not m.migrations:
             continue
         try:
-            with extensions.importing_for(layout):        # its imports follow this project's approval
-                module = extensions.import_named_module(layout, m.migrations)
+            with plugins.importing_for(layout):        # its imports follow this project's approval
+                module = plugins.import_named_module(layout, m.migrations)
                 for migration in getattr(module, "MIGRATIONS", []):
                     notes += [f"{m.identity}: {n}" for n in migration(layout, dry_run)]
         except store.CannotKeep:
             raise
         except Exception as exc:                            # named and stopped, never half-reported
-            raise MigrationError(f"extension {m.identity!r}: its migration ({m.migrations}) failed: {exc}") from exc
+            raise MigrationError(f"plugin {m.identity!r}: its migration ({m.migrations}) failed: {exc}") from exc
     return notes
 
 
 MIGRATIONS: list[Migration] = [_routing_limits_rename, _tasks_cost_category, _approval_responses, _resources_gpu,
-                               _extension_config]
+                               _plugin_config]
 
 
 def run(layout: Layout, dry_run: bool = False) -> list[str]:
@@ -239,7 +239,7 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
     try:
         for m in MIGRATIONS:
             notes += m(layout, dry_run)
-        notes += _extension_migrations(layout, dry_run)
+        notes += _plugin_migrations(layout, dry_run)
         raw = project.raw(layout)
         recorded = str(raw.get("framework_version") or "")
         if recorded != __version__:

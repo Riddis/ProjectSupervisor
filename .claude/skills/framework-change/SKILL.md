@@ -1,23 +1,23 @@
 ---
 name: framework-change
-description: Change the Supervisor framework itself (loop, store, gates, adapters, Control Center, CLI, template, docs) or decide whether a change belongs in the framework, an extension or a project, and take it to a reviewable state with gates G1, G3 and G7 green. Use when the user says "change the framework", "this fix should go upstream", "add this to the control center for every project", "/framework-change", "/supervisor-update", or asks why a project folder and the framework differ. For cutting the release afterwards use framework-release; for any state or config format change use migration-author.
+description: Change the Supervisor framework itself (loop, store, gates, adapters, Control Center, CLI, template, docs) or decide whether a change belongs in the framework, a plugin or a project, and take it to a reviewable state with gates G1, G3 and G7 green. Use when the user says "change the framework", "this fix should go upstream", "add this to the control center for every project", "/framework-change", "/supervisor-update", or asks why a project folder and the framework differ. For cutting the release afterwards use framework-release; for any state or config format change use migration-author.
 ---
 
 # Changing the Supervisor framework
 
 Two kinds of folder are involved: the **framework** (this repo: `supervisor/`, `docs/`, `tests/`, `boundary.toml`)
 and **projects**, which run a tagged framework checkout installed editable. A project never edits the framework;
-the framework never names a project. Read `docs/BOUNDARY.md` and `docs/FRAMEWORK_VS_EXTENSION.md` first.
+the framework never names a project. Read `docs/BOUNDARY.md` and `docs/FRAMEWORK_VS_PLUGIN.md` first.
 
 ## 1. Decide where the change goes, in writing
 
 Answer before writing code, and keep the answer for the pull request (G7):
 
 - **Rule 1:** would a project about something completely different want this? Yes → framework, continue here.
-  Some projects → an extension package (`supervisor extension new <name> --package`, `docs/EXTENSION_STANDARD.md`). Only this project →
-  the project's `extensions/`, `config/` or `agents/`: stop here and do it there.
+  Some projects → a plugin package (`supervisor plugin new <name> --package`, `docs/PLUGIN_STANDARD.md`). Only this project →
+  the project's `plugins/`, `config/` or `agents/`: stop here and do it there.
 - **Rule 3, for a new or changed hook:** name its second user — a generic use beyond the project asking. With
-  only one user the project solves it in its extension.
+  only one user the project solves it in its plugin.
 - **Rule 4:** a default that is right for only one project is that project's value, not a framework default.
 
 ## 2. Set up the clone once
@@ -43,14 +43,14 @@ fails such a test). Run `python -m pytest -q` before and after; on Windows `tool
   commit message explains.
 - A change to the shape of anything under a project's `state/` or `config/` is a migration: use the
   **migration-author** skill.
-- A hook added or changed: update `docs/FRAMEWORK_VS_EXTENSION.md`, `supervisor/ext/_registry.py` (the documented
-  `Registry`), the reference extension and its contract test (`tests/test_hook_contracts.py` fails until the new hook
+- A hook added or changed: update `docs/FRAMEWORK_VS_PLUGIN.md`, `supervisor/plugin/_registry.py` (the documented
+  `Registry`), the reference plugin and its contract test (`tests/test_hook_contracts.py` fails until the new hook
   has one), and the template's `project.yaml` / `routing.yaml` comments. Adding one is a minor version, changing one
-  a major version with a migration note for extension authors.
-- The public extension API (`supervisor/ext/`, `docs/EXTENSION_API.md`) is a promise to every extension: export a
-  name only when an extension needs it (rule 3 for a second user), with a behaviour test through `supervisor.ext`,
-  its section in `docs/EXTENSION_API.md`, `python -m supervisor.api_contract record` to update
-  `docs/extension_api.json` in the same commit, and an "Extension API" line in `CHANGELOG.md` naming it. Removing a
+  a major version with a migration note for plugin authors.
+- The public plugin API (`supervisor/plugin/`, `docs/PLUGIN_API.md`) is a promise to every plugin: export a
+  name only when a plugin needs it (rule 3 for a second user), with a behaviour test through `supervisor.plugin`,
+  its section in `docs/PLUGIN_API.md`, `python -m supervisor.api_contract record` to update
+  `docs/plugin_api.json` in the same commit, and a "Plugin API" line in `CHANGELOG.md` naming it. Removing a
   name or changing a signature so a caller breaks needs a minor release that warns first, then a major one.
   `supervisor.testing` is unstable and carries no such promise.
 - `supervisor/template/` is the only place project files are born; keep it generic and its comments current (dot
@@ -68,10 +68,10 @@ All four, and say in the pull request which ran (the gate table in `docs/BOUNDAR
   documented section, and the difference from the last release tag (signatures and documented sections) follows the
   version rule and is classified in the CHANGELOG (CI runs it with full history).
 - **G3** `python -m pytest -q` green on Windows (`tools\test_windows.ps1`) and on Linux (CI runs both).
-- **G7** the written answers from step 1, plus: extension API impact (names added, deprecated or changed),
+- **G7** the written answers from step 1, plus: plugin API impact (names added, deprecated or changed),
   migration impact, docs updated.
 
-Then `CHANGELOG.md` under `## Unreleased` (what changed and why, for owners and extension authors), and the
+Then `CHANGELOG.md` under `## Unreleased` (what changed and why, for owners and plugin authors), and the
 commit naming the module or hook. Never commit framework changes from a project repo; never put project files in
 the framework.
 
@@ -84,7 +84,7 @@ stop, move their framework checkout to the tag (`git -C <runtime worktree> fetch
 dependencies changed, `supervisor migrate --dry-run`, `supervisor migrate`, `supervisor doctor`, start. Never `git
 pull` a project's framework checkout: doctor refuses an untagged or dirty one, by design.
 
-## Promoting a project extension into the framework
+## Promoting a project plugin into the framework
 
 Rule 1 must hold for the whole of it: split the project-specific parts out first and leave them in the project.
 Port the code with its tests (an adapter under `adapters/`, a check into `doctor.py`, a page into `ui/routes/`),

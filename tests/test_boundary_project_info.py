@@ -155,7 +155,7 @@ def test_the_framework_repository_holds_no_project_information():
 
 
 # ---------------------------------------------------------------- the project-words scan for any repository (1.14.0)
-# An extension package's repository (or its folder under packages/) and its built wheel must hold no project
+# A plugin package's repository (or its folder under packages/) and its built wheel must hold no project
 # information either: `python -m supervisor.boundary --words <target>` runs G1d's word list over any folder or built
 # archive, file names included. A release check that cannot run fails instead of passing.
 
@@ -179,15 +179,15 @@ def test_any_folder_is_scanned_contents_and_file_names(tmp_path, monkeypatch):
     root = package(tmp_path, {
         ".gitignore": "build/\n",
         "README.md": "# A lane\nBuilt for Wobble Works.\n",
-        "src/supervisor_ext_quuxify/__init__.py": "x = 1\n",
-        "src/supervisor_ext_quuxify/lane.py": "NAME = 'neutral'\n",
+        "src/supervisor_plugin_quuxify/__init__.py": "x = 1\n",
+        "src/supervisor_plugin_quuxify/lane.py": "NAME = 'neutral'\n",
         "build/notes.txt": "zorblax\n",
     })
     terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
     assert hits(boundary.scan_words(root, terms)) == [
         ("README.md", 2, "Wobble Works"),
-        ("src/supervisor_ext_quuxify/__init__.py", 0, "quuxify"),
-        ("src/supervisor_ext_quuxify/lane.py", 0, "quuxify"),
+        ("src/supervisor_plugin_quuxify/__init__.py", 0, "quuxify"),
+        ("src/supervisor_plugin_quuxify/lane.py", 0, "quuxify"),
     ]
 
 
@@ -200,16 +200,16 @@ def test_a_folder_inside_a_repository_is_scanned_alone(tmp_path, monkeypatch):
 
 def test_a_built_wheel_is_scanned_metadata_and_member_names_included(tmp_path, monkeypatch):
     import zipfile
-    wheel = tmp_path / "supervisor_ext_neutral-1.0.0-py3-none-any.whl"
+    wheel = tmp_path / "supervisor_plugin_neutral-1.0.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as z:
-        z.writestr("supervisor_ext_neutral/__init__.py", "x = 1\n")
-        z.writestr("supervisor_ext_neutral/zorblax.json", "{}\n")
-        z.writestr("supervisor_ext_neutral-1.0.0.dist-info/METADATA", "Name: neutral\nSummary: for Wobble Works\n")
-        z.writestr("supervisor_ext_neutral/icon.png", bytes([0x89, 0x50, 0xff, 0xfe, 0x00]) + b"quuxify")
+        z.writestr("supervisor_plugin_neutral/__init__.py", "x = 1\n")
+        z.writestr("supervisor_plugin_neutral/zorblax.json", "{}\n")
+        z.writestr("supervisor_plugin_neutral-1.0.0.dist-info/METADATA", "Name: neutral\nSummary: for Wobble Works\n")
+        z.writestr("supervisor_plugin_neutral/icon.png", bytes([0x89, 0x50, 0xff, 0xfe, 0x00]) + b"quuxify")
     terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
     assert hits(boundary.scan_words(wheel, terms)) == [
-        (f"{wheel.name}!supervisor_ext_neutral-1.0.0.dist-info/METADATA", 2, "Wobble Works"),
-        (f"{wheel.name}!supervisor_ext_neutral/zorblax.json", 0, "zorblax"),
+        (f"{wheel.name}!supervisor_plugin_neutral-1.0.0.dist-info/METADATA", 2, "Wobble Works"),
+        (f"{wheel.name}!supervisor_plugin_neutral/zorblax.json", 0, "zorblax"),
     ]
 
 
@@ -261,42 +261,42 @@ def test_a_folder_an_enclosing_repository_ignores_is_still_scanned(tmp_path, mon
 
 
 # ---------------------------------------------------------------- a package's own name (1.14.0)
-# A project word can become the public name of an extension package kept under packages/ (an identity the project's
+# A project word can become the public name of a plugin package kept under packages/ (an identity the project's
 # saved state already uses). The local file may allow it there, and only there: inside packages/<distribution>/ (or
 # that folder scanned on its own) and in that distribution's wheel or sdist. Everywhere else it is still a hit.
 
 ALLOWING = TERMS + """
 [projects.zorblax.packages]
-supervisor-ext-quuxify = ["quuxify"]
+supervisor-plugin-quuxify = ["quuxify"]
 """
 
 
 def test_a_package_may_carry_its_own_name_and_nothing_else_may(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, ALLOWING)
     root = framework(tmp_path, {
-        "packages/supervisor-ext-quuxify/README.md": "The quuxify lane, built for zorblax.\n",
-        "packages/supervisor-ext-quuxify/supervisor_ext_quuxify/__init__.py": "NAME = 'quuxify'\n",
-        "packages/supervisor-ext-other/README.md": "Not the quuxify package.\n",
-        "examples/supervisor-ext-quuxify/README.md": "neutral\n",
-        "docs/PACKAGES.md": "See supervisor-ext-quuxify.\n",
+        "packages/supervisor-plugin-quuxify/README.md": "The quuxify lane, built for zorblax.\n",
+        "packages/supervisor-plugin-quuxify/supervisor_plugin_quuxify/__init__.py": "NAME = 'quuxify'\n",
+        "packages/supervisor-plugin-other/README.md": "Not the quuxify package.\n",
+        "examples/supervisor-plugin-quuxify/README.md": "neutral\n",
+        "docs/PACKAGES.md": "See supervisor-plugin-quuxify.\n",
     })
     assert g1d(boundary.check(root, user_names=[])) == [
         ("docs/PACKAGES.md", 1, "quuxify"),
-        ("examples/supervisor-ext-quuxify/README.md", 0, "quuxify"),
-        ("packages/supervisor-ext-other/README.md", 1, "quuxify"),
-        ("packages/supervisor-ext-quuxify/README.md", 1, "zorblax"),        # another word: still a hit
+        ("examples/supervisor-plugin-quuxify/README.md", 0, "quuxify"),
+        ("packages/supervisor-plugin-other/README.md", 1, "quuxify"),
+        ("packages/supervisor-plugin-quuxify/README.md", 1, "zorblax"),        # another word: still a hit
     ]
 
 
 def test_the_allowance_holds_for_the_package_folder_scanned_alone_or_from_the_root(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, ALLOWING)
-    root = package(tmp_path, {"packages/supervisor-ext-quuxify/supervisor_ext_quuxify/lane.py": "X = 'quuxify'\n",
+    root = package(tmp_path, {"packages/supervisor-plugin-quuxify/supervisor_plugin_quuxify/lane.py": "X = 'quuxify'\n",
                               "docs/A.md": "quuxify\n"})
     terms = boundary.load_project_terms()
     allowed = boundary.load_package_allowances()
-    assert hits(boundary.scan_words(root / "packages" / "supervisor-ext-quuxify", terms, allowed=allowed)) == []
+    assert hits(boundary.scan_words(root / "packages" / "supervisor-plugin-quuxify", terms, allowed=allowed)) == []
     assert hits(boundary.scan_words(root, terms, allowed=allowed)) == [("docs/A.md", 1, "quuxify")]
-    assert hits(boundary.scan_words(root / "packages" / "supervisor-ext-quuxify", terms)) != []   # none given
+    assert hits(boundary.scan_words(root / "packages" / "supervisor-plugin-quuxify", terms)) != []   # none given
 
 
 def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monkeypatch):
@@ -305,18 +305,18 @@ def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monk
     import zipfile
     terms_file(tmp_path, monkeypatch, ALLOWING)
     terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
-    own = tmp_path / "supervisor_ext_quuxify-1.0.0-py3-none-any.whl"
-    other = tmp_path / "supervisor_ext_other-1.0.0-py3-none-any.whl"
+    own = tmp_path / "supervisor_plugin_quuxify-1.0.0-py3-none-any.whl"
+    other = tmp_path / "supervisor_plugin_other-1.0.0-py3-none-any.whl"
     for wheel in (own, other):
         with zipfile.ZipFile(wheel, "w") as z:
-            z.writestr("supervisor_ext_quuxify/__init__.py", "NAME = 'quuxify'  # zorblax\n")
+            z.writestr("supervisor_plugin_quuxify/__init__.py", "NAME = 'quuxify'  # zorblax\n")
     assert hits(boundary.scan_words(own, terms, allowed=allowed)) == [
-        (f"{own.name}!supervisor_ext_quuxify/__init__.py", 1, "zorblax")]
+        (f"{own.name}!supervisor_plugin_quuxify/__init__.py", 1, "zorblax")]
     assert len(hits(boundary.scan_words(other, terms, allowed=allowed))) == 3
-    sdist = tmp_path / "supervisor-ext-quuxify-1.0.0.tar.gz"
+    sdist = tmp_path / "supervisor-plugin-quuxify-1.0.0.tar.gz"
     with tarfile.open(sdist, "w:gz") as t:
         data = b"Summary: the quuxify lane\n"
-        info = tarfile.TarInfo("supervisor-ext-quuxify-1.0.0/PKG-INFO")
+        info = tarfile.TarInfo("supervisor-plugin-quuxify-1.0.0/PKG-INFO")
         info.size = len(data)
         t.addfile(info, io.BytesIO(data))
     assert hits(boundary.scan_words(sdist, terms, allowed=allowed)) == []
@@ -324,17 +324,17 @@ def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monk
 
 def test_the_words_cli_reads_the_allowance_from_the_local_file(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, ALLOWING)
-    root = package(tmp_path, {"packages/supervisor-ext-quuxify/README.md": "the quuxify lane\n"})
-    assert boundary.words([root / "packages" / "supervisor-ext-quuxify"], echo=lambda _l: None) == 0
+    root = package(tmp_path, {"packages/supervisor-plugin-quuxify/README.md": "the quuxify lane\n"})
+    assert boundary.words([root / "packages" / "supervisor-plugin-quuxify"], echo=lambda _l: None) == 0
 
 
 BASE_TERMS = '[projects.zorblax]\nterms = ["zorblax", "quuxify"]\n'
 
 
 @pytest.mark.parametrize("text", [
-    BASE_TERMS + '[projects.zorblax.packages]\nsupervisor-ext-quuxify = "quuxify"\n',        # not a list
-    '[projects.zorblax]\nterms = ["quuxify"]\npackages = ["supervisor-ext-quuxify"]\n',      # not a table
-    BASE_TERMS + '[projects.zorblax.packages]\nsupervisor-ext-quuxify = ["blorp"]\n',       # not the project's word
+    BASE_TERMS + '[projects.zorblax.packages]\nsupervisor-plugin-quuxify = "quuxify"\n',        # not a list
+    '[projects.zorblax]\nterms = ["quuxify"]\npackages = ["supervisor-plugin-quuxify"]\n',      # not a table
+    BASE_TERMS + '[projects.zorblax.packages]\nsupervisor-plugin-quuxify = ["blorp"]\n',       # not the project's word
 ])
 def test_a_malformed_allowance_stops_the_check(tmp_path, monkeypatch, text):
     terms_file(tmp_path, monkeypatch, text)

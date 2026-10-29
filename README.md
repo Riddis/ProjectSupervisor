@@ -13,15 +13,15 @@ Supervisor/                 the framework (this repo) — generic, installed int
   supervisor/               the Python package: loop, store, gates, review, inbox, adapters, Control Center
   supervisor/template/      what `supervisor init` stamps into a new project
   .claude/skills/           the contributor skills: setup (interview → plan → approval → scaffold), framework
-                            change and release, migrations, extensions, boundary review
+                            change and release, migrations, plugins, boundary review
   docs/                     how it works, how to extend it, runbooks
 
 <your project>/             a thin project folder — everything specific to one project
-  project.yaml              name, phase labels, extensions, framework version
+  project.yaml              name, phase labels, plugins, framework version
   config/routing.yaml       roles → lanes/models, limits, verification commands
   agents/                   role cards + result schemas
   state/                    tasks, gates, decisions, issues, inbox (the truth; rendered to *.md)
-  extensions/               project-specific Python the framework loads (adapters, checks, UI panels)
+  plugins/               project-specific Python the framework loads (adapters, checks, UI panels)
   docs/plan/PROJECT_PLAN.md the approved plan
 ```
 
@@ -45,7 +45,7 @@ Then either run the **setup skill** from Claude Code / Cowork with this folder o
 any agent. Afterwards:
 
 ```powershell
-.venv\Scripts\python.exe -m supervisor doctor        # tools, state, routing, extensions
+.venv\Scripts\python.exe -m supervisor doctor        # tools, state, routing, plugins
 .venv\Scripts\python.exe -m supervisor task import   # tasks from state/tasks_seed.yaml
 start_control_center.bat                             # UI at http://127.0.0.1:8790/
 start_supervisor.bat                                 # loop + UI
@@ -76,7 +76,7 @@ project folder.
 
 - `docs/ARCHITECTURE.md` — the modules and the invariants they keep.
 - `docs/TASK_CONTRACT.md` — task, gate, decision, issue, inbox and owner-task records.
-- `docs/FRAMEWORK_VS_EXTENSION.md` — what goes in the framework, what goes in a project, how extensions work.
+- `docs/FRAMEWORK_VS_PLUGIN.md` — what goes in the framework, what goes in a project, how plugins work.
 - `docs/SETUP_INTERVIEW.md` — the project setup interview (system-agnostic; the skill wraps it).
 - Project-side skills (maintenance window, rehearsal, upgrade, restore, diagnosis, tasks, roles) reach a project
   with `supervisor init`; `supervisor skills status` and `supervisor skills update` keep them current.
@@ -95,7 +95,7 @@ itself runs on Linux/macOS and the test suite runs there.
 
 Apache License 2.0 with the Commons Clause (`LICENSE`). You may use, modify and share the framework, at work too.
 You may not sell it, or sell a product or service whose value comes entirely or substantially from it, hosting and
-paid support included. That makes it source-available rather than open source in the formal sense. Extensions are
+paid support included. That makes it source-available rather than open source in the formal sense. Plugins are
 their authors' own and carry their own licences. Contributions are accepted under the same licence.
 
 ## Naming
