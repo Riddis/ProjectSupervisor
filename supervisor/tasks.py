@@ -166,14 +166,28 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
     - one that is inactive (`active: false`), which parks the task until the role is activated;
-    - a check command outside `verification.allowed_test_commands`, which would fail only at verification.
+    - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
+    - a `job` whose adapter, or whose python `fn`, nothing registers (built in or from a loaded extension), which
+      would fail only when it ran.
     Warnings, not errors: a project whose seed already holds one keeps importing."""
     from . import gate, verify
     roles = gate.routing_doc(layout).get("roles")
     roles = roles if isinstance(roles, dict) else {}
     allowed = verify.allowed_test_commands(layout)
     out = []
+    loaded = None
     for t in tasks:
+        job = (getattr(t, "model_extra", None) or {}).get("job")
+        if isinstance(job, dict) and job.get("adapter"):
+            if loaded is None:
+                loaded = _registered_lanes(layout)
+            lanes, python_jobs, unloaded = loaded
+            if job["adapter"] not in lanes:
+                out.append(f"{t.id}: job adapter {job['adapter']!r} is not a registered lane{unloaded}; the job "
+                           f"would fail when it ran")
+            elif job["adapter"] == "python" and job.get("fn", "noop") not in python_jobs:
+                out.append(f"{t.id}: job fn {job.get('fn')!r} is not a registered python job{unloaded}; the job "
+                           f"would fail when it ran")
         named = [("owner_role", t.owner_role)] + [("reviewer", r) for r in t.reviewer]
         for field_name, role in named:
             if not role:
@@ -189,6 +203,17 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
                 out.append(f"{t.id}: check {check.command!r} is not in verification.allowed_test_commands; "
                            f"verification would refuse it")
     return out
+
+
+def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
+    """The adapter names and python job names registered once the project's extensions have loaded, and a note
+    for the warning when an extension did not load (its names are then missing for that reason)."""
+    from . import extensions
+    from .adapters import REGISTRY
+    from .adapters.python import JOBS
+    reg = extensions.load(layout)
+    unloaded = " (an extension did not load: see `supervisor doctor`)" if reg.errors else ""
+    return set(REGISTRY), set(JOBS), unloaded
 
 
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:

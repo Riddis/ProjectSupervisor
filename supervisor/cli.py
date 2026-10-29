@@ -178,7 +178,7 @@ def doctor():
 @app.command()
 def check():
     """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
-    not configure or has made inactive, and about checks off the allowed list."""
+    not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs."""
     layout = _layout()
     tasks = tasks_mod.load_all(layout)
     errors = tasks_mod.validate_graph(tasks)

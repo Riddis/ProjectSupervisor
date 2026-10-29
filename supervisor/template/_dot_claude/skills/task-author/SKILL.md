@@ -53,7 +53,8 @@ Find the framework with the project's own environment, from the project folder a
 
 1. `supervisor task import --dry-run` (with `--update-contracts <ids>` when refreshing). It writes nothing. It
    refuses an artifact that cannot match a file, a missing dependency or a cycle. It warns about a role routing does
-   not know or has made inactive, and about a check off the allowed list. Fix every refusal, and every warning
+   not know or has made inactive, about a check off the allowed list, and about a job whose lane or python
+   function nothing registers. Fix every refusal, and every warning
    unless you can say why it is right.
 2. `supervisor check`: no ERROR, and the same warnings for every open task.
 3. Then import for real, and `supervisor task show <id>` to read it back.

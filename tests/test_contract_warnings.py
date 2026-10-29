@@ -69,3 +69,39 @@ def test_supervisor_check_reports_them_and_still_passes(tmp_path, monkeypatch):
     out = CliRunner().invoke(app, ["check"])
     assert out.exit_code == 0, out.output
     assert "WARN T0-01: owner_role 'nobody'" in out.output and "WARN T0-02" in out.output, out.output
+
+
+EXT = '''
+from supervisor.ext import Adapter
+
+def tally(root, run_dir, **params):
+    return {"status": "COMPLETE", "artifacts": [], "notes": ""}
+
+class Lane(Adapter):
+    name = "tally_lane"
+
+def setup(registry):
+    registry.python_job("tally", tally)
+    registry.adapter(Lane())
+'''
+
+
+def test_a_job_naming_an_unregistered_lane_or_function_is_warned(tmp_path):
+    """1.13.0, a skill-trial finding (extension-promote, round 2): nothing checked that a job's adapter or python
+    function exists, so a task naming a lane or a job that no extension registers imported in silence and failed only
+    when it ran ("unknown python job"). Names an extension registers count, so extensions are loaded first."""
+    try:
+        lay = testing.project(tmp_path, routing=ROUTING, modules={"tally": EXT})
+        (lay.state / "tasks_seed.yaml").write_text(yaml.safe_dump({"tasks": [
+            contract("T0-01", job={"adapter": "nolane"}),
+            contract("T0-02", job={"adapter": "python", "fn": "nojob"}),
+            contract("T0-03", job={"adapter": "python", "fn": "tally"}),
+            contract("T0-04", job={"adapter": "tally_lane"}),
+            contract("T0-05", job={"adapter": "python"}),
+        ]}, sort_keys=False), encoding="utf-8")
+        found = warnings_of(lay)
+        assert any("T0-01" in w and "'nolane'" in w for w in found), found
+        assert any("T0-02" in w and "'nojob'" in w for w in found), found
+        assert not any(w.startswith(("T0-03", "T0-04", "T0-05")) for w in found), found
+    finally:
+        testing.reset()
