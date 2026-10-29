@@ -147,6 +147,29 @@ Both shapes pass `supervisor extension check` as generated, and the package's ow
 `<name>` is the identity: lower case letters, digits and `_`, starting with a letter. An existing folder is never
 overwritten.
 
+## Where a package lives
+
+A package has one of two homes, and the standard is the same in both:
+- **The framework repository's `packages/<distribution>/`** (from 1.14.0), for the packages the framework's
+  maintainers keep: `packages/supervisor-ext-textgen/` with its own `pyproject.toml`, version, CHANGELOG and tests.
+  - It is an optional install. The framework's wheel holds `supervisor*` only, so nothing under `packages/` reaches
+    a project unless the project installs that package's wheel.
+  - Each release is tagged `<identity>-vX.Y.Z` (`text_model-v1.0.0`), with its wheel and sha256 on that tag's
+    release. Only `vX.Y.Z` tags are framework releases: the update check, doctor's runtime check, G2's previous
+    contract and the skills history never take a package's tag for one.
+  - CI runs a job per package (`tools/ci_package.py`): the package's wheel and the framework's, built from the
+    oldest framework release in the manifest's `framework` range and from HEAD, installed in a fresh environment
+    with no source on the path; then the installed proof (found, loaded, G5, a task on what the pyproject's
+    `[tool.supervisor.ci]` names: `lane`, `python_job`, a `config` table for its section) and the package's suite.
+  - G1d (no project information) covers `packages/` like every other file in the repository. G1a to G1c, the
+    framework's own import and literal rules, do not apply to a package: G5 holds its imports to `supervisor.ext`.
+- **A repository of its own**, for anyone else's package: tagged `vX.Y.Z` there, released and tested the same way
+  (the extension-release skill).
+
+Either way the package and its built wheel hold no project's information: `supervisor boundary words <folder>
+<wheel>` runs G1d's local word list over them, file names and the wheel's `METADATA` included. A release checks it
+(extension-release).
+
 ## Migrations
 
 `migrations = "<module>"` names a module exposing `MIGRATIONS`, a list of `migration(layout, dry_run) -> list[str]`

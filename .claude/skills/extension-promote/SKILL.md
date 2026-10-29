@@ -17,7 +17,8 @@ Read the extension and mark each part:
 
 The project-specific parts stay in the project: as configuration the package reads from
 `extensions.<identity>`, or as a small project-local extension that uses the package. Nothing project-specific goes
-into the package. The package's repository carries no project's names, paths or examples either.
+into the package. The package's repository (or its folder under the framework repository's `packages/`) carries
+no project's names, paths or examples either.
 
 ## 2. Create the package
 
@@ -84,7 +85,8 @@ with the same rules: one copy afterwards, the project switched in the same relea
 - The project's suite, after the switch, on the rehearsal copy (switched and rolled back) and then in the window.
 - No copy left: no `extensions/<identity>.py` or `extensions/<identity>/` in the project. The identity itself rightly
   stays in `project.yaml` and the config.
-- Nothing of the project in the package: search the package repository and the built wheel, its `METADATA` (the
-  README) included, for the project's name, paths, aliases and example values (`python -m zipfile -e <wheel>
-  <scratch folder>`, then search that folder). Examples use invented names.
+- Nothing of the project in the package: `supervisor boundary words <package folder> <wheel>` (framework 1.14.0
+  or later) runs the local project-terms file over both, file names and the wheel's `METADATA` included; it fails
+  when the file is missing. Then read for what a word list cannot catch: the project's paths, aliases and example
+  values. Examples use invented names.
 - `supervisor check` in the project: no warning about a job naming the extension's lanes or python jobs.

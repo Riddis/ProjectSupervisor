@@ -1,0 +1,3 @@
+# Review owners. A pull request touching an extension package kept in this repository asks the framework's
+# maintainer for review (docs/EXTENSION_STANDARD.md, "Where a package lives").
+/packages/ @Riddis

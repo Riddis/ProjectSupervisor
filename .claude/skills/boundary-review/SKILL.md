@@ -56,13 +56,15 @@ Read the whole diff before the gates.
 
     When the file exists and nothing is found, G1d prints nothing. "G1d ... did not run" means there is no file:
     create it and run again. CI has no file, so the reviewer runs G1d locally. It reads every file git tracks and
-    every new file git does not ignore, so uncommitted work is covered too.
+    every new file git does not ignore, file names included, so uncommitted work and `packages/` are covered too.
+  - For an extension package and its built wheel: `supervisor boundary words <package folder> <wheel>`.
 - **G2** `python -m supervisor.api_contract check`: OK, and the classification matches the change.
 - **G3** the suite: `python -m pytest -q` locally (Windows: `tools\test_windows.ps1`, which writes
   `runs\pytest_windows.txt`; in a worktree with no `.venv`, pass `-Python <python.exe>`).
   - For a pushed head, also read CI's exact-head checks for Linux and Windows.
   - For local work, only your own platform has run. Say so; the other runs when it is pushed.
-- **G5** for an extension: `supervisor extension check <identity>`. For a package, across its framework range.
+- **G5** for an extension: `supervisor extension check <identity>`. For a package, across its framework range;
+  for a package under `packages/`, its CI jobs run that against the oldest framework and HEAD.
 - **G4**, for a release: the version rule, the CHANGELOG's Migration and Rollback lines, the tag only after
   acceptance.
 

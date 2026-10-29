@@ -36,7 +36,9 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   (`tools/ci_package.py`): the framework's wheel built from the oldest release in the package's `framework` range
   and from HEAD, the package's wheel, a fresh environment, the installed proof and the package's own suite with no
   source on the path. A generated package names its python job for that job in `[tool.supervisor.ci]`. The G5 job
-  proves the path on a package scaffolded in the runner.
+  proves the path on a package scaffolded in the runner. docs/EXTENSION_STANDARD.md ("Where a package lives"),
+  `packages/README.md` and the extension skills describe both homes (here, or a repository of its own) and the
+  release tag for each; `.github/CODEOWNERS` names the reviewer for `packages/`.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 

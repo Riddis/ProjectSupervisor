@@ -13,8 +13,9 @@ extension but a framework change (the framework-change skill).
 
 Ask: would a different project want this, as it is?
 - **No:** it is **project-local**, a module in the project's `extensions/` folder.
-- **Yes, or it will be shared:** it is a **package** in its own repository, installed into each project that uses
-  it.
+- **Yes, or it will be shared:** it is a **package**, installed into each project that uses it. It lives either in
+  the framework repository's `packages/` (a package the framework's maintainers keep) or in a repository of its
+  own (docs/EXTENSION_STANDARD.md, "Where a package lives").
 
 Write the answer and its reason in the extension's module docstring (local) or its README (package). It decides
 everything below.
@@ -23,12 +24,14 @@ everything below.
 
 - **Project-local:** from the project folder, `supervisor extension new <name>`. It writes `extensions/<name>.py`
   and `extensions/<name>.toml` (the manifest) and lists the name in `project.yaml`.
-- **Package:** `supervisor extension new <name> --package --dir <where>`. It writes the folder
-  `supervisor-ext-<name>` (with `_` as `-`). That folder holds:
+- **Package:** `supervisor extension new <name> --package --dir <where>` (in the framework repository,
+  `--dir packages`). It writes the folder `supervisor-ext-<name>` (with `_` as `-`). That folder holds:
   - `pyproject.toml`, with the entry point in the `supervisor.extensions` group;
   - the package `supervisor_ext_<name>`, with its manifest and a pydantic config model;
   - a generated conformance test and a behaviour test;
-  - a README and a CHANGELOG.
+  - a README and a CHANGELOG;
+  - `[tool.supervisor.ci]` in `pyproject.toml`: what the framework repository's CI drives on the installed wheel
+    (its python job; name a `lane`, or a `config` table when a field is required, as it changes).
 
 `<name>` is the extension's **identity**: lower case letters, digits and `_`, starting with a letter. It never
 changes once anything is saved under it.

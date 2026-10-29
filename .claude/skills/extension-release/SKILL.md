@@ -76,8 +76,13 @@ Record, for the release:
 - the source commit;
 - the framework versions it was tested against, with the results.
 
-Then tag the source commit with that record in the tag's message (`git tag -a vX.Y.Z -m "<the record>"`). The hash
-exists only once the wheel is built, so the tag comes after the build, never before.
+Then tag the source commit with that record in the tag's message. The hash exists only once the wheel is built, so
+the tag comes after the build, never before.
+- A package in a repository of its own: `git tag -a vX.Y.Z -m "<the record>"`.
+- A package under the framework repository's `packages/`: `git tag -a <identity>-vX.Y.Z -m "<the record>"`
+  (`text_model-v1.0.0`). A `vX.Y.Z` tag there would be a framework release. Attach the wheel and its sha256 to that
+  tag's GitHub release (`gh release create <identity>-vX.Y.Z <wheel> --latest=false --notes "<the record>"`): the
+  latest release is the framework's.
 
 ## 4. Into a project, and the catalog
 
@@ -93,6 +98,10 @@ exists only once the wheel is built, so the tag comes after the build, never bef
 
 ## Checks it ends with
 
+- No project's information in the package or the wheel: `supervisor boundary words <package folder> <wheel>`
+  (framework 1.14.0 or later) passes, run where the local project-terms file is. It fails, rather than passing,
+  without that file.
 - G5 on the installed wheel, against the oldest and the newest framework in the range.
 - The package's suite on the installed wheel, against both.
-- The artifact identified: version, wheel name, sha256, commit and tag.
+- The artifact identified: version, wheel name, sha256, commit and tag. For a package under the framework
+  repository's `packages/`, its CI jobs (oldest framework and HEAD) green on the release commit.
