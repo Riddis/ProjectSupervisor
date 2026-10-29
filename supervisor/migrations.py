@@ -7,6 +7,9 @@ that module is imported, never the plugin's setup(); a plugin whose framework ra
 is skipped (it does not load either)."""
 from __future__ import annotations
 
+import re
+import tomllib
+from pathlib import Path
 from typing import Callable
 
 import yaml
@@ -218,8 +221,136 @@ def _plugin_migrations(layout: Layout, dry_run: bool) -> list[str]:
     return notes
 
 
-MIGRATIONS: list[Migration] = [_routing_limits_rename, _tasks_cost_category, _approval_responses, _resources_gpu,
-                               _plugin_config]
+_OLD_KEY = re.compile(r"^extensions(?=[ \t]*:)", re.MULTILINE)
+_OLD_REQUIRES = re.compile(r"^([ \t]*)extensions(?=[ \t]*=)", re.MULTILINE)
+_OLD_SECTION = re.compile(r"""(["'])extensions\.""")
+_OLD_IMPORT = re.compile(r"^[ \t]*(?:from|import)[ \t]+(?:supervisor\.ext\b|extensions\b)|"
+                         r"^[ \t]*from[ \t]+supervisor[ \t]+import[ \t]+[^\n]*\bext\b", re.MULTILINE)
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "runs", "state", "__pycache__"}
+
+
+def _key_rename(layout: Layout, rel: str) -> tuple[Path, str] | None:
+    """(file, its text with the top-level `extensions:` key renamed `plugins:`), or None when it has no such key.
+    Raises MigrationError for a file holding both names, or the old one in a form a line edit cannot rename."""
+    path = layout.root / rel
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8")
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None                                          # doctor reports an unreadable file
+    if not isinstance(doc, dict) or "extensions" not in doc:
+        return None
+    if "plugins" in doc:
+        raise MigrationError(f"{rel} has both extensions and plugins (2.0.0 renamed extensions to plugins): keep "
+                             f"one by hand, then run `supervisor migrate` again")
+    new, n = _OLD_KEY.subn("plugins", text, count=1)
+    if n != 1 or (yaml.safe_load(new) or {}).get("plugins") != doc["extensions"]:
+        raise MigrationError(f"{rel}: its extensions key is not a plain top-level line; rename it plugins by hand, "
+                             f"then run `supervisor migrate` again")
+    return path, new
+
+
+def _old_code(layout: Layout, moved: Path) -> list[str]:
+    """Project Python that imports supervisor.ext or the old folder: the project's to change, never migrate's."""
+    import subprocess
+    root = layout.root
+    listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+                             "--", "*.py"], capture_output=True, check=False)
+    if listed.returncode == 0:
+        files = [root / rel for rel in sorted(set(listed.stdout.decode("utf-8").split("\0"))) if rel]
+    else:
+        files = sorted(p for p in root.rglob("*.py") if not _SKIP_DIRS & set(p.relative_to(root).parts))
+    out = []
+    for p in files:
+        rel = p.relative_to(root).as_posix()
+        if rel.startswith("extensions/"):                    # read where the folder is now
+            p = moved / rel[len("extensions/"):]
+            rel = "plugins/" + rel[len("extensions/"):]
+        if rel in out:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _OLD_IMPORT.search(text):
+            out.append(rel)
+    return out
+
+
+def _out_of_range(folder: Path) -> list[str]:
+    """Local manifests whose `framework` range leaves out this framework: the plugin does not load. A range is its
+    author's promise, so it is named, never widened."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    out = []
+    if not folder.is_dir():
+        return out
+    for p in sorted([*folder.glob("*.toml"), *folder.glob("*/supervisor-plugin.toml"),
+                     *folder.glob("*/supervisor-extension.toml")]):
+        try:
+            rng = str(tomllib.loads(p.read_text(encoding="utf-8")).get("framework") or "")
+            if rng and not SpecifierSet(rng).contains(__version__, prereleases=True):
+                out.append(f"plugins/{p.relative_to(folder).as_posix()}: framework {rng} leaves out this framework "
+                           f"({__version__}), so the plugin does not load until its range includes it")
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, InvalidSpecifier):
+            continue                                         # doctor's plugin_manifests reports a broken manifest
+    return out
+
+
+def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
+    """2.0.0 renamed "extension" to "plugin" (a clean break): project.yaml and config/routing.yaml `extensions:` ->
+    `plugins:`, the folder `extensions/` -> `plugins/`, and in each local manifest `[requires] extensions` ->
+    `plugins`, the config section `extensions.<identity>` -> `plugins.<identity>` and `supervisor-extension.toml` ->
+    `supervisor-plugin.toml`. Every refusal is decided before anything is written. Code that imports supervisor.ext
+    or the old folder is named, not edited."""
+    keys = [k for k in (_key_rename(layout, "project.yaml"), _key_rename(layout, "config/routing.yaml")) if k]
+    old, new = layout.root / "extensions", layout.root / "plugins"
+    move = old.is_dir()
+    if move and new.exists() and (not new.is_dir() or any(new.iterdir())):
+        raise MigrationError("the project has both extensions/ and plugins/ (2.0.0 renamed extensions/ to "
+                             "plugins/): merge them into plugins/ by hand, then run `supervisor migrate` again")
+    folder = old if move else new
+    manifests = []
+    if folder.is_dir():
+        for p in sorted([*folder.glob("*.toml"), *folder.glob("*/supervisor-extension.toml"),
+                         *folder.glob("*/supervisor-plugin.toml")]):
+            text = p.read_text(encoding="utf-8")
+            changed = _OLD_SECTION.sub(r"\1plugins.", _OLD_REQUIRES.sub(r"\1plugins", text))
+            if changed != text or p.name == "supervisor-extension.toml":
+                manifests.append((p.relative_to(folder), text, changed))
+    notes = [f"{path.relative_to(layout.root).as_posix()}: extensions renamed plugins" for path, _t in keys]
+    if move:
+        notes.append("extensions/ moved to plugins/")
+    for rel, text, changed in manifests:
+        what = []
+        if changed != text:
+            what.append("its extensions names renamed plugins")
+        if rel.name == "supervisor-extension.toml":
+            what.append("renamed supervisor-plugin.toml")
+        notes.append(f"plugins/{rel.as_posix()}: {', '.join(what)}")
+    if not dry_run:
+        for path, text in keys:
+            store.rewrite_text(path, text)
+        if move:
+            if new.is_dir():
+                new.rmdir()                                  # an empty plugins/ (nothing in it to merge)
+            old.rename(new)
+        for rel, _text, changed in manifests:
+            path = new / rel
+            store.rewrite_text(path, changed)
+            if rel.name == "supervisor-extension.toml":
+                path.rename(path.with_name("supervisor-plugin.toml"))
+    notes += _out_of_range(new if (move and not dry_run) else folder)
+    code = _old_code(layout, new if (move and not dry_run) else old)
+    if code:
+        notes.append(f"{', '.join(code)}: import supervisor.ext or the extensions folder; change them to "
+                     f"supervisor.plugin and plugins (migrate does not edit code)")
+    return notes
+
+
+MIGRATIONS: list[Migration] = [_plugins_rename, _routing_limits_rename, _tasks_cost_category, _approval_responses,
+                               _resources_gpu, _plugin_config]
 
 
 def run(layout: Layout, dry_run: bool = False) -> list[str]:

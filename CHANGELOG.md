@@ -5,6 +5,33 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
+- **Changed (breaking): "extension" is now "plugin", everywhere, with no old names kept.** The owner's
+  decision (2026-10-29): a clean break, released as a major version. What changes for a project, and what
+  `supervisor migrate` does about it (refusing, before it writes anything, a project that has both the old
+  and the new name):
+
+  | Before | Now | Migrate |
+  | --- | --- | --- |
+  | `project.yaml` `extensions:` | `plugins:` | renames the key |
+  | `config/routing.yaml` `extensions.<identity>` | `plugins.<identity>` | renames the key |
+  | the project's folder `extensions/` | `plugins/` | moves it |
+  | a local manifest's `[requires] extensions`, `section = "extensions.<identity>"` | `plugins` | rewrites them; names a manifest whose `framework` range leaves out 2.0.0 |
+  | a package's `supervisor-extension.toml` (local packages) | `supervisor-plugin.toml` | renames it |
+  | `from supervisor import ext`, `supervisor.ext.*` | `supervisor.plugin` | names the files; the code is the project's to change |
+  | `ExtensionError` | `PluginError` | (code) |
+  | `supervisor extension new / check / list` | `supervisor plugin ...` | — |
+  | entry-point group `supervisor.extensions` | `supervisor.plugins` | an installed package needs a new release |
+  | distributions `supervisor-ext-<name>`, modules `supervisor_ext_<name>` | `supervisor-plugin-<name>`, `supervisor_plugin_<name>` | (new packages) |
+  | doctor checks `extensions`, `extension_manifests`, `extension_imports` | `plugins`, `plugin_manifests`, `plugin_imports` | — |
+  | log event `extension_error` | `plugin_error` | old lines stay as written |
+  | `testing.project(..., extensions=...)` | `plugins=` | — |
+
+  The framework's own names follow: `docs/PLUGIN_API.md`, `docs/plugin_api.json` (G2 reads a release from before
+  the rename under its old file names), `docs/PLUGIN_STANDARD.md`, `docs/FRAMEWORK_VS_PLUGIN.md`, the reference
+  plugin in `examples/reference_plugin/`, the scaffold in `supervisor/plugin_template/`, the skills plugin-new,
+  plugin-promote and plugin-release, `tools/ci_installed_plugin.py`, and the CI jobs "G2 plugin API" and "G5
+  reference plugin" (branch protection names the new jobs). "Extensions" of a job's time limit (the owner's Extend)
+  keep their name: that is another word.
 - **Fixed: `supervisor skills update --dry-run` said "would installe"** for a skill it would install (the past
   tense cut by one letter). It says "would install" and "would update".
 - **Fixed: a package's tag is never taken for a framework release.** Plugin packages kept in this repository tag
