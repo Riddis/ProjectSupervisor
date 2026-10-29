@@ -25,6 +25,10 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
     tags by `tools/skills_history.py`), and any other as edited.
   - `skills update` commits what it wrote, naming only those paths, as migrate does. Its dry run says "would install"
     or "would update".
+- **Fixed: `supervisor reload` keeps a paused loop paused.** The reload command replaced the decision with RELOAD,
+  and the loop came back with RUN. A project left PAUSED for the owner, as every maintenance window leaves it, then
+  started dispatching on a reload. The command now records the decision it replaced (`after_reload`), and the loop
+  restores it, also when it starts on a RELOAD it never finished: PAUSE stays PAUSE, DRAIN stays DRAIN.
 - **Fixed: pytest checks in a fresh project.** Verification gives each pytest run its own
   `--basetemp=runs/pytest_tmp/<tag>`. Nothing created `runs/pytest_tmp/`, and pytest creates the basetemp but never a
   missing parent. So in a new project every task with a pytest check failed verification. The parent is created

@@ -923,7 +923,10 @@ class Supervisor:
                 print(f"supervisor refuses to run: {blocked}", file=sys.stderr)
                 return 1
             runtime.write(self.layout, status="RUNNING", pid=os.getpid(), started=now_iso(), decision=runtime.read(self.layout).get("decision", "RUN"))
-            if reset_decision and runtime.read(self.layout).get("decision") in ("STOP", "RELOAD"):
+            doc = runtime.read(self.layout)
+            if reset_decision and doc.get("decision") == "RELOAD":     # a reload the loop never got to finish
+                runtime.set_decision(self.layout, doc.get("after_reload") or "RUN", "loop-start", after_reload=None)
+            elif reset_decision and doc.get("decision") == "STOP":
                 runtime.set_decision(self.layout, "RUN", "loop-start")   # `supervisor run` = owner Start
             while True:
                 try:
@@ -940,7 +943,9 @@ class Supervisor:
                     return 0
                 if decision == "RELOAD":
                     runtime.heartbeat(self.layout, "STOPPED", reason="reload requested")
-                    runtime.set_decision(self.layout, "RUN", "loop-reload")
+                    # back with the decision the reload replaced: a paused loop stays paused (1.13.0)
+                    after = runtime.read(self.layout).get("after_reload") or "RUN"
+                    runtime.set_decision(self.layout, after, "loop-reload", after_reload=None)
                     return EXIT_RELOAD
                 if max_iterations is not None and self.iteration >= max_iterations:
                     runtime.heartbeat(self.layout, "STOPPED", reason="max iterations")
