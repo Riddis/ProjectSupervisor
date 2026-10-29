@@ -48,8 +48,9 @@ says what that is. Write down every command you ran and what it printed.
 
 ## 4. Bring it back
 
-1. `supervisor migrate --dry-run`, then `supervisor migrate`: the dry run lists what will change and writes nothing;
-   the apply makes exactly those changes and commits them; a repeat says "nothing to migrate".
+1. `supervisor migrate --dry-run`, then `supervisor migrate`: the dry run lists what will change and writes nothing
+   but the lock it holds while it reads (`state/.lock`, git-ignored); the apply makes exactly those changes and
+   commits them; a repeat says "nothing to migrate".
 2. `supervisor doctor`: every check OK, or each FAIL explained (a service that is simply not started is the usual
    one). An unexplained FAIL ends the window with a restore, not a start.
 3. The project's own test suite, against the live files: green before the loop may run. The project's runbook

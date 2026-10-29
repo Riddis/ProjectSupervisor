@@ -58,10 +58,11 @@ Find the framework with the project's own environment, from the project folder a
 
 ## 3. Check before it runs
 
-1. `supervisor task import --dry-run` (with `--update-contracts <ids>` when refreshing). It writes nothing. It
-   refuses an artifact that cannot match a file, a missing dependency or a cycle. It warns about a role routing does
-   not know or has made inactive, about a check off the allowed list, and about a job whose lane or python
-   function nothing registers. Fix every refusal, and every warning unless you can say why it is right.
+1. `supervisor task import --dry-run` (with `--update-contracts <ids>` when refreshing). It writes nothing and
+   sets no extension up. It refuses an artifact that cannot match a file, a missing dependency or a cycle. It warns
+   about a role routing does not know or has made inactive, about a check off the allowed list, and about a job
+   whose lane or python function neither the framework nor an extension's manifest (`provides`) declares. Fix
+   every refusal, and every warning unless you can say why it is right.
 2. Commit the seed, and any `config/routing.yaml` change it needed, with a message that says why. You are the
    owner's session; a dispatched worker never commits. Otherwise the loop's next state commit takes the seed under
    its own message, and `config/` stays uncommitted.

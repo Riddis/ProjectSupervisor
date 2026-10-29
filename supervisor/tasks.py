@@ -167,8 +167,8 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
     - one that is inactive (`active: false`), which parks the task until the role is activated;
     - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
-    - a `job` whose adapter, or whose python `fn`, nothing registers (built in or from a loaded extension), which
-      would fail only when it ran.
+    - a `job` whose adapter, or whose python `fn`, neither the framework nor an extension's manifest provides, which
+      would fail only when it ran. No extension is set up for this (`_registered_lanes`).
     Warnings, not errors: a project whose seed already holds one keeps importing."""
     from . import gate, verify
     roles = gate.routing_doc(layout).get("roles")
@@ -206,14 +206,24 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
 
 
 def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
-    """The adapter names and python job names registered once the project's extensions have loaded, and a note
-    for the warning when an extension did not load (its names are then missing for that reason)."""
+    """The adapter and python job names the framework registers, plus those each configured extension's manifest
+    declares (`provides`, which G5 holds to what its setup() registers), and a note for the warning naming any
+    extension whose names could not be read. Import-free: no extension is set up, so `task import --dry-run` and
+    `supervisor check` write nothing (review 1.13.0 round 2)."""
     from . import extensions
-    from .adapters import REGISTRY
-    from .adapters.python import JOBS
-    reg = extensions.load(layout)
-    unloaded = " (an extension did not load: see `supervisor doctor`)" if reg.errors else ""
-    return set(REGISTRY), set(JOBS), unloaded
+    lanes, python_jobs = extensions._built_in("adapters"), extensions._built_in("python_jobs")
+    unread = []
+    found = extensions.approval(layout)
+    for name, _required in found.entries:
+        m = found.finds[name].manifest
+        if name in found.refused or m is None:
+            unread.append(name)
+            continue
+        lanes |= set(m.provides.get("adapters", ()))
+        python_jobs |= set(m.provides.get("python_jobs", ()))
+    note = (f" (not checked against {', '.join(sorted(unread))}: no usable manifest, see `supervisor doctor`)"
+            if unread else "")
+    return lanes, python_jobs, note
 
 
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:

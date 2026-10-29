@@ -77,7 +77,10 @@ ordinary state commits.
   - an `owner_role` or `reviewer` that routing.yaml does not configure;
   - a role that is inactive;
   - a check command outside `verification.allowed_test_commands`;
-  - a `job` whose adapter, or whose python `fn`, nothing registers (built in or from a loaded extension).
+  - a `job` whose adapter, or whose python `fn`, neither the framework nor an extension's manifest (`provides`)
+    declares. No extension is set up for this: `task import --dry-run`, `supervisor check` and `supervisor
+    supervisor` now read the project without setting its extensions up, so they write nothing, even when an
+    extension fails (`doctor` and `extension list` still set them up, to report on them).
 
   `supervisor check` warns only about open tasks. These are warnings, not refusals, so an existing seed keeps
   importing. Until now, all four passed in silence, and the task then waited forever, failed at verification or

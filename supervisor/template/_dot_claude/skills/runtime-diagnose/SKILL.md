@@ -5,7 +5,11 @@ description: Find out why the whole project misbehaves - a stopped or blocked lo
 
 # Diagnosing the running project
 
-Read first, change nothing. Every step below only reads; the recovery at the end goes through a supported command.
+Read first, change nothing. Every step below only reads, with one exception: `supervisor doctor` and
+`supervisor extension list` set the project's extensions up in order to report on them. That runs the extensions'
+own code, and a load writes the loader's records: an `extension_error` line in `state/log.jsonl` for each optional
+extension that fails, and the projection paths in `state/runtime/`. Run them after the other steps. The recovery at
+the end goes through a supported command.
 
 ## 1. Collect the evidence
 
@@ -26,7 +30,8 @@ Read first, change nothing. Every step below only reads; the recovery at the end
 - `supervisor doctor`: which check is FAIL or WARN.
 - `state/runtime/jobs/*.json`: the open records (phase PREPARED, SUBMITTED, RUNNING) and the newest finished ones.
 - `supervisor extension list`: whether every configured extension loaded, and each error.
-- `supervisor check`: WARN lines for tasks waiting on a role that is unknown or inactive.
+- `supervisor check`: WARN lines for tasks waiting on a role that is unknown or inactive, and for jobs naming a lane
+  or python job that neither the framework nor an extension's manifest provides. It sets no extension up.
 - For a lane: `state/runtime/usage_*.json` (its capacity windows) and the project's `config/routing.yaml` (its
   limits, reserves and whether its role is active).
 
@@ -62,4 +67,5 @@ Never: delete job records or lock files, edit `state/` by hand, or restart repea
 - `supervisor doctor` (G6), read before and, after a recovery, again.
 - No file under `state/` or `config/` changed by the diagnosis itself. Note `git status --porcelain -- state config`
   before you start, and compare at the end. A running loop changes its own records meanwhile (the log, the task
-  records it updates): only a change you made counts.
+  records it updates), and `doctor` and `extension list` write the loader's records named at the top (an
+  `extension_error` line; `state/runtime/` is not tracked). Any other change you made counts.

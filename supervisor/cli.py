@@ -178,8 +178,9 @@ def doctor():
 @app.command()
 def check():
     """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
-    not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs."""
-    layout = _layout()
+    not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs.
+    Reads only: no extension is set up and nothing is created (review 1.13.0)."""
+    layout = _reader()
     tasks = tasks_mod.load_all(layout)
     errors = tasks_mod.validate_graph(tasks)
     for e in errors:
@@ -215,7 +216,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     Goes through the command queue, so it also works while a supervisor is running (it applies it next iteration)."""
     ids = [s for s in update_contracts.split(",") if s]
     if dry_run:
-        layout = _layout()
+        layout = _reader()                         # reads only: no extension set up, nothing created (review 1.13.0)
         try:
             res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
         except (ValueError, tasks_mod.TaskError) as exc:
@@ -541,8 +542,8 @@ def cmd(kind: str, payload: str = "{}", actor: str = "owner"):
 
 @app.command()
 def supervisor():
-    """Show runtime state."""
-    typer.echo(json.dumps(runtime.read(_layout()), indent=2))
+    """Show runtime state. Reads only: no extension set up (review 1.13.0)."""
+    typer.echo(json.dumps(runtime.read(_reader()), indent=2))
 
 
 @app.command()

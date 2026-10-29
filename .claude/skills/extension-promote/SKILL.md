@@ -50,9 +50,10 @@ On a copy of the project (the project's rehearsal skill), with the copy's own en
 1. check out the branch in the copy (the old module and its manifest leave `extensions/` with it);
 2. install the package's released wheel;
 3. keep the identity in `project.yaml`, and move any configuration a migration does not;
-4. `supervisor check`: no warning that an open task's job names a lane or python job nothing registers (it loads
-   the extensions and resolves each one). An open job record would be resolved only when the loop runs it, so the
-   window drains first and leaves none open. Reading is enough: running an open task makes it rollback B;
+4. `supervisor check`: no warning that an open task's job names a lane or python job nothing provides (it
+   resolves each one against the framework's names and each extension's manifest, here the installed package's).
+   An open job record would be resolved only when the loop runs it, so the window drains first and leaves none
+   open. Reading is enough: running an open task makes it rollback B;
 5. roll the copy back: restore the snapshot, put the old module back, **and uninstall the package**, or the loop
    finds the identity twice and blocks. In a venv, `pip uninstall <distribution>`. In a target folder on
    `PYTHONPATH` pip refuses ("outside environment"): delete the files listed in

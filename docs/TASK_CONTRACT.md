@@ -33,8 +33,9 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 
 Since 1.13.0 `task import` (and its `--dry-run`), `task create` and `supervisor check` also **warn** about a
 contract the project cannot serve: an `owner_role` or `reviewer` routing does not configure or has made inactive, a
-check outside `verification.allowed_test_commands`, and a `job` whose adapter or python `fn` nothing registers (the
-project's extensions are loaded first). `supervisor check` warns only about open tasks.
+check outside `verification.allowed_test_commands`, and a `job` whose adapter or python `fn` neither the framework
+nor an extension's manifest (`provides`) declares. No extension is set up for this, so `task import --dry-run` and
+`supervisor check` write nothing. `supervisor check` warns only about open tasks.
 
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
 changes), `delivery` (`digest`, `verification`, `reviews[]`, `approvals[]`, all bound to the digest of the current
