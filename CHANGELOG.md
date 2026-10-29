@@ -87,6 +87,13 @@ Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills.
 
   `supervisor-setup` now looks for an existing package before writing an extension, holds each extension to G5,
   and leaves the shipped skills as they are. `catalog-review` waits for the catalog index (phase 6).
+
+  Every skill was followed by a fresh session on a throwaway project, twice. What those trials found unclear,
+  missing or wrong is fixed in the text: among others, the order of the task checks (`check` reads the store, so
+  it runs after the import), who commits the seed and a role change, the retire order, an interpreter for a
+  `process` job, the uninstall for a target folder, the code change prepared on a branch, the package searched for
+  project information, a project with no agent role, and a safe way to get "the commit before" for a review.
+  `docs/SETUP_INTERVIEW.md` allows two phases, and says who plans when no planning role is kept.
 - **Tests:** `tests/test_skill_catalog.py` checks every planned skill: its place, its front matter, the checks it ends
   with, that every `supervisor` command it names exists, and that it holds no machine path or host.
 - **Fixed (docs):** the runbooks show `supervisor cmd <kind> --payload '<json>'`, the form the CLI takes.

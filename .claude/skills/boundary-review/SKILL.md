@@ -15,6 +15,10 @@ instead of trusting them.
   branch it targets (`origin/main`) and `<head>` its exact commit.
 - Local work not yet committed: `git diff HEAD` and `git status` for new files. "The commit before" is then `HEAD`.
 
+To run anything against the commit before without touching the checkout, export it into a scratch folder:
+`git archive <commit> | tar -x -C <scratch folder>` (or `git worktree add --detach <folder> <commit>`). Never
+`git stash`: the stash is shared with every other checkout of the repository.
+
 Read the whole diff before the gates.
 
 ## 2. The questions (write each answer down)
@@ -22,8 +26,8 @@ Read the whole diff before the gates.
 1. **Would a different project want this?** Name the kind of project, and say what it would do with it. "Only one
    project needs it" means it is an extension, not a framework change.
 2. **For a new hook, API or public function:** who calls it? A hook or API needs a second user, and why that user
-   cannot do without it. Count the hooks in `docs/FRAMEWORK_VS_EXTENSION.md` before and after. A function nothing
-   calls is a finding.
+   cannot do without it. Count the hooks (the rows of the hook table in `docs/FRAMEWORK_VS_EXTENSION.md`) before
+   and after; a public function that is not a hook is not counted there. A function nothing calls is a finding.
 3. **The API (G2):** does it add, change or remove a name in `supervisor.ext` or a documented section of
    `docs/EXTENSION_API.md`? Then the CHANGELOG's "Extension API" entry classifies it: compatible, (editorial) or
    (breaking), and the version follows.
@@ -40,7 +44,9 @@ Read the whole diff before the gates.
 
 - **G1** `python -m supervisor.boundary` from the framework root: OK.
   - G1a–c scan `supervisor/` only. Read `docs/`, `tests/`, `examples/` and the skills yourself for machine paths,
-    hosts, user names and project names.
+    hosts, user names and project names. A search to start from: the changed lines of
+    `git diff <base> -- docs tests examples .claude`, for a drive path (`grep -E '[A-Za-z]:\\'`), `/home/`, `/Users/`, a
+    host name and your own login name. Then read what it did not catch.
   - G1d needs the local project-terms file, one table per project:
 
     ```toml
@@ -49,9 +55,11 @@ Read the whole diff before the gates.
     ```
 
     When the file exists and nothing is found, G1d prints nothing. "G1d ... did not run" means there is no file:
-    create it and run again. CI has no file, so the reviewer runs G1d locally.
+    create it and run again. CI has no file, so the reviewer runs G1d locally. It reads every file git tracks and
+    every new file git does not ignore, so uncommitted work is covered too.
 - **G2** `python -m supervisor.api_contract check`: OK, and the classification matches the change.
-- **G3** the suite: `python -m pytest -q` locally (Windows: `tools\test_windows.ps1`).
+- **G3** the suite: `python -m pytest -q` locally (Windows: `tools\test_windows.ps1`, which writes
+  `runs\pytest_windows.txt`; in a worktree with no `.venv`, pass `-Python <python.exe>`).
   - For a pushed head, also read CI's exact-head checks for Linux and Windows.
   - For local work, only your own platform has run. Say so; the other runs when it is pushed.
 - **G5** for an extension: `supervisor extension check <identity>`. For a package, across its framework range.
@@ -61,9 +69,12 @@ Read the whole diff before the gates.
 ## 4. Read the change itself
 
 - **Each new test must be able to fail:**
-  - Run it against "the commit before". It must fail on an assertion, not an ImportError or a missing name.
+  - Run it against "the commit before" (section 1 says how). It must fail on an assertion, not an ImportError or a
+    missing name.
   - Where the code under test exists before the change, also run it against a stub that returns a wrong answer: a
     test that passes then cannot fail.
+  - For code the change adds, the commit before can only give an ImportError, so the stub is the probe that
+    counts: replace the new function with one that returns a wrong answer, and the test must fail.
 - **New literals:** every new path, host, name or vendor word is generic, or listed as an explicit exception in
   `boundary.toml`.
 - **Failure paths:** for behaviour with one (a commit, a migration, a load), probe that path in a disposable

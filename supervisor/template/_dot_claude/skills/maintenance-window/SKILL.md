@@ -19,7 +19,8 @@ holds `state/.lock`, and every step is recorded so it can be undone. Do every st
      the supervisor is STOPPED;
    - every file in `state/runtime/jobs/` has `phase` DONE or FAILED: a PREPARED or RUNNING record is an open job;
    - `state/commands/` holds no queued `*.json` (applied ones live in `state/commands/applied/`);
-   - the Control Center is closed.
+   - the Control Center is closed: nothing listens on the port `ui.port` in `project.yaml` names
+     (`netstat -ano | findstr :<port>` on Windows, `ss -ltn` elsewhere).
 3. If a job stays open, or the lock is held, stop here and say which and why. Never delete or edit a job record or
    a lock file to get past this.
 
@@ -33,7 +34,9 @@ Copy, into a dated folder outside the project (an archive the owner keeps), befo
   - `git diff --binary`, for the tracked changes;
   - the untracked files themselves (`git ls-files --others --exclude-standard` lists them);
 - the framework checkout's commit and tag (`git -C <framework checkout> describe --tags`), and the packages
-  installed in the project's environment (`pip freeze`).
+  installed in the project's environment (`pip freeze` with that environment's own Python; for packages installed
+  into a target folder on `PYTHONPATH`, `pip freeze --path <folder>` as well, since plain `pip freeze` does not
+  see them).
 
 Compare the copy with the live files (`diff -r`, `cmp`) and say they are identical. Write a README there with the
 rollback-A steps for this window (the project-restore skill uses it).
@@ -52,7 +55,8 @@ says what that is. Write down every command you ran and what it printed.
 3. The project's own test suite, against the live files: green before the loop may run. The project's runbook
    (`docs/runbooks/<project>.md`) says how to run it; usually `python -m pytest -q` from the project folder, with
    the project's own environment. A failure caused by the change is a stop; one that existed before the window is
-   named as such, with the evidence.
+   named as such, with the evidence. A new project has neither the runbook nor a `tests/` folder until its phase 0
+   writes them: then say that it has no suite yet, and doctor is the check.
 4. `supervisor pause`, then start the loop and the Control Center: the project's start script, or `supervisor run`
    and `supervisor ui` with the project's own environment. The loop comes up PAUSED, so the owner decides when work
    resumes.

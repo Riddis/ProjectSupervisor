@@ -20,11 +20,15 @@ Pick the lighter way that is enough for the change:
   - A clone has no `state/runtime/` (it is ignored), so it holds no job records. Say so.
 - **A copy of the working tree**, when the uncommitted files matter too.
   - Copy `.git/` with it, so the copy can commit.
-  - Leave out what is large, secret or live: the virtual environment, model or data caches, `secrets/`, `runs/`,
-    and `state/.lock` with its `.lock.owner`.
-  - Then commit the copy's uncommitted changes in the copy, so the change starts from a known commit.
+  - Leave out what is large, secret or live: the virtual environment, model or data caches, the contents of
+    `secrets/` (but keep the committed `secrets/README.md`, or the copy shows it deleted), `runs/`, and
+    `state/.lock` with its `.lock.owner`.
+  - Then commit the copy's uncommitted changes in the copy, so the change starts from a known commit. Read
+    `git status` first: a deletion there is a file you left out, not a change to commit.
   - Copied job records still name the live project's `runs/` folders. Never let the copy's loop collect them: no
     record may be open (all DONE or FAILED).
+  - The copied runtime record names the live loop's pid, so the copy's `supervisor status` shows it (`STOPPED (pid
+    ...)`). That is the live loop, not one in the copy.
 
 Then, in the copy:
 - set `SUPERVISOR_ROOT` to the copy for every command, and check the `project:` line of `supervisor status`;
@@ -48,14 +52,16 @@ project's suite, and a Control Center page loaded on the copy if the change touc
 
 ## 3. Rehearse the way back
 
-Restore the copy to its pre-change state, as rollback A would (the project-restore skill). That includes the skills
-folder (skills an update installed) and uninstalling any package the change installed. Then run doctor and the
-suite again. A change whose rollback has not run on the copy is not ready for the live project.
+Restore the copy to its pre-change state, as rollback A would (the project-restore skill). That skill runs inside a
+window of its own, so on the copy too: drain the copy and take its snapshot before restoring. The restore includes
+the skills folder (skills an update installed) and uninstalling any package the change installed. Then run doctor
+and the suite again. A change whose rollback has not run on the copy is not ready for the live project.
 
 ## 4. Report
 
 Write the rehearsal down in the project's own records, beside the window it prepares (for example
-`docs/runbooks/rehearsals/<date>-<change>.md`). Include:
+`docs/runbooks/rehearsals/<date>-<change>.md`). Make the "live project untouched" comparison (below) first: the
+record is then a new file in the live project, committed in the window it prepares. Include:
 - the copy's path, and what was left out of it and why;
 - each step's output;
 - every difference from what the change promised;

@@ -36,7 +36,9 @@ who wants to answer questions, approve a plan, and then watch the Control Center
 
 - Write `docs/plan/PROJECT_PLAN.md` by hand (the template's eight sections, filled, with a "Setup summary" at the
   top listing the files the approval will create/change; copy the headings from
-  `supervisor/template/docs/plan/PROJECT_PLAN.md` in the framework when the folder has no plan yet). Show it. Revise
+  `supervisor/template/docs/plan/PROJECT_PLAN.md` in the framework when the folder has no plan yet, and fill its
+  `{{ name }}` by hand: nothing fills it before `init`). Its header names the roles that rule and plan from it;
+  name the kept ones, or the owner when the plan keeps no agent role. Show it. Revise
   until the owner says "approved" — the literal word, or an unambiguous equivalent. Record the date in the plan.
 - **Do not create or modify config, cards, gates, tasks or extensions before approval.** The plan file is the only
   thing you write before then; `supervisor init` keeps an existing plan file, so writing it first is safe.
@@ -57,9 +59,17 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
   whatever the owner does not have or want:
   - roles the plan drops;
   - `cost_lanes` entries for lanes the owner has no account or CLI for (a local-only project keeps none of the agent
-    lanes; otherwise the loop still polls an installed CLI's capacity);
+    lanes; otherwise the loop still polls an installed CLI's capacity). Removing an entry stops that poll, not the
+    routing: the defaults fill it in again, so a task on a model `cost_category` (`claude`, `codex`, `mixed`,
+    `paid`) still goes to an agent lane. In a project with no agent lane, every task has a `job` block or a
+    non-model `cost_category` (`deterministic`, `local`, `human`);
+  - the agent sections such a project has no use for: `capacity`, `claude_api`, `claude`, `codex`;
   - the `escalation` roles, when they are agent roles the plan does not keep: point them at kept roles, or set
-    `escalation.diagnosis: false`.
+    `escalation.diagnosis: false` and remove `manager_role` and `architect_role` with it.
+
+  Keep the `conversation` entry: Control Center chat runs on its lane (the agent CLI lane when the entry names
+  none), and `active` never parks a reply. A project with no agent CLI therefore has no chat; say so to the owner
+  and in the plan.
 
   If only one agent CLI exists, set `code_review` to that lane and keep `fallback.flag: same_vendor` with a plan note
   that reviews are same-vendor until a second lane exists. A role whose work is deterministic (no model) keeps a
@@ -69,6 +79,9 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
 - Tasks: each one must pass `supervisor check` (dependencies exist, no cycles, model-lane tasks declare
   `owned_paths`). Phase 0 always ends with a task whose artifact is the project's own runbook
   (`docs/runbooks/<project>.md`: how to run, test, and recover it).
+- A project that keeps no agent role: the owner plans the later phases and writes what no job can (an owner task
+  for each, with a date), and the runbook comes from a deterministic job or an owner task. Say so in the plan, in
+  place of the interview's planning roles.
 - Extensions: first look for an existing extension package that does the job (a package the owner names; the
   framework's catalog index arrives with phase 6), and install it rather than write a new one. Otherwise follow the
   framework's `extension-new` skill: `supervisor extension new <name>` writes the module and its manifest in the
@@ -77,15 +90,20 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
   lists the extension in `project.yaml` itself; do not add it a second time. Each extension passes `supervisor
   extension check <name>` (G5) before the setup commit.
 - Decision records: `D-001-project-setup.md` plus one per numbered decision in plan §7; front matter
-  `id/date/title/status: accepted/decided_by: owner`.
+  `id/date/title/status: accepted/decided_by: owner`. Quote the title (`title: "Project setup: the approved
+  plan"`): a title holding `: ` is invalid YAML without quotes.
+- Line endings: the template ships no `.gitattributes`. When the project keeps files git could read as text but
+  must keep byte for byte (a placeholder PDF, a fixture), add one (`*.pdf binary`) before the setup commit.
 - Project code stays in the project. If the interview shows the owner also needs a framework change (a generic
   hook, a fix), that is separate work through the framework's `framework-change` skill, never an edit made during
   setup.
 - Only when the owner will also change the framework from this machine, and with their go (both touch files
-  outside the project): run `git config core.hooksPath .githooks` in the framework clone once, so its boundary check
-  (G1, `docs/BOUNDARY.md`) runs before every commit there; and add the project's distinctive words (its name, its
-  extensions' identities, its own terms) to the local project-terms file, `~/.config/supervisor/project-terms.toml`
-  (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every repository. Its format is one table per project:
+  outside the project): check `git config --get core.hooksPath` in the framework clone first, and only when it does
+  not print `.githooks`, run `git config core.hooksPath .githooks` there, so its boundary check (G1,
+  `docs/BOUNDARY.md`) runs before every commit there. Record the owner's answer in `D-001`. Also add the
+  project's distinctive words (its name, its extensions' identities, its own terms) to the local project-terms
+  file, `~/.config/supervisor/project-terms.toml` (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every
+  repository. Its format is one table per project:
 
   ```toml
   [projects.<project>]

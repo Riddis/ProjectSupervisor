@@ -23,35 +23,52 @@ into the package. The package's repository carries no project's names, paths or 
 
 1. Run the extension-new skill with `--package`, keeping the **same identity**, so saved identifiers still belong
    to it. Its G5 check runs in the package's own test project, not in the live project: while the local module
-   exists, an installed package of the same name is refused there as "found in two places".
+   exists, an installed package of the same name is refused there as "found in two places". The scaffold registers
+   example identifiers (a `<identity>_hello` job, a doctor check) with tests that name them: remove the examples
+   and their tests unless the package keeps them on purpose.
 2. Move the generic code in. Every identifier the project saved stays registered under the same name, listed in
    `legacy_ids` when it predates the namespace rule.
-3. Move the tests that test the generic behaviour with the code; the project keeps the tests of its own parts.
-4. The package's config schema takes the values the project configured. An old section moves with a migration:
-   the manifest's `config.legacy_sections`, which `supervisor migrate` moves, or the package's own migrations (the
+3. Move the tests that test the generic behaviour with the code. The project keeps the tests of its own parts:
+   when every project-specific part has become configuration, that is a test of the project's configuration of the
+   package. A project test that loads `extensions/<identity>.py` goes in the same change as the module, or the
+   project's suite fails after the switch.
+4. The package's config schema takes the values the project configured. The module's former constants become keys
+   of the same section: write the project's values into its config in the same change that removes the module, or
+   the package runs on its defaults without a word. An old section moves with a migration: the manifest's
+   `config.legacy_sections`, which `supervisor migrate` moves, or the package's own migrations (the
    migration-author skill, with its rollback stated).
-5. Release it (the extension-release skill), so the project installs one identified artifact.
+5. Release it (the extension-release skill), so the project installs one identified artifact. A promoted package
+   starts at `1.0.0`: a project has already saved its identifiers, so they are meant to stay.
 
 ## 3. Rehearse the switch
 
+First prepare the project's code change on a branch, without touching the live working tree:
+`git worktree add -b <branch> <folder>` from the project, then remove the old module and its manifest there, write
+the configuration (section 2, step 4) and commit. The rehearsal runs that branch, as the window will.
+
 On a copy of the project (the project's rehearsal skill), with the copy's own environment, never the live one:
-1. remove the old module and its manifest from `extensions/`;
+1. check out the branch in the copy (the old module and its manifest leave `extensions/` with it);
 2. install the package's released wheel;
 3. keep the identity in `project.yaml`, and move any configuration a migration does not;
-4. check that an open task and a job record naming the extension's identifiers still resolve
-   (`supervisor task show`, `supervisor doctor`). Reading them is enough: running an open task makes it rollback B;
-5. roll the copy back: restore the snapshot, put the old module back, **and uninstall the package**
-   (`pip uninstall <distribution>`), or the loop finds the identity twice and blocks. Then doctor and the suite.
+4. `supervisor check`: no warning that an open task's job names a lane or python job nothing registers (it loads
+   the extensions and resolves each one). An open job record would be resolved only when the loop runs it, so the
+   window drains first and leaves none open. Reading is enough: running an open task makes it rollback B;
+5. roll the copy back: restore the snapshot, put the old module back, **and uninstall the package**, or the loop
+   finds the identity twice and blocks. In a venv, `pip uninstall <distribution>`. In a target folder on
+   `PYTHONPATH` pip refuses ("outside environment"): delete the files listed in
+   `<folder>/<distribution>-<version>.dist-info/RECORD`, then that folder. Then doctor and the suite.
 
 ## 4. Switch the project, in a window
 
 The project's environment is shared by every branch, so the package is installed in a maintenance window (the
 project's maintenance-window skill), never ahead of it:
-- the code change (old module and manifest removed) is merged in the window;
+- the branch prepared in section 3 (old module and manifest removed, configuration written) is merged in the window;
 - the package is installed, pinned in the project's lock if it has one (a new project may not have a lock yet:
-  record the exact wheel and hash in the project's runbook instead);
+  record the exact wheel and its sha256 in the project's runbook instead, `docs/runbooks/<project>.md` with the
+  `name` from `project.yaml`, spaces as hyphens; the template ships none, so create it);
 - `supervisor migrate`, `supervisor doctor`, the suite;
-- the window's README says that rollback A also uninstalls the package.
+- the window's README says that rollback A also uninstalls the package, and how for the project's environment
+  (section 3, step 5).
 
 ## 5. Into the framework instead
 
@@ -66,3 +83,7 @@ with the same rules: one copy afterwards, the project switched in the same relea
 - The project's suite, after the switch, on the rehearsal copy (switched and rolled back) and then in the window.
 - No copy left: no `extensions/<identity>.py` or `extensions/<identity>/` in the project. The identity itself rightly
   stays in `project.yaml` and the config.
+- Nothing of the project in the package: search the package repository and the built wheel, its `METADATA` (the
+  README) included, for the project's name, paths, aliases and example values (`python -m zipfile -e <wheel>
+  <scratch folder>`, then search that folder). Examples use invented names.
+- `supervisor check` in the project: no warning about a job naming the extension's lanes or python jobs.

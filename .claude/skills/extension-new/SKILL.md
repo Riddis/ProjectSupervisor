@@ -44,7 +44,9 @@ changes once anything is saved under it.
   major>` (for example `>=1.12,<2`). Its lower end is the oldest version it is tested against.
 - **`config`:** the section `extensions.<identity>` and its schema, `module:Class` (a pydantic model). A
   project-local extension names its own module (`<name>:Settings`); a package names its config module
-  (`supervisor_ext_<name>.config:Settings`). Read the section with `ext.config(layout, "<identity>")`.
+  (`supervisor_ext_<name>.config:Settings`). Read the section with `ext.config(layout, "<identity>")`. The local
+  scaffold writes neither the `[config]` table nor a `Settings` class (the package scaffold writes both): add them
+  when the extension has configuration.
 - **`requires`:**
   - the resources it reads (`gpu`, through `ext.resources()`);
   - the extensions it calls into, which load first;
@@ -59,7 +61,11 @@ changes once anything is saved under it.
     `testing.project(tmp_path, modules={"<name>": <source>}, files={"extensions/<name>.toml": <manifest>},
     extensions=["<name>"])`: pass the manifest through `files=`, since `modules=` writes only the module.
   - A package's tests live in its own `tests/`. Install the package into the test environment first
-    (`pip install -e <package folder>`), so its entry point is found.
+    (`pip install -e <package folder>`), so its entry point is found. Offline, add `--no-build-isolation`; the
+    environment then needs `setuptools` (at the version the package's `pyproject.toml` asks) and `wheel` installed.
+  - `supervisor.testing` drives tasks but does not read a task's status back: a test reads
+    `state/tasks/<id>.yaml` itself (it is YAML, with a `status` field). Doctor checks run only through a
+    `supervisor doctor` subprocess.
 - **`supervisor extension check <name>` (gate G5):** every check OK.
   - It reads the manifest without import, and checks the framework range.
   - It checks the imports, and that importing changes no registry (in a fresh process).
