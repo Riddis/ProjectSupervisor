@@ -270,6 +270,27 @@ def test_the_previous_contract_is_read_from_the_last_tag(tmp_path):
 
 
 
+def test_a_release_from_before_the_plugin_names_is_read_under_its_own_file_names(tmp_path):
+    """2.0.0 renamed the contract files (docs/extension_api.json, docs/EXTENSION_API.md before). The last release
+    carries them under the old names: read as no contract at all, G2 would pass any change unchecked."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    released = {"format": 1, "names": {"x": {"kind": "function"}}}
+    (repo / "docs" / "extension_api.json").write_text(json.dumps(released), encoding="utf-8")
+    (repo / "docs" / "EXTENSION_API.md").write_text("# API\n\n### `x`\n\nDoes x.\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "a release before the rename")
+    git(repo, "tag", "-a", "v1.0.0", "-m", "1.0.0")
+    git(repo, "mv", "docs/extension_api.json", "docs/plugin_api.json")
+    git(repo, "mv", "docs/EXTENSION_API.md", "docs/PLUGIN_API.md")
+    git(repo, "commit", "-qm", "the rename")
+    assert ac.previous_contract(repo) == ("v1.0.0", released)
+    assert ac.document_at(repo, "v1.0.0") == "# API\n\n### `x`\n\nDoes x.\n"
+
+
 def test_a_shallow_clone_cannot_stand_in_for_the_previous_contract(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
