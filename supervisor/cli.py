@@ -371,6 +371,15 @@ def boundary_check(root: str = typer.Option("", help="framework checkout (defaul
     raise typer.Exit(boundary.run(Path(root) if root else None, as_json=as_json, echo=typer.echo))
 
 
+@boundary_app.command("words")
+def boundary_words(targets: list[str] = typer.Argument(..., help="folders or built archives (a wheel, an sdist)")):
+    """G1d's project words scan over any repository, folder or built archive, file names included: an extension
+    package and its wheel hold no project's information either. Uses the local word list
+    (~/.config/supervisor/project-terms.toml). Exit 0 clean, 1 hits, 2 when it cannot run (no word list)."""
+    from . import boundary
+    raise typer.Exit(boundary.words([Path(t) for t in targets], echo=typer.echo))
+
+
 @skills_app.command("status")
 def skills_status():
     """Each skill the framework ships (or shipped) and its state here: current, missing, outdated, edited, retired."""

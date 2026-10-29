@@ -11,7 +11,10 @@
   G1d  no project information anywhere in the repository (every file git tracks or would add, not only `supervisor/`): the
        framework repo never contains a project's files or information. A project's words are listed in a local
        file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
-       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run.
+       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run. File names count (1.14.0).
+
+`--words <target>` runs only G1d's word list over any other folder or built archive (an extension package's
+repository or folder and its wheel, 1.14.0); there a missing word list fails the scan instead of skipping it.
 
 Every exception is an explicit entry in `boundary.toml` at the framework root, so a new one is a reviewed change.
 
@@ -359,6 +362,10 @@ def repository_files(root: Path) -> list[Path]:
             return [Path(root) / rel for rel in sorted(set(out.stdout.decode("utf-8").split("\0"))) if rel]
     except (OSError, subprocess.SubprocessError):
         pass
+    return _walk_files(root)
+
+
+def _walk_files(root: Path) -> list[Path]:
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS | {".git", "runs", ".pytest_cache",
@@ -376,23 +383,82 @@ def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None
                            f"them to the local file {project_terms_path()} ({PROJECT_TERMS_ENV})"))
     if terms is None:
         return out, [f"G1d (project information) did not run: no local project-terms file at {project_terms_path()}"]
-    for project, words in terms.items():
-        rx = _term_re(words)
-        if rx is None:
-            continue
-        for p in repository_files(root):
-            if not p.is_file():
-                continue
-            try:
-                text = p.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            rel = _rel(root, p)
-            for no, line in enumerate(text.splitlines(), 1):
-                for m in rx.finditer(line):
-                    out.append(Finding("G1d", rel, no, m.group(0),
-                                       f"a word of project {project!r} in the framework repo"))
-    return out, []
+    return out + scan_words(root, terms, where="the framework repo"), []
+
+
+def _members(target: Path):
+    """(path, bytes or None) of each file in `target`: a folder (what git tracks or would add there, else every file
+    but caches), a wheel or zip, or a tar archive (an sdist). Bytes are None when the file cannot be read."""
+    import tarfile
+    import zipfile
+    if target.is_dir():
+        # git lists nothing for a folder that an enclosing repository ignores (a package unpacked under runs/):
+        # then every file is read, never none
+        for p in repository_files(target) or _walk_files(target):
+            if p.is_file():
+                try:
+                    yield _rel(target, p), p.read_bytes()
+                except OSError:
+                    yield _rel(target, p), None
+    elif zipfile.is_zipfile(target):
+        with zipfile.ZipFile(target) as z:
+            for info in z.infolist():
+                if not info.is_dir():
+                    yield f"{target.name}!{info.filename}", z.read(info)
+    elif tarfile.is_tarfile(target):
+        with tarfile.open(target) as t:
+            for info in t.getmembers():
+                if info.isfile():
+                    f = t.extractfile(info)
+                    yield f"{target.name}!{info.name}", f.read() if f else None
+    else:
+        raise ConfigError(f"{target}: not a folder, a wheel, a zip or a tar archive")
+
+
+def scan_words(target: Path, terms: dict[str, list[str]], where: str = "") -> list[Finding]:
+    """G1d's word list over any folder or built archive (1.14.0): each text file's lines, and every file's path (line
+    0), since a module or data file named after a project is project information too. A binary file is checked by
+    its name only. `where` names the place in each finding (default: the target)."""
+    target = Path(target)
+    if not target.exists():
+        raise ConfigError(f"{target}: no such folder or archive")
+    rules = [(project, rx) for project, words in terms.items() if (rx := _term_re(words)) is not None]
+    out = []
+    for rel, data in _members(target):
+        try:
+            lines = data.decode("utf-8").splitlines() if data is not None else []
+        except UnicodeDecodeError:
+            lines = []
+        for project, rx in rules:
+            detail = f"a word of project {project!r} in {where or target.name}"
+            out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)]
+            for no, line in enumerate(lines, 1):
+                out += [Finding("G1d", rel, no, m.group(0), detail) for m in rx.finditer(line)]
+    return out
+
+
+def words(targets: list[Path], echo=print) -> int:
+    """CLI body of `python -m supervisor.boundary --words <target>...` and `supervisor boundary words`: the project
+    words scan over an extension package's repository or folder and its built wheel (extension-release). Exit 0
+    clean, 1 hits, 2 when the scan cannot run: without the local word list a release check has not passed."""
+    terms = load_project_terms()
+    if terms is None:
+        echo(f"project words: cannot run, no local project-terms file at {project_terms_path()} "
+             f"({PROJECT_TERMS_ENV}): a release check that did not run has not passed")
+        return 2
+    found = []
+    for target in targets:
+        try:
+            hits = scan_words(Path(target), terms)
+        except ConfigError as exc:
+            echo(f"project words: {exc}")
+            return 2
+        for f in hits:
+            echo(f"{target}: {f}")
+        found += hits
+    echo(f"project words: {'OK' if not found else f'{len(found)} hit(s)'} "
+         f"({len(targets)} target(s), {sum(len(w) for w in terms.values())} word(s))")
+    return 1 if found else 0
 
 
 def default_user_names(cfg: dict) -> list[str]:
@@ -467,7 +533,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m supervisor.boundary", description=__doc__.split("\n\n")[0])
     ap.add_argument("--root", help="framework checkout (default: the one this module runs from)")
     ap.add_argument("--json", action="store_true", help="machine-readable report")
+    ap.add_argument("--words", action="append", metavar="TARGET",
+                    help="only the project words scan (G1d's local word list) over this folder or built archive, "
+                         "for example an extension package and its wheel; repeatable")
     args = ap.parse_args(argv)
+    if args.words:
+        return words([Path(t) for t in args.words])
     return run(Path(args.root) if args.root else None, as_json=args.json)
 
 

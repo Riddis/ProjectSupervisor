@@ -13,6 +13,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   it, and a checkout at a package tag alone passed), G2 compared with the nearest `v[0-9]*` tag (a package `v2`
   tags `v2-v1.0.0`), and `tools/skills_history.py` read every `v*` tag (a package `vision` tags `vision-v1.0.0`).
   Each now takes the newest `vX.Y.Z` tag only. The pinned update check already did.
+- **Added: the project words scan for any repository: `supervisor boundary words <target>...`** (also
+  `python -m supervisor.boundary --words <target>`). G1d's local word list over any folder (what git tracks or would
+  add there, else every file) or built archive (a wheel with its `METADATA`, an sdist), file names included. An
+  extension package's folder and its wheel hold no project's information either; extension-release runs it. Unlike
+  G1d in the framework check, it fails (exit 2) without the local word list: a release check that did not run has
+  not passed.
+- **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
+  information too.
 
 ## 1.13.0 — 2026-10-29
 

@@ -152,3 +152,109 @@ def test_the_framework_repository_holds_no_project_information():
         pytest.skip("no local project-terms file: G1d runs on a contributor's machine, not in CI")
     report = boundary.check(Path(__file__).resolve().parents[1], user_names=[], terms=terms)
     assert g1d(report) == [], "\n".join(str(f) for f in report.violations if f.rule == "G1d")
+
+
+# ---------------------------------------------------------------- the project-words scan for any repository (1.14.0)
+# An extension package's repository (or its folder under packages/) and its built wheel must hold no project
+# information either: `python -m supervisor.boundary --words <target>` runs G1d's word list over any folder or built
+# archive, file names included. A release check that cannot run fails instead of passing.
+
+def package(tmp_path, files: dict[str, str], git: bool = True) -> Path:
+    root = tmp_path / "pkg"
+    for rel, text in files.items():
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    if git:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    return root
+
+
+def hits(findings) -> list[tuple[str, int, str]]:
+    return sorted((f.path, f.line, f.text) for f in findings)
+
+
+def test_any_folder_is_scanned_contents_and_file_names(tmp_path, monkeypatch):
+    root = package(tmp_path, {
+        ".gitignore": "build/\n",
+        "README.md": "# A lane\nBuilt for Wobble Works.\n",
+        "src/supervisor_ext_quuxify/__init__.py": "x = 1\n",
+        "src/supervisor_ext_quuxify/lane.py": "NAME = 'neutral'\n",
+        "build/notes.txt": "zorblax\n",
+    })
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(root, terms)) == [
+        ("README.md", 2, "Wobble Works"),
+        ("src/supervisor_ext_quuxify/__init__.py", 0, "quuxify"),
+        ("src/supervisor_ext_quuxify/lane.py", 0, "quuxify"),
+    ]
+
+
+def test_a_folder_inside_a_repository_is_scanned_alone(tmp_path, monkeypatch):
+    root = package(tmp_path, {"packages/one/README.md": "neutral\n", "packages/two/README.md": "zorblax\n"})
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(root / "packages" / "one", terms)) == []
+    assert hits(boundary.scan_words(root / "packages" / "two", terms)) == [("README.md", 1, "zorblax")]
+
+
+def test_a_built_wheel_is_scanned_metadata_and_member_names_included(tmp_path, monkeypatch):
+    import zipfile
+    wheel = tmp_path / "supervisor_ext_neutral-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        z.writestr("supervisor_ext_neutral/__init__.py", "x = 1\n")
+        z.writestr("supervisor_ext_neutral/zorblax.json", "{}\n")
+        z.writestr("supervisor_ext_neutral-1.0.0.dist-info/METADATA", "Name: neutral\nSummary: for Wobble Works\n")
+        z.writestr("supervisor_ext_neutral/icon.png", bytes([0x89, 0x50, 0xff, 0xfe, 0x00]) + b"quuxify")
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(wheel, terms)) == [
+        (f"{wheel.name}!supervisor_ext_neutral-1.0.0.dist-info/METADATA", 2, "Wobble Works"),
+        (f"{wheel.name}!supervisor_ext_neutral/zorblax.json", 0, "zorblax"),
+    ]
+
+
+def test_a_source_archive_is_scanned(tmp_path, monkeypatch):
+    import io
+    import tarfile
+    sdist = tmp_path / "neutral-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        data = b"Summary: quuxify everything\n"
+        info = tarfile.TarInfo("neutral-1.0.0/PKG-INFO")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(sdist, terms)) == [(f"{sdist.name}!neutral-1.0.0/PKG-INFO", 1, "quuxify")]
+
+
+def test_the_words_cli_fails_on_a_hit_passes_clean_and_never_passes_unrun(tmp_path, monkeypatch):
+    dirty = package(tmp_path, {"README.md": "zorblax\n"})
+    clean = tmp_path / "clean"
+    (clean / "src").mkdir(parents=True)
+    (clean / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    out = []
+    assert boundary.words([clean, tmp_path / "missing"], echo=out.append) == 2       # no word list: not a pass
+    assert any("project-terms" in line for line in out)
+    terms_file(tmp_path, monkeypatch)
+    out.clear()
+    assert boundary.words([clean], echo=out.append) == 0 and "OK" in out[-1]
+    out.clear()
+    assert boundary.words([clean, dirty], echo=out.append) == 1
+    assert any("README.md:1: G1d" in line for line in out)
+    assert boundary.words([tmp_path / "missing"], echo=out.append) == 2
+    assert boundary.main(["--words", str(dirty)]) == 1
+
+
+def test_g1d_also_reads_file_names_in_the_framework_repository(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch)
+    root = framework(tmp_path, {"docs/zorblax_notes.md": "neutral\n"})
+    assert g1d(boundary.check(root, user_names=[])) == [("docs/zorblax_notes.md", 0, "zorblax")]
+
+
+def test_a_folder_an_enclosing_repository_ignores_is_still_scanned(tmp_path, monkeypatch):
+    """git lists nothing there: an empty list must not read as a clean package."""
+    root = package(tmp_path, {".gitignore": "runs/\n"})
+    unpacked = root / "runs" / "unpacked"
+    unpacked.mkdir(parents=True)
+    (unpacked / "README.md").write_text("zorblax\n", encoding="utf-8")
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(unpacked, terms)) == [("README.md", 1, "zorblax")]
