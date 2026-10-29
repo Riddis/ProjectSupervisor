@@ -39,6 +39,11 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   proves the path on a package scaffolded in the runner. docs/EXTENSION_STANDARD.md ("Where a package lives"),
   `packages/README.md` and the extension skills describe both homes (here, or a repository of its own) and the
   release tag for each; `.github/CODEOWNERS` names the reviewer for `packages/`.
+- **Added: a package's own name may be allowed in that package.** A package promoted from a project keeps its
+  identity, which can be one of the project's words. The local word list's `[projects.<name>.packages]` table
+  (`<distribution> = ["<word>"]`) allows those words inside `packages/<distribution>/`, that folder scanned on its
+  own, and that distribution's wheel or sdist; anywhere else they are still G1d hits. Each allowed word must be one
+  of the project's terms.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 

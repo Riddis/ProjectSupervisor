@@ -163,12 +163,21 @@ A package has one of two homes, and the standard is the same in both:
     `[tool.supervisor.ci]` names: `lane`, `python_job`, a `config` table for its section) and the package's suite.
   - G1d (no project information) covers `packages/` like every other file in the repository. G1a to G1c, the
     framework's own import and literal rules, do not apply to a package: G5 holds its imports to `supervisor.ext`.
+  - A package promoted from a project keeps its identity, which may be one of that project's words. The local
+    word list allows it for that package alone (`[projects.<name>.packages]`, below); everywhere else in the
+    repository the word is still a hit.
 - **A repository of its own**, for anyone else's package: tagged `vX.Y.Z` there, released and tested the same way
   (the extension-release skill).
 
 Either way the package and its built wheel hold no project's information: `supervisor boundary words <folder>
 <wheel>` runs G1d's local word list over them, file names and the wheel's `METADATA` included. A release checks it
-(extension-release).
+(extension-release). A word that is the package's own public name is allowed there by the local file, never in the
+repository:
+
+```toml
+[projects.<name>.packages]
+supervisor-ext-<name> = ["<word>"]     # allowed inside packages/supervisor-ext-<name>/ and its wheel or sdist only
+```
 
 ## Migrations
 

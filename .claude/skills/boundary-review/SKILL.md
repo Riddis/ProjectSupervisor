@@ -58,6 +58,8 @@ Read the whole diff before the gates.
     create it and run again. CI has no file, so the reviewer runs G1d locally. It reads every file git tracks and
     every new file git does not ignore, file names included, so uncommitted work and `packages/` are covered too.
   - For an extension package and its built wheel: `supervisor boundary words <package folder> <wheel>`.
+  - A `[projects.<project>.packages]` table in the local file allows a package's own name inside that package
+    only. Check that each allowed word is the package's identity or the tool it is named after, nothing more.
 - **G2** `python -m supervisor.api_contract check`: OK, and the classification matches the change.
 - **G3** the suite: `python -m pytest -q` locally (Windows: `tools\test_windows.ps1`, which writes
   `runs\pytest_windows.txt`; in a worktree with no `.venv`, pass `-Python <python.exe>`).

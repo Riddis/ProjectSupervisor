@@ -350,6 +350,64 @@ def load_project_terms(path: Path | None = None) -> dict[str, list[str]] | None:
             for name, entry in sorted((data.get("projects") or {}).items())}
 
 
+def _distribution(name: str) -> str:
+    """A distribution name as packaging compares them: case and runs of -, _ and . do not matter."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def load_package_allowances(path: Path | None = None) -> dict[str, dict[str, list[str]]] | None:
+    """{project: {distribution: [words]}} from the local file's `[projects.<name>.packages]` tables, or None when
+    there is no file. A project word that is also the public name of an extension package kept under packages/ (an
+    identity the project's saved state already uses) may be allowed there:
+
+        [projects.<name>.packages]
+        supervisor-ext-<name> = ["<word>"]
+
+    It is allowed only inside `packages/<distribution>/` (or that folder scanned on its own) and in that
+    distribution's wheel or sdist; everywhere else it is still a hit. Each word must be one of the project's own."""
+    path = Path(path) if path else project_terms_path()
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"{path} (the local project-terms file) is not valid TOML: {exc}") from exc
+    out = {}
+    for name, entry in sorted((data.get("projects") or {}).items()):
+        table = (entry or {}).get("packages")
+        if table is None:
+            continue
+        if not isinstance(table, dict):
+            raise ConfigError(f"{path}: [projects.{name}] packages must be a table of distribution = [words]")
+        own = {str(w).lower() for w in (entry or {}).get("terms") or []}
+        allowed = {}
+        for dist, words in table.items():
+            if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+                raise ConfigError(f"{path}: [projects.{name}.packages] {dist} must be a list of words")
+            stray = [w for w in words if w.lower() not in own]
+            if stray:
+                raise ConfigError(f"{path}: [projects.{name}.packages] {dist} allows {stray}, which are not among "
+                                  f"project {name!r}'s terms")
+            allowed[_distribution(dist)] = list(words)
+        out[str(name)] = allowed
+    return out
+
+
+def _allowed_here(target: Path, rel: str, allowed: dict[str, list[str]]) -> set[str]:
+    """The words a project allows in this file: its package's own name, inside packages/<distribution>/ (or that
+    folder scanned on its own) or in that distribution's archive."""
+    if not allowed:
+        return set()
+    if not target.is_dir():
+        m = re.match(r"(.+?)-\d", target.name)
+        words = allowed.get(_distribution(m.group(1))) if m else None
+        return {w.lower() for w in words or []}
+    parts = [target.name, *rel.split("/")]
+    dists = {_distribution(parts[0])} | {_distribution(parts[i + 1]) for i in range(len(parts) - 2)
+                                         if parts[i] == "packages"}
+    return {w.lower() for d in dists for w in allowed.get(d, [])}
+
+
 def repository_files(root: Path) -> list[Path]:
     """Every file the repository tracks, and every untracked file it does not ignore, which the next commit would add
     (`git ls-files --cached --others --exclude-standard`, 1.13.0); without git, every file but caches, `runs/` and
@@ -374,7 +432,8 @@ def _walk_files(root: Path) -> list[Path]:
     return found
 
 
-def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None) -> tuple[list[Finding], list[str]]:
+def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None,
+                       allowed: dict[str, dict[str, list[str]]] | None = None) -> tuple[list[Finding], list[str]]:
     """G1d: (violations, why it did not run). A `[projects]` table in boundary.toml is itself a violation: it is a
     project's vocabulary inside the framework repo."""
     out = []
@@ -383,7 +442,7 @@ def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None
                            f"them to the local file {project_terms_path()} ({PROJECT_TERMS_ENV})"))
     if terms is None:
         return out, [f"G1d (project information) did not run: no local project-terms file at {project_terms_path()}"]
-    return out + scan_words(root, terms, where="the framework repo"), []
+    return out + scan_words(root, terms, where="the framework repo", allowed=allowed), []
 
 
 def _members(target: Path):
@@ -415,10 +474,12 @@ def _members(target: Path):
         raise ConfigError(f"{target}: not a folder, a wheel, a zip or a tar archive")
 
 
-def scan_words(target: Path, terms: dict[str, list[str]], where: str = "") -> list[Finding]:
+def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
+               allowed: dict[str, dict[str, list[str]]] | None = None) -> list[Finding]:
     """G1d's word list over any folder or built archive (1.14.0): each text file's lines, and every file's path (line
     0), since a module or data file named after a project is project information too. A binary file is checked by
-    its name only. `where` names the place in each finding (default: the target)."""
+    its name only. `where` names the place in each finding (default: the target). `allowed` is
+    load_package_allowances(): a package's own name, allowed in that package only."""
     target = Path(target)
     if not target.exists():
         raise ConfigError(f"{target}: no such folder or archive")
@@ -430,10 +491,13 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "") -> li
         except UnicodeDecodeError:
             lines = []
         for project, rx in rules:
+            ok = _allowed_here(target, rel.split("!", 1)[-1], (allowed or {}).get(project) or {})
             detail = f"a word of project {project!r} in {where or target.name}"
-            out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)]
+            out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)
+                    if m.group(0).lower() not in ok]
             for no, line in enumerate(lines, 1):
-                out += [Finding("G1d", rel, no, m.group(0), detail) for m in rx.finditer(line)]
+                out += [Finding("G1d", rel, no, m.group(0), detail) for m in rx.finditer(line)
+                        if m.group(0).lower() not in ok]
     return out
 
 
@@ -441,7 +505,7 @@ def words(targets: list[Path], echo=print) -> int:
     """CLI body of `python -m supervisor.boundary --words <target>...` and `supervisor boundary words`: the project
     words scan over an extension package's repository or folder and its built wheel (extension-release). Exit 0
     clean, 1 hits, 2 when the scan cannot run: without the local word list a release check has not passed."""
-    terms = load_project_terms()
+    terms, allowed = load_project_terms(), load_package_allowances()
     if terms is None:
         echo(f"project words: cannot run, no local project-terms file at {project_terms_path()} "
              f"({PROJECT_TERMS_ENV}): a release check that did not run has not passed")
@@ -449,7 +513,7 @@ def words(targets: list[Path], echo=print) -> int:
     found = []
     for target in targets:
         try:
-            hits = scan_words(Path(target), terms)
+            hits = scan_words(Path(target), terms, allowed=allowed)
         except ConfigError as exc:
             echo(f"project words: {exc}")
             return 2
@@ -473,8 +537,9 @@ def default_user_names(cfg: dict) -> list[str]:
 
 
 def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None,
-          terms: dict[str, list[str]] | None = ...) -> Report:
-    """Every rule over the framework at `root`. `terms` is G1d's word list; by default the local project-terms file."""
+          terms: dict[str, list[str]] | None = ..., allowed: dict | None = None) -> Report:
+    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances; by
+    default both from the local project-terms file."""
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
@@ -487,7 +552,8 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     vendor, stale = check_vendors(root, files, cfg)
     report.violations += vendor
     report.notes += stale
-    info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms)
+    info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms,
+                                       load_package_allowances() if terms is ... else allowed)
     report.violations += info
     report.skipped += skipped
     return report
