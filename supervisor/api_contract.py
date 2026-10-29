@@ -16,9 +16,10 @@ with the tag's: the recorded signatures, where a removal or a change that breaks
 least a minor version; and each name's documented section, where a change (types, data shapes, semantics, error
 cases) cannot be proved compatible by a program, so the CHANGELOG's newest section classifies it in an "Extension API"
 entry naming the name: marked "(editorial)" (any version), "(breaking)" (a major version) or neither (a compatible
-change, at least a minor version). Every change needs that entry. The previous contract is read from the last `v*`
-tag reachable from HEAD with `git show`, both docs/extension_api.json and docs/EXTENSION_API.md; a shallow clone
-cannot supply it and fails instead of passing unchecked.
+change, at least a minor version). Every change needs that entry. The previous contract is read with `git show` from
+the newest framework release tag (`vX.Y.Z`, never a package's `<identity>-vX.Y.Z`) in HEAD's history, both
+docs/extension_api.json and docs/EXTENSION_API.md; a shallow clone cannot supply it and fails instead of passing
+unchecked.
 """
 from __future__ import annotations
 
@@ -48,6 +49,7 @@ _KINDS = {
 _POSITIONAL = ("positional_only", "positional_or_keyword")
 _ADDRESS = re.compile(r" at 0x[0-9A-Fa-f]+")
 _PATH_FLAVOUR = re.compile(r"\b(?:Pure)?(?:Windows|Posix)Path\(")
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")   # a framework release; a package's tag is <identity>-vX.Y.Z
 
 
 class ContractError(RuntimeError):
@@ -504,7 +506,7 @@ def document_at(root: Path, tag: str) -> str | None:
 
 
 def previous_contract(root: Path) -> tuple[str | None, dict | None]:
-    """(last release tag reachable from HEAD, its contract or None). A shallow clone raises: without the history and
+    """(the newest framework release tag `vX.Y.Z` in HEAD's history, its contract or None). A shallow clone raises: without the history and
     the tags it would look like a first release and pass unchecked."""
     shallow = _git(root, "rev-parse", "--is-shallow-repository")
     if shallow.returncode != 0:
@@ -513,10 +515,13 @@ def previous_contract(root: Path) -> tuple[str | None, dict | None]:
     if shallow.stdout.strip() == "true":
         raise ContractError("this is a shallow clone: fetch the full history and tags to read the previous release's "
                             "contract (actions/checkout: fetch-depth: 0)")
-    described = _git(root, "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
-    if described.returncode != 0:
+    merged = _git(root, "tag", "--list", "--merged", "HEAD")
+    if merged.returncode != 0:
+        raise ContractError(f"git could not list the tags in HEAD's history: {merged.stderr.strip()[:200]}")
+    releases = {t: tuple(map(int, m.groups())) for t in merged.stdout.split() if (m := _RELEASE_TAG.match(t))}
+    if not releases:
         return None, None                                 # no release yet
-    tag = described.stdout.strip()
+    tag = max(releases, key=releases.get)               # the newest framework release; never a package's tag
     return tag, contract_at(root, tag)
 
 
@@ -575,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m supervisor.api_contract", description=__doc__.split("\n\n")[0])
     ap.add_argument("command", choices=["record", "check"])
     ap.add_argument("--against", default="auto", metavar="TAG",
-                    help="the release to compare with: a tag, 'auto' (the last v* tag before HEAD, the default) or "
+                    help="the release to compare with: a tag, 'auto' (the newest vX.Y.Z tag before HEAD, the default) or "
                          "'none' (skip the comparison, e.g. in a shallow clone)")
     args = ap.parse_args(argv)
     return run(args.command, against=args.against)

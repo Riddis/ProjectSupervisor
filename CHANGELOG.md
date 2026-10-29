@@ -7,6 +7,12 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 - **Fixed: `supervisor skills update --dry-run` said "would installe"** for a skill it would install (the past
   tense cut by one letter). It says "would install" and "would update".
+- **Fixed: a package's tag is never taken for a framework release.** Extension packages kept in this repository tag
+  their releases `<identity>-vX.Y.Z`; only `vX.Y.Z` is a framework release. `supervisor doctor` read any tag at the
+  runtime checkout's HEAD as its release (a package released on the framework's merge commit could stand in for
+  it, and a checkout at a package tag alone passed), G2 compared with the nearest `v[0-9]*` tag (a package `v2`
+  tags `v2-v1.0.0`), and `tools/skills_history.py` read every `v*` tag (a package `vision` tags `vision-v1.0.0`).
+  Each now takes the newest `vX.Y.Z` tag only. The pinned update check already did.
 
 ## 1.13.0 — 2026-10-29
 

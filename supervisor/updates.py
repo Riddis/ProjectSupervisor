@@ -87,7 +87,8 @@ def framework_dir() -> Path:
 
 def runtime_checkout() -> dict:
     """What is running: the installed framework version, and — when the package is an editable install of a git
-    checkout — that checkout's commit, the tag exactly at it (if any) and whether the working tree is dirty.
+    checkout — that checkout's commit, the framework release tag (`vX.Y.Z`) exactly at it (if any) and whether the
+    working tree is dirty. A package's `<identity>-vX.Y.Z` tag on the same commit is not a framework release.
     {"version", "is_git", "commit", "tag", "dirty", "status_error", "path"}; commit/tag are None without git or
     outside a checkout. `dirty` counts modified tracked files AND non-ignored untracked files: an editable install
     imports whatever Python file sits in the package directory, tracked or not, so an untracked module is
@@ -103,8 +104,9 @@ def runtime_checkout() -> dict:
     out["is_git"] = True
     code, sha = _git(["rev-parse", "--short=12", "HEAD"], fw, timeout=10)
     out["commit"] = sha.strip() if code == 0 and sha.strip() else None
-    code, tag = _git(["describe", "--tags", "--exact-match", "HEAD"], fw, timeout=10)
-    out["tag"] = tag.strip().splitlines()[0] if code == 0 and tag.strip() else None
+    code, at = _git(["tag", "--points-at", "HEAD"], fw, timeout=10)
+    releases = [t for t in at.split() if _release(t)] if code == 0 else []
+    out["tag"] = max(releases, key=_release) if releases else None    # never a package's `<identity>-vX.Y.Z` tag
     code, status = _git(["status", "--porcelain", "--untracked-files=normal"], fw, timeout=10)
     if code != 0:
         out["dirty"] = None

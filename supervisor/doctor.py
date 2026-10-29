@@ -62,7 +62,7 @@ def check_framework(layout: Layout) -> Check:
                         + (f" including untracked files ({', '.join(untracked[:5])}{'…' if len(untracked) > 5 else ''})"
                            if untracked else ""))
     if not rt["tag"]:
-        problems.append("HEAD is not at a tag")
+        problems.append("HEAD is not at a tag (a framework release, vX.Y.Z)")
     if problems:
         return Check("framework", False, where + " — " + "; ".join(problems)
                      + ". Run the project from a tagged, clean checkout (git checkout <tag>), never a working tree being edited")
