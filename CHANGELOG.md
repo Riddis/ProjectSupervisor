@@ -14,7 +14,9 @@ project words scan covers any package and its wheel.
 
 **Migration:** `supervisor migrate` renames `extensions:` to `plugins:` in project.yaml and config/routing.yaml,
 moves `extensions/` to `plugins/` and rewrites the local manifests (the first entry below has the table). It stops,
-with nothing written, when a project has both the old and the new name. It names, without editing them, the
+with nothing written and a message saying what to do by hand, when a project has both the old and the new name
+(keys, folders, or a package's two manifest file names), when a manifest holds the old names in a form it cannot
+rename, or when project.yaml lists a plugin by the old folder's dotted name (`extensions.<name>`). It names, without editing them, the
 project's Python that imports `supervisor.ext` or the old folder, and a local manifest whose `framework` range leaves
 out 2.0.0: both are the project's to change before its plugins load. Then it records 2.0.0.
 
@@ -96,9 +98,10 @@ reviewer checks each entry below.
   release tag for each; `.github/CODEOWNERS` names the reviewer for `packages/`.
 - **Added: a package's own name may be allowed in that package.** A package promoted from a project keeps its
   identity, which can be one of the project's words. The local word list's `[projects.<name>.packages]` table
-  (`<distribution> = ["<word>"]`) allows those words inside `packages/<distribution>/`, that folder scanned on its
-  own, and that distribution's wheel or sdist; anywhere else they are still G1d hits. Each allowed word must be one
-  of the project's terms.
+  (`<distribution> = ["<word>"]`) allows those words inside `packages/<distribution>/` at the top of the git
+  repository (scanned from the root or as that folder), and in that distribution's own wheel or sdist (its file name
+  and its metadata's `Name:` both say so). Anywhere else, a lookalike path or archive included, they are still G1d
+  hits. Each allowed word must be one of the project's terms.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 
