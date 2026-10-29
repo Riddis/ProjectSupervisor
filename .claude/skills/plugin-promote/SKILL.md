@@ -85,7 +85,7 @@ with the same rules: one copy afterwards, the project switched in the same relea
 - The project's suite, after the switch, on the rehearsal copy (switched and rolled back) and then in the window.
 - No copy left: no `plugins/<identity>.py` or `plugins/<identity>/` in the project. The identity itself rightly
   stays in `project.yaml` and the config.
-- Nothing of the project in the package: `supervisor boundary words <package folder> <wheel>` (framework 1.14.0
+- Nothing of the project in the package: `supervisor boundary words <package folder> <wheel>` (framework 2.0.0
   or later) runs the local project-terms file over both, file names and the wheel's `METADATA` included; it fails
   when the file is missing. Then read for what a word list cannot catch: the project's paths, aliases and example
   values. Examples use invented names.

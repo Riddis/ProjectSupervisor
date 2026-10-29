@@ -1,4 +1,4 @@
-"""Gate G5's installed-package proof (CI job "G5 reference plugin", phase 3 gate; each package's job, 1.14.0).
+"""Gate G5's installed-package proof (CI job "G5 reference plugin", phase 3 gate; each package's job, 2.0.0).
 
     python tools/ci_installed_plugin.py <identity> [--lane <adapter>] [--python-job <name>] [--config <file>]
                                                       [--workdir <folder>]

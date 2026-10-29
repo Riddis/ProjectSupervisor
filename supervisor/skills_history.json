@@ -1,8 +1,33 @@
 {
   "about": "sha256 of each template skill file as release tags shipped it (line endings ignored); written by tools/skills_history.py",
   "files": {
+    "maintenance-window/SKILL.md": [
+      "227cb2ee4d83e3ecc078052fbf85d5b4974d19faa7224c2ba55ff9146389abaa"
+    ],
+    "project-restore/SKILL.md": [
+      "d36a7f23b0648882f13fb8c3ffefd13e69c90594f2194d37d0080b2adbf61f1d"
+    ],
+    "project-upgrade/SKILL.md": [
+      "a961bde394558b604bb0a9b07e3dc3dcee871ae562ca5aa6e3419894d1cf3d92"
+    ],
+    "rehearsal/SKILL.md": [
+      "3b3e90ed5762de56ac49c7f68e4d93d29d793dfc871f3922b2e4d87ce0cc3f84"
+    ],
+    "role-change/SKILL.md": [
+      "0e5b4947791fa36d29da11c530a428d20eb68679da7573cd290ef63f23857d39"
+    ],
+    "runtime-diagnose/SKILL.md": [
+      "14ad1598b50c8c064b32ab7e25882e543177a0a97f5a8c44322ee794f081fa6f"
+    ],
+    "stuck-task/SKILL.md": [
+      "32c1bea1aaa99d74b1dfc6ca59a21d3dfceb17c4416531b89cba8f8f37797b64"
+    ],
     "supervisor-setup/SKILL.md": [
-      "acb07a2823e1854632661f6f38d9b596c5e1b9078d545dc7e18224b0a4f83878"
+      "acb07a2823e1854632661f6f38d9b596c5e1b9078d545dc7e18224b0a4f83878",
+      "e60ae51c50afda19984c481cc3558cb7325dd0dc123e5d63f23a87a21d55375b"
+    ],
+    "task-author/SKILL.md": [
+      "a95b4b115bfab52b8fb0d5ae360788e4ab9a3603ed29066dda680fdcc93702b8"
     ]
   }
 }

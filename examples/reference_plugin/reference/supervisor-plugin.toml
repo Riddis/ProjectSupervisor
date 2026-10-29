@@ -2,7 +2,7 @@
 # here; `supervisor plugin check reference` (gate G5) proves setup() registers exactly what [provides] lists.
 identity = "reference"
 version = "1.0.0"
-framework = ">=1.12,<2"
+framework = ">=2.0,<3"
 
 [provides]
 adapters = ["reference_lane"]

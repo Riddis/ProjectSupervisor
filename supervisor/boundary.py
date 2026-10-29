@@ -11,10 +11,10 @@
   G1d  no project information anywhere in the repository (every file git tracks or would add, not only `supervisor/`): the
        framework repo never contains a project's files or information. A project's words are listed in a local
        file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
-       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run. File names count (1.14.0).
+       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run. File names count (2.0.0).
 
 `--words <target>` runs only G1d's word list over any other folder or built archive (a plugin package's
-repository or folder and its wheel, 1.14.0); there a missing word list fails the scan instead of skipping it.
+repository or folder and its wheel, 2.0.0); there a missing word list fails the scan instead of skipping it.
 
 Every exception is an explicit entry in `boundary.toml` at the framework root, so a new one is a reviewed change.
 
@@ -476,7 +476,7 @@ def _members(target: Path):
 
 def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
                allowed: dict[str, dict[str, list[str]]] | None = None) -> list[Finding]:
-    """G1d's word list over any folder or built archive (1.14.0): each text file's lines, and every file's path (line
+    """G1d's word list over any folder or built archive (2.0.0): each text file's lines, and every file's path (line
     0), since a module or data file named after a project is project information too. A binary file is checked by
     its name only. `where` names the place in each finding (default: the target). `allowed` is
     load_package_allowances(): a package's own name, allowed in that package only."""

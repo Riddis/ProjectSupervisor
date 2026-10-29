@@ -44,7 +44,7 @@ changes once anything is saved under it.
     commented examples already do.
   - An older name that predates the rule goes in `legacy_ids`.
 - **`framework`:** the range of framework versions it supports. The scaffold writes `>=<this major.minor>,<next
-  major>` (for example `>=1.12,<2`). Its lower end is the oldest version it is tested against.
+  major>` (for example `>=2.0,<3`). Its lower end is the oldest version it is tested against.
 - **`config`:** the section `plugins.<identity>` and its schema, `module:Class` (a pydantic model). A
   project-local plugin names its own module (`<name>:Settings`); a package names its config module
   (`supervisor_plugin_<name>.config:Settings`). Read the section with `plugin.config(layout, "<identity>")`. The local

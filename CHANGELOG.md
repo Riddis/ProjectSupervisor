@@ -3,7 +3,35 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.0.0 — 2026-10-29
+
+Phase 5 of the boundary plan (docs/BOUNDARY.md), the framework part, and a rename. "Extension" is now "plugin"
+everywhere, as a clean break the owner chose (2026-10-29): a major version, with `supervisor migrate` moving a
+project to the new names. Around it, what the first plugin packages need before they are released and tested as
+built wheels: plugin packages may live in this repository under `packages/` with their own CI and tags, their tests
+get read helpers in `supervisor.testing`, the installed-package proof takes their config and python jobs, and a
+project words scan covers any package and its wheel.
+
+**Migration:** `supervisor migrate` renames `extensions:` to `plugins:` in project.yaml and config/routing.yaml,
+moves `extensions/` to `plugins/` and rewrites the local manifests (the first entry below has the table). It stops,
+with nothing written, when a project has both the old and the new name. It names, without editing them, the
+project's Python that imports `supervisor.ext` or the old folder, and a local manifest whose `framework` range leaves
+out 2.0.0: both are the project's to change before its plugins load. Then it records 2.0.0.
+
+**Rollback** to v1.13.0, in a maintenance window: stop, restore the project from the window's snapshot (the folder
+move and the key renames are not reversed by 1.13.0's migrate, which knows only the old names), check out
+`v1.13.0`, `supervisor doctor`, start. A project that installed a plugin package needing 2.0.0 uninstalls it.
+
+**Plugin API:** the deprecation release a major version normally follows was skipped by the owner's decision; the
+reviewer checks each entry below.
+- **Plugin API (breaking):** the module `supervisor.ext` is `supervisor.plugin`: every name moved with it.
+  `ExtensionError` is `PluginError` (removed and added under the new name). `Layout.extensions` is
+  `Layout.plugins` (removed and added). `Registry`, `agent_lane`, `config` and `log_event` raise `PluginError`;
+  `config` reads `plugins.<identity>` (was `extensions.<identity>`).
+- **Plugin API (editorial):** `AgentLane`, `job_spec`, `policy`, `resources` and `ui`: "extension" reads
+  "plugin" in their sections, nothing else.
+- `supervisor.testing` (not part of the contract, unstable) gains helpers, below, and `project(plugins=...)`
+  replaces `extensions=`.
 
 - **Changed (breaking): "extension" is now "plugin", everywhere, with no old names kept.** The owner's
   decision (2026-10-29): a clean break, released as a major version. What changes for a project, and what

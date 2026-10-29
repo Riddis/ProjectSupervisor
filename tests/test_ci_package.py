@@ -1,5 +1,5 @@
 """tools/ci_package.py: the CI of the plugin packages kept in this repository under packages/<distribution>/
-(1.14.0, decision D2 of the boundary plan's phase 5). Each package is tested against the oldest framework release in
+(2.0.0, decision D2 of the boundary plan's phase 5). Each package is tested against the oldest framework release in
 its manifest's range and against HEAD; a package's own tag (`<identity>-vX.Y.Z`) is never taken for a framework
 release. The `run` step (wheels, a fresh environment, the installed proof, the suite) runs in CI on a package
 scaffolded there; here, the matrix and the options it reads."""

@@ -17,7 +17,7 @@ IDENTITY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def framework_range(version: str = __version__) -> str:
-    """The range a new plugin declares: this minor release up to the next major (`>=1.12,<2`)."""
+    """The range a new plugin declares: this minor release up to the next major (`>=2.0,<3`)."""
     major, minor = (int(x) for x in version.split(".")[:2])
     return f">={major}.{minor},<{major + 1}"
 

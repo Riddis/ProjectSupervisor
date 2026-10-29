@@ -129,7 +129,7 @@ def parse(text: str, source: str) -> Manifest:
         try:
             SpecifierSet(framework)
         except InvalidSpecifier:
-            problems.append(f"framework {framework!r} is not a version range (PEP 440, e.g. \">=1.12,<2\")")
+            problems.append(f"framework {framework!r} is not a version range (PEP 440, e.g. \">=2.0,<3\")")
 
     provides = _names_table(data, "provides", IDENTIFIER_KINDS + ("hooks",), problems)
     for hook in provides.get("hooks", ()):

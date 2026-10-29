@@ -1,4 +1,4 @@
-"""tools/ci_installed_plugin.py, the installed-package proof behind gate G5 in CI (1.14.0 options).
+"""tools/ci_installed_plugin.py, the installed-package proof behind gate G5 in CI (2.0.0 options).
 
 A plugin package's CI job (packages/<distribution>/, docs/PLUGIN_STANDARD.md) runs the tool against the
 built wheel. A package whose config has a required field cannot load in an empty section (`--config <file>` gives
@@ -44,7 +44,7 @@ class Settings(BaseModel):
 MANIFEST = '''
 identity = "tally"
 version = "1.0.0"
-framework = ">=1.12,<2"
+framework = ">=2.0,<3"
 
 [provides]
 python_jobs = ["tally_count"]

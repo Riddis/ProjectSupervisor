@@ -1,5 +1,5 @@
 """CI for the plugin packages kept in this repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md,
-"Packages in the framework repository"), from 1.14.0.
+"Packages in the framework repository"), from 2.0.0.
 
     python tools/ci_package.py matrix [--github-output <file>]
     python tools/ci_package.py run packages/<distribution> --framework <vX.Y.Z | HEAD> [--workdir <folder>]

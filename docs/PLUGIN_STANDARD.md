@@ -21,7 +21,7 @@ migrations are module names here, imported only once the plugin is approved.
 ```toml
 identity = "text_model"                       # required; lower case letters, digits and _, starting with a letter
 version = "1.0.0"                            # required; the plugin's own version (PEP 440)
-framework = ">=1.12,<2"                      # required; the framework versions it supports (a PEP 440 range)
+framework = ">=2.0,<3"                       # required; the framework versions it supports (a PEP 440 range)
 migrations = "supervisor_plugin_textgen.migrations"   # optional; a module exposing MIGRATIONS
 
 [provides]                                   # what setup() registers; nothing else may be registered
@@ -150,7 +150,7 @@ overwritten.
 ## Where a package lives
 
 A package has one of two homes, and the standard is the same in both:
-- **The framework repository's `packages/<distribution>/`** (from 1.14.0), for the packages the framework's
+- **The framework repository's `packages/<distribution>/`** (from 2.0.0), for the packages the framework's
   maintainers keep: `packages/supervisor-plugin-textgen/` with its own `pyproject.toml`, version, CHANGELOG and tests.
   - It is an optional install. The framework's wheel holds `supervisor*` only, so nothing under `packages/` reaches
     a project unless the project installs that package's wheel.

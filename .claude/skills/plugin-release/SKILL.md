@@ -56,7 +56,7 @@ artifact (version and hash) that was tested, and nothing else.
      The framework repository's `tools/ci_installed_plugin.py <identity> [--lane <adapter>] [--python-job
      <name>] [--config <file>] [--workdir <folder>]` does these steps. It is not in the framework wheel: run the
      copy from the framework tag under test (a `git worktree add` at the tag, as for its wheel); its options need
-     framework 1.14.0 or later. `--config` is a YAML file written as `plugins.<identity>`, for a package whose
+     framework 2.0.0 or later. `--config` is a YAML file written as `plugins.<identity>`, for a package whose
      config has a required field (without it the section is empty). `--python-job` completes a task on a python
      job the package registers, for a package without a lane. Its temporary project goes under `--workdir` (default:
      the current folder), is removed when it passes and kept, and named, when it fails.
@@ -99,7 +99,7 @@ the tag comes after the build, never before.
 ## Checks it ends with
 
 - No project's information in the package or the wheel: `supervisor boundary words <package folder> <wheel>`
-  (framework 1.14.0 or later) passes, run where the local project-terms file is. It fails, rather than passing,
+  (framework 2.0.0 or later) passes, run where the local project-terms file is. It fails, rather than passing,
   without that file.
 - G5 on the installed wheel, against the oldest and the newest framework in the range.
 - The package's suite on the installed wheel, against both.

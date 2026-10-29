@@ -94,7 +94,7 @@ def test_the_import_probe_is_offered(tmp_path):
     testing.reset()
 
 
-# ---------------------------------------------------------------- read helpers (1.14.0)
+# ---------------------------------------------------------------- read helpers (2.0.0)
 # A plugin package's tests may use only supervisor.plugin and supervisor.testing (G5). Porting the first packages'
 # tests showed what they read: the stored task a lane is handed, the job records, an open job record planted the
 # way the loop leaves one, one settle pass, the scheduler's next picks, the inbox items of a claimed kind and the

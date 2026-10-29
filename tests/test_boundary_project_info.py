@@ -154,7 +154,7 @@ def test_the_framework_repository_holds_no_project_information():
     assert g1d(report) == [], "\n".join(str(f) for f in report.violations if f.rule == "G1d")
 
 
-# ---------------------------------------------------------------- the project-words scan for any repository (1.14.0)
+# ---------------------------------------------------------------- the project-words scan for any repository (2.0.0)
 # A plugin package's repository (or its folder under packages/) and its built wheel must hold no project
 # information either: `python -m supervisor.boundary --words <target>` runs G1d's word list over any folder or built
 # archive, file names included. A release check that cannot run fails instead of passing.
@@ -260,7 +260,7 @@ def test_a_folder_an_enclosing_repository_ignores_is_still_scanned(tmp_path, mon
     assert hits(boundary.scan_words(unpacked, terms)) == [("README.md", 1, "zorblax")]
 
 
-# ---------------------------------------------------------------- a package's own name (1.14.0)
+# ---------------------------------------------------------------- a package's own name (2.0.0)
 # A project word can become the public name of a plugin package kept under packages/ (an identity the project's
 # saved state already uses). The local file may allow it there, and only there: inside packages/<distribution>/ (or
 # that folder scanned on its own) and in that distribution's wheel or sdist. Everywhere else it is still a hit.

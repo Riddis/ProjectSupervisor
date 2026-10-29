@@ -1,4 +1,4 @@
-"""1.14.0: plugin packages live in the framework repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md)
+"""2.0.0: plugin packages live in the framework repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md)
 and each package release is tagged `<identity>-vX.Y.Z`. Only `vX.Y.Z` tags are framework releases. A package tag
 never counts as one: not in the pinned update check, not as the release a runtime checkout runs (doctor), not as the
 previous release G2 compares the plugin API with, and not in the skills history.
