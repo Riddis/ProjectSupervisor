@@ -41,11 +41,13 @@ gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
 extension_app = typer.Typer(help="project extensions (extensions/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
+skills_app = typer.Typer(help="the framework's skills in this project: status and update")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(extension_app, name="extension")
 app.add_typer(boundary_app, name="boundary")
+app.add_typer(skills_app, name="skills")
 
 
 def _layout(load: bool = True) -> Layout:
@@ -145,8 +147,15 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
 def status():
     """Print the live state summary: reads the store and `state/runtime/supervisor.json`, writes nothing (STATE.md is
     `supervisor render`'s job). Before 1.10.0 this rendered STATE.md, so a read command rewrote a file while the loop
-    held `state/.lock`, and with no runtime record passed it always reported the loop as not running."""
+    held `state/.lock`, and with no runtime record passed it always reported the loop as not running. It first names the
+    project it reads and whether a loop holds `state/.lock` (1.13.0): a probe that takes and releases the lock at
+    once, and reads its owner sidecar when it cannot."""
+    from . import locks
     layout = _reader()
+    typer.echo(f"project: {layout.root}")
+    held = locks.holder(layout.lock) if layout.lock.exists() else None
+    typer.echo("lock: free" if held is None else f"lock: held by {held.get('owner', 'unknown')}"
+               + (f" on {held['host']}" if held.get("host") else ""))
     typer.echo("\n".join(render.state_lines(layout, runtime=runtime.read(layout))).rstrip())
 
 
@@ -168,12 +177,18 @@ def doctor():
 
 @app.command()
 def check():
-    """Validate the task store (fields, enums, dependencies, cycles)."""
-    layout = _layout()
+    """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
+    not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs.
+    Reads only: no extension is set up and nothing is created (review 1.13.0)."""
+    layout = _reader()
     tasks = tasks_mod.load_all(layout)
     errors = tasks_mod.validate_graph(tasks)
     for e in errors:
         typer.echo(f"ERROR {e}")
+    from .models.task import TERMINAL
+    open_tasks = [t for t in tasks.values() if t.status not in TERMINAL]
+    for w in tasks_mod.contract_warnings(open_tasks, layout):
+        typer.echo(f"WARN {w}")
     typer.echo(f"{len(tasks)} tasks; eligible: {', '.join(t.id for t in tasks_mod.eligible(layout, tasks)) or 'none'}")
     raise typer.Exit(1 if errors else 0)
 
@@ -201,7 +216,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     Goes through the command queue, so it also works while a supervisor is running (it applies it next iteration)."""
     ids = [s for s in update_contracts.split(",") if s]
     if dry_run:
-        layout = _layout()
+        layout = _reader()                         # reads only: no extension set up, nothing created (review 1.13.0)
         try:
             res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
         except (ValueError, tasks_mod.TaskError) as exc:
@@ -354,6 +369,22 @@ def boundary_check(root: str = typer.Option("", help="framework checkout (defaul
     supervisor/ (docs/BOUNDARY.md). Exit 0 clean, 1 violations, 2 when it cannot run. Needs no project."""
     from . import boundary
     raise typer.Exit(boundary.run(Path(root) if root else None, as_json=as_json, echo=typer.echo))
+
+
+@skills_app.command("status")
+def skills_status():
+    """Each skill the framework ships (or shipped) and its state here: current, missing, outdated, edited, retired."""
+    from . import skills
+    for e in skills.status(_layout(load=False).root):
+        typer.echo(f"{e.state:<9} {e.rel}" + (f"  ({e.detail})" if e.detail else ""))
+
+
+@skills_app.command("update")
+def skills_update(dry_run: bool = typer.Option(False, help="report what would change without writing")):
+    """Install missing skills and replace the ones nobody edited; an edited one is left, to merge by hand."""
+    from . import skills
+    for e in skills.update(_layout(load=False).root, dry_run=dry_run):
+        typer.echo(f"{e.state:<9} {e.rel}" + (f"  ({e.detail})" if e.detail else ""))
 
 
 @extension_app.command("list")
@@ -511,8 +542,8 @@ def cmd(kind: str, payload: str = "{}", actor: str = "owner"):
 
 @app.command()
 def supervisor():
-    """Show runtime state."""
-    typer.echo(json.dumps(runtime.read(_layout()), indent=2))
+    """Show runtime state. Reads only: no extension set up (review 1.13.0)."""
+    typer.echo(json.dumps(runtime.read(_reader()), indent=2))
 
 
 @app.command()

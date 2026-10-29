@@ -8,7 +8,7 @@
        literals, e-mail addresses and the user names the check is given;
   G1c  no model or vendor names outside the explicit list of files that legitimately carry them (the agent
        adapters, the capacity and usage code, the CLI doctor checks, the template config, the docs);
-  G1d  no project information anywhere in the repository (every tracked text file, not only `supervisor/`): the
+  G1d  no project information anywhere in the repository (every file git tracks or would add, not only `supervisor/`): the
        framework repo never contains a project's files or information. A project's words are listed in a local
        file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
        in `boundary.toml`; without that file, as in CI, G1d reports that it did not run.
@@ -348,13 +348,15 @@ def load_project_terms(path: Path | None = None) -> dict[str, list[str]] | None:
 
 
 def repository_files(root: Path) -> list[Path]:
-    """Every file the repository tracks (`git ls-files`), else, without git, every file but caches, `runs/` and
-    `.git/`. Untracked files are not in the repository, so a contributor's scratch notes are not scanned."""
+    """Every file the repository tracks, and every untracked file it does not ignore, which the next commit would add
+    (`git ls-files --cached --others --exclude-standard`, 1.13.0); without git, every file but caches, `runs/` and
+    `.git/`. An ignored file, such as a contributor's scratch notes under `runs/`, is not scanned."""
     import subprocess
     try:
-        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=False, timeout=60)
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                             capture_output=True, check=False, timeout=60)
         if out.returncode == 0:
-            return [Path(root) / rel for rel in sorted(out.stdout.decode("utf-8").split("\0")) if rel]
+            return [Path(root) / rel for rel in sorted(set(out.stdout.decode("utf-8").split("\0"))) if rel]
     except (OSError, subprocess.SubprocessError):
         pass
     found = []

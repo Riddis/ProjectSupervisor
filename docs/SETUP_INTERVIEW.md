@@ -74,9 +74,10 @@ external (publishing, sending, deploying, purchasing), anything irreversible. De
 inbox kinds, a packet screen if some content must not leave the machine, the plan's §2 constraints.
 
 **9. Phases and gates.**
-Propose 3–6 phases from the answers so far, each with a goal, an exit gate, the evidence that gate needs, and whether
-the owner must acknowledge it. Ask the owner to edit. Default phase 0 is always "Foundations": repo, toolchain, test
-runner, the project's own runbook — ending at G0, which the owner acknowledges. Decides: `project.yaml phases`,
+Propose 2–6 phases from the answers so far (a small recurring operation may need only two: prove it, then run it),
+each with a goal, an exit gate, the evidence that gate needs, and whether the owner must acknowledge it. Ask the
+owner to edit. Default phase 0 is always "Foundations": repo, toolchain, test runner, the project's own runbook —
+ending at G0, which the owner acknowledges. Decides: `project.yaml phases`,
 `state/gates.yaml`.
 
 **10. The first phase's tasks.**
@@ -138,6 +139,7 @@ author directly.
 
 ## Stage 4 — hand over
 
-The supervisor runs phase 0. The Senior PM role plans phase 1 in detail when G0 is near; the owner approves gates in
-the inbox. This interview is not run again: later changes go through the Control Center chat ("convert to task /
-decision"), decision records, and `supervisor task import --update-contracts`.
+The supervisor runs phase 0. The Senior PM role plans phase 1 in detail when G0 is near (in a project that keeps no
+planning role, the owner does, as an owner task); the owner approves gates in the inbox. This interview is not run
+again: later changes go through the Control Center chat ("convert to task / decision"), decision records, and
+`supervisor task import --update-contracts`.

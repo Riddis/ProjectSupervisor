@@ -18,7 +18,7 @@ A single Messages API call per attempt, billed to an API key the owner put in `s
   `claude_cli`, and a delivery the switch had already moved here is closed as `REROUTED` (`rerouted_to`) and
   queued on its own lane — no escalation. Work pinned to this lane (`job.adapter`, `cost_category: paid`) and
   reviews wait PREPARED until the recheck instead. To retry sooner (credit topped up, a new billing cycle):
-  `supervisor cmd lane.reset '{"lane":"claude_api"}'` — the waiting records are released on the loop's next
+  `supervisor cmd lane.reset --payload '{"lane":"claude_api"}'` — the waiting records are released on the loop's next
   iteration, as they are when the owner raises a reached `monthly_budget_usd`.
 - Detection is exact: HTTP 400 with a JSON `error.type` of `invalid_request_error` and the "credit balance is too
   low" message. Any other response, whatever it contains, stays an ordinary FAILED attempt.

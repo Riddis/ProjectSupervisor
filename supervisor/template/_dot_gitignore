@@ -6,8 +6,9 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 
-# secrets - never commit
-secrets/
+# secrets - never commit (the folder's README, which says so, is the one file kept)
+secrets/*
+!secrets/README.md
 .env
 *.token
 *token*.json

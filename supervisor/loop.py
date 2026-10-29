@@ -839,10 +839,15 @@ class Supervisor:
             return decision
         self.reconcile()                 # collects finished work under every decision; launches only when the gate allows
         self.poll_capacity()
-        if decision == "PAUSE":
-            runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
-        elif decision == "DRAIN":
-            decision = self.drain()
+        if decision in ("PAUSE", "DRAIN"):
+            if decision == "PAUSE":
+                runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
+            else:
+                decision = self.drain()
+            # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and the
+            # work reconcile() collected are records too, and a completed drain commits its last ones at once.
+            done = checkpoint_mod.run(self.layout)
+            self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
         else:
             for task, name in scheduler.plan(self.layout, unattended=self.unattended):
                 self.dispatch(task, name)
@@ -918,7 +923,10 @@ class Supervisor:
                 print(f"supervisor refuses to run: {blocked}", file=sys.stderr)
                 return 1
             runtime.write(self.layout, status="RUNNING", pid=os.getpid(), started=now_iso(), decision=runtime.read(self.layout).get("decision", "RUN"))
-            if reset_decision and runtime.read(self.layout).get("decision") in ("STOP", "RELOAD"):
+            doc = runtime.read(self.layout)
+            if reset_decision and doc.get("decision") == "RELOAD":     # a reload the loop never got to finish
+                runtime.set_decision(self.layout, doc.get("after_reload") or "RUN", "loop-start", after_reload=None)
+            elif reset_decision and doc.get("decision") == "STOP":
                 runtime.set_decision(self.layout, "RUN", "loop-start")   # `supervisor run` = owner Start
             while True:
                 try:
@@ -935,7 +943,9 @@ class Supervisor:
                     return 0
                 if decision == "RELOAD":
                     runtime.heartbeat(self.layout, "STOPPED", reason="reload requested")
-                    runtime.set_decision(self.layout, "RUN", "loop-reload")
+                    # back with the decision the reload replaced: a paused loop stays paused (1.13.0)
+                    after = runtime.read(self.layout).get("after_reload") or "RUN"
+                    runtime.set_decision(self.layout, after, "loop-reload", after_reload=None)
                     return EXIT_RELOAD
                 if max_iterations is not None and self.iteration >= max_iterations:
                     runtime.heartbeat(self.layout, "STOPPED", reason="max iterations")

@@ -170,7 +170,9 @@ def _isolate_pytest(argv: list[str], root: Path, tag: str) -> list[str]:
     """Concurrent pytest runs (two agents, or an agent and this verifier) sharing pyproject's --basetemp wipe each
     other's temp dirs on Windows; give every run its own basetemp."""
     if "pytest" in " ".join(argv[:3]) and not any(a.startswith("--basetemp") for a in argv):
-        argv = argv + [f"--basetemp={(root / 'runs' / 'pytest_tmp' / tag).as_posix()}"]
+        parent = root / "runs" / "pytest_tmp"
+        parent.mkdir(parents=True, exist_ok=True)          # pytest makes the basetemp, never a missing parent (1.13.0)
+        argv = argv + [f"--basetemp={(parent / tag).as_posix()}"]
     return argv
 
 
@@ -240,6 +242,9 @@ def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list
     for p in changed_paths(before, after):
         if p in declared or p in skip or (ignore and contained(p, list(ignore), root)):
             continue
+        kinds = {(before.get(p) or {}).get("kind"), (after.get(p) or {}).get("kind")}
+        if kinds <= {"directory", "missing", None}:
+            continue                    # a folder appearing or going away is no delivery; its files are judged (1.13.0)
         (inside if contained(p, owned_paths, root) else outside).append(p)
     return inside, outside
 

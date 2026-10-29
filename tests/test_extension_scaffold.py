@@ -75,6 +75,13 @@ def test_the_package_has_the_standard_shape(tmp_path, monkeypatch):
     assert "{{" not in "".join(p.read_text(encoding="utf-8") for p in dist.rglob("*") if p.is_file())
 
 
+
+def test_the_package_ignores_its_build_output(tmp_path, monkeypatch):
+    """1.13.0, a skill-trial finding (extension-new, round 2): a build or an editable install in the package's
+    repository left build/ and the egg-info untracked, so the scaffold ships a .gitignore for them."""
+    dist = scaffold_package(tmp_path, monkeypatch, "lab_notes")
+    ignored = (dist / ".gitignore").read_text(encoding="utf-8").split()
+    assert {"build/", "dist/", "*.egg-info/", "__pycache__/"} <= set(ignored), ignored
 def installed(site: Path, dist: Path, identity: str) -> None:
     """dist's package on `site`, with a .dist-info as pip would write (entry point and file list)."""
     package = f"supervisor_ext_{identity}"

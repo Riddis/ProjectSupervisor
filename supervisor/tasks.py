@@ -162,6 +162,70 @@ def artifact_warnings(tasks: Iterable[Task], root: Path | None = None) -> list[s
     return artifact_problems(tasks, root)[1]
 
 
+def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
+    """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
+    - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
+    - one that is inactive (`active: false`), which parks the task until the role is activated;
+    - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
+    - a `job` whose adapter, or whose python `fn`, neither the framework nor an extension's manifest provides, which
+      would fail only when it ran. No extension is set up for this (`_registered_lanes`).
+    Warnings, not errors: a project whose seed already holds one keeps importing."""
+    from . import gate, verify
+    roles = gate.routing_doc(layout).get("roles")
+    roles = roles if isinstance(roles, dict) else {}
+    allowed = verify.allowed_test_commands(layout)
+    out = []
+    loaded = None
+    for t in tasks:
+        job = (getattr(t, "model_extra", None) or {}).get("job")
+        if isinstance(job, dict) and job.get("adapter"):
+            if loaded is None:
+                loaded = _registered_lanes(layout)
+            lanes, python_jobs, unloaded = loaded
+            if job["adapter"] not in lanes:
+                out.append(f"{t.id}: job adapter {job['adapter']!r} is not a registered lane{unloaded}; the job "
+                           f"would fail when it ran")
+            elif job["adapter"] == "python" and job.get("fn", "noop") not in python_jobs:
+                out.append(f"{t.id}: job fn {job.get('fn')!r} is not a registered python job{unloaded}; the job "
+                           f"would fail when it ran")
+        named = [("owner_role", t.owner_role)] + [("reviewer", r) for r in t.reviewer]
+        for field_name, role in named:
+            if not role:
+                continue
+            if roles and role not in roles:
+                out.append(f"{t.id}: {field_name} {role!r} is not a role in config/routing.yaml; the task would wait "
+                           f"for it forever")
+            elif gate.role_inactive(layout, role):
+                out.append(f"{t.id}: {field_name} {role!r} is inactive (routing.yaml roles.{role}.active: false); "
+                           f"the task waits until it is activated")
+        for check in t.checks:
+            if not verify.permitted(check.command, allowed):
+                out.append(f"{t.id}: check {check.command!r} is not in verification.allowed_test_commands; "
+                           f"verification would refuse it")
+    return out
+
+
+def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
+    """The adapter and python job names the framework registers, plus those each configured extension's manifest
+    declares (`provides`, which G5 holds to what its setup() registers), and a note for the warning naming any
+    extension whose names could not be read. Import-free: no extension is set up, so `task import --dry-run` and
+    `supervisor check` write nothing (review 1.13.0 round 2)."""
+    from . import extensions
+    lanes, python_jobs = extensions._built_in("adapters"), extensions._built_in("python_jobs")
+    unread = []
+    found = extensions.approval(layout)
+    for name, _required in found.entries:
+        m = found.finds[name].manifest
+        if name in found.refused or m is None:
+            unread.append(name)
+            continue
+        lanes |= set(m.provides.get("adapters", ()))
+        python_jobs |= set(m.provides.get("python_jobs", ()))
+    note = (f" (not checked against {', '.join(sorted(unread))}: no usable manifest, see `supervisor doctor`)"
+            if unread else "")
+    return lanes, python_jobs, note
+
+
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
     tasks = tasks or load_all(layout)
     gate_data = gates_mod.load(layout)
@@ -186,6 +250,7 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     combined = load_all(layout)
     combined[doc["id"]] = Task.model_validate(doc)
     art_errors, warnings = artifact_problems([combined[doc["id"]]], root=layout.root)
+    warnings += contract_warnings([combined[doc["id"]]], layout)
     errors = validate_graph(combined) + ownership_errors([combined[doc["id"]]], layout) + art_errors
     if errors:
         raise TaskError("; ".join(errors))
@@ -211,6 +276,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     for t in seed:
         combined[t["id"]] = Task.model_validate(t)   # seed must be a valid contract
     art_errors, warnings = artifact_problems([combined[t["id"]] for t in seed], root=layout.root)
+    warnings += contract_warnings([combined[t["id"]] for t in seed], layout)
     errors = (validate_graph(combined) + ownership_errors([combined[t["id"]] for t in seed if t["id"] not in existing], layout)
               + art_errors)
     if errors:

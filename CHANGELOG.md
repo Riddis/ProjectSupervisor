@@ -3,6 +3,119 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 1.13.0 — 2026-10-29
+
+Phase 4 of the boundary plan (docs/BOUNDARY.md): the skills. The project-side skills reach a project with
+`supervisor init` and, from now on, `supervisor skills update`; the contributor skills live in the framework repo.
+Each skill was followed by a fresh session on a throwaway project, and what those trials found is fixed below.
+
+**Migration:** none added. `supervisor migrate` records the new version; its dry run on a project at 1.12.1 lists
+only `project.yaml: framework_version 1.12.1 → 1.13.0`. After it, `supervisor skills status` shows the skills this
+release ships, and `supervisor skills update` installs them (the project-upgrade skill).
+
+**Rollback** to v1.12.1, in a maintenance window: stop, check out `v1.12.1`, run `supervisor migrate` (it records
+1.12.1 again), restore the skills folder from the window's snapshot (1.12.1 has no `skills` command, and ignores
+`.claude/supervisor-skills.json`), `supervisor doctor`, start. Nothing else 1.13.0 writes is new to 1.12.1: the
+reload's `after_reload` field in the runtime record is ignored there, and the commits made while paused are
+ordinary state commits.
+
+**Extension API:** unchanged (G2 compared with v1.12.1).
+
+- **Changed: commits go on while the loop is paused or draining.** In 1.12.1 only a running iteration checkpointed
+  accepted work and committed the loop's records, so the records made while paused (an owner's command, the work
+  `reconcile()` collected) waited for the first running iteration. PAUSE and DRAIN iterations now checkpoint and
+  commit too, since a commit launches nothing. A drain that completes commits its last records at once, before the
+  loop stops.
+- **Added: `supervisor skills status` and `supervisor skills update`** (`supervisor/skills.py`). The framework's
+  skills reach a project when `supervisor init` stamps the template. Until now a later release's newer skills never
+  did.
+  - `supervisor init` records the hash of each skill file it writes in `.claude/supervisor-skills.json`.
+  - `skills status` reports each shipped skill as current, missing, outdated (unedited, but the template moved on),
+    edited (changed in the project) or retired (no longer shipped).
+  - `skills update` installs the missing ones and replaces the outdated ones. It never touches an edited copy, which
+    it flags for a merge by hand, nor a retired one.
+  - Hashes ignore line endings. A project from before 1.13.0 has no record yet: an identical copy counts as current,
+    a copy an earlier release shipped counts as outdated (`supervisor/skills_history.json`, written from the release
+    tags by `tools/skills_history.py`), and any other as edited.
+  - `skills update` commits what it wrote and nothing else: no record under `state/`, no projection, and no file
+    someone else staged. Its dry run says "would install" or "would update".
+- **Fixed: `supervisor reload` keeps a paused loop paused.** The reload command replaced the decision with RELOAD,
+  and the loop came back with RUN. A project left PAUSED for the owner, as every maintenance window leaves it, then
+  started dispatching on a reload. The command now records the decision it replaced (`after_reload`), and the loop
+  restores it, also when it starts on a RELOAD it never finished: PAUSE stays PAUSE, DRAIN stays DRAIN. A second
+  reload requested before the first is done keeps the decision the first one saved.
+- **Fixed: pytest checks in a fresh project.** Verification gives each pytest run its own
+  `--basetemp=runs/pytest_tmp/<tag>`. Nothing created `runs/pytest_tmp/`, and pytest creates the basetemp but never a
+  missing parent. So in a new project every task with a pytest check failed verification. The parent is created
+  first now.
+- **Added: `SUPERVISOR_RUN_DIR` for process jobs.** A `process` job must write `result.json` into its run folder,
+  and it could find that folder only as the parent of `$SUPERVISOR_PROGRESS_FILE`. The adapter now names the folder
+  itself. `docs/TASK_CONTRACT.md` says what the job writes, and how a python job's `fn` is registered.
+- **Fixed: the template.**
+  - Its `.gitignore` ignores `secrets/*` but keeps `secrets/README.md`, so that note reaches a new project's first
+    commit.
+  - `supervisor extension new`'s commented example lane is `<identity>_lane`, namespaced as G5 requires, instead of
+    `my_lane`.
+  - `docs/BOUNDARY.md` says what G1d scans: every file git tracks, or without git, every file but caches, `runs/`
+    and `.git/`.
+  - The extension package scaffold (`supervisor extension new --package`) ships a `.gitignore` for `build/`,
+    `dist/`, `*.egg-info/` and caches, which a build or an editable install in the package's repository left
+    untracked.
+- **Fixed: G1d checks a new file before it is added.** It read only what git tracks, so a new file in uncommitted
+  work was never checked, and a clean G1d prints nothing. It now also reads every untracked file git does not
+  ignore.
+- **Fixed: a new owned folder no longer fails the first delivery.** A task whose `owned_paths` named a folder that
+  did not exist yet failed its first verification with "undeclared changes inside owned paths: <folder>", and spent a
+  revision. The delivery manifest recorded the folder as missing before the job and as a directory after it, and
+  that counted as a write. Only file changes count now. A file replaced by a folder still does.
+- **Changed: `supervisor status` names the project and the lock's holder.** It first prints `project: <root>`, so a
+  session working on a copy can confirm `SUPERVISOR_ROOT`. Then `lock: free`, or `lock: held by <owner>` for a loop
+  holding `state/.lock`: a probe takes and releases the lock at once, and reads its owner sidecar when it cannot.
+  Before, no command said whether a loop held the lock, and the file stays after the loop stops.
+- **Added: contract warnings** (`tasks.contract_warnings`). `supervisor task import` (and its `--dry-run`),
+  `supervisor task create` and `supervisor check` now warn when a contract asks for something the project cannot give:
+  - an `owner_role` or `reviewer` that routing.yaml does not configure;
+  - a role that is inactive;
+  - a check command outside `verification.allowed_test_commands`;
+  - a `job` whose adapter, or whose python `fn`, neither the framework nor an extension's manifest (`provides`)
+    declares. No extension is set up for this: `task import --dry-run`, `supervisor check` and `supervisor
+    supervisor` now read the project without setting its extensions up, so they write nothing, even when an
+    extension fails (`doctor` and `extension list` still set them up, to report on them).
+
+  `supervisor check` warns only about open tasks. These are warnings, not refusals, so an existing seed keeps
+  importing. Until now, all four passed in silence, and the task then waited forever, failed at verification or
+  failed when its job ran.
+- **Added: the project-side skills, wave 1** (`supervisor/template/.claude/skills/`, delivered by `supervisor init`
+  and `supervisor skills update`):
+  - `maintenance-window`: drain, confirm nothing is open, snapshot, the change, migrate, doctor, the suite, start
+    paused;
+  - `rehearsal`: the change and its rollback on a copy, never with real lanes;
+  - `project-upgrade`: a new release, from reading its CHANGELOG to `supervisor skills update`;
+  - `project-restore`: rollback A, or B with the owner deciding on the work done since;
+  - `runtime-diagnose`: read-only evidence, the failing layer, a supported recovery or a reproducible issue;
+  - `task-author`: the contract fields that decide whether a task can work;
+  - `stuck-task`: why one task stopped, and how it continues through owner commands;
+  - `role-change`: card, routing and schemas in agreement.
+- **Added: the contributor skills** (the framework repo's `.claude/skills/`):
+  - `extension-new`: rule 1, the standard shape, G5;
+  - `extension-promote`: one copy afterwards, identifiers kept, the project switched in the same change;
+  - `extension-release`: test the built wheel against the oldest and newest framework in range, and identify the
+    artifact;
+  - `boundary-review`: the G7 questions and every gate re-run.
+
+  `supervisor-setup` now looks for an existing package before writing an extension, holds each extension to G5,
+  and leaves the shipped skills as they are. `catalog-review` waits for the catalog index (phase 6).
+
+  Every skill was followed by a fresh session on a throwaway project, twice. What those trials found unclear,
+  missing or wrong is fixed in the text: among others, the order of the task checks (`check` reads the store, so
+  it runs after the import), who commits the seed and a role change, the retire order, an interpreter for a
+  `process` job, the uninstall for a target folder, the code change prepared on a branch, the package searched for
+  project information, a project with no agent role, and a safe way to get "the commit before" for a review.
+  `docs/SETUP_INTERVIEW.md` allows two phases, and says who plans when no planning role is kept.
+- **Tests:** `tests/test_skill_catalog.py` checks every planned skill: its place, its front matter, the checks it ends
+  with, that every `supervisor` command it names exists, and that it holds no machine path or host.
+- **Fixed (docs):** the runbooks show `supervisor cmd <kind> --payload '<json>'`, the form the CLI takes.
+
 ## 1.12.1 — 2026-10-28
 
 Fixes only, found by running a live project on 1.12.0:
