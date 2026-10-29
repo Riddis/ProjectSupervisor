@@ -19,6 +19,11 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   extension package's folder and its wheel hold no project's information either; extension-release runs it. Unlike
   G1d in the framework check, it fails (exit 2) without the local word list: a release check that did not run has
   not passed.
+- **Added: `supervisor.testing` read helpers** for an extension package's own tests, which may use only
+  `supervisor.ext` and `supervisor.testing`: `load`, `registered_lane`, `task`, `job`, `jobs`, `running_job` (an
+  open job record planted as the loop leaves one), `settle`, `plan`, `inbox_item`, `make_inbox_item`, `answer` and
+  `loop_lock`. They are what porting the first packages' tests needed (docs/EXTENSION_API.md, "Testing
+  extensions"). The module stays unstable.
 - **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
   information too.
 

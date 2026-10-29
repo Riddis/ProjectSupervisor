@@ -433,5 +433,16 @@ nothing in it is promised. It is promoted from the framework's own test fixtures
 | `ui_client(layout, csrf=CSRF)` | a Control Center test client with the CSRF cookie set (imported on use; needs the `ui` and `dev` extras) |
 | `import_side_effects(layout, name)` | what importing an extension module registers by itself, measured in a fresh interpreter |
 | `reset()` | forget loaded extensions and what they registered |
+| `load(layout)` | set the project's extensions up as the loop does; returns the loader's registry (`.loaded`, `.errors`) |
+| `registered_lane(name) -> Adapter` | the lane registered under `name`, the object the loop calls (KeyError when none) |
+| `task(layout, tid)` | the task as stored, the object a lane's `prepare()` is handed (`.status`, `.job`) |
+| `job(layout, attempt_id) -> dict`, `jobs(layout, task_id=None) -> list[dict]` | a job record (`phase`, `result`, `spec`, `handle`); a task's records oldest first, or all of them |
+| `running_job(layout, task_id, adapter, spec, handle, *, attempt_id=None, gpu=False, **fields) -> dict` | plant an open job record as the loop leaves one after `submit()` (RUNNING, the task IN_PROGRESS); `gpu=True` holds the resource slot |
+| `settle(layout)` | one settle pass without dispatching: each open job record collected or adopted through its lane |
+| `plan(layout) -> list[tuple[str, str]]` | what the loop would dispatch now, as (task id, lane), after the gate's checks |
+| `inbox_item(layout, item_id) -> dict` | an inbox item as stored, any kind (InboxError when none) |
+| `make_inbox_item(layout, *, kind="question", subject=..., summary=..., allowed_responses=None, for_role="owner", **fields) -> dict` | an open inbox item with extra fields (`items=[...]`) written on it |
+| `answer(layout, item_id, response, note="", by="owner") -> dict` | the owner's generic answer (the inbox page's path); a kind claimed with `answerable=False` refuses it |
+| `loop_lock(layout)` | a context manager holding the state lock as a running loop does, so owner commands queue |
 
 Nothing in it launches a model client or reaches the network.

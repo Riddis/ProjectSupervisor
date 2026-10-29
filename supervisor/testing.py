@@ -174,6 +174,102 @@ def ui_client(layout: Layout, csrf: str = CSRF):
     return client
 
 
+def load(layout: Layout):
+    """Set the project's extensions up as the loop does (their lanes, checks, kinds and commands registered).
+    Returns the loader's registry: `.loaded` and `.errors` say what loaded."""
+    return _extensions.load(layout)
+
+
+def registered_lane(name: str) -> Adapter:
+    """The lane registered under `name` (after `load()`), the object the loop calls. KeyError when there is none."""
+    if name not in REGISTRY:
+        raise KeyError(f"no lane {name!r} is registered (loaded: {sorted(REGISTRY)})")
+    return REGISTRY[name]
+
+
+def task(layout: Layout, tid: str):
+    """The task as stored, the object a lane's prepare() is handed: `.status`, `.job`, `.artifacts` and the rest."""
+    from . import tasks
+    return tasks.load(layout, tid)
+
+
+def job(layout: Layout, attempt_id: str) -> dict:
+    """One job record (state/jobs/<attempt>.json): `phase` (PREPARED, SUBMITTED, RUNNING, DONE, FAILED), `result`
+    once done, `spec`, `handle`, `error`."""
+    from . import jobs as _jobs
+    return _jobs.read(layout, attempt_id)
+
+
+def jobs(layout: Layout, task_id: str | None = None) -> list[dict]:
+    """The task's job records, oldest attempt first (every record without `task_id`)."""
+    from . import jobs as _jobs
+    return _jobs.for_task(layout, task_id) if task_id is not None else _jobs.all_records(layout)
+
+
+def running_job(layout: Layout, task_id: str, adapter: str, spec: dict, handle: dict, *,
+                attempt_id: str | None = None, gpu: bool = False, **fields) -> dict:
+    """Plant an open job record the way the loop leaves one after a lane's submit(): phase RUNNING with `spec` and
+    `handle` (and any other record field), the task IN_PROGRESS. The attempt id defaults to the task's next one
+    (`<task>.a<n>`). `gpu=True` makes it hold the resource slot. Returns the record."""
+    from . import jobs as _jobs
+    from . import tasks
+    attempt_id = attempt_id or f"{task_id}.a{len(_jobs.for_task(layout, task_id)) + 1}"
+    _jobs.prepare(layout, task_id, attempt_id, adapter, spec, gpu=gpu)
+    rec = _jobs.set_phase(layout, attempt_id, "RUNNING", handle=handle, **fields)
+    if tasks.load(layout, task_id).status in ("NOT_STARTED", "READY"):
+        tasks.set_status(layout, task_id, "IN_PROGRESS", actor="loop", note=f"{attempt_id} planted by a test")
+    return rec
+
+
+def settle(layout: Layout) -> None:
+    """One settle pass of the loop, without dispatching: each open job record is collected or adopted through its
+    lane (a finished one closed, an expired one cancelled), as a loop restart or iteration does first."""
+    from .loop import Supervisor
+    Supervisor(layout, sleep_s=0).settle()
+
+
+def plan(layout: Layout) -> list[tuple[str, str]]:
+    """What the loop would dispatch now, as (task id, lane) pairs: the scheduler's picks after the gate's checks
+    (dependencies, phase gates, limits and the resource slot against the open job records)."""
+    from . import scheduler
+    return [(t.id, lane_name) for t, lane_name in scheduler.plan(layout)]
+
+
+def inbox_item(layout: Layout, item_id: str) -> dict:
+    """One inbox item as stored (any kind). Raises supervisor.ext.InboxError when there is none."""
+    from . import inbox
+    return inbox.load(layout, item_id)
+
+
+def make_inbox_item(layout: Layout, *, kind: str = "question", subject: str = "subject", summary: str = "summary",
+                    allowed_responses: list[str] | None = None, for_role: str = "owner", **fields) -> dict:
+    """An open inbox item of `kind` for `for_role`, with any other field (`items=[...]`, `rows=[...]`) written on it
+    under the inbox lock, as an extension's code or an agent's request would leave it. Returns it as stored."""
+    from . import inbox
+    item = inbox.create(layout, for_role=for_role, subject=subject, summary=summary, kind=kind,
+                        allowed_responses=allowed_responses)
+    if fields:
+        store.update(inbox.path_for(layout, item["id"]), lambda doc: {**doc, **fields},
+                     lock_path=layout.state / ".inbox.lock")
+    return inbox.load(layout, item["id"])
+
+
+def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str = "owner") -> dict:
+    """The owner's generic answer to an inbox item, the path the inbox page and `inbox.answer` take (not an owning
+    extension's close_owned_item): a kind claimed with `answerable=False` refuses it with InboxError."""
+    from . import inbox
+    return inbox.answer(layout, item_id, response, note=note, by=by)
+
+
+@contextlib.contextmanager
+def loop_lock(layout: Layout) -> Iterator[None]:
+    """Hold the project's state lock for the block, as a running loop does: an owner command submitted meanwhile
+    (supervisor.ext.submit_command, a Control Center action) is queued for the loop, not applied."""
+    from .locks import FileLock
+    with FileLock(layout.lock, owner="test loop"):
+        yield
+
+
 def import_side_effects(layout: Layout, name: str) -> dict[str, list[str]]:
     """What importing extension `name` registers by itself, measured in a fresh interpreter (all lists empty for an
     extension that registers only in setup()). See `supervisor.extensions.import_side_effects`."""
