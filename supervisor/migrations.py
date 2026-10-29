@@ -313,6 +313,12 @@ def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
     folder = old if move else new
     manifests = []
     if folder.is_dir():
+        clash = sorted(p.parent.name for p in folder.glob("*/supervisor-extension.toml")
+                       if (p.parent / "supervisor-plugin.toml").exists())
+        if clash:                                            # decided before anything is written (review 2.0.0)
+            raise MigrationError(f"{', '.join(clash)}: both supervisor-extension.toml and supervisor-plugin.toml "
+                                 f"(2.0.0 renamed the first to the second): keep one by hand, then run `supervisor "
+                                 f"migrate` again")
         for p in sorted([*folder.glob("*.toml"), *folder.glob("*/supervisor-extension.toml"),
                          *folder.glob("*/supervisor-plugin.toml")]):
             text = p.read_text(encoding="utf-8")

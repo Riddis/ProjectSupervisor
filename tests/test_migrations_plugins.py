@@ -127,3 +127,14 @@ def test_a_local_manifest_whose_range_leaves_out_this_framework_is_named(tmp_pat
     (lay.root / "extensions" / "alpha.toml").write_bytes(old.replace(b'">=1.12,<3"', b'">=1.12,<1.13"'))
     notes = migrations.run(lay, dry_run=True)
     assert any("plugins/alpha.toml" in n and "framework" in n and ">=1.12,<1.13" in n for n in notes)
+
+
+def test_a_package_with_both_manifest_names_stops_the_migration_before_any_write(tmp_path):
+    """Review 2.0.0 R1-2 (partial report): the clash surfaced at the manifest's rename, after project.yaml,
+    routing.yaml and the folder had already moved."""
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "beta" / "supervisor-plugin.toml").write_bytes(BETA_MANIFEST.encode())
+    before = snapshot(lay.root)
+    with pytest.raises(migrations.MigrationError, match="both supervisor-extension.toml and supervisor-plugin.toml"):
+        migrations.run(lay)
+    assert snapshot(lay.root) == before
