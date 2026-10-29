@@ -1,6 +1,6 @@
 ---
 name: extension-promote
-description: Move a project-local extension into its own package (or a package's generic part into the framework) so other projects can use it - split out what is project-specific first, move the tests with the code, keep every saved identifier working, and switch the project to the package in the same change. Use when the user says "make this extension reusable", "promote this extension", "extract it into a package", "/extension-promote".
+description: Move a project-local extension into its own package (or a package's generic part into the framework) so other projects can use it - split out what is project-specific first, move the tests with the code, keep every saved identifier working, and switch the project to the package in a maintenance window. Use when the user says "make this extension reusable", "promote this extension", "extract it into a package", "/extension-promote".
 ---
 
 # Promoting an extension
@@ -22,26 +22,38 @@ into the package. The package's repository carries no project's names, paths or 
 ## 2. Create the package
 
 1. Run the extension-new skill with `--package`, keeping the **same identity**, so saved identifiers still belong
-   to it.
+   to it. Its G5 check runs in the package's own test project, not in the live project: while the local module
+   exists, an installed package of the same name is refused there as "found in two places".
 2. Move the generic code in. Every identifier the project saved stays registered under the same name, listed in
    `legacy_ids` when it predates the namespace rule.
 3. Move the tests that test the generic behaviour with the code; the project keeps the tests of its own parts.
 4. The package's config schema takes the values the project configured. An old section moves with a migration:
    the manifest's `config.legacy_sections`, which `supervisor migrate` moves, or the package's own migrations (the
    migration-author skill, with its rollback stated).
+5. Release it (the extension-release skill), so the project installs one identified artifact.
 
-## 3. Switch the project, in one change
+## 3. Rehearse the switch
 
-On a project branch:
-- remove the old module and its manifest from `extensions/`;
-- install the package into the project's environment, pinned in the project's lock;
-- list the identity in `project.yaml` (unchanged when it was already listed);
-- move any configuration the migration does not move.
+On a copy of the project (the project's rehearsal skill), with the copy's own environment, never the live one:
+1. remove the old module and its manifest from `extensions/`;
+2. install the package's released wheel;
+3. keep the identity in `project.yaml`, and move any configuration a migration does not;
+4. check that an open task and a job record naming the extension's identifiers still resolve
+   (`supervisor task show`, `supervisor doctor`). Reading them is enough: running an open task makes it rollback B;
+5. roll the copy back: restore the snapshot, put the old module back, **and uninstall the package**
+   (`pip uninstall <distribution>`), or the loop finds the identity twice and blocks. Then doctor and the suite.
 
-Then rehearse it on a copy of the project (the project's rehearsal skill), including an open item and a job record
-that name the extension's identifiers. All must still resolve, and rollback A must restore the old copy.
+## 4. Switch the project, in a window
 
-## 4. Into the framework instead
+The project's environment is shared by every branch, so the package is installed in a maintenance window (the
+project's maintenance-window skill), never ahead of it:
+- the code change (old module and manifest removed) is merged in the window;
+- the package is installed, pinned in the project's lock if it has one (a new project may not have a lock yet:
+  record the exact wheel and hash in the project's runbook instead);
+- `supervisor migrate`, `supervisor doctor`, the suite;
+- the window's README says that rollback A also uninstalls the package.
+
+## 5. Into the framework instead
 
 When the generic part belongs in the framework itself (every project wants it), this is the framework-change skill,
 with the same rules: one copy afterwards, the project switched in the same release window, identifiers kept.
@@ -49,6 +61,8 @@ with the same rules: one copy afterwards, the project switched in the same relea
 ## Checks it ends with
 
 - `supervisor extension check <identity>` (G5) in the project, now finding the installed package.
-- The package's own suite, across its declared framework range.
-- The project's suite, after the switch, on the rehearsal copy and then in the window.
-- `grep` for the old module's name: no copy left in the project.
+- The package's own suite, across its declared framework range (the extension-release skill says where those
+  framework versions come from).
+- The project's suite, after the switch, on the rehearsal copy (switched and rolled back) and then in the window.
+- No copy left: no `extensions/<identity>.py` or `extensions/<identity>/` in the project. The identity itself rightly
+  stays in `project.yaml` and the config.

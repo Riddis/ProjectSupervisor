@@ -26,7 +26,8 @@ who wants to answer questions, approve a plan, and then watch the Control Center
   Skip questions the folder already answers; say which ones you skipped and why.
 - Use the host's question tool when it has one (multiple-choice with the default first); otherwise ask in plain
   text. Never batch more than two questions.
-- Keep a running "answers so far" note (a scratch file or the plan draft) so an interrupted session can resume.
+- Keep a running "answers so far" in the plan draft itself (`docs/plan/PROJECT_PLAN.md`), so an interrupted session
+  can resume and the plan stays the only file written before approval.
 - When the owner's answer reveals a technical unknown ("I don't know which test runner"), do not investigate now:
   write it as an open question and make it a phase-0 task.
 - After Q9 (phases) and Q10 (tasks), show the proposal as a compact table and ask for edits before moving on.
@@ -44,41 +45,64 @@ who wants to answer questions, approve a plan, and then watch the Control Center
 
 Do Stage 3 steps 0–12 in order. Step 0 is the CLI command `python -m supervisor init <folder> --name "<name>"` (the
 project's venv if it exists, else any Python with the framework installed) when the folder has no `project.yaml`;
-it stamps generic defaults that the following steps adapt. Steps 1–4 and 7–9 are direct file authoring; steps 5, 6,
-10 and 11 run CLI/git commands. Specifics that matter:
+it stamps generic defaults that the following steps adapt. If the folder is not a git repository yet, `git init` it
+right after: doctor's `git` check and the setup commit need one, and the loop commits accepted work into it. Steps
+1–4 and 7–9 are direct file authoring; steps 5, 6, 10 and 11 run CLI/git commands. Specifics that matter:
 
 - Cards: start from `supervisor/template/agents/*.md`; adapt mandate/authority/escalation to the owner's answers;
   ≤ 400 words; never a model or vendor name (the framework's tests enforce this for the template, and the project's
   reviewers will hold the same line). Every role in `routing.yaml` with `active: true` needs a card; dormant roles
   get `card: null`, `active: false`, and a `note`.
-- `routing.yaml`: keep the template's comments; only change values. If only one agent CLI exists, set `code_review`
-  to that lane and keep `fallback.flag: same_vendor` with a plan note that reviews are same-vendor until a second
-  lane exists.
+- `routing.yaml`: keep the template's comments on what stays; only change values. Remove, with their comments,
+  whatever the owner does not have or want:
+  - roles the plan drops;
+  - `cost_lanes` entries for lanes the owner has no account or CLI for (a local-only project keeps none of the agent
+    lanes; otherwise the loop still polls an installed CLI's capacity);
+  - the `escalation` roles, when they are agent roles the plan does not keep: point them at kept roles, or set
+    `escalation.diagnosis: false`.
+
+  If only one agent CLI exists, set `code_review` to that lane and keep `fallback.flag: same_vendor` with a plan note
+  that reviews are same-vendor until a second lane exists. A role whose work is deterministic (no model) keeps a
+  routing entry and a card like any other, with a deterministic lane (`adapter: python` or `process`); its tasks carry
+  a `job` block, and a reviewer that is not an agent is either none (`reviewer: []`) or the owner (`human_approval:
+  required`, answered APPROVE in the inbox).
 - Tasks: each one must pass `supervisor check` (dependencies exist, no cycles, model-lane tasks declare
   `owned_paths`). Phase 0 always ends with a task whose artifact is the project's own runbook
   (`docs/runbooks/<project>.md`: how to run, test, and recover it).
-- Extensions: first look for an existing extension package that does the job (the framework's catalog index,
-  once it exists, or a package the owner names), and install it rather than write a new one. Otherwise follow the
+- Extensions: first look for an existing extension package that does the job (a package the owner names; the
+  framework's catalog index arrives with phase 6), and install it rather than write a new one. Otherwise follow the
   framework's `extension-new` skill: `supervisor extension new <name>` writes the module and its manifest in the
   standard shape (`docs/EXTENSION_STANDARD.md`); implement what the owner described; anything unknown becomes a
-  `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. Each extension
-  passes `supervisor extension check <name>` (G5) before the setup commit.
+  `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. `extension new`
+  lists the extension in `project.yaml` itself; do not add it a second time. Each extension passes `supervisor
+  extension check <name>` (G5) before the setup commit.
 - Decision records: `D-001-project-setup.md` plus one per numbered decision in plan §7; front matter
   `id/date/title/status: accepted/decided_by: owner`.
 - Project code stays in the project. If the interview shows the owner also needs a framework change (a generic
   hook, a fix), that is separate work through the framework's `framework-change` skill, never an edit made during
-  setup; if they will change the framework from this machine, run `git config core.hooksPath .githooks` in the
-  framework clone once so its boundary check (G1, `docs/BOUNDARY.md`) runs before every commit there. Then add the
-  project's distinctive words (its name, its extensions' identities, its own terms) to the local project-terms file,
-  `~/.config/supervisor/project-terms.toml` (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every repository:
+  setup.
+- Only when the owner will also change the framework from this machine, and with their go (both touch files
+  outside the project): run `git config core.hooksPath .githooks` in the framework clone once, so its boundary check
+  (G1, `docs/BOUNDARY.md`) runs before every commit there; and add the project's distinctive words (its name, its
+  extensions' identities, its own terms) to the local project-terms file, `~/.config/supervisor/project-terms.toml`
+  (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every repository. Its format is one table per project:
+
+  ```toml
+  [projects.<project>]
+  terms = ["<word>", "<another word>"]
+  ```
+
   G1d fails any of them in the framework repo, which never holds a project's files or information.
 - The project's own skills: `supervisor init` stamped the framework's project-side skills into `.claude/skills/`
-  (maintenance-window, rehearsal, project-upgrade, project-restore, runtime-diagnose, task-author, stuck-task,
-  role-change). Leave them as shipped; `supervisor skills status` says whether they are current, and later
-  releases bring newer ones with `supervisor skills update`. A skill only this project needs goes beside them
-  under its own name.
-- Finish with `supervisor doctor`, `supervisor check`, `supervisor render`, and the single setup commit. Report the
-  doctor output verbatim; a FAIL you cannot fix becomes an owner task.
+  (this setup stub, and maintenance-window, rehearsal, project-upgrade, project-restore, runtime-diagnose,
+  task-author, stuck-task, role-change). Leave them as shipped; `supervisor skills status` says whether they are
+  current, and later releases bring newer ones with `supervisor skills update`. A skill only this project needs goes
+  beside them under its own name.
+- Finish with `supervisor doctor`, `supervisor check` (no ERROR, and every WARN explained), `supervisor render`, and
+  the single setup commit. Report the doctor output verbatim; a FAIL you cannot fix becomes an owner task. One FAIL
+  is expected when the framework checkout is not at a release tag (a development clone): `framework: HEAD is not at
+  a tag`. Say so; it clears once the project runs a tagged checkout (the framework's `docs/UPDATING.md`, "Pinned
+  checkouts").
 
 ## Hand-over message
 
@@ -89,5 +113,7 @@ the interview is not re-run — later changes go through the Control Center chat
 ## If the framework is not installed in the project
 
 `py -3.11 -m venv .venv` then `.venv\Scripts\python.exe -m pip install -e "<framework path>[ui]"` (Windows), or
-`tools/setup_env.sh <framework path>` once the template is stamped. Never `pip install supervisor` from PyPI — that is
-an unrelated package.
+`tools/setup_env.sh <framework path>` once the template is stamped. Both download the framework's dependencies, so
+they need network access, and `setup_env.ps1` also sets a user environment variable: say so to the owner before
+running it. Never `pip install supervisor` from PyPI — that is an unrelated package. Until the venv exists, the
+start scripts do not work; the hand-over then says how to start once it does.

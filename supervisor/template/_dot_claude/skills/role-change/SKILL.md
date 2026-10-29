@@ -6,24 +6,31 @@ description: Add, activate, retire or re-model an agent role - its card under ag
 # Changing a role
 
 A role is three things that must agree: its **card** (`agents/<role>.md`, what it does and how it reports), its
-**routing entry** (`config/routing.yaml`, `roles.<role>`: lane, model, effort, tools, review lane, whether active)
-and the **schemas** its results are checked against (`agents/schemas/`).
+**routing entry** (`config/routing.yaml`, under `roles:`) and the **schemas** its results are checked against
+(`agents/schemas/`). Roles are edited by hand: the Control Center's Settings page shows capacity and limits, not
+roles.
 
-## 1. The card
+## 1. The routing entry
 
-- At most about 400 words: the mandate, what it delivers, what it must not do, how it ends (the fenced result
-  block its schema asks for).
-- No model or vendor names in the card: those belong to routing, so a role can move lanes without a rewrite.
+The keys, as the template's `config/routing.yaml` shows them:
+- `adapter`: the lane (an agent lane, as the template's routing names them; `python` or `process` for a deterministic
+  role, whose tasks then carry a `job` block);
+- for an agent lane: `model`, `effort`, optionally `senior_model` (the second revision runs on it), and `tools`;
+- `card`: the card file under `agents/` (`card: null` for a role with no card yet, which must then be inactive);
+- `active`: `true`, or `false` to park the role, with `active_from: <phase>` recording when it starts;
+- `result_kinds`: the kinds of result it returns (`delivery`, `review`, ...);
+- `review`: how it runs when it reviews (`{tools: reviewer, write_scope: run_dir}` in the template).
+
+A reviewer runs on a different vendor's lane than the workers it reviews, where one exists. Keep each value's
+comment (an owner decision often lives there).
+
+## 2. The card
+
+- At most 400 words (count them: `wc -w agents/<role>.md`): the mandate, what it delivers, what it must not do, how
+  it ends (the fenced result block its schema asks for).
+- No model or vendor names (search the card for the names of the lanes and models in routing.yaml): those belong
+  to routing, so a role can move lanes without a rewrite.
 - No secrets, no machine paths.
-
-## 2. The routing entry
-
-- `adapter` (the lane), `model`, `effort`, the tools it may use, and its review lane.
-- `active: false` parks the role: its tasks wait with a `schedule_skip` log entry. Activate it when the phase that
-  needs it opens (`active_from` records which).
-- A reviewer runs on a different vendor's lane than the workers it reviews, where one exists.
-- Edit values the Control Center's Settings page shows through Settings; for others, edit the file by hand and keep
-  each value's comment (an owner decision often lives there).
 
 ## 3. Schemas
 
@@ -32,12 +39,19 @@ invalid sample beside it if the project keeps samples.
 
 ## 4. Retiring or re-modelling
 
-- Retire: set `active: false` first, and check that no open task names the role as `owner_role` or `reviewer`
-  (`supervisor task show`, or the seed). Move those tasks to another role with the task-author skill.
-- Re-model: change only routing. If the new model needs a different effort or tool set, say so in the change.
+- **Retire** means keeping the entry and the card, with `active: false` and a note saying why: tasks and records
+  that name the role keep resolving. First move every open task off it. `supervisor check` warns about each open
+  task naming an inactive or unknown role, so it lists them; move each with the task-author skill
+  (`--update-contracts`).
+- **Re-model:** change only routing. If the new model needs a different effort or tool set, say so in the change.
+
+## 5. Make the loop see it
+
+A running loop started before the change: `supervisor reload`, so it restarts on the new configuration.
 
 ## Checks it ends with
 
-- `supervisor doctor` (G6): routing and role cards OK.
-- `supervisor check`: no task names a role that no longer exists or is inactive without a reason.
+- `supervisor doctor` (G6): routing and role cards OK. Doctor checks that the cards exist; the word count and the
+  absence of vendor names are the checks in section 2.
+- `supervisor check`: no WARN about a role that is unknown or inactive, unless the task is meant to wait for it.
 - The project's own card or schema tests, if it has them.

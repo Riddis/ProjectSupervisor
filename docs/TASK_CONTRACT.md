@@ -25,7 +25,7 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `review_note` | guidance for the reviewers |
 | `acceptance` | one sentence a reviewer can check without asking what you meant |
 | `escalation` | free text: who decides when this goes wrong |
-| `human_approval` | `none` / `required` (owner must ACCEPT the delivery in the inbox) / `gate` |
+| `human_approval` | `none` / `required` (owner must APPROVE the delivery in the inbox; ACCEPT is the same answer) / `gate` |
 | `approval_note` | what the owner should look at when approving |
 | `cost_category` | `deterministic` / `local` / `claude` / `codex` / `human` / `mixed` / `paid` → default adapter via `routing.yaml cost_lanes` |
 | `priority` | higher first among eligible tasks |

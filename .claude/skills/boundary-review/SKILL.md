@@ -9,51 +9,78 @@ Two people use this: the **contributor**, before opening a pull request (every g
 and the **reviewer** (a maintainer or the independent G4 reviewer), who re-runs every gate and checks the answers
 instead of trusting them.
 
-## 1. The questions (write each answer down)
+## 1. Get the change
+
+- A pull request or a pushed branch: `git diff <base>...<head>` and `git log <base>..<head>`, where `<base>` is the
+  branch it targets (`origin/main`) and `<head>` its exact commit.
+- Local work not yet committed: `git diff HEAD` and `git status` for new files. "The commit before" is then `HEAD`.
+
+Read the whole diff before the gates.
+
+## 2. The questions (write each answer down)
 
 1. **Would a different project want this?** Name the kind of project, and say what it would do with it. "Only one
    project needs it" means it is an extension, not a framework change.
-2. **For a new hook or API:** what is its second user, and why can that user not do without it? Each hook is a
-   cost: count the hooks in `docs/FRAMEWORK_VS_EXTENSION.md` before and after.
+2. **For a new hook, API or public function:** who calls it? A hook or API needs a second user, and why that user
+   cannot do without it. Count the hooks in `docs/FRAMEWORK_VS_EXTENSION.md` before and after. A function nothing
+   calls is a finding.
 3. **The API (G2):** does it add, change or remove a name in `supervisor.ext` or a documented section of
    `docs/EXTENSION_API.md`? Then the CHANGELOG's "Extension API" entry classifies it: compatible, (editorial) or
    (breaking), and the version follows.
 4. **State and config:** does it change the shape of anything under a project's `state/` or `config/`? Then it has a
    migration (the migration-author skill): dry-run aware, idempotent, keeping unrelated data, with its rollback
    stated.
-5. **Docs:** are the docs it touches current (`docs/`, the template's comments, the skills)?
+5. **Docs and the CHANGELOG:** are the docs it touches current (`docs/`, the template's comments, the skills), and
+   does the CHANGELOG say what changed?
 6. **No project information:** the framework repository never contains a project's files or information: no
    project's names, paths, identifiers, task or decision ids, or examples built from one. Examples use invented
    names.
 
-## 2. The gates, re-run (never taken from the description)
+## 3. The gates, re-run (never taken from the description)
 
 - **G1** `python -m supervisor.boundary` from the framework root: OK.
-  - G1d needs the local project-terms file (`docs/BOUNDARY.md`). If it says it did not run, create the file and run
-    it again.
-  - Without the file, CI cannot run G1d, so the reviewer runs it.
+  - G1a–c scan `supervisor/` only. Read `docs/`, `tests/`, `examples/` and the skills yourself for machine paths,
+    hosts, user names and project names.
+  - G1d needs the local project-terms file, one table per project:
+
+    ```toml
+    [projects.<project>]
+    terms = ["<word>", "<another word>"]
+    ```
+
+    When the file exists and nothing is found, G1d prints nothing. "G1d ... did not run" means there is no file:
+    create it and run again. CI has no file, so the reviewer runs G1d locally.
 - **G2** `python -m supervisor.api_contract check`: OK, and the classification matches the change.
-- **G3** the suite on Linux and on Windows. CI runs both: read the exact-head checks.
+- **G3** the suite: `python -m pytest -q` locally (Windows: `tools\test_windows.ps1`).
+  - For a pushed head, also read CI's exact-head checks for Linux and Windows.
+  - For local work, only your own platform has run. Say so; the other runs when it is pushed.
 - **G5** for an extension: `supervisor extension check <identity>`. For a package, across its framework range.
 - **G4**, for a release: the version rule, the CHANGELOG's Migration and Rollback lines, the tag only after
   acceptance.
 
-## 3. Read the change itself
+## 4. Read the change itself
 
-- Each new test fails without the change: run it against the commit before.
-- Every new path, host, name or vendor word is generic, or listed as an explicit exception in `boundary.toml`.
-- For behaviour with a failure path (a commit, a migration, a load), probe that path in a disposable project.
+- **Each new test must be able to fail:**
+  - Run it against "the commit before". It must fail on an assertion, not an ImportError or a missing name.
+  - Where the code under test exists before the change, also run it against a stub that returns a wrong answer: a
+    test that passes then cannot fail.
+- **New literals:** every new path, host, name or vendor word is generic, or listed as an explicit exception in
+  `boundary.toml`.
+- **Failure paths:** for behaviour with one (a commit, a migration, a load), probe that path in a disposable
+  project.
+- **Errors raised:** the change documents and tests each error it raises.
 
-## 4. The verdict
+## 5. The verdict
 
 **ACCEPT**, **REVISE** or **REJECT**, with each finding:
 - ranked P1 (blocks, and is a defect), P2 (blocks, and is a gap in a promise), or P3 (worth fixing, does not block);
+  a failing gate is a P1;
 - with file:line evidence, and a probe someone else can run.
 
 A REVISE lists exactly what would make it an ACCEPT.
 
 ## Checks it ends with
 
-- G1 (with G1d), G2, G3 at the exact head, and G5 for any extension, all re-run.
-- G7: every question in section 1 answered in writing.
+- G1 (with G1d), G2 and G3 re-run: G3 locally, plus CI's exact-head checks for a pushed head. G5 for any extension.
+- G7: every question in section 2 answered in writing.
 - G4 too, for a release.

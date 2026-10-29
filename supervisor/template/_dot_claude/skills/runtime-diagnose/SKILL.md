@@ -9,15 +9,24 @@ Read first, change nothing. Every step below only reads; the recovery at the end
 
 ## 1. Collect the evidence
 
-- `supervisor status`: the store's summary with the live runtime record (it writes nothing).
-- `supervisor supervisor`: the runtime record itself: `status`, `decision`, `reason`, `heartbeat`, `open_jobs`,
-  `busy`. A heartbeat much older than the loop's sleep interval means the loop process is gone or hung.
-- Whether a loop process runs at all, and whether anything holds `state/.lock`.
-- `state/log.jsonl`, the last few hundred lines: `loop_error`, `schedule_skip`, `capacity_*`, `extension_error`,
-  `checkpoint_*`, `state_commit_*` events say what the loop decided and why.
+- `supervisor status`:
+  - `project:` names the project it read;
+  - `lock:` says whether a loop holds `state/.lock` (and its pid);
+  - then the store's summary with the live runtime record. It writes nothing.
+- `supervisor supervisor`, the runtime record itself:
+  - `status`, `heartbeat`, `open_jobs` and `busy`;
+  - `decision`, with who set it and when (`decision_by`, `decision_at`). `reason` can be stale: it is the last
+    reason written, not necessarily the current one.
+
+  A heartbeat much older than the loop's sleep interval, with the lock free, means the loop process is gone.
+- `state/log.jsonl`, the last few hundred lines:
+  - `loop_error`, `schedule_skip`, `capacity_*`, `extension_error`, `checkpoint_*` and `state_commit_*` events say
+    what the loop decided and why;
+  - the `command` events say which owner command (a `loop.pause`, say) changed it.
 - `supervisor doctor`: which check is FAIL or WARN.
 - `state/runtime/jobs/*.json`: the open records (phase PREPARED, SUBMITTED, RUNNING) and the newest finished ones.
 - `supervisor extension list`: whether every configured extension loaded, and each error.
+- `supervisor check`: WARN lines for tasks waiting on a role that is unknown or inactive.
 - For a lane: `state/runtime/usage_*.json` (its capacity windows) and the project's `config/routing.yaml` (its
   limits, reserves and whether its role is active).
 
@@ -25,7 +34,7 @@ Read first, change nothing. Every step below only reads; the recovery at the end
 
 Say which one, with the evidence that shows it:
 - **the loop:** stopped, BLOCKED after repeated errors (read the `loop_error` events), or never started;
-- **a decision:** PAUSE or DRAIN in force, set by the owner or by the loop;
+- **a decision:** PAUSE or DRAIN in force, set by the owner or by the loop (`decision_by`);
 - **scheduling:** nothing eligible (dependencies, gates, an inactive role, overlapping `owned_paths`, a limit
   reached), or a lane deferring on its capacity reserve;
 - **a lane or service:** an agent CLI missing or failing, a local service not started, credentials missing;
@@ -35,9 +44,13 @@ Say which one, with the evidence that shows it:
 
 ## 3. End with one of
 
-- **A supported recovery,** stated as the exact command and why it is safe: `supervisor resume`, `supervisor
-  reload`, `supervisor cmd lane.reset --payload '{"lane": "<adapter>"}'`, `supervisor cmd capacity.reset`, starting a
-  service, fixing a config value through the Control Center's Settings. The owner runs it, or approves it.
+- **A supported recovery,** stated as the exact command and why it is safe. For example:
+  - `supervisor resume` or `supervisor reload`;
+  - `supervisor cmd lane.reset --payload '{"lane": "<adapter>"}'`, or `supervisor cmd capacity.reset`;
+  - starting a service;
+  - fixing a config value, through the Control Center's Settings where it shows the value.
+
+  The owner runs it, or approves it.
 - **A reproducible issue:** what happens, the smallest steps that make it happen, the evidence, and which
   repository it belongs to: the project's (an extension, its config), an extension package's, or the
   framework's (`framework-change` there).
@@ -47,4 +60,6 @@ Never: delete job records or lock files, edit `state/` by hand, or restart repea
 ## Checks it ends with
 
 - `supervisor doctor` (G6), read before and, after a recovery, again.
-- No file under `state/` or `config/` changed by the diagnosis itself.
+- No file under `state/` or `config/` changed by the diagnosis itself. Note `git status --porcelain -- state config`
+  before you start, and compare at the end. A running loop changes its own records meanwhile (the log, the task
+  records it updates): only a change you made counts.

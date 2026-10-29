@@ -7,17 +7,23 @@ description: Take a new framework release (or a new extension package version) i
 
 A live project runs the framework from its own checkout, detached at a release tag, installed editable into the
 project's environment (the framework's `docs/UPDATING.md`, "Pinned checkouts"). An upgrade moves that checkout to a
-newer tag, only in a maintenance window. Find the framework's files with:
-`python -c "import supervisor, pathlib; print(pathlib.Path(supervisor.__file__).parents[1])"` (the project's own
-environment's Python).
+newer tag, only in a maintenance window.
+
+Find the checkout with the project's own environment, from the project folder and without `PYTHONPATH` set (it
+would point elsewhere):
+`.venv\Scripts\python.exe -c "import supervisor, pathlib; print(pathlib.Path(supervisor.__file__).parents[1])"`
+(`.venv/bin/python` elsewhere). `supervisor update --check` lists the newer releases origin publishes (it needs the
+network).
 
 ## 1. Read the release first
 
 From the new tag's `CHANGELOG.md` section, write down:
-- the **Migration** line: what `supervisor migrate` will change in this project's files;
-- the **Rollback** line: how to go back, and from which point a restore needs reconciling first;
-- any changed dependency (`pyproject.toml`): then the environment is reinstalled from the project's lock, by the
-  project's own install procedure;
+- the **Migration** line: what `supervisor migrate` will change in this project's files. No Migration line means
+  none: migrate only records the version;
+- the **Rollback** line: how to go back, and from which point a restore needs reconciling first. No Rollback line
+  means rollback A of the window (the previous tag plus the snapshot);
+- any changed dependency: `git -C <framework checkout> diff <current tag> <new tag> -- pyproject.toml`. If one
+  changed, the environment is reinstalled from the project's lock, by the project's own install procedure;
 - anything the project must change itself (an extension using an API that changed, a config value that moved).
 
 If the project must change too, that change is made and tested on a branch first, and merged in the window.
@@ -36,18 +42,23 @@ Run the maintenance-window skill. Its change step is:
 2. Reinstall only if a dependency changed.
 3. Merge the project's branch for this release, if it has one. Its uncommitted changes must not overlap the branch
    (check with `git diff --name-only HEAD...<branch>` against `git status --porcelain`).
-4. `supervisor skills status`, then `supervisor skills update`: the framework's newer skills come in, an edited one
-   is flagged and left for a merge by hand.
+4. `supervisor skills status`, then `supervisor skills update`. The framework's newer skills come in and are
+   committed. An unedited copy, or one an earlier release shipped, is replaced. An **edited** one is left: merge it
+   by hand from the template file the status names:
+   1. compare the project's copy with that file;
+   2. keep the project's own additions, and take the template's changes;
+   3. commit the merge.
 
 The window's own end (migrate, doctor, the suite on live data, start paused) follows.
 
 ## 4. After
 
-- `supervisor doctor`'s `framework` check names the new tag, and the update check says the checkout is pinned at
-  the newest release.
-- `git status` in the project shows only the work still in review: the loop commits its own records.
-- Update the project's own runbook with the window's record, and tell the owner the project is PAUSED for them to
-  resume.
+- `supervisor doctor`'s `framework` check names the new tag, and `supervisor update --check` says the checkout is
+  pinned at the newest release.
+- `git status` in the project shows only the work still in review: the loop commits its own records, and `migrate`
+  and `skills update` committed theirs.
+- Add the window's record to the project's runbook (`docs/runbooks/<project>.md`), and tell the owner the project is
+  PAUSED for them to resume.
 
 ## Checks it ends with
 
