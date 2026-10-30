@@ -230,8 +230,9 @@ _OLD_DOTTED = re.compile(r"""^([ \t]*requires[ \t]*\.[ \t]*)(["']?)extensions\2(
 # wherever it occurred — a legacy `extensions.<name>` command identifier in [provides]/[legacy_ids], or syntax-
 # looking text inside an unrelated string, as well as the one field it was meant for. `requires = {...}` and
 # `config = {...}` inline tables are now rewritten key/value by key/value (`_rewrite_inline`, below), skipping over
-# string content entirely, and the plain `[config]` table's `section` line is matched only inside that table's own
-# span (`_table_span`), never anywhere else in the file.
+# string content entirely, and the plain tables' key lines are matched only inside their own table's span
+# (`_table_span`, `_in_table`): `extensions` is renamed only where `[requires]` declares it, `section` only where
+# `[config]` does, never anywhere else in the file.
 _INLINE_TABLE = re.compile(r"""^[ \t]*(?:requires|config)[ \t]*=[ \t]*\{.*\}.*$""", re.MULTILINE)
 _OLD_SECTION_LINE = re.compile(r"""^([ \t]*section[ \t]*=[ \t]*)(["'])extensions\.""", re.MULTILINE)
 _TABLE_HEADER = re.compile(r"""^[ \t]*\[[ \t]*([A-Za-z_][A-Za-z0-9_-]*)[ \t]*\][ \t]*(?:#.*)?$""", re.MULTILINE)
@@ -246,6 +247,16 @@ def _table_span(text: str, name: str) -> tuple[int, int] | None:
         if h.group(1) == name:
             return h.end(), headers[i + 1].start() if i + 1 < len(headers) else len(text)
     return None
+
+
+def _in_table(text: str, name: str, rewrite: Callable[[str], str]) -> str:
+    """`text` with `rewrite` applied to table `[name]`'s body and to nothing else, so a key of the same name in
+    another table (or at the top level) is never touched. Unchanged when the manifest has no such header."""
+    span = _table_span(text, name)
+    if not span:
+        return text
+    start, end = span
+    return text[:start] + rewrite(text[start:end]) + text[end:]
 
 
 def _inline_pairs(body: str) -> list[tuple[int, int, int, int]]:
@@ -328,14 +339,10 @@ def _rewrite_inline(line: str) -> str:
 
 
 def _renamed_manifest(text: str) -> str:
-    text = _OLD_REQUIRES.sub(r"\1\2plugins\2", text)
-    text = _OLD_DOTTED.sub(r"\1\2plugins\2", text)
+    text = _in_table(text, "requires", lambda body: _OLD_REQUIRES.sub(r"\1\2plugins\2", body))
+    text = _OLD_DOTTED.sub(r"\1\2plugins\2", text)       # `requires.extensions`, scoped by the key itself
     text = _INLINE_TABLE.sub(lambda m: _rewrite_inline(m.group(0)), text)
-    span = _table_span(text, "config")
-    if span:
-        start, end = span
-        text = text[:start] + _OLD_SECTION_LINE.sub(r"\1\2plugins.", text[start:end]) + text[end:]
-    return text
+    return _in_table(text, "config", lambda body: _OLD_SECTION_LINE.sub(r"\1\2plugins.", body))
 
 
 def _unexpected_rewrite(before: str, after: str) -> bool:
