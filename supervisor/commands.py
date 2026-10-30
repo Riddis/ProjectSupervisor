@@ -145,15 +145,22 @@ def _task_import(layout, payload, actor):
     return {k: r[k] for k in ("created", "updated", "warnings") if k in r}
 
 
+def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
+    """The only writer of a task's `job` block: the Control Center's re-route (`task.set_job`) and a bounded
+    diagnosis job_fix (supervisor.diagnosis.propose_job_fix) both call this, never state/ directly."""
+    def fn(doc):
+        doc["job"] = dict(job)
+        if cost_category:
+            doc["cost_category"] = cost_category
+    t = tasks_mod._update(layout, task_id, fn)
+    tasks_mod.log(layout, "task_job_set", actor, task=task_id, job=job)
+    return t
+
+
 @handler("task.set_job")
 def _set_job(layout, payload, actor):
     """Replace a task's `job` block (adapter/fn/params/model/...): how the Control Center re-routes a task."""
-    def fn(doc):
-        doc["job"] = dict(payload["job"])
-        if payload.get("cost_category"):
-            doc["cost_category"] = payload["cost_category"]
-    t = tasks_mod._update(layout, payload["task_id"], fn)
-    tasks_mod.log(layout, "task_job_set", actor, task=payload["task_id"], job=payload["job"])
+    t = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
     return {"status": t.status.value}
 
 

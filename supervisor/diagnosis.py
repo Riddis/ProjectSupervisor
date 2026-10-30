@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import yaml
 
-from . import inbox as inbox_mod, jobs as jobs_mod, store, tasks as tasks_mod
+from . import inbox as inbox_mod, jobs as jobs_mod, scheduler, store, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
@@ -31,11 +31,21 @@ LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
 DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
 
+# A `requeue` on a non-agent (process) job may also carry a corrected `argv` — the one thing a bare requeue cannot
+# repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. Bounded to
+# exactly these fields per adapter: the job's adapter, every limit (timeout_s, idle_timeout_s, ...) and every other
+# field (fn, role, model, prompt, ...) are never touched, whatever a diagnosis proposes — task.set_job (via
+# commands.apply_job) stays the single writer and every application is logged (diagnosis_job_fixed).
+JOB_FIX_FIELDS = {"process": ("argv",)}
+
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
-    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) what '
-    'must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
+    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","job_fix":"(requeue, '
+    'optional, process jobs only) {\\"argv\\": [...]} — the corrected command; omit unless the job itself (not the '
+    'agent) is wrong, e.g. a stale --sha. Every other field of the job (its adapter, timeout, ...) is kept exactly as '
+    'it was, whatever this names","blocked_on":"(defer) what must happen first","question":"(owner) the one decision '
+    'or action only the owner can take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
     "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
     "`owner` is for product choices, spending, external commitments, or physical actions on the workstation.\n")
@@ -154,6 +164,29 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
         pass
 
 
+def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | None:
+    """Apply a diagnosis-proposed job correction, bounded to JOB_FIX_FIELDS[adapter]. None when there is nothing
+    to apply (an agent job, an unlisted adapter, or no usable fields) — the ordinary `requeue` guidance still runs
+    in that case. Every field `proposed` names outside the allow-list is dropped, never applied and never raises
+    the job's adapter, timeout or any other limit: `new_job` starts from the CURRENT job and only overwrites the
+    allowed keys, so an unlisted field (including `adapter` itself) keeps its current value even if `proposed`
+    names a different one."""
+    if not isinstance(proposed, dict) or not proposed:
+        return None
+    from . import commands as commands_mod
+    current = scheduler.job_spec(task)
+    allowed = JOB_FIX_FIELDS.get(current.get("adapter"))
+    if not allowed:
+        return None
+    applied = {k: v for k, v in proposed.items() if k in allowed}
+    dropped = sorted(set(proposed) - set(applied))
+    if not applied:
+        return {"applied": {}, "dropped": dropped} if dropped else None
+    commands_mod.apply_job(layout, task.id, {**current, **applied}, actor=f"diagnosis:{role}")
+    tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied=applied, dropped=dropped)
+    return {"applied": applied, "dropped": dropped}
+
+
 def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question: str, why: str) -> dict:
     """Hand a stopped task to the owner as a `decision` item (inbox.apply_decision acts on the answer). The question
     and the options lead the text: the inbox card shows the first MAX_SUMMARY_CHARS and keeps the full diagnosis
@@ -205,13 +238,17 @@ def ingest(supervisor, rec: dict, result) -> dict:
         def fn(doc):
             doc.setdefault("guidance", []).append({"at": store.now_iso(), "by": role, "text": guidance})
         tasks_mod._update(layout, task.id, fn)
+        fix = propose_job_fix(layout, task, role, obj.get("job_fix"))
         escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis")
         if task.status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation",
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")
         else:
             tasks_mod.add_note(layout, task.id, f"{role} diagnosis: requeue — {summary[:200]}", actor="escalation")
-        return {"action": "requeue", "guidance": guidance}
+        out = {"action": "requeue", "guidance": guidance}
+        if fix:
+            out["job_fix"] = fix
+        return out
     if action == "defer":
         blocked_on = str(obj.get("blocked_on") or summary)[:1000]
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred — blocked on: {blocked_on[:300]}", actor="escalation")
