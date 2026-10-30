@@ -255,6 +255,50 @@ def test_f1_a_key_named_extensions_outside_requires_is_left_as_it_is(tmp_path):
     assert (lay.root / "plugins" / "alpha.toml").read_bytes() == F1_STRAY_EXPECTED.encode()
 
 
+# Review 2.0.0 round 3 F5: the field-scoped rewrite that closed F1 narrowed what it recognized along with what it
+# touched. `_inline_pairs`'s value span kept its trailing whitespace, so `_rewrite_inline` read that whitespace as
+# the value's last character and left an ordinarily formatted `section` unrenamed (a space before the comma, or
+# `section` listed last); the table-header and section-line patterns accepted only a bare, unquoted, undotted
+# spelling, losing `["config"]`, a quoted `"section"` key, `config.section = ...` and `["requires"]`. Each of these
+# is valid 1.13.0 TOML that 9713fea migrated; none is a conflict, an unresolved dotted entry or an escaped key, so
+# each must still migrate and load rather than stop the migration.
+F5_FORMS = {
+    "space before comma": (HEAD_LINES
+                            + 'config = { section = "extensions.alpha" , schema = "alpha_settings:Settings" }\r\n'
+                            + PROVIDES + REQUIRES_TABLE),
+    "section last": (HEAD_LINES
+                      + 'config = { schema = "alpha_settings:Settings", section = "extensions.alpha" }\r\n'
+                      + PROVIDES + REQUIRES_TABLE),
+    "quoted table": (HEAD_LINES + PROVIDES
+                      + '\r\n["config"]\r\nsection = "extensions.alpha"\r\nschema = "alpha_settings:Settings"\r\n'
+                      + REQUIRES_TABLE),
+    "quoted section": (HEAD_LINES + PROVIDES
+                        + '\r\n[config]\r\n"section" = "extensions.alpha"\r\nschema = "alpha_settings:Settings"\r\n'
+                        + REQUIRES_TABLE),
+    "dotted section": (HEAD_LINES
+                        + 'config.section = "extensions.alpha"\r\nconfig.schema = "alpha_settings:Settings"\r\n'
+                        + PROVIDES + REQUIRES_TABLE),
+    "quoted requires": (HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n["requires"]\r\nextensions = ["beta"]\r\n'),
+}
+F5_EXPECTED = {name: text.replace('"extensions.alpha"', '"plugins.alpha"').replace(
+    'extensions = ["beta"]', 'plugins = ["beta"]') for name, text in F5_FORMS.items()}
+
+
+@pytest.mark.parametrize("form", sorted(F5_FORMS))
+@pytest.mark.parametrize("nl", ["\r\n", "\n"])
+def test_f5_a_common_formatting_variant_still_migrates_and_the_plugin_loads(tmp_path, nl, form):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(F5_FORMS[form].replace("\r\n", nl).encode())
+    migrations.run(lay)
+    text = (lay.root / "plugins" / "alpha.toml").read_bytes()
+    assert text == F5_EXPECTED[form].replace("\r\n", nl).encode()
+    if nl == "\n":
+        assert b"\r" not in text
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+
 def test_a_manifest_that_still_reads_the_old_names_stops_migrate_before_any_write(tmp_path):
     lay = old_project(tmp_path)
     escaped = HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\n"\\u0065xtensions" = ["beta"]\r\n'
