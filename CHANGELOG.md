@@ -70,6 +70,25 @@ reviewer checks each entry below.
   it, and a checkout at a package tag alone passed), G2 compared with the nearest `v[0-9]*` tag (a package `v2`
   tags `v2-v1.0.0`), and `tools/skills_history.py` read every `v*` tag (a package `vision` tags `vision-v1.0.0`).
   Each now takes the newest `vX.Y.Z` tag only. The pinned update check already did.
+- **Fixed: `supervisor migrate`'s manifest rewrite reached text it never names.** Matching on text, not structure,
+  let a legacy `extensions.<name>` command identifier kept on purpose (in `[provides]`/`[legacy_ids]`), or a
+  syntax-looking string inside a `requires = {...}` inline table, be rewritten along with the key the migration
+  actually renames. The rewrite now reads each table structurally — key by key for an inline table, by table span
+  for a plain one — and refuses, before any write, if the result differs from `requires.extensions` →
+  `requires.plugins` and `config.section`'s `extensions.` prefix anywhere else.
+- **Fixed: a project's package-name allowance in the words scan was not contained to `packages/`.** `supervisor
+  boundary --words` (and G1d) split every scanned path on its first `!` before checking the package allowance,
+  though `!` is also a legal character in an ordinary folder name; a folder named `outside!packages/<distribution>/
+  ...` then passed as if it were really inside `packages/<distribution>/`. The allowance decision now reads a
+  member's real path; `!` is only ever a display separator for an archive member's label, never a scope boundary.
+- **Fixed: `supervisor migrate` accepted a rewrite that produced invalid TOML.** A manifest's `[requires]` table
+  holding both `extensions` and `plugins` is valid TOML; renaming `extensions` to `plugins` produced a table with
+  two `plugins` keys, which does not parse — and the check meant to catch an unmigrated manifest read that parse
+  error as "already renamed", so migrate announced the rename instead of refusing it. Any rewrite that turns
+  parseable TOML unparseable is now refused before any write, naming the manifest.
+- **Fixed: the words scan over a tar archive skipped a link member's name and target.** A symbolic- or hard-link
+  member contributed nothing, though the archive still publishes its name and the path it points at. Both are now
+  scanned, as the link member's own name and one line of content; nothing is followed or extracted.
 - **Added: the project words scan for any repository: `supervisor boundary words <target>...`** (also
   `python -m supervisor.boundary --words <target>`). G1d's local word list over any folder (what git tracks or would
   add there, else every file) or built archive (a wheel with its `METADATA`, an sdist), file names included. An
