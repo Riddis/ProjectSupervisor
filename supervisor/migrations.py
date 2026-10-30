@@ -226,16 +226,140 @@ _OLD_KEY = re.compile(r"^extensions(?=[ \t]*:)", re.MULTILINE)
 # `requires.extensions`, the inline table `requires = { extensions = [...] }`, and the config section's value.
 _OLD_REQUIRES = re.compile(r"""^([ \t]*)(["']?)extensions\2(?=[ \t]*=)""", re.MULTILINE)
 _OLD_DOTTED = re.compile(r"""^([ \t]*requires[ \t]*\.[ \t]*)(["']?)extensions\2(?=[ \t]*=)""", re.MULTILINE)
-_OLD_INLINE = re.compile(r"""^([ \t]*requires[ \t]*=[ \t]*\{.*)$""", re.MULTILINE)
-_OLD_INLINE_KEY = re.compile(r"""([{,][ \t]*)(["']?)extensions\2(?=[ \t]*=)""")
-_OLD_SECTION = re.compile(r"""(["'])extensions\.""")
+# review 2.0.0 F1: the old single regex (`(["'])extensions\.`) renamed every quoted string starting `extensions.`
+# wherever it occurred — a legacy `extensions.<name>` command identifier in [provides]/[legacy_ids], or syntax-
+# looking text inside an unrelated string, as well as the one field it was meant for. `requires = {...}` and
+# `config = {...}` inline tables are now rewritten key/value by key/value (`_rewrite_inline`, below), skipping over
+# string content entirely, and the plain `[config]` table's `section` line is matched only inside that table's own
+# span (`_table_span`), never anywhere else in the file.
+_INLINE_TABLE = re.compile(r"""^[ \t]*(?:requires|config)[ \t]*=[ \t]*\{.*\}.*$""", re.MULTILINE)
+_OLD_SECTION_LINE = re.compile(r"""^([ \t]*section[ \t]*=[ \t]*)(["'])extensions\.""", re.MULTILINE)
+_TABLE_HEADER = re.compile(r"""^[ \t]*\[[ \t]*([A-Za-z_][A-Za-z0-9_-]*)[ \t]*\][ \t]*(?:#.*)?$""", re.MULTILINE)
+
+
+def _table_span(text: str, name: str) -> tuple[int, int] | None:
+    """The text span holding table `[name]`'s body: after its header line, up to the next `[other]` header or the
+    end of the file. None when the manifest has no such header (an inline `name = { ... }` is `_rewrite_inline`'s,
+    not this)."""
+    headers = list(_TABLE_HEADER.finditer(text))
+    for i, h in enumerate(headers):
+        if h.group(1) == name:
+            return h.end(), headers[i + 1].start() if i + 1 < len(headers) else len(text)
+    return None
+
+
+def _inline_pairs(body: str) -> list[tuple[int, int, int, int]]:
+    """(key_start, key_end, value_start, value_end) for each top-level key=value pair in the text strictly between
+    one inline table's braces, skipping over any string's content and any nested array/table, so text inside a
+    value is never mistaken for another pair (review 2.0.0 F1's `"remote, extensions = [x]"`)."""
+    pairs, i, n = [], 0, len(body)
+    while i < n:
+        while i < n and (body[i].isspace() or body[i] == ","):
+            i += 1
+        if i >= n:
+            break
+        key_start = i
+        if body[i] in "\"'":
+            q = body[i]
+            i += 1
+            while i < n and body[i] != q:
+                i += 2 if q == '"' and body[i] == "\\" else 1
+            i = min(i + 1, n)
+        else:
+            while i < n and (body[i].isalnum() or body[i] in "_-"):
+                i += 1
+        key_end = i
+        while i < n and body[i].isspace():
+            i += 1
+        if i >= n or body[i] != "=":
+            break                                             # not a key = value pair; stop rather than guess
+        i += 1
+        while i < n and body[i].isspace():
+            i += 1
+        value_start = i
+        depth, quote = 0, None
+        while i < n:
+            c = body[i]
+            if quote:
+                i += 2 if quote == '"' and c == "\\" else 1
+                quote = None if c == quote else quote
+                continue
+            if c in "\"'":
+                quote = c
+            elif c in "[{":
+                depth += 1
+            elif c in "]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif c == "," and depth == 0:
+                break
+            i += 1
+        pairs.append((key_start, key_end, value_start, i))
+        if i < n and body[i] == ",":
+            i += 1
+    return pairs
+
+
+def _requote(token: str, name: str) -> str:
+    return f"{token[0]}{name}{token[0]}" if token[:1] in "\"'" else name
+
+
+def _rewrite_inline(line: str) -> str:
+    """One `requires = { ... }` or `config = { ... }` line, its `extensions` key renamed `plugins` and a `section`
+    key's `extensions.`-prefixed string value renamed `plugins.`, structurally: every other key, value and byte of
+    the line is untouched."""
+    start, end = line.index("{"), line.rindex("}")
+    body = line[start + 1:end]
+    out, pos = [], 0
+    for ks, ke, vs, ve in _inline_pairs(body):
+        name = body[ks:ke].strip("\"'")
+        out.append(body[pos:ks])
+        out.append(_requote(body[ks:ke], "plugins") if name == "extensions" else body[ks:ke])
+        out.append(body[ke:vs])
+        value = body[vs:ve]
+        if (name == "section" and len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'"
+                and value[1:-1].startswith("extensions.")):
+            value = value[0] + "plugins." + value[1:-1][len("extensions."):] + value[-1]
+        out.append(value)
+        pos = ve
+    out.append(body[pos:])
+    return line[:start + 1] + "".join(out) + line[end:]
 
 
 def _renamed_manifest(text: str) -> str:
     text = _OLD_REQUIRES.sub(r"\1\2plugins\2", text)
     text = _OLD_DOTTED.sub(r"\1\2plugins\2", text)
-    text = _OLD_INLINE.sub(lambda m: _OLD_INLINE_KEY.sub(r"\1\2plugins\2", m.group(1)), text)
-    return _OLD_SECTION.sub(r"\1plugins.", text)
+    text = _INLINE_TABLE.sub(lambda m: _rewrite_inline(m.group(0)), text)
+    span = _table_span(text, "config")
+    if span:
+        start, end = span
+        text = text[:start] + _OLD_SECTION_LINE.sub(r"\1\2plugins.", text[start:end]) + text[end:]
+    return text
+
+
+def _unexpected_rewrite(before: str, after: str) -> bool:
+    """Whether `after` (what `_renamed_manifest` made of `before`) changed anything beyond `requires.extensions`
+    renamed `requires.plugins` (the key only; its value is untouched) and a `config.section` value's `extensions.`
+    prefix renamed `plugins.`: a second, structural check that the targeted rewrite above stayed inside the two
+    fields migrate names, by comparing the parsed documents rather than trusting the regex (review 2.0.0 F1).
+    Unparsable text is `_still_old`'s and doctor's to report, not this check's."""
+    try:
+        before_doc, after_doc = tomllib.loads(before), tomllib.loads(after)
+    except tomllib.TOMLDecodeError:
+        return False
+    expected = dict(before_doc)
+    requires = expected.get("requires")
+    if isinstance(requires, dict) and "extensions" in requires:
+        requires = dict(requires)
+        requires["plugins"] = requires.pop("extensions")
+        expected["requires"] = requires
+    config = expected.get("config")
+    if isinstance(config, dict) and str(config.get("section") or "").startswith("extensions."):
+        config = dict(config)
+        config["section"] = "plugins." + config["section"][len("extensions."):]
+        expected["config"] = config
+    return expected != after_doc
 
 
 def _still_old(text: str) -> bool:
@@ -374,6 +498,10 @@ def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
                 raise MigrationError(f"{p.relative_to(layout.root).as_posix()}: its `[requires] extensions` or "
                                      f"`section = \"extensions.<identity>\"` is in a form migrate cannot rename: "
                                      f"rename it plugins by hand, then run `supervisor migrate` again")
+            if _unexpected_rewrite(text, changed):           # decided before anything is written (review 2.0.0 F1)
+                raise MigrationError(f"{p.relative_to(layout.root).as_posix()}: its rewrite would change something "
+                                     f"beyond `requires` and `config.section`: rename it plugins by hand, then run "
+                                     f"`supervisor migrate` again")
             if changed != text or p.name == "supervisor-extension.toml":
                 manifests.append((p.relative_to(folder), text, changed))
     notes = [f"{path.relative_to(layout.root).as_posix()}: extensions renamed plugins" for path, _t in keys]
