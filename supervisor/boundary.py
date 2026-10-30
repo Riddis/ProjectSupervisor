@@ -504,7 +504,9 @@ def _members(target: Path):
     Finding, archive-prefixed (`archive-name!member/path`) for a wheel or tar; `real path` is the member's actual
     path, used to decide whether a package allowance applies, and never carries that display prefix — an ordinary
     folder's member is never relabelled, so a directory named with a literal `!` cannot be mistaken for one (review
-    2.0.0 R1, F2). Bytes are None when the file cannot be read."""
+    2.0.0 R1, F2). Bytes are None when the file cannot be read. A tar's symbolic- or hard-link member is never
+    followed or extracted: its name is scanned like any other member's, and its target is scanned as that member's
+    one line of published metadata (review 2.0.0 R2, F4)."""
     import tarfile
     import zipfile
     if target.is_dir():
@@ -528,6 +530,8 @@ def _members(target: Path):
                 if info.isfile():
                     f = t.extractfile(info)
                     yield f"{target.name}!{info.name}", info.name, f.read() if f else None
+                elif info.issym() or info.islnk():
+                    yield f"{target.name}!{info.name}", info.name, info.linkname.encode("utf-8")
     else:
         raise ConfigError(f"{target}: not a folder, a wheel, a zip or a tar archive")
 
