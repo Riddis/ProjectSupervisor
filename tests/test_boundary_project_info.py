@@ -375,6 +375,50 @@ def test_a_folder_named_like_the_package_outside_its_place_gets_no_allowance(tmp
     assert hits(boundary.scan_words(loose, terms, allowed=allowed)) == [("README.md", 1, "quuxify")]
 
 
+BANG_ALLOWING = """
+[projects.demo]
+terms = ["cedar"]
+[projects.demo.packages]
+supervisor-plugin-cedar = ["cedar"]
+"""
+
+
+def test_a_bang_in_an_ordinary_folder_name_gets_no_allowance(tmp_path, monkeypatch):
+    """Review 2.0.0 round 2, F2: `!` is legal in an ordinary directory name, so `outside!packages/...` must not
+    read as an archive member inside packages/ and borrow that package's allowance. Same hits with or without it."""
+    terms_file(tmp_path, monkeypatch, BANG_ALLOWING)
+    root = package(tmp_path, {"outside!packages/supervisor-plugin-cedar/notes.txt": "cedar\n"})
+    terms = boundary.load_project_terms()
+    plain = hits(boundary.scan_words(root, terms))
+    allowed = hits(boundary.scan_words(root, terms, allowed=boundary.load_package_allowances()))
+    want = [("outside!packages/supervisor-plugin-cedar/notes.txt", 0, "cedar"),
+            ("outside!packages/supervisor-plugin-cedar/notes.txt", 1, "cedar")]
+    assert plain == want
+    assert allowed == want
+
+
+def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatch):
+    """The same case through the framework-repository scan, alongside a real packages/<distribution> member, which
+    must keep its allowance."""
+    terms_file(tmp_path, monkeypatch, BANG_ALLOWING)
+    root = framework(tmp_path, {
+        "outside!packages/supervisor-plugin-cedar/notes.txt": "cedar\n",
+        "packages/supervisor-plugin-cedar/README.md": "cedar\n",
+    })
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("outside!packages/supervisor-plugin-cedar/notes.txt", 0, "cedar") in found
+    assert ("outside!packages/supervisor-plugin-cedar/notes.txt", 1, "cedar") in found
+    assert not any(path.startswith("packages/") for path, _l, _w in found)
+
+
+def test_the_words_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, BANG_ALLOWING)
+    root = package(tmp_path, {"outside!packages/supervisor-plugin-cedar/notes.txt": "cedar\n"})
+    out = []
+    assert boundary.words([root], echo=out.append) == 1
+    assert any("outside!packages/supervisor-plugin-cedar/notes.txt" in line for line in out)
+
+
 def test_a_lookalike_archive_gets_no_allowance(tmp_path, monkeypatch):
     import zipfile
     terms_file(tmp_path, monkeypatch, ALLOWING)
