@@ -13,9 +13,11 @@ Code that imports `supervisor.ext` or the old folder is the project's to change,
 here are invented."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from supervisor import migrations, plugins, testing
+from supervisor import migrations, plugins, project, store, testing
 
 PROJECT = ("name: Demo\r\nframework_version: 1.13.0\r\n# what the loop loads\r\nextensions:\r\n- alpha\r\n"
            "- beta\r\n")
@@ -321,3 +323,111 @@ def test_an_already_invalid_input_is_not_blamed_on_the_rewrite():
     before = "not [ valid toml"
     after = "also not valid, but a different error"
     assert not migrations._rewrite_unparsable(before, after)
+
+
+# Review 2.0.0 ("Migration safety"): the review could not get a successful apply, a second run or a halfway-failure
+# recovery past its own sandbox (docs/releases/2.0.0/EXECUTION_CONTEXT.md §2). Each test below crashes `migrations.
+# run` at one of the three points the migration itself is not atomic across — the key rename, the folder move, the
+# manifest rewrite — by making exactly the next write raise, then undoes the injected failure and reruns the same
+# `Layout` to show the remaining steps complete and `framework_version` is recorded only once everything else is.
+
+
+def test_a_failure_after_the_key_rename_and_before_the_folder_move_is_completed_by_a_rerun(tmp_path, monkeypatch):
+    lay = old_project(tmp_path)
+    root = lay.root
+    real_rename = Path.rename
+
+    def failing_rename(self, target):
+        if self == root / "extensions":
+            raise OSError("simulated crash between the key rename and the folder move")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", failing_rename)
+    with pytest.raises(OSError, match="simulated crash"):
+        migrations.run(lay)
+    monkeypatch.undo()
+
+    assert (root / "project.yaml").read_bytes() == PROJECT.replace("extensions:", "plugins:").encode()
+    assert (root / "config" / "routing.yaml").read_bytes() == ROUTING.replace("extensions:", "plugins:").encode()
+    assert (root / "extensions").is_dir() and not (root / "plugins").exists()
+
+    notes = migrations.run(lay)
+    assert "extensions/ moved to plugins/" in notes
+    assert any("framework_version" in n for n in notes)
+    assert (root / "project.yaml").read_bytes() == PROJECT.replace("1.13.0", migrations.__version__).replace(
+        "extensions:", "plugins:").encode()
+    assert not (root / "extensions").exists()
+    assert (root / "plugins" / "alpha.py").read_bytes() == ALPHA.encode()
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+    again = migrations.run(lay)
+    assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
+
+
+def test_a_failure_after_the_folder_move_and_before_the_manifest_rewrite_is_completed_by_a_rerun(tmp_path, monkeypatch):
+    lay = old_project(tmp_path)
+    root = lay.root
+    real_rewrite = store.rewrite_text
+
+    def failing_rewrite(path, text):
+        if path.suffix == ".toml":
+            raise OSError("simulated crash between the folder move and the manifest rewrite")
+        return real_rewrite(path, text)
+
+    monkeypatch.setattr(store, "rewrite_text", failing_rewrite)
+    with pytest.raises(OSError, match="simulated crash"):
+        migrations.run(lay)
+    monkeypatch.undo()
+
+    assert not (root / "extensions").exists()
+    assert (root / "plugins" / "alpha.toml").read_bytes() == ALPHA_MANIFEST.encode()          # not yet renamed
+    assert (root / "plugins" / "beta" / "supervisor-extension.toml").exists()                 # not yet renamed
+    assert (root / "project.yaml").read_bytes() == PROJECT.replace("extensions:", "plugins:").encode()
+
+    notes = migrations.run(lay)
+    assert any("plugins/alpha.toml" in n for n in notes)
+    assert any("framework_version" in n for n in notes)
+    assert (root / "plugins" / "alpha.toml").read_bytes() == ALPHA_MANIFEST.replace(
+        '"extensions.alpha"', '"plugins.alpha"').replace("extensions = [", "plugins = [").encode()
+    assert not (root / "plugins" / "beta" / "supervisor-extension.toml").exists()
+    assert (root / "plugins" / "beta" / "supervisor-plugin.toml").read_bytes() == BETA_MANIFEST.encode()
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+    again = migrations.run(lay)
+    assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
+
+
+def test_a_failure_after_the_manifest_rewrite_and_before_the_version_is_recorded_is_completed_by_a_rerun(
+        tmp_path, monkeypatch):
+    lay = old_project(tmp_path)
+    root = lay.root
+
+    def failing_write(layout, raw):
+        raise OSError("simulated crash between the manifest rewrite and the version record")
+
+    monkeypatch.setattr(project, "write", failing_write)
+    with pytest.raises(OSError, match="simulated crash"):
+        migrations.run(lay)
+    monkeypatch.undo()
+
+    assert not (root / "extensions").exists()
+    assert (root / "plugins" / "alpha.toml").read_bytes() == ALPHA_MANIFEST.replace(
+        '"extensions.alpha"', '"plugins.alpha"').replace("extensions = [", "plugins = [").encode()
+    assert (root / "plugins" / "beta" / "supervisor-plugin.toml").read_bytes() == BETA_MANIFEST.encode()
+    assert (root / "project.yaml").read_bytes() == PROJECT.replace("extensions:", "plugins:").encode()  # not recorded
+
+    notes = migrations.run(lay)
+    assert any("framework_version" in n for n in notes)
+    assert not any("renamed" in n or "moved" in n for n in notes)       # already done; only the version is left
+    assert (root / "project.yaml").read_bytes() == PROJECT.replace("1.13.0", migrations.__version__).replace(
+        "extensions:", "plugins:").encode()
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+    again = migrations.run(lay)
+    assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
