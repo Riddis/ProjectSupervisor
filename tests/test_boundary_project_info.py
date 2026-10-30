@@ -440,3 +440,56 @@ def test_a_lookalike_archive_gets_no_allowance(tmp_path, monkeypatch):
     with zipfile.ZipFile(nameless, "w") as z:
         z.writestr(member, "NAME = 'quuxify'\n")
     assert (f"{nameless.name}!{member}", 1, "quuxify") in hits(boundary.scan_words(nameless, terms, allowed=allowed))
+
+
+# ---------------------------------------------------------------- review 2.0.0 round 2, F4: tar link members
+# The tar branch emitted only info.isfile() members: a symbolic- or hard-link member's name, and the target it
+# points at, were never scanned, though the published archive exposes that path. The archives below point their
+# links at a member absent from the archive, so a scan that followed or extracted the link would raise, not report
+# zero or one hit; a directory member must still report nothing of its own.
+
+def test_a_tar_symlink_members_name_is_scanned(tmp_path, monkeypatch):
+    import tarfile
+    sdist = tmp_path / "neutral-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        info = tarfile.TarInfo("neutral-1.0.0/quuxify-link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "target.txt"
+        t.addfile(info)
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(sdist, terms)) == [(f"{sdist.name}!neutral-1.0.0/quuxify-link", 0, "quuxify")]
+
+
+def test_a_tar_hardlink_members_name_is_scanned(tmp_path, monkeypatch):
+    import tarfile
+    sdist = tmp_path / "neutral-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        info = tarfile.TarInfo("neutral-1.0.0/zorblax-hardlink")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "neutral-1.0.0/target.txt"
+        t.addfile(info)
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(sdist, terms)) == [(f"{sdist.name}!neutral-1.0.0/zorblax-hardlink", 0, "zorblax")]
+
+
+def test_a_tar_symlinks_target_is_scanned(tmp_path, monkeypatch):
+    import tarfile
+    sdist = tmp_path / "neutral-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        info = tarfile.TarInfo("neutral-1.0.0/link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "quuxify.txt"
+        t.addfile(info)
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(sdist, terms)) == [(f"{sdist.name}!neutral-1.0.0/link", 1, "quuxify")]
+
+
+def test_a_tar_directory_member_reports_nothing_of_its_own(tmp_path, monkeypatch):
+    import tarfile
+    sdist = tmp_path / "neutral-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        info = tarfile.TarInfo("neutral-1.0.0/quuxify")
+        info.type = tarfile.DIRTYPE
+        t.addfile(info)
+    terms = boundary.load_project_terms(terms_file(tmp_path, monkeypatch))
+    assert hits(boundary.scan_words(sdist, terms)) == []
