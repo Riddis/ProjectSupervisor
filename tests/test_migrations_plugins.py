@@ -85,8 +85,10 @@ def test_migrate_renames_the_keys_the_folder_and_the_manifests_and_the_plugins_l
     reg = plugins.load(lay)
     assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
     testing.reset()
+    before = snapshot(root)
     again = migrations.run(lay)
     assert not any("renamed" in n or "moved" in n for n in again)
+    assert snapshot(root) == before
 
 
 def test_both_names_at_once_stop_the_migration(tmp_path):
@@ -362,8 +364,10 @@ def test_a_failure_after_the_key_rename_and_before_the_folder_move_is_completed_
     assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
     testing.reset()
 
+    before = snapshot(root)
     again = migrations.run(lay)
     assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
+    assert snapshot(root) == before
 
 
 def test_a_failure_after_the_folder_move_and_before_the_manifest_rewrite_is_completed_by_a_rerun(tmp_path, monkeypatch):
@@ -397,8 +401,10 @@ def test_a_failure_after_the_folder_move_and_before_the_manifest_rewrite_is_comp
     assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
     testing.reset()
 
+    before = snapshot(root)
     again = migrations.run(lay)
     assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
+    assert snapshot(root) == before
 
 
 def test_a_failure_after_the_manifest_rewrite_and_before_the_version_is_recorded_is_completed_by_a_rerun(
@@ -429,5 +435,7 @@ def test_a_failure_after_the_manifest_rewrite_and_before_the_version_is_recorded
     assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
     testing.reset()
 
+    before = snapshot(root)
     again = migrations.run(lay)
     assert not any("renamed" in n or "moved" in n or "framework_version" in n for n in again)
+    assert snapshot(root) == before
