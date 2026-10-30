@@ -209,6 +209,48 @@ def test_f1_the_same_manifest_with_lf_line_endings(tmp_path):
     testing.reset()
 
 
+# The same finding's other half, in the form the review demonstrated: one `requires = { ... }` inline table whose
+# `services` value is a string that reads like TOML syntax. The old inline rule matched `extensions =` after any `,`
+# in the captured line, so the comma inside that string made the service itself `"remote, plugins = [x]"`. Only the
+# `extensions` key of that inline table may change; the string, the legacy command identifiers and every other byte
+# stay as they are.
+F1_INLINE = (HEAD_LINES
+             + 'requires = { services = ["remote, extensions = [x]"], extensions = ["beta"] }\r\n'
+             + '\r\n# a plugin that kept its old command name on purpose\r\n'
+               '[provides]\r\ndoctor_checks = ["alpha"]\r\ncommands = ["extensions.submit"]\r\n'
+             + '\r\n[legacy_ids]\r\ncommands = ["extensions.submit"]\r\n'
+             + CONFIG_TABLE)
+F1_INLINE_EXPECTED = F1_INLINE.replace('section = "extensions.alpha"', 'section = "plugins.alpha"').replace(
+    'extensions = ["beta"]', 'plugins = ["beta"]')
+
+
+@pytest.mark.parametrize("nl", ["\r\n", "\n"])
+def test_f1_a_syntax_looking_string_in_a_requires_inline_table_is_kept(tmp_path, nl):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(F1_INLINE.replace("\r\n", nl).encode())
+    migrations.run(lay)
+    assert (lay.root / "plugins" / "alpha.toml").read_bytes() == F1_INLINE_EXPECTED.replace("\r\n", nl).encode()
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+
+# The same defect class in one more position: a key literally named `extensions` where the migration never names one
+# (here a stray top-level key, which the loader's strict parse is the one to report). The rename is read inside the
+# `[requires]` table's own span, so such a key is left exactly as it is, rather than renamed and then refused with
+# advice about a field migrate does not touch.
+F1_STRAY = HEAD_LINES + 'extensions = ["alpha"]\r\n' + PROVIDES + CONFIG_TABLE + REQUIRES_TABLE
+F1_STRAY_EXPECTED = F1_STRAY.replace('section = "extensions.alpha"', 'section = "plugins.alpha"').replace(
+    'extensions = ["beta"]', 'plugins = ["beta"]')
+
+
+def test_f1_a_key_named_extensions_outside_requires_is_left_as_it_is(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(F1_STRAY.encode())
+    migrations.run(lay)
+    assert (lay.root / "plugins" / "alpha.toml").read_bytes() == F1_STRAY_EXPECTED.encode()
+
+
 def test_a_manifest_that_still_reads_the_old_names_stops_migrate_before_any_write(tmp_path):
     lay = old_project(tmp_path)
     escaped = HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\n"\\u0065xtensions" = ["beta"]\r\n'
