@@ -164,6 +164,15 @@ def _set_job(layout, payload, actor):
     return {"status": t.status.value}
 
 
+@handler("issue.resolve")
+def _issue_resolve(layout, payload, actor):
+    """The only writer that closes an issue record: nothing else touches state/issues/ (escalation.open_issue and
+    diagnosis's own annotation only ever open or annotate one, never resolve it)."""
+    from . import escalation
+    return escalation.resolve_issue(layout, payload["issue_id"], payload["resolution"],
+                                    payload.get("resolving_task"), actor)
+
+
 @handler("task.advance")
 def _advance(layout, payload, actor):
     """Re-evaluate the completion rule for the current digest (e.g. after the owner unblocks a task)."""
