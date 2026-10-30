@@ -23,7 +23,7 @@ claude_api:                           # Messages API lane (optional; needs a key
 
 # Default adapter per task cost_category when the task's own `job.adapter` is absent. For the model categories
 # (claude, codex, mixed, paid) the owner role's `roles.<role>.adapter` (below) decides the provider instead; the
-# non-model lanes (deterministic, local, human) apply whoever owns the task. An extension lane that holds the
+# non-model lanes (deterministic, local, human) apply whoever owns the task. A plugin lane that holds the
 # project's single heavy resource (a GPU, a device, a build farm) is usually mapped to `local`.
 cost_lanes:
   deterministic: python
@@ -161,11 +161,11 @@ timeouts:                           # supervisor/timeouts.py: an agent session (
                                     # task job.timeout_s (hard cap) / job.idle_timeout_s (idle limit; 0 = none)
 limits:
   max_agent_jobs: 2                 # concurrent model-lane jobs (deliveries + reviews + chat turns share this)
-  max_resource_jobs: 1              # concurrent holders of the single heavy local resource (extension lanes with gpu=True)
+  max_resource_jobs: 1              # concurrent holders of the single heavy local resource (plugin lanes with gpu=True)
   resource_cost_categories: []      # cost categories whose DELIVERY also holds that resource slot, on any lane — e.g. [local]
                                     # when an agent session does the resource's own engineering work (installs, runs, benchmarks it)
 # Two more sections, added when they are needed:
-#   resources:     shared resource policy extensions read with supervisor.ext.resources(), e.g.
+#   resources:     shared resource policy plugins read with supervisor.plugin.resources(), e.g.
 #     gpu: {usable_vram_floor_mb: 6500, single_job: true}
-#   extensions:    each extension's own settings under its identity, validated by the schema its manifest names
+#   plugins:    each plugin's own settings under its identity, validated by the schema its manifest names
 #     <identity>: {...}

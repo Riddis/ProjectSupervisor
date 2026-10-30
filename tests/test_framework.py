@@ -1,4 +1,4 @@
-"""The framework/project boundary: project.yaml discovery, `supervisor init`, extensions, doctor and migrate."""
+"""The framework/project boundary: project.yaml discovery, `supervisor init`, plugins, doctor and migrate."""
 from __future__ import annotations
 
 import subprocess
@@ -9,7 +9,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from supervisor import __version__, doctor, extensions, migrations, project, template
+from supervisor import __version__, doctor, plugins, migrations, project, template
 from supervisor.adapters import REGISTRY
 from supervisor.cli import app
 from supervisor.paths import Layout, find_root
@@ -24,7 +24,7 @@ def fresh(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_ROOT", raising=False)
     target = tmp_path / "demo"
     template.stamp(target, name="Demo Project")
-    extensions.reset()
+    plugins.reset()
     return target
 
 
@@ -64,7 +64,7 @@ def test_project_yaml_is_stamped_with_name_and_version(fresh):
 def test_project_defaults_apply_without_a_file(tmp_path):
     layout = Layout(tmp_path)
     assert project.name(layout) == "Untitled project"
-    assert project.extensions(layout) == []
+    assert project.plugins(layout) == []
 
 
 def test_template_contains_no_task_history_references():
@@ -100,7 +100,7 @@ def test_init_stamps_every_template_file_and_the_runtime_dirs(tmp_path, monkeypa
     assert r.exit_code == 0, r.output
     assert (target / "project.yaml").exists() and (target / ".gitignore").exists()
     assert (target / "state" / "tasks").is_dir() and (target / "state" / "runtime" / "jobs").is_dir()
-    assert (target / "extensions" / "__init__.py").exists()
+    assert (target / "plugins" / "__init__.py").exists()
     assert "My Thing" in (target / "README.md").read_text(encoding="utf-8")
     assert "{{" not in (target / "project.yaml").read_text(encoding="utf-8")
     # every template file landed (dot-files renamed)
@@ -128,7 +128,7 @@ def test_a_stamped_project_passes_check_and_renders(fresh, monkeypatch):
     assert "Demo Project" in state and "Foundations" in state
 
 
-# ------------------------------------------------------------------ extensions
+# ------------------------------------------------------------------ plugins
 
 EXT = '''
 from supervisor.doctor import Check
@@ -151,7 +151,7 @@ cli = typer.Typer()
 
 @cli.command("hello")
 def hello():
-    typer.echo("hello from the extension")
+    typer.echo("hello from the plugin")
 
 def setup(registry):
     registry.adapter(EchoAdapter())
@@ -166,18 +166,18 @@ def setup(registry):
 '''
 
 
-def _install_extension(root: Path, name: str = "echo_ext", code: str = EXT) -> Layout:
-    (root / "extensions" / f"{name}.py").write_text(code, encoding="utf-8")
+def _install_plugin(root: Path, name: str = "echo_ext", code: str = EXT) -> Layout:
+    (root / "plugins" / f"{name}.py").write_text(code, encoding="utf-8")
     doc = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8"))
-    doc["extensions"] = [name]
+    doc["plugins"] = [name]
     project.write(Layout(root), doc)
-    extensions.reset()
+    plugins.reset()
     return Layout(root)
 
 
-def test_an_extension_registers_every_kind_of_hook(fresh):
-    layout = _install_extension(fresh)
-    reg = extensions.load(layout)
+def test_a_plugin_registers_every_kind_of_hook(fresh):
+    layout = _install_plugin(fresh)
+    reg = plugins.load(layout)
     assert reg.loaded == ["echo_ext"] and reg.errors == []
     assert "echo_lane" in REGISTRY and REGISTRY["echo_lane"].gpu
     assert [c.name for c in doctor.run(layout) if c.name == "echo"] == ["echo"]
@@ -188,44 +188,44 @@ def test_an_extension_registers_every_kind_of_hook(fresh):
     assert "echo_job" in JOBS
 
 
-def test_extension_overview_panel_reaches_the_control_center(fresh):
-    layout = _install_extension(fresh)
+def test_plugin_overview_panel_reaches_the_control_center(fresh):
+    layout = _install_plugin(fresh)
     from supervisor.ui.routes.overview import overview_context
     ctx = overview_context(layout)
     assert ctx["project_name"] == "Demo Project"
     assert ctx["panels"][0]["title"] == "Echo" and ctx["panels"][0]["rows"] == [("state", "ok")]
 
 
-def test_a_broken_extension_is_reported_not_fatal(fresh):
-    layout = _install_extension(fresh, "broken", "raise RuntimeError('boom at import')\n")
-    reg = extensions.load(layout)
+def test_a_broken_plugin_is_reported_not_fatal(fresh):
+    layout = _install_plugin(fresh, "broken", "raise RuntimeError('boom at import')\n")
+    reg = plugins.load(layout)
     assert reg.loaded == [] and reg.errors and "boom at import" in reg.errors[0]
     checks = {c.name: c for c in doctor.run(layout)}
-    assert checks["extensions"].ok is False and "broken" in checks["extensions"].detail
+    assert checks["plugins"].ok is False and "broken" in checks["plugins"].detail
 
 
-def test_extension_new_scaffolds_and_registers(fresh, monkeypatch):
+def test_plugin_new_scaffolds_and_registers(fresh, monkeypatch):
     monkeypatch.chdir(fresh)
-    r = runner.invoke(app, ["extension", "new", "mytool"])
+    r = runner.invoke(app, ["plugin", "new", "mytool"])
     assert r.exit_code == 0, r.output
-    assert (fresh / "extensions" / "mytool.py").exists()
-    assert project.extensions(Layout(fresh)) == ["mytool"]
-    extensions.reset()
-    r = runner.invoke(app, ["extension", "list"])
+    assert (fresh / "plugins" / "mytool.py").exists()
+    assert project.plugins(Layout(fresh)) == ["mytool"]
+    plugins.reset()
+    r = runner.invoke(app, ["plugin", "list"])
     assert "loaded mytool" in r.output
 
 
-def test_extension_cli_group_is_attached(fresh, monkeypatch):
-    _install_extension(fresh)
+def test_plugin_cli_group_is_attached(fresh, monkeypatch):
+    _install_plugin(fresh)
     monkeypatch.chdir(fresh)
     out = subprocess.run([sys.executable, "-m", "supervisor", "echo", "hello"], capture_output=True, text=True,
                          cwd=str(fresh), env={**__import__("os").environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])})
     assert out.returncode == 0, out.stderr
-    assert "hello from the extension" in out.stdout
+    assert "hello from the plugin" in out.stdout
 
 
-def test_cost_lane_local_can_be_routed_to_an_extension_lane(fresh):
-    layout = _install_extension(fresh)
+def test_cost_lane_local_can_be_routed_to_a_plugin_lane(fresh):
+    layout = _install_plugin(fresh)
     cfg = layout.config / "routing.yaml"
     doc = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     doc["cost_lanes"]["local"] = "echo_lane"
@@ -391,10 +391,10 @@ def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
     layout = Layout(fresh)
     before = layout.project_file.read_text(encoding="utf-8")
     monkeypatch.chdir(fresh)
-    r = runner.invoke(app, ["extension", "new", "demo_job"])
+    r = runner.invoke(app, ["plugin", "new", "demo_job"])
     assert r.exit_code == 0, r.output
     after = layout.project_file.read_text(encoding="utf-8")
-    assert project.extensions(layout) == ["demo_job"] and "demo_job" in after
+    assert project.plugins(layout) == ["demo_job"] and "demo_job" in after
     for comment in ("# project.yaml - what makes this folder", "# checked by `supervisor doctor`", "# Phase labels only."):
         assert comment in before and comment in after
     assert after.count("#") == before.count("#")
@@ -466,7 +466,7 @@ def test_init_refuses_a_target_inside_the_framework_clone(tmp_path, monkeypatch)
 def test_framework_gitignore_blocks_project_shapes_at_the_root():
     root = Path(__file__).resolve().parents[1]
     text = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
-    for line in ("/project.yaml", "/state/", "/secrets/", "/extensions/", "/agents/", "/config/", "/uploads/"):
+    for line in ("/project.yaml", "/state/", "/secrets/", "/plugins/", "/agents/", "/config/", "/uploads/"):
         assert line in text, line
     probe = subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
     if probe.returncode != 0 or probe.stdout.strip() != "true":

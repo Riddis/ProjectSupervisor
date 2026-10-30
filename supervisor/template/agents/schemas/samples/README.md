@@ -11,4 +11,4 @@ a schema that stops rejecting its invalid sample has lost a constraint.
 | `research_report.invalid.json` | an OBSERVATION with zero `source_ids`; `confidence: "very high"` outside the enum; a URL with no scheme; `retrieved` and `created` not parseable dates. |
 | `assessment.invalid.json` | `independent: false`; a score of 7 above the 1-5 rubric; a repeated candidate in `scores` and in `ranking`; reasoning below the minimum length. |
 
-A project that adds result kinds (an extension) adds its schema here with a valid and an invalid sample.
+A project that adds result kinds (a plugin) adds its schema here with a valid and an invalid sample.

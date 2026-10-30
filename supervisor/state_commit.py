@@ -61,9 +61,9 @@ def settings(layout: Layout) -> dict:
 
 
 def projections(layout: Layout) -> list[str]:
-    """The rendered files: the framework's and the ones extensions' projections are known to write."""
-    from . import extensions, verify
-    return sorted(set(verify.EXCLUDED_FILES) | extensions.known_projection_paths(layout))
+    """The rendered files: the framework's and the ones plugins' projections are known to write."""
+    from . import plugins, verify
+    return sorted(set(verify.EXCLUDED_FILES) | plugins.known_projection_paths(layout))
 
 
 def changed(layout: Layout, paths: list[str]) -> list[str]:

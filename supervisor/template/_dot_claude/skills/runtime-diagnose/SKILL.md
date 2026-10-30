@@ -1,14 +1,14 @@
 ---
 name: runtime-diagnose
-description: Find out why the whole project misbehaves - a stopped or blocked loop, a stale heartbeat, a lane that never runs, a missing extension, a service that is unavailable - from read-only evidence, and end with a supported recovery or a reproducible issue. Use when the user says "the loop is stuck", "nothing runs", "why is it blocked", "/runtime-diagnose". For one task that is BLOCKED or FAILED, use stuck-task instead.
+description: Find out why the whole project misbehaves - a stopped or blocked loop, a stale heartbeat, a lane that never runs, a missing plugin, a service that is unavailable - from read-only evidence, and end with a supported recovery or a reproducible issue. Use when the user says "the loop is stuck", "nothing runs", "why is it blocked", "/runtime-diagnose". For one task that is BLOCKED or FAILED, use stuck-task instead.
 ---
 
 # Diagnosing the running project
 
 Read first, change nothing. Every step below only reads, with one exception: `supervisor doctor` and
-`supervisor extension list` set the project's extensions up in order to report on them. That runs the extensions'
-own code, and a load writes the loader's records: an `extension_error` line in `state/log.jsonl` for each optional
-extension that fails, and the projection paths in `state/runtime/`. Run them after the other steps. The recovery at
+`supervisor plugin list` set the project's plugins up in order to report on them. That runs the plugins'
+own code, and a load writes the loader's records: a `plugin_error` line in `state/log.jsonl` for each optional
+plugin that fails, and the projection paths in `state/runtime/`. Run them after the other steps. The recovery at
 the end goes through a supported command.
 
 ## 1. Collect the evidence
@@ -24,14 +24,14 @@ the end goes through a supported command.
 
   A heartbeat much older than the loop's sleep interval, with the lock free, means the loop process is gone.
 - `state/log.jsonl`, the last few hundred lines:
-  - `loop_error`, `schedule_skip`, `capacity_*`, `extension_error`, `checkpoint_*` and `state_commit_*` events say
+  - `loop_error`, `schedule_skip`, `capacity_*`, `plugin_error`, `checkpoint_*` and `state_commit_*` events say
     what the loop decided and why;
   - the `command` events say which owner command (a `loop.pause`, say) changed it.
 - `supervisor doctor`: which check is FAIL or WARN.
 - `state/runtime/jobs/*.json`: the open records (phase PREPARED, SUBMITTED, RUNNING) and the newest finished ones.
-- `supervisor extension list`: whether every configured extension loaded, and each error.
+- `supervisor plugin list`: whether every configured plugin loaded, and each error.
 - `supervisor check`: WARN lines for tasks waiting on a role that is unknown or inactive, and for jobs naming a lane
-  or python job that neither the framework nor an extension's manifest provides. It sets no extension up.
+  or python job that neither the framework nor a plugin's manifest provides. It sets no plugin up.
 - For a lane: `state/runtime/usage_*.json` (its capacity windows) and the project's `config/routing.yaml` (its
   limits, reserves and whether its role is active).
 
@@ -43,7 +43,7 @@ Say which one, with the evidence that shows it:
 - **scheduling:** nothing eligible (dependencies, gates, an inactive role, overlapping `owned_paths`, a limit
   reached), or a lane deferring on its capacity reserve;
 - **a lane or service:** an agent CLI missing or failing, a local service not started, credentials missing;
-- **an extension:** failed to load (a required one blocks the loop), or refused by its manifest;
+- **a plugin:** failed to load (a required one blocks the loop), or refused by its manifest;
 - **the framework:** a defect the evidence reproduces;
 - **the environment:** disk, network, a driver, the operating system.
 
@@ -57,7 +57,7 @@ Say which one, with the evidence that shows it:
 
   The owner runs it, or approves it.
 - **A reproducible issue:** what happens, the smallest steps that make it happen, the evidence, and which
-  repository it belongs to: the project's (an extension, its config), an extension package's, or the
+  repository it belongs to: the project's (a plugin, its config), a plugin package's, or the
   framework's (`framework-change` there).
 
 Never: delete job records or lock files, edit `state/` by hand, or restart repeatedly hoping it clears.
@@ -67,5 +67,5 @@ Never: delete job records or lock files, edit `state/` by hand, or restart repea
 - `supervisor doctor` (G6), read before and, after a recovery, again.
 - No file under `state/` or `config/` changed by the diagnosis itself. Note `git status --porcelain -- state config`
   before you start, and compare at the end. A running loop changes its own records meanwhile (the log, the task
-  records it updates), and `doctor` and `extension list` write the loader's records named at the top (an
-  `extension_error` line; `state/runtime/` is not tracked). Any other change you made counts.
+  records it updates), and `doctor` and `plugin list` write the loader's records named at the top (an
+  `plugin_error` line; `state/runtime/` is not tracked). Any other change you made counts.

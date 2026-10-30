@@ -14,14 +14,14 @@ running time against the hard cap, how long a job has been quiet, the stage the 
 (*downloading*, *training*, … with a bar when it gives numbers; see below), **+1h** to extend one running job's hard cap
 and a live-log link, plus the next eligible tasks; supervisor controls
 Start/Pause/Resume/Stop/Reload/Doctor/Shut down PC when idle, enabled only when they apply; capacity, disk,
-extension panels, phase & gates, recent activity), Roadmap (phases, gates, tasks per phase), Tasks (list + detail:
+plugin panels, phase & gates, recent activity), Roadmap (phases, gates, tasks per phase), Tasks (list + detail:
 attempts, artifacts, notes, re-queue/cancel/hold/priority), Agents (live jobs, SSE transcript tail, terminate, drop a
 note the agent reads between steps), Inbox (answer/snooze/reopen, gate acknowledgement, file upload to
 `uploads/<item>/`; a delivery approval shows what it approves — every file frozen in the digest, readable in place or
 opened from `/tasks/<id>/files/<n>`, the verification and each live review's verdict, summary and findings, and a
 warning naming any declared artifact the digest does not cover; the task page shows the same), Chat (threads with a role, grounded in the live state; convert a reply into a task / decision /
 issue / owner task), Log (SSE tail of `state/log.jsonl`), Owner tasks, Settings (the few numeric routing knobs).
-Extensions can add sidebar pages (`registry.ui_router`) and overview panels (`registry.overview_panel`).
+Plugins can add sidebar pages (`registry.ui_router`) and overview panels (`registry.overview_panel`).
 
 ## Live pages
 

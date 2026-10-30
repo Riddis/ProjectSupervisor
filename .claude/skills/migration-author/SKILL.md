@@ -1,6 +1,6 @@
 ---
 name: migration-author
-description: Write a migration for any persisted format change - framework (supervisor/migrations.py), extension or project - so it is dry-run aware, idempotent, safe to interrupt, keeps unrelated data, and has a stated rollback. Use when a change alters the shape of anything under a project's state/ or config/, renames a persisted identifier, or the user says "write a migration", "/migration-author". Called from framework-change and framework-release; written once, never copied.
+description: Write a migration for any persisted format change - framework (supervisor/migrations.py), plugin or project - so it is dry-run aware, idempotent, safe to interrupt, keeps unrelated data, and has a stated rollback. Use when a change alters the shape of anything under a project's state/ or config/, renames a persisted identifier, or the user says "write a migration", "/migration-author". Called from framework-change and framework-release; written once, never copied.
 ---
 
 # Writing a migration
@@ -48,9 +48,9 @@ Going back therefore needs one of:
 Once work has run on the new version, reconcile before any restore: the work done since the upgrade is applied
 to the restored state or explicitly discarded by the owner (rollback A, before any work ran, versus rollback B).
 
-## Extension and project migrations
+## Plugin and project migrations
 
-The same contract applies to an extension's migration of its own identifiers and config section (from 1.12.0
-through the extension standard) and to a project's own state changes. The extension that owns an identifier owns
+The same contract applies to a plugin's migration of its own identifiers and config section (from 1.12.0
+through the plugin standard) and to a project's own state changes. The plugin that owns an identifier owns
 its migration and its rollback path; a project migration runs inside the project's maintenance window with a
 snapshot taken first.

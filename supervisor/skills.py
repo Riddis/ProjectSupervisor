@@ -129,14 +129,14 @@ def update(root: Path, dry_run: bool = False) -> list[Entry]:
     for e in status(root):
         if e.state in ("missing", "outdated"):
             text = render(ship[e.rel].read_text(encoding="utf-8"), name)
-            done = "installed" if e.state == "missing" else "updated"
+            done, would = ("installed", "install") if e.state == "missing" else ("updated", "update")
             if not dry_run:
                 dest = root / SKILLS / e.rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(text, encoding="utf-8", newline="\n")
                 record[e.rel] = _digest(text)
                 written.append((SKILLS / e.rel).as_posix())
-            out.append(Entry(e.rel, done if not dry_run else "would " + done[:-1]))
+            out.append(Entry(e.rel, done if not dry_run else "would " + would))
         else:
             if e.state == "current":
                 record[e.rel] = _digest((root / SKILLS / e.rel).read_text(encoding="utf-8"))

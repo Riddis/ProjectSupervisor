@@ -14,7 +14,7 @@ Three guards, each at the one boundary the thing it protects has to cross:
   (`screen_log_identity()`) - `actor` because it is *data*, fed from a queued `state/commands/*.json` file, not
   an identifier in source code. The `ts` stamp is `store.now_iso()` and is the one value a caller cannot
   influence.
-* **extension screens** - a project may register further packet screens (`registry.packet_screen`) for content
+* **plugin screens** - a project may register further packet screens (`registry.packet_screen`) for content
   that must not leave the machine; `assert_packet_clean()` runs them after the credential check.
 
 Everything fails closed. The defaults below apply when `config/policy.yaml` is missing or unreadable.
@@ -198,7 +198,7 @@ def _merge(defaults: dict, configured: dict) -> tuple[dict, list[str]]:
     config error that can silently delete a protection (a null list leaves a guard with nothing to match, a
     string where a flag belongs is truthy), and a security floor that a typo can remove is not a floor. Keys
     with no entry in `DEFAULTS` (`version`, a project's own sections, …) have no floor to
-    protect and are taken as given (a project extension may read them through `section()`)."""
+    protect and are taken as given (a project plugin may read them through `section()`)."""
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in defaults.items()}
     problems: list[str] = []
     for name, value in (configured or {}).items():
@@ -831,7 +831,7 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
 
     `job`, `task` and `lane` are the dispatch context the hosted adapters pass from `prepare()` (the task's `job`
     block, the Task, the adapter name): a project screen may refuse on *what the job is*, not only on the prompt
-    text — a job tagged for a channel its content may not leave the machine for, say. Each extension screen is
+    text — a job tagged for a channel its content may not leave the machine for, say. Each plugin screen is
     called as `fn(layout, text, where, **ctx)` with exactly the keyword arguments it declares (or all three when it
     takes `**kwargs`); a screen written as `fn(layout, text, where)` keeps working and sees text only.
 
@@ -855,7 +855,7 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
             f"{where} refused: credential-like content ({', '.join(hits)}). Secrets live in secrets/ and are "
             "never referenced from a packet (config/policy.yaml, docs/runbooks/policy.md).")
     ctx = {"job": job, "task": task, "lane": lane}
-    for screen in extension_screens(layout):
+    for screen in plugin_screens(layout):
         screen(layout, text, where, **_accepted(screen, ctx))     # raises PolicyViolation to refuse
     return text
 
@@ -875,18 +875,18 @@ def _accepted(fn, ctx: dict) -> dict:
     return {k: v for k, v in ctx.items() if k in params and k not in positional[:3]}
 
 
-# ---------------------------------------------------------------------------- extension screens
+# ---------------------------------------------------------------------------- plugin screens
 
-def extension_screens(layout: Layout | None):
-    """The project's registered packet screens — or PolicyViolation when a required extension failed to load: the
-    screen that extension would have registered is not running, so no packet can be called clean."""
+def plugin_screens(layout: Layout | None):
+    """The project's registered packet screens — or PolicyViolation when a required plugin failed to load: the
+    screen that plugin would have registered is not running, so no packet can be called clean."""
     if layout is None:
         return []
-    from . import extensions
+    from . import plugins
     try:
-        return extensions.assert_loaded(layout).packet_screens
-    except extensions.ExtensionError as exc:
-        raise PolicyViolation(f"packet refused: {exc} (fix the extension or mark it `required: false` in "
+        return plugins.assert_loaded(layout).packet_screens
+    except plugins.PluginError as exc:
+        raise PolicyViolation(f"packet refused: {exc} (fix the plugin or mark it `required: false` in "
                               "project.yaml; `supervisor doctor` shows the error)") from exc
 
 

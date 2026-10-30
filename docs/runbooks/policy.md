@@ -9,7 +9,7 @@
 | Credentials never reach a packet | `supervisor/packets.py` and every agent adapter's `prepare()` | **refuses** (`policy.PolicyViolation`); the attempt fails visibly |
 | Credentials never reach a log | `supervisor/tasks.py log()` — the single append path | **redacts** to `[REDACTED]`; the record is kept |
 | Credentials never reach a child | `adapters/process.scrub_env()` | strips every variable named like a credential |
-| Project-specific content rules | extension `packet_screen`s | **refuse**, same as the credential screen |
+| Project-specific content rules | plugin `packet_screen`s | **refuse**, same as the credential screen |
 
 A refusal names labels (`secrets/.env:ANTHROPIC_API_KEY`, `pattern/github_token`, `env/MY_TOKEN`), never the value.
 
@@ -30,12 +30,12 @@ Lists (`patterns`, `secret_key_words`, `env_key_suffixes`) are unioned with the 
 `min_value_length` can only be lowered; `ignore_files` can never hide a dotenv file; an empty
 `redaction_placeholder` falls back to the built-in. A wrongly-typed entry (`patterns: null`) is dropped, the floor
 stands, and `policy.config_problems()` names it — `supervisor doctor` shows them as the `policy` check (ok when the
-list is empty). Sections the floor does not know (a project's own) are taken as given for extensions to read with
+list is empty). Sections the floor does not know (a project's own) are taken as given for plugins to read with
 `policy.section(name)`.
 
 ## Adding a project rule
 
-Register a packet screen in an extension:
+Register a packet screen in a plugin:
 
 ```python
 def setup(registry):
@@ -45,8 +45,8 @@ def setup(registry):
     registry.packet_screen(no_customer_data)
 ```
 
-A screen is only a protection while its extension loads. If the extension fails to import (a typo, a missing
-dependency), `assert_packet_clean()` refuses **every** packet naming the extension and the loop refuses to start
-(runtime `BLOCKED`, reason `required extension(s) failed to load: <name>: ...`); `supervisor doctor` shows the
-error under `extensions`. Fix the module, or — only for an extension whose absence is genuinely harmless — list it
-as `{name: <name>, required: false}` in `project.yaml` (docs/FRAMEWORK_VS_EXTENSION.md).
+A screen is only a protection while its plugin loads. If the plugin fails to import (a typo, a missing
+dependency), `assert_packet_clean()` refuses **every** packet naming the plugin and the loop refuses to start
+(runtime `BLOCKED`, reason `required plugin(s) failed to load: <name>: ...`); `supervisor doctor` shows the
+error under `plugins`. Fix the module, or — only for a plugin whose absence is genuinely harmless — list it
+as `{name: <name>, required: false}` in `project.yaml` (docs/FRAMEWORK_VS_PLUGIN.md).

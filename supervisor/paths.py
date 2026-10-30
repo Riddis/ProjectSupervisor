@@ -41,7 +41,7 @@ def require_root() -> Path:
 
 
 class Layout:
-    # Declared so the public extension API's contract (supervisor.ext, G2) records every path a Layout carries.
+    # Declared so the public plugin API's contract (supervisor.plugin, G2) records every path a Layout carries.
     root: Path
     project_file: Path
     state: Path
@@ -65,7 +65,7 @@ class Layout:
     agents: Path
     secrets: Path
     uploads: Path
-    extensions: Path
+    plugins: Path
     docs: Path
 
     def __init__(self, base: Path | None = None):
@@ -92,7 +92,7 @@ class Layout:
         self.agents = self.root / "agents"
         self.secrets = self.root / "secrets"
         self.uploads = self.root / "uploads"          # files the owner drops for an agent (Control Center inbox)
-        self.extensions = self.root / "extensions"    # project-specific Python (adapters, checks, UI panels)
+        self.plugins = self.root / "plugins"          # project-specific Python (adapters, checks, UI panels)
         self.docs = self.root / "docs"
 
     def ensure(self):

@@ -1,6 +1,6 @@
 ---
 name: maintenance-window
-description: Stop this project safely for a change that needs it, make the change, and bring it back. Use for a framework or extension upgrade, a restore, a toolchain or environment change, or whenever the user says "maintenance window", "take the loop down", "/maintenance-window". Other skills (project-upgrade, project-restore) call this procedure instead of repeating it.
+description: Stop this project safely for a change that needs it, make the change, and bring it back. Use for a framework or plugin upgrade, a restore, a toolchain or environment change, or whenever the user says "maintenance window", "take the loop down", "/maintenance-window". Other skills (project-upgrade, project-restore) call this procedure instead of repeating it.
 ---
 
 # Maintenance window

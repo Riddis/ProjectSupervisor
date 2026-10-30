@@ -49,7 +49,7 @@ class HumanApproval(str, Enum):
 class CostCategory(str, Enum):
     """What a task costs when it runs; routing.yaml `cost_lanes` maps each to a default adapter."""
     deterministic = "deterministic"   # software only (python/process adapters)
-    local = "local"                   # a local resource lane (an extension adapter holding the resource lock)
+    local = "local"                   # a local resource lane (a plugin adapter holding the resource lock)
     claude = "claude"
     codex = "codex"
     human = "human"

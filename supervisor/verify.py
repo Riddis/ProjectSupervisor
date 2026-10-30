@@ -55,11 +55,11 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 
 def excluded_files(layout: Layout | None = None) -> set[str]:
     """Root-relative files that are never evidence about what an agent wrote: the built-in rendered views plus
-    every projection a project extension registered (`registry.projection`, supervisor.extensions)."""
+    every projection a project plugin registered (`registry.projection`, supervisor.plugins)."""
     out = set(EXCLUDED_FILES)
     if layout is not None:
-        from . import extensions
-        out |= extensions.load(layout).projection_paths | extensions.known_projection_paths(layout)
+        from . import plugins
+        out |= plugins.load(layout).projection_paths | plugins.known_projection_paths(layout)
     return out
 
 

@@ -37,7 +37,7 @@ Nothing there: rollback A. Anything: rollback B.
 ## 3. Rollback A: no work has run since
 
 1. `git -C <framework checkout> checkout <previous tag>`. Skip it when the window did not move the framework (an
-   extension switch): the snapshot's record of the checkout equals its current `describe --tags`.
+   plugin switch): the snapshot's record of the checkout equals its current `describe --tags`.
 2. In the project, `git reset --keep <commit before>`. That undoes the change's commits and keeps the uncommitted
    files. If it refuses, a file would be lost: stop and say which.
 3. Restore `project.yaml`, `config/` and the skills folder from the snapshot. Restore `state/` too when the change's
@@ -45,7 +45,7 @@ Nothing there: rollback A. Anything: rollback B.
 4. Uninstall every package the change installed, and reinstall the ones it replaced, to match the snapshot's list.
    In a venv, `pip uninstall <distribution>`. Pip refuses a package in a target folder on `PYTHONPATH` ("outside
    environment"): delete the files listed in `<folder>/<distribution>-<version>.dist-info/RECORD`, then that
-   `.dist-info` folder. A package left in place makes the loop find its extension twice and block.
+   `.dist-info` folder. A package left in place makes the loop find its plugin twice and block.
 5. `supervisor migrate`: it records the older version again. Then `supervisor doctor`.
 
 ## 4. Rollback B: work has run since

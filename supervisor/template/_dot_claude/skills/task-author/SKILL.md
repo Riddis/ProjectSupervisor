@@ -49,7 +49,7 @@ Find the framework with the project's own environment, from the project folder a
     forward slashes, like the contract's. `argv` runs as written: a check's `python` becomes the supervisor's own
     interpreter, an `argv`'s does not, so name the project's interpreter (`.venv/Scripts/python.exe`,
     `.venv/bin/python`) when the job needs the project's packages.
-  - **`{adapter: python, fn: <name>, params: {...}}`:** `<name>` is a function a project extension registers in its
+  - **`{adapter: python, fn: <name>, params: {...}}`:** `<name>` is a function a project plugin registers in its
     `setup()` with `registry.python_job("<name>", fn)`. The function takes `(root, run_dir, **params)` and returns
     the same dict.
 - **`depends_on` and `phase`:** only what the task truly waits for. A phase whose gate is closed holds it.
@@ -59,9 +59,9 @@ Find the framework with the project's own environment, from the project folder a
 ## 3. Check before it runs
 
 1. `supervisor task import --dry-run` (with `--update-contracts <ids>` when refreshing). It writes nothing and
-   sets no extension up. It refuses an artifact that cannot match a file, a missing dependency or a cycle. It warns
+   sets no plugin up. It refuses an artifact that cannot match a file, a missing dependency or a cycle. It warns
    about a role routing does not know or has made inactive, about a check off the allowed list, and about a job
-   whose lane or python function neither the framework nor an extension's manifest (`provides`) declares. Fix
+   whose lane or python function neither the framework nor a plugin's manifest (`provides`) declares. Fix
    every refusal, and every warning unless you can say why it is right.
 2. Commit the seed, and any `config/routing.yaml` change it needed, with a message that says why. You are the
    owner's session; a dispatched worker never commits. Otherwise the loop's next state commit takes the seed under

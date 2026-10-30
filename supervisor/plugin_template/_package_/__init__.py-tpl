@@ -1,0 +1,22 @@
+"""{{ identity }}: a Supervisor plugin package.
+
+Import only `supervisor.plugin` (the public plugin API), and register only inside setup(): importing this package
+must change nothing. Everything setup() registers is declared in supervisor-plugin.toml."""
+from __future__ import annotations
+
+from supervisor import plugin
+
+
+def hello(root, run_dir, **params) -> dict:
+    """A python job (`job: {adapter: python, fn: {{ identity }}_hello}`): replace it with real work."""
+    return {"status": "COMPLETE", "artifacts": [], "notes": params.get("greeting", "hello")}
+
+
+def check(layout) -> plugin.Check:
+    greeting = plugin.config(layout, "{{ identity }}")["greeting"]
+    return plugin.Check("{{ identity }}", True, f"configured (greeting: {greeting})")
+
+
+def setup(registry) -> None:
+    registry.python_job(registry.identity + "_hello", hello)
+    registry.doctor_check(check)

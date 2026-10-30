@@ -1,6 +1,6 @@
 ---
 name: supervisor-setup
-description: Set up a new project to run under the Supervisor framework — interview the owner about the project, write a plan (environment, roles, phases/gates, tracker, repo), get it approved, then scaffold project.yaml, routing, agent cards, gates, first tasks and extensions. Use when the user says "set up a project with the supervisor", "new supervisor project", "/supervisor-setup", "plan this project for the control center", or opens an empty/fresh `supervisor init` folder and wants to start.
+description: Set up a new project to run under the Supervisor framework — interview the owner about the project, write a plan (environment, roles, phases/gates, tracker, repo), get it approved, then scaffold project.yaml, routing, agent cards, gates, first tasks and plugins. Use when the user says "set up a project with the supervisor", "new supervisor project", "/supervisor-setup", "plan this project for the control center", or opens an empty/fresh `supervisor init` folder and wants to start.
 ---
 
 # Supervisor project setup
@@ -14,10 +14,10 @@ who wants to answer questions, approve a plan, and then watch the Control Center
 1. Find the framework and the project. The framework is the repo containing this skill (`supervisor/` package,
    `docs/SETUP_INTERVIEW.md`); the project is the folder the owner is working in. If they are the same folder, stop:
    projects are never created inside the framework repo — ask where the project should live.
-2. Read `docs/SETUP_INTERVIEW.md`, `docs/TASK_CONTRACT.md` and `docs/FRAMEWORK_VS_EXTENSION.md` from the framework.
+2. Read `docs/SETUP_INTERVIEW.md`, `docs/TASK_CONTRACT.md` and `docs/FRAMEWORK_VS_PLUGIN.md` from the framework.
 3. In the project folder: read everything Stage 0 lists. If it already is a supervisor project (`project.yaml`
    exists) also run `supervisor doctor`. If it is not, do **not** run `supervisor init` yet — init stamps config,
-   cards, gates and extension skeletons, and nothing but the plan is written before approval. Tell the owner in two
+   cards, gates and plugin skeletons, and nothing but the plan is written before approval. Tell the owner in two
    lines what you found already decided.
 
 ## Running the interview
@@ -40,7 +40,7 @@ who wants to answer questions, approve a plan, and then watch the Control Center
   `{{ name }}` by hand: nothing fills it before `init`). Its header names the roles that rule and plan from it;
   name the kept ones, or the owner when the plan keeps no agent role. Show it. Revise
   until the owner says "approved" — the literal word, or an unambiguous equivalent. Record the date in the plan.
-- **Do not create or modify config, cards, gates, tasks or extensions before approval.** The plan file is the only
+- **Do not create or modify config, cards, gates, tasks or plugins before approval.** The plan file is the only
   thing you write before then; `supervisor init` keeps an existing plan file, so writing it first is safe.
 
 ## Scaffolding (after approval)
@@ -82,13 +82,13 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
 - A project that keeps no agent role: the owner plans the later phases and writes what no job can (an owner task
   for each, with a date), and the runbook comes from a deterministic job or an owner task. Say so in the plan, in
   place of the interview's planning roles.
-- Extensions: first look for an existing extension package that does the job (a package the owner names; the
+- Plugins: first look for an existing plugin package that does the job (a package the owner names; the
   framework's catalog index arrives with phase 6), and install it rather than write a new one. Otherwise follow the
-  framework's `extension-new` skill: `supervisor extension new <name>` writes the module and its manifest in the
-  standard shape (`docs/EXTENSION_STANDARD.md`); implement what the owner described; anything unknown becomes a
-  `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. `extension new`
-  lists the extension in `project.yaml` itself; do not add it a second time. Each extension passes `supervisor
-  extension check <name>` (G5) before the setup commit.
+  framework's `plugin-new` skill: `supervisor plugin new <name>` writes the module and its manifest in the
+  standard shape (`docs/PLUGIN_STANDARD.md`); implement what the owner described; anything unknown becomes a
+  `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. `plugin new`
+  lists the plugin in `project.yaml` itself; do not add it a second time. Each plugin passes `supervisor
+  plugin check <name>` (G5) before the setup commit.
 - Decision records: `D-001-project-setup.md` plus one per numbered decision in plan §7; front matter
   `id/date/title/status: accepted/decided_by: owner`. Quote the title (`title: "Project setup: the approved
   plan"`): a title holding `: ` is invalid YAML without quotes.
@@ -101,7 +101,7 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
   outside the project): check `git config --get core.hooksPath` in the framework clone first, and only when it does
   not print `.githooks`, run `git config core.hooksPath .githooks` there, so its boundary check (G1,
   `docs/BOUNDARY.md`) runs before every commit there. Record the owner's answer in `D-001`. Also add the
-  project's distinctive words (its name, its extensions' identities, its own terms) to the local project-terms
+  project's distinctive words (its name, its plugins' identities, its own terms) to the local project-terms
   file, `~/.config/supervisor/project-terms.toml` (or the path in `SUPERVISOR_PROJECT_TERMS`), outside every
   repository. Its format is one table per project:
 

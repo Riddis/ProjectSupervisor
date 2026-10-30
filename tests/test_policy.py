@@ -1,4 +1,4 @@
-"""The policy boundary — credential isolation, log redaction, extension packet screens."""
+"""The policy boundary — credential isolation, log redaction, plugin packet screens."""
 import json
 from pathlib import Path
 
@@ -87,9 +87,9 @@ def test_a_wrongly_typed_entry_is_rejected_and_the_floor_stands(layout, doc, rej
 def test_an_entry_with_no_builtin_floor_is_still_taken_as_given(layout):
     """The kind check guards the floor; it must not turn a project's own section into an error, or every
     forward-compatible config edit becomes a blocker."""
-    write_policy(layout, {"version": 1, "my_extension": {"channels": {"fanclub": {"allowed": False}}}})
+    write_policy(layout, {"version": 1, "my_plugin": {"channels": {"fanclub": {"allowed": False}}}})
     assert policy.config_problems(layout) == []
-    assert policy.section("my_extension", layout)["channels"]["fanclub"]["allowed"] is False
+    assert policy.section("my_plugin", layout)["channels"]["fanclub"]["allowed"] is False
 
 
 def test_a_null_item_inside_a_list_contributes_no_name(layout):
@@ -372,20 +372,20 @@ def test_redact_leaves_ordinary_values_alone(layout):
 
 
 
-# ---------------------------------------------------------------------------- extension screens
+# ---------------------------------------------------------------------------- plugin screens
 
-def test_an_extension_packet_screen_can_refuse_a_packet(layout, monkeypatch):
+def test_a_plugin_packet_screen_can_refuse_a_packet(layout, monkeypatch):
     """A project registers its own screen (content that must not leave the machine, say); it runs on every packet
     after the credential check and refuses the same way."""
-    from supervisor import extensions
-    reg = extensions.load(layout)
+    from supervisor import plugins
+    reg = plugins.load(layout)
 
     def screen(lay, text, where):
         if "DO-NOT-SEND" in text:
-            raise policy.PolicyViolation(f"{where} refused by extension")
+            raise policy.PolicyViolation(f"{where} refused by plugin")
     reg.packet_screen(screen)
     try:
-        with pytest.raises(policy.PolicyViolation, match="refused by extension"):
+        with pytest.raises(policy.PolicyViolation, match="refused by plugin"):
             policy.assert_packet_clean("brief with DO-NOT-SEND inside", layout, "delivery packet X")
         assert policy.assert_packet_clean("ordinary brief", layout) == "ordinary brief"
     finally:

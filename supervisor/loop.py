@@ -77,27 +77,27 @@ RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HU
 
 class Supervisor:
     def __init__(self, layout: Layout, sleep_s: float = 5.0, render_every: int = 1, unattended: bool = False):
-        from . import extensions
+        from . import plugins
         self.layout = layout.ensure()
-        extensions.load(self.layout)                           # project lanes/checks register before any dispatch
+        plugins.load(self.layout)                           # project lanes/checks register before any dispatch
         self.sleep_s = sleep_s
         self.render_every = render_every
         self.unattended = unattended
         self.iteration = 0
         self.errors: list[float] = []
 
-    def extensions_blocked(self) -> str | None:
-        """Why this loop must not dispatch, or None: a required extension (project.yaml `extensions:`) failed to
+    def plugins_blocked(self) -> str | None:
+        """Why this loop must not dispatch, or None: a required plugin (project.yaml `plugins:`) failed to
         load, so the lane, screen or check it provides is missing. `supervisor doctor` shows the error; the owner
         fixes the module or marks it `required: false`."""
-        from . import extensions
-        return extensions.load(self.layout).blocking_reason()
+        from . import plugins
+        return plugins.load(self.layout).blocking_reason()
 
-    def _require_extensions(self) -> None:
-        from . import extensions
-        reason = self.extensions_blocked()
+    def _require_plugins(self) -> None:
+        from . import plugins
+        reason = self.plugins_blocked()
         if reason:
-            raise extensions.ExtensionError(reason)
+            raise plugins.PluginError(reason)
 
     # ------------------------------------------------------------ dispatch and ingestion
 
@@ -112,7 +112,7 @@ class Supervisor:
 
     def dispatch(self, task: Task, adapter_name: str, deferred_until: float | None = None, note: str = "dispatch",
                 kind: str = "delivery", extra: dict | None = None) -> dict:
-        self._require_extensions()
+        self._require_plugins()
         ad = REGISTRY[adapter_name]
         n = len(jobs_mod.for_task(self.layout, task.id)) + 1
         attempt_id = f"{task.id}.a{n}"
@@ -382,7 +382,7 @@ class Supervisor:
             # a worker may add deliverables, never narrow the list.
             patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
             files, missing = self._expand_artifacts(patterns)
-            rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and extension views
+            rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and plugin views
             volatile = [f for f in files if tasks_mod.volatile_state(f) or f in rendered]
             if volatile:                                           # the store/projections change on every tick: never an
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
@@ -454,7 +454,7 @@ class Supervisor:
             # budget, then the exception route. (Capacity limits never get here — DEFERRED and handoff-incomplete runs
             # are continuations, see requeue().)
             escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=event or rec["attempt_id"])
-        # a deterministic lane (process/python/extension adapters) that FAILED is left to sweep_stalled(): its grace
+        # a deterministic lane (process/python/plugin adapters) that FAILED is left to sweep_stalled(): its grace
         # period is the back-off — a timeout or a busy resource usually clears by itself — and it then retries within the same
         # budget and escalates the same way
 
@@ -828,9 +828,9 @@ class Supervisor:
     # ------------------------------------------------------------ one iteration
 
     def once(self) -> str:
-        """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD). Raises ExtensionError (before
-        touching anything) while a required extension is missing: `run()` reports that as BLOCKED instead."""
-        self._require_extensions()
+        """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD). Raises PluginError (before
+        touching anything) while a required plugin is missing: `run()` reports that as BLOCKED instead."""
+        self._require_plugins()
         self.iteration += 1
         commands_mod.apply_all(self.layout)
         decision = runtime.read(self.layout).get("decision", "RUN")
@@ -916,9 +916,9 @@ class Supervisor:
             print("another supervisor holds state/.lock", file=sys.stderr)
             return 2
         try:
-            blocked = self.extensions_blocked()
+            blocked = self.plugins_blocked()
             if blocked:                                       # a missing protection is not a loop error to budget: refuse
-                tasks_mod.log(self.layout, "extensions_blocked", "loop", reason=blocked)
+                tasks_mod.log(self.layout, "plugins_blocked", "loop", reason=blocked)
                 runtime.heartbeat(self.layout, "BLOCKED", reason=blocked)
                 print(f"supervisor refuses to run: {blocked}", file=sys.stderr)
                 return 1

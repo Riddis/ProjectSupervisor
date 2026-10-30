@@ -1,0 +1,17 @@
+"""G5: `supervisor plugin check {{ identity }}` in a temporary project that uses this plugin. The check proves
+conformance only; the other tests prove behaviour."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+from supervisor import testing
+
+
+def test_supervisor_plugin_check_passes(tmp_path):
+    layout = testing.project(tmp_path, plugins=["{{ identity }}"], routing={"plugins": {"{{ identity }}": {}}})
+    env = {**os.environ, "SUPERVISOR_ROOT": str(layout.root), "PYTHONIOENCODING": "utf-8"}
+    result = subprocess.run([sys.executable, "-m", "supervisor", "plugin", "check", "{{ identity }}"],
+                            cwd=str(layout.root), env=env, capture_output=True, text=True, timeout=300, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -1,7 +1,137 @@
 # Changelog
 
-All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new extension hook,
+All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
+
+## 2.0.0 — 2026-10-29
+
+Phase 5 of the boundary plan (docs/BOUNDARY.md), the framework part, and a rename. "Extension" is now "plugin"
+everywhere, as a clean break the owner chose (2026-10-29): a major version, with `supervisor migrate` moving a
+project to the new names. Around it, what the first plugin packages need before they are released and tested as
+built wheels: plugin packages may live in this repository under `packages/` with their own CI and tags, their tests
+get read helpers in `supervisor.testing`, the installed-package proof takes their config and python jobs, and a
+project words scan covers any package and its wheel.
+
+**Migration:** `supervisor migrate` renames `extensions:` to `plugins:` in project.yaml and config/routing.yaml,
+moves `extensions/` to `plugins/` and rewrites the local manifests (the first entry below has the table). It stops,
+with nothing written and a message saying what to do by hand, when a project has both the old and the new name
+(keys, folders, or a package's two manifest file names), when a manifest holds the old names in a form it cannot
+rename, or when project.yaml lists a plugin by the old folder's dotted name (`extensions.<name>`). It names, without editing them, the
+project's Python that imports `supervisor.ext` or the old folder, and a local manifest whose `framework` range leaves
+out 2.0.0: both are the project's to change before its plugins load. Then it records 2.0.0.
+
+**Rollback** to v1.13.0, in a maintenance window: stop, restore the project from the window's snapshot (the folder
+move and the key renames are not reversed by 1.13.0's migrate, which knows only the old names), check out
+`v1.13.0`, `supervisor doctor`, start. A project that installed a plugin package needing 2.0.0 uninstalls it.
+
+**Plugin API:** the deprecation release a major version normally follows was skipped by the owner's decision; the
+reviewer checks each entry below.
+- **Plugin API (breaking):** the module `supervisor.ext` is `supervisor.plugin`: every name moved with it.
+  `ExtensionError` is `PluginError` (removed and added under the new name). `Layout.extensions` is
+  `Layout.plugins` (removed and added). `Registry`, `agent_lane`, `config` and `log_event` raise `PluginError`;
+  `config` reads `plugins.<identity>` (was `extensions.<identity>`).
+- **Plugin API (editorial):** `AgentLane`, `job_spec`, `policy`, `resources` and `ui`: "extension" reads
+  "plugin" in their sections, nothing else.
+- `supervisor.testing` (not part of the contract, unstable) gains helpers, below, and `project(plugins=...)`
+  replaces `extensions=`.
+
+- **Changed (breaking): "extension" is now "plugin", everywhere, with no old names kept.** The owner's
+  decision (2026-10-29): a clean break, released as a major version. What changes for a project, and what
+  `supervisor migrate` does about it (refusing, before it writes anything, a project that has both the old
+  and the new name):
+
+  | Before | Now | Migrate |
+  | --- | --- | --- |
+  | `project.yaml` `extensions:` | `plugins:` | renames the key |
+  | `config/routing.yaml` `extensions.<identity>` | `plugins.<identity>` | renames the key |
+  | the project's folder `extensions/` | `plugins/` | moves it |
+  | a local manifest's `[requires] extensions`, `section = "extensions.<identity>"` | `plugins` | rewrites them; names a manifest whose `framework` range leaves out 2.0.0 |
+  | a package's `supervisor-extension.toml` (local packages) | `supervisor-plugin.toml` | renames it |
+  | `from supervisor import ext`, `supervisor.ext.*` | `supervisor.plugin` | names the files; the code is the project's to change |
+  | `ExtensionError` | `PluginError` | (code) |
+  | `supervisor extension new / check / list` | `supervisor plugin ...` | — |
+  | entry-point group `supervisor.extensions` | `supervisor.plugins` | an installed package needs a new release |
+  | distributions `supervisor-ext-<name>`, modules `supervisor_ext_<name>` | `supervisor-plugin-<name>`, `supervisor_plugin_<name>` | (new packages) |
+  | doctor checks `extensions`, `extension_manifests`, `extension_imports` | `plugins`, `plugin_manifests`, `plugin_imports` | — |
+  | log event `extension_error` | `plugin_error` | old lines stay as written |
+  | `testing.project(..., extensions=...)` | `plugins=` | — |
+
+  The framework's own names follow: `docs/PLUGIN_API.md`, `docs/plugin_api.json` (G2 reads a release from before
+  the rename under its old file names), `docs/PLUGIN_STANDARD.md`, `docs/FRAMEWORK_VS_PLUGIN.md`, the reference
+  plugin in `examples/reference_plugin/`, the scaffold in `supervisor/plugin_template/`, the skills plugin-new,
+  plugin-promote and plugin-release, `tools/ci_installed_plugin.py`, and the CI jobs "G2 plugin API" and "G5
+  reference plugin" (branch protection names the new jobs). "Extensions" of a job's time limit (the owner's Extend)
+  keep their name: that is another word.
+- **Fixed: `supervisor skills update --dry-run` said "would installe"** for a skill it would install (the past
+  tense cut by one letter). It says "would install" and "would update".
+- **Fixed: a package's tag is never taken for a framework release.** Plugin packages kept in this repository tag
+  their releases `<identity>-vX.Y.Z`; only `vX.Y.Z` is a framework release. `supervisor doctor` read any tag at the
+  runtime checkout's HEAD as its release (a package released on the framework's merge commit could stand in for
+  it, and a checkout at a package tag alone passed), G2 compared with the nearest `v[0-9]*` tag (a package `v2`
+  tags `v2-v1.0.0`), and `tools/skills_history.py` read every `v*` tag (a package `vision` tags `vision-v1.0.0`).
+  Each now takes the newest `vX.Y.Z` tag only. The pinned update check already did.
+- **Fixed: `supervisor migrate`'s manifest rewrite reached text it never names.** Matching on text, not structure,
+  let a legacy `extensions.<name>` command identifier kept on purpose (in `[provides]`/`[legacy_ids]`), or a
+  syntax-looking string inside a `requires = {...}` inline table, be rewritten along with the key the migration
+  actually renames. The rewrite now reads each table structurally — key by key for an inline table, by table span
+  for a plain one — and refuses, before any write, if the result differs from `requires.extensions` →
+  `requires.plugins` and `config.section`'s `extensions.` prefix anywhere else.
+- **Fixed: `supervisor migrate`'s structural rewrite (the previous entry) stopped recognizing manifest forms it
+  used to migrate.** The value-span comparison included the whitespace in front of a `,`/`}`, so ordinary inline
+  formatting (a space before the comma, `section` listed last) left the value looking unquoted and the whole
+  migration was refused; a quoted table header (`["config"]`), a quoted `section` key, and `config.section`
+  written as a top-level dotted key were not located at all. Each was valid 1.13.0 TOML that migrated before the
+  previous entry's fix. The value token is now read apart from its trailing whitespace, which is preserved
+  unchanged, and the table-header, section-line and dotted-section locators recognize the quoted and dotted
+  spellings as the same TOML fields. Both parsed-document safeguards are unchanged, and no global string
+  replacement was reintroduced.
+- **Fixed: a project's package-name allowance in the words scan was not contained to `packages/`.** `supervisor
+  boundary --words` (and G1d) split every scanned path on its first `!` before checking the package allowance,
+  though `!` is also a legal character in an ordinary folder name; a folder named `outside!packages/<distribution>/
+  ...` then passed as if it were really inside `packages/<distribution>/`. The allowance decision now reads a
+  member's real path; `!` is only ever a display separator for an archive member's label, never a scope boundary.
+- **Fixed: `supervisor migrate` accepted a rewrite that produced invalid TOML.** A manifest's `[requires]` table
+  holding both `extensions` and `plugins` is valid TOML; renaming `extensions` to `plugins` produced a table with
+  two `plugins` keys, which does not parse — and the check meant to catch an unmigrated manifest read that parse
+  error as "already renamed", so migrate announced the rename instead of refusing it. Any rewrite that turns
+  parseable TOML unparseable is now refused before any write, naming the manifest.
+- **Fixed: the words scan over a tar archive skipped a link member's name and target.** A symbolic- or hard-link
+  member contributed nothing, though the archive still publishes its name and the path it points at. Both are now
+  scanned, as the link member's own name and one line of content; nothing is followed or extracted.
+- **Added: the project words scan for any repository: `supervisor boundary words <target>...`** (also
+  `python -m supervisor.boundary --words <target>`). G1d's local word list over any folder (what git tracks or would
+  add there, else every file) or built archive (a wheel with its `METADATA`, an sdist), file names included. An
+  plugin package's folder and its wheel hold no project's information either; plugin-release runs it. Unlike
+  G1d in the framework check, it fails (exit 2) without the local word list: a release check that did not run has
+  not passed.
+- **Added: `supervisor.testing` read helpers** for a plugin package's own tests, which may use only
+  `supervisor.plugin` and `supervisor.testing`: `load`, `registered_lane`, `task`, `job`, `jobs`, `running_job` (an
+  open job record planted as the loop leaves one), `settle`, `plan`, `inbox_item`, `make_inbox_item`, `answer` and
+  `loop_lock`. They are what porting the first packages' tests needed (docs/PLUGIN_API.md, "Testing
+  plugins"). The module stays unstable.
+- **Added: `tools/ci_installed_plugin.py --config <file>`, `--python-job <name>` and `--workdir <folder>`.**
+  The installed-package proof (G5 in CI) now serves a package whose config has a required field (`--config`
+  writes the plugin's section) and a package without a lane (`--python-job` completes a task on a python job
+  it registers). Its temporary project goes in a `g5-installed-*` folder under the current folder (or
+  `--workdir`), never the system's temporary folder, removed after a pass and kept after a failure. CI's G5 job
+  also completes the reference plugin's python job.
+- **Added: plugin packages may live in this repository, under `packages/<distribution>/`**, each a
+  distribution of its own (its `pyproject.toml`, version, CHANGELOG and tests) and released with its own tag
+  `<identity>-vX.Y.Z`. The framework's wheel still holds `supervisor*` only. CI gains a job per package
+  (`tools/ci_package.py`): the framework's wheel built from the oldest release in the package's `framework` range
+  and from HEAD, the package's wheel, a fresh environment, the installed proof and the package's own suite with no
+  source on the path. A generated package names its python job for that job in `[tool.supervisor.ci]`. The G5 job
+  proves the path on a package scaffolded in the runner. docs/PLUGIN_STANDARD.md ("Where a package lives"),
+  `packages/README.md` and the plugin skills describe both homes (here, or a repository of its own) and the
+  release tag for each; `.github/CODEOWNERS` names the reviewer for `packages/`.
+- **Added: a package's own name may be allowed in that package.** A package promoted from a project keeps its
+  identity, which can be one of the project's words. The local word list's `[projects.<name>.packages]` table
+  (`<distribution> = ["<word>"]`) allows those words inside `packages/<distribution>/` at the top of the git
+  repository (scanned from the root or as that folder), and in that distribution's own wheel or sdist (its file name
+  and its metadata's `Name:` both say so). Anywhere else, a lookalike path or archive included, they are still G1d
+  hits. Each allowed word must be one of the project's terms.
+- **Changed: G1d reads file names as well as contents.** A module or data file named after a project is project
+  information too.
 
 ## 1.13.0 — 2026-10-29
 

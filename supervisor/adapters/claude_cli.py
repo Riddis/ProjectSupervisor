@@ -262,7 +262,7 @@ class ClaudeCliAdapter(ProcessAdapter):
         return env
 
     def agent_handle(self, layout: Layout) -> dict:
-        """For supervisor.ext.agent_lane: what an extension needs to launch this agent itself, under this lane's
+        """For supervisor.plugin.agent_lane: what a plugin needs to launch this agent itself, under this lane's
         environment rules (the executable, the configured model, a callable returning the scrubbed environment)."""
         def environment() -> dict:
             env = scrub_env(dict(os.environ), layout)

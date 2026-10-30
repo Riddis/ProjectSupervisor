@@ -1,9 +1,9 @@
-"""`supervisor extension new <name> --package`: the standard extension package (docs/EXTENSION_STANDARD.md), stamped
-from `supervisor/extension_template/`.
+"""`supervisor plugin new <name> --package`: the standard plugin package (docs/PLUGIN_STANDARD.md), stamped
+from `supervisor/plugin_template/`.
 
 In the template, `_package_` stands for the Python package's folder and `{{ key }}` for a value, in file names and
 in text. Python files are stored as `*.py-tpl`: with placeholders in them they are not valid Python, and nothing in
-the framework may try to import or lint them. The result passes `supervisor extension check` and its own tests as
+the framework may try to import or lint them. The result passes `supervisor plugin check` and its own tests as
 generated."""
 from __future__ import annotations
 
@@ -12,23 +12,23 @@ from pathlib import Path
 
 from . import __version__
 
-TEMPLATE = Path(__file__).resolve().parent / "extension_template"
+TEMPLATE = Path(__file__).resolve().parent / "plugin_template"
 IDENTITY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def framework_range(version: str = __version__) -> str:
-    """The range a new extension declares: this minor release up to the next major (`>=1.12,<2`)."""
+    """The range a new plugin declares: this minor release up to the next major (`>=2.0,<3`)."""
     major, minor = (int(x) for x in version.split(".")[:2])
     return f">={major}.{minor},<{major + 1}"
 
 
 def package(directory: str | Path, identity: str) -> Path:
-    """Create `<directory>/supervisor-ext-<identity>/`; returns it. ValueError for an identity the manifest would
+    """Create `<directory>/supervisor-plugin-<identity>/`; returns it. ValueError for an identity the manifest would
     refuse, FileExistsError when the folder exists (nothing is overwritten)."""
     if not IDENTITY.match(identity):
         raise ValueError(f"invalid identity {identity!r}: lower case letters, digits and _, starting with a letter")
-    values = {"identity": identity, "package": f"supervisor_ext_{identity}",
-              "distribution": f"supervisor-ext-{identity.replace('_', '-')}",
+    values = {"identity": identity, "package": f"supervisor_plugin_{identity}",
+              "distribution": f"supervisor-plugin-{identity.replace('_', '-')}",
               "framework_range": framework_range(), "framework_version": __version__}
     root = Path(directory) / values["distribution"]
     if root.exists():
@@ -50,7 +50,7 @@ def package(directory: str | Path, identity: str) -> Path:
 
 
 def local_manifest(identity: str) -> str:
-    """The manifest `supervisor extension new <name>` writes beside a new project-local module."""
-    return (f"# The manifest of extensions/{identity}.py (docs/EXTENSION_STANDARD.md in the framework repo). List in\n"
-            f"# [provides] what setup() registers; `supervisor extension check {identity}` proves the two agree.\n"
+    """The manifest `supervisor plugin new <name>` writes beside a new project-local module."""
+    return (f"# The manifest of plugins/{identity}.py (docs/PLUGIN_STANDARD.md in the framework repo). List in\n"
+            f"# [provides] what setup() registers; `supervisor plugin check {identity}` proves the two agree.\n"
             f'identity = "{identity}"\nversion = "0.1.0"\nframework = "{framework_range()}"\n')

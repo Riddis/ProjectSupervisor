@@ -12,12 +12,12 @@ repo:
 phases:
   0: "Foundations"
 
-# Extensions by identity: a project module extensions/<name>.py, or an installed extension package (entry point
-# group supervisor.extensions). Each has a manifest, supervisor-extension.toml, read before anything is imported
-# (the framework's docs/EXTENSION_STANDARD.md). An extension imports only supervisor.ext (docs/EXTENSION_API.md) and
-# registers everything in setup(). `supervisor extension new <name>` scaffolds one with its manifest and lists it
-# here; `supervisor extension check <name>` proves it conforms.
-extensions: []
+# Plugins by identity: a project module plugins/<name>.py, or an installed plugin package (entry point
+# group supervisor.plugins). Each has a manifest, supervisor-plugin.toml, read before anything is imported
+# (the framework's docs/PLUGIN_STANDARD.md). A plugin imports only supervisor.plugin (docs/PLUGIN_API.md) and
+# registers everything in setup(). `supervisor plugin new <name>` scaffolds one with its manifest and lists it
+# here; `supervisor plugin check <name>` proves it conforms.
+plugins: []
 
 ui:
   port: 8790

@@ -31,10 +31,10 @@ One Python package, one process per role of the system (loop, UI, CLI), one dire
 | Module | Role |
 |---|---|
 | `paths.py`, `project.py` | project root discovery (`SUPERVISOR_ROOT` → nearest `project.yaml`), `project.yaml` access |
-| `extensions.py` | loads a project's `extensions/`; the registry of hooks (adapters, checks, UI, screens, projections, CLI, python jobs, config sections); which extension is calling; the internal-import scan |
-| `ext/` | the public extension API (`docs/EXTENSION_API.md`): the only part of the framework an extension imports; it may import internals, nothing imports it |
-| `api_contract.py` | gate G2: records `supervisor.ext`'s contract in `docs/extension_api.json` and checks it against the code, the docs and the last release |
-| `testing.py` | unstable helpers for extensions' tests (temporary project, fake lane, loop driver, UI client) |
+| `plugins.py` | loads a project's `plugins/`; the registry of hooks (adapters, checks, UI, screens, projections, CLI, python jobs, config sections); which plugin is calling; the internal-import scan |
+| `plugin/` | the public plugin API (`docs/PLUGIN_API.md`): the only part of the framework a plugin imports; it may import internals, nothing imports it |
+| `api_contract.py` | gate G2: records `supervisor.plugin`'s contract in `docs/plugin_api.json` and checks it against the code, the docs and the last release |
+| `testing.py` | unstable helpers for plugins' tests (temporary project, fake lane, loop driver, UI client) |
 | `yaml_edit.py` | edits to hand-authored YAML (routing.yaml, project.yaml) that change only what they edit |
 | `store.py`, `locks.py` | YAML documents with revisions and compare-and-swap; the OS-level file lock |
 | `models/` | pydantic schemas: `Task`, `Delivery`, records (`Decision`, `Issue`, `InboxItem`, `Gate`, `OwnerTask`) |
@@ -52,7 +52,7 @@ One Python package, one process per role of the system (loop, UI, CLI), one dire
 | `capacity.py`, `_vendor/usage_policy.py` | measured subscription windows and reserves per engine |
 | `checkpoint.py` | commits exactly the accepted contents of a COMPLETE task |
 | `state_commit.py` | commits the loop's own records (`state/` and the projections), only those paths, after a checkpoint and at most every 15 minutes (1.12.1) |
-| `policy.py` | credential isolation (packets, logs, child env) + extension packet screens |
+| `policy.py` | credential isolation (packets, logs, child env) + plugin packet screens |
 | `commands.py` | command files and their handlers |
 | `runtime.py`, `shutdown.py` | heartbeat/decision document; drain-then-power-off |
 | `render.py` | the markdown projections |

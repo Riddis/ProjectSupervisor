@@ -1,9 +1,9 @@
 """Framework boundary check (gate G1 of docs/BOUNDARY.md): narrow, testable rules over the `supervisor/` package, so
 "is this generic?" is answered by code and not by memory.
 
-  G1a  no static import of a project or extension module: a module may import the standard library, `supervisor`
+  G1a  no static import of a project or plugin module: a module may import the standard library, `supervisor`
        itself and the third-party packages the framework declares; dynamic loading is allowed only in the files
-       listed as loaders (the extension loader is the one sanctioned path to project code);
+       listed as loaders (the plugin loader is the one sanctioned path to project code);
   G1b  no project-specific literals: drive-letter or home-directory paths, non-loopback hosts in URLs or IP
        literals, e-mail addresses and the user names the check is given;
   G1c  no model or vendor names outside the explicit list of files that legitimately carry them (the agent
@@ -11,7 +11,10 @@
   G1d  no project information anywhere in the repository (every file git tracks or would add, not only `supervisor/`): the
        framework repo never contains a project's files or information. A project's words are listed in a local
        file outside the repository (`SUPERVISOR_PROJECT_TERMS`, else ~/.config/supervisor/project-terms.toml), never
-       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run.
+       in `boundary.toml`; without that file, as in CI, G1d reports that it did not run. File names count (2.0.0).
+
+`--words <target>` runs only G1d's word list over any other folder or built archive (a plugin package's
+repository or folder and its wheel, 2.0.0); there a missing word list fails the scan instead of skipping it.
 
 Every exception is an explicit entry in `boundary.toml` at the framework root, so a new one is a reviewed change.
 
@@ -218,7 +221,7 @@ def check_imports(root: Path, files: list[Path], cfg: dict) -> list[Finding]:
                 out.append(Finding("G1a", rel, line, "", how))
             elif module.split(".")[0] not in allowed:
                 out.append(Finding("G1a", rel, line, module, f"{how} of a module the framework does not own or "
-                                                             "declare (a project or extension module?)"))
+                                                             "declare (a project or plugin module?)"))
     return out
 
 
@@ -347,6 +350,117 @@ def load_project_terms(path: Path | None = None) -> dict[str, list[str]] | None:
             for name, entry in sorted((data.get("projects") or {}).items())}
 
 
+def _distribution(name: str) -> str:
+    """A distribution name as packaging compares them: case and runs of -, _ and . do not matter."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def load_package_allowances(path: Path | None = None) -> dict[str, dict[str, list[str]]] | None:
+    """{project: {distribution: [words]}} from the local file's `[projects.<name>.packages]` tables, or None when
+    there is no file. A project word that is also the public name of a plugin package kept under packages/ (an
+    identity the project's saved state already uses) may be allowed there:
+
+        [projects.<name>.packages]
+        supervisor-plugin-<name> = ["<word>"]
+
+    It is allowed only inside `packages/<distribution>/` (or that folder scanned on its own) and in that
+    distribution's wheel or sdist; everywhere else it is still a hit. Each word must be one of the project's own."""
+    path = Path(path) if path else project_terms_path()
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"{path} (the local project-terms file) is not valid TOML: {exc}") from exc
+    out = {}
+    for name, entry in sorted((data.get("projects") or {}).items()):
+        table = (entry or {}).get("packages")
+        if table is None:
+            continue
+        if not isinstance(table, dict):
+            raise ConfigError(f"{path}: [projects.{name}] packages must be a table of distribution = [words]")
+        own = {str(w).lower() for w in (entry or {}).get("terms") or []}
+        allowed = {}
+        for dist, words in table.items():
+            if not isinstance(words, list) or not all(isinstance(w, str) for w in words):
+                raise ConfigError(f"{path}: [projects.{name}.packages] {dist} must be a list of words")
+            stray = [w for w in words if w.lower() not in own]
+            if stray:
+                raise ConfigError(f"{path}: [projects.{name}.packages] {dist} allows {stray}, which are not among "
+                                  f"project {name!r}'s terms")
+            allowed[_distribution(dist)] = list(words)
+        out[str(name)] = allowed
+    return out
+
+
+_SDIST_VERSION = re.compile(r"\d+(\.\d+)*((a|b|rc|\.post|\.dev)\d+)*")
+
+
+def _repository_prefix(folder: Path) -> str | None:
+    """The folder's path inside its git repository (`packages/x/`, "" at the top), or None outside one."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(folder), "rev-parse", "--show-prefix"], capture_output=True, text=True,
+                             check=False, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _archive_distribution(archive: Path) -> str | None:
+    """The distribution an archive is, or None: a wheel (`<dist>-<version>[-<build>]-<py>-<abi>-<platform>.whl`) or
+    an sdist (`<dist>-<version>.tar.gz`) whose file name and own metadata (the wheel's `*.dist-info/METADATA`, the
+    sdist's `<top>/PKG-INFO`) both name it (review 2.0.0 R1: a name that only began like it was enough)."""
+    import tarfile
+    import zipfile
+    name = archive.name
+    if name.endswith(".whl") and len(name[:-4].split("-")) in (5, 6) and zipfile.is_zipfile(archive):
+        dist = name[:-4].split("-")[0]
+        with zipfile.ZipFile(archive) as z:
+            meta = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/METADATA", n)]
+            text = z.read(meta[0]).decode("utf-8", "replace") if len(meta) == 1 else ""
+    elif name.endswith(".tar.gz") and "-" in name and tarfile.is_tarfile(archive):
+        dist, version = name[:-7].rsplit("-", 1)
+        if not _SDIST_VERSION.fullmatch(version):
+            return None
+        with tarfile.open(archive) as tar:
+            info = next((m for m in tar.getmembers() if m.isfile() and m.name == f"{name[:-7]}/PKG-INFO"), None)
+            f = tar.extractfile(info) if info is not None else None
+            text = f.read().decode("utf-8", "replace") if f else ""
+    else:
+        return None
+    declared = re.search(r"^Name:[ \t]*(\S+)[ \t]*$", text, re.MULTILINE)
+    if declared is None or _distribution(declared.group(1)) != _distribution(dist):
+        return None
+    return _distribution(dist)
+
+
+def _allowance_scope(target: Path) -> tuple[str, str] | None:
+    """Where a scan target stands for the allowance: ("folder", its path inside its git repository) or
+    ("archive", its distribution), or None when no allowance can apply."""
+    if target.is_dir():
+        prefix = _repository_prefix(target)
+        return ("folder", prefix) if prefix is not None else None
+    dist = _archive_distribution(target)
+    return ("archive", dist) if dist else None
+
+
+def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, list[str]]) -> set[str]:
+    """The words a project allows in this file: its package's own name, inside `packages/<distribution>/` at the top
+    of the git repository the file is in, or in that distribution's own wheel or sdist. Nothing else: not a
+    lookalike path deeper in the tree, a folder named like the package elsewhere, a folder outside git, or an
+    archive whose file name or metadata names another distribution (review 2.0.0 R1)."""
+    if not allowed or scope is None:
+        return set()
+    kind, where = scope
+    if kind == "archive":
+        return {w.lower() for w in allowed.get(where, [])}
+    parts = (where + rel).split("/")
+    if len(parts) < 3 or parts[0] != "packages":
+        return set()
+    return {w.lower() for w in allowed.get(_distribution(parts[1]), [])}
+
+
 def repository_files(root: Path) -> list[Path]:
     """Every file the repository tracks, and every untracked file it does not ignore, which the next commit would add
     (`git ls-files --cached --others --exclude-standard`, 1.13.0); without git, every file but caches, `runs/` and
@@ -359,6 +473,10 @@ def repository_files(root: Path) -> list[Path]:
             return [Path(root) / rel for rel in sorted(set(out.stdout.decode("utf-8").split("\0"))) if rel]
     except (OSError, subprocess.SubprocessError):
         pass
+    return _walk_files(root)
+
+
+def _walk_files(root: Path) -> list[Path]:
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS | {".git", "runs", ".pytest_cache",
@@ -367,7 +485,8 @@ def repository_files(root: Path) -> list[Path]:
     return found
 
 
-def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None) -> tuple[list[Finding], list[str]]:
+def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None,
+                       allowed: dict[str, dict[str, list[str]]] | None = None) -> tuple[list[Finding], list[str]]:
     """G1d: (violations, why it did not run). A `[projects]` table in boundary.toml is itself a violation: it is a
     project's vocabulary inside the framework repo."""
     out = []
@@ -376,23 +495,97 @@ def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None
                            f"them to the local file {project_terms_path()} ({PROJECT_TERMS_ENV})"))
     if terms is None:
         return out, [f"G1d (project information) did not run: no local project-terms file at {project_terms_path()}"]
-    for project, words in terms.items():
-        rx = _term_re(words)
-        if rx is None:
-            continue
-        for p in repository_files(root):
-            if not p.is_file():
-                continue
-            try:
-                text = p.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-            rel = _rel(root, p)
-            for no, line in enumerate(text.splitlines(), 1):
-                for m in rx.finditer(line):
-                    out.append(Finding("G1d", rel, no, m.group(0),
-                                       f"a word of project {project!r} in the framework repo"))
-    return out, []
+    return out + scan_words(root, terms, where="the framework repo", allowed=allowed), []
+
+
+def _members(target: Path):
+    """(label, real path, bytes or None) of each file in `target`: a folder (what git tracks or would add there,
+    else every file but caches), a wheel or zip, or a tar archive (an sdist). `label` is the display name used in a
+    Finding, archive-prefixed (`archive-name!member/path`) for a wheel or tar; `real path` is the member's actual
+    path, used to decide whether a package allowance applies, and never carries that display prefix — an ordinary
+    folder's member is never relabelled, so a directory named with a literal `!` cannot be mistaken for one (review
+    2.0.0 R1, F2). Bytes are None when the file cannot be read. A tar's symbolic- or hard-link member is never
+    followed or extracted: its name is scanned like any other member's, and its target is scanned as that member's
+    one line of published metadata (review 2.0.0 R2, F4)."""
+    import tarfile
+    import zipfile
+    if target.is_dir():
+        # git lists nothing for a folder that an enclosing repository ignores (a package unpacked under runs/):
+        # then every file is read, never none
+        for p in repository_files(target) or _walk_files(target):
+            if p.is_file():
+                rel = _rel(target, p)
+                try:
+                    yield rel, rel, p.read_bytes()
+                except OSError:
+                    yield rel, rel, None
+    elif zipfile.is_zipfile(target):
+        with zipfile.ZipFile(target) as z:
+            for info in z.infolist():
+                if not info.is_dir():
+                    yield f"{target.name}!{info.filename}", info.filename, z.read(info)
+    elif tarfile.is_tarfile(target):
+        with tarfile.open(target) as t:
+            for info in t.getmembers():
+                if info.isfile():
+                    f = t.extractfile(info)
+                    yield f"{target.name}!{info.name}", info.name, f.read() if f else None
+                elif info.issym() or info.islnk():
+                    yield f"{target.name}!{info.name}", info.name, info.linkname.encode("utf-8")
+    else:
+        raise ConfigError(f"{target}: not a folder, a wheel, a zip or a tar archive")
+
+
+def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
+               allowed: dict[str, dict[str, list[str]]] | None = None) -> list[Finding]:
+    """G1d's word list over any folder or built archive (2.0.0): each text file's lines, and every file's path (line
+    0), since a module or data file named after a project is project information too. A binary file is checked by
+    its name only. `where` names the place in each finding (default: the target). `allowed` is
+    load_package_allowances(): a package's own name, allowed in that package only."""
+    target = Path(target)
+    if not target.exists():
+        raise ConfigError(f"{target}: no such folder or archive")
+    rules = [(project, rx) for project, words in terms.items() if (rx := _term_re(words)) is not None]
+    scope = _allowance_scope(target) if any(allowed.values() for allowed in (allowed or {}).values()) else None
+    out = []
+    for rel, real, data in _members(target):
+        try:
+            lines = data.decode("utf-8").splitlines() if data is not None else []
+        except UnicodeDecodeError:
+            lines = []
+        for project, rx in rules:
+            ok = _allowed_here(scope, real, (allowed or {}).get(project) or {})
+            detail = f"a word of project {project!r} in {where or target.name}"
+            out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)
+                    if m.group(0).lower() not in ok]
+            for no, line in enumerate(lines, 1):
+                out += [Finding("G1d", rel, no, m.group(0), detail) for m in rx.finditer(line)
+                        if m.group(0).lower() not in ok]
+    return out
+
+
+def words(targets: list[Path], echo=print) -> int:
+    """CLI body of `python -m supervisor.boundary --words <target>...` and `supervisor boundary words`: the project
+    words scan over a plugin package's repository or folder and its built wheel (plugin-release). Exit 0
+    clean, 1 hits, 2 when the scan cannot run: without the local word list a release check has not passed."""
+    terms, allowed = load_project_terms(), load_package_allowances()
+    if terms is None:
+        echo(f"project words: cannot run, no local project-terms file at {project_terms_path()} "
+             f"({PROJECT_TERMS_ENV}): a release check that did not run has not passed")
+        return 2
+    found = []
+    for target in targets:
+        try:
+            hits = scan_words(Path(target), terms, allowed=allowed)
+        except ConfigError as exc:
+            echo(f"project words: {exc}")
+            return 2
+        for f in hits:
+            echo(f"{target}: {f}")
+        found += hits
+    echo(f"project words: {'OK' if not found else f'{len(found)} hit(s)'} "
+         f"({len(targets)} target(s), {sum(len(w) for w in terms.values())} word(s))")
+    return 1 if found else 0
 
 
 def default_user_names(cfg: dict) -> list[str]:
@@ -407,8 +600,9 @@ def default_user_names(cfg: dict) -> list[str]:
 
 
 def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None,
-          terms: dict[str, list[str]] | None = ...) -> Report:
-    """Every rule over the framework at `root`. `terms` is G1d's word list; by default the local project-terms file."""
+          terms: dict[str, list[str]] | None = ..., allowed: dict | None = None) -> Report:
+    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances; by
+    default both from the local project-terms file."""
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
@@ -421,7 +615,8 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     vendor, stale = check_vendors(root, files, cfg)
     report.violations += vendor
     report.notes += stale
-    info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms)
+    info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms,
+                                       load_package_allowances() if terms is ... else allowed)
     report.violations += info
     report.skipped += skipped
     return report
@@ -467,7 +662,12 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m supervisor.boundary", description=__doc__.split("\n\n")[0])
     ap.add_argument("--root", help="framework checkout (default: the one this module runs from)")
     ap.add_argument("--json", action="store_true", help="machine-readable report")
+    ap.add_argument("--words", action="append", metavar="TARGET",
+                    help="only the project words scan (G1d's local word list) over this folder or built archive, "
+                         "for example a plugin package and its wheel; repeatable")
     args = ap.parse_args(argv)
+    if args.words:
+        return words([Path(t) for t in args.words])
     return run(Path(args.root) if args.root else None, as_json=args.json)
 
 

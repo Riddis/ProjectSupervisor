@@ -1,7 +1,7 @@
-"""The extension manifest (phase 3 step 1): `supervisor-extension.toml` says who an extension is, which framework
+"""The plugin manifest (phase 3 step 1): `supervisor-plugin.toml` says who a plugin is, which framework
 versions it supports, what it registers and what it needs, and the framework reads it without importing anything the
-extension ships. Parsing is strict (an unknown key is a problem, not ignored) and reports every problem at once, so
-an author fixes a manifest in one pass. docs/EXTENSION_STANDARD.md is the reference."""
+plugin ships. Parsing is strict (an unknown key is a problem, not ignored) and reports every problem at once, so
+an author fixes a manifest in one pass. docs/PLUGIN_STANDARD.md is the reference."""
 from __future__ import annotations
 
 import sys
@@ -14,7 +14,7 @@ FULL = '''
 identity = "text_model"
 version = "1.0.0"
 framework = ">=1.12,<2"
-migrations = "supervisor_ext_textgen.migrations"
+migrations = "supervisor_plugin_textgen.migrations"
 
 [provides]
 adapters = ["text_model"]
@@ -25,13 +25,13 @@ hooks = ["overview_panel"]
 doctor_checks = ["textgen"]
 
 [config]
-section = "extensions.text_model"
-schema = "supervisor_ext_textgen.config:Settings"
+section = "plugins.text_model"
+schema = "supervisor_plugin_textgen.config:Settings"
 
 [requires]
 resources = ["gpu"]
 services = ["http://127.0.0.1:11434"]
-extensions = ["render"]
+plugins = ["render"]
 '''
 
 
@@ -42,32 +42,32 @@ def problems_of(text: str) -> list[str]:
 
 
 def test_a_complete_manifest_reads_as_written():
-    m = manifest.parse(FULL, source="supervisor-extension.toml")
+    m = manifest.parse(FULL, source="supervisor-plugin.toml")
     assert (m.identity, m.version, m.framework) == ("text_model", "1.0.0", ">=1.12,<2")
     assert m.provides == {"adapters": ("text_model",), "doctor_checks": ("text_model_server", "textgen"),
                           "hooks": ("overview_panel",)}
     assert m.legacy_ids == {"doctor_checks": ("textgen",)}
-    assert (m.config.section, m.config.schema) == ("extensions.text_model", "supervisor_ext_textgen.config:Settings")
-    assert m.requires.resources == ("gpu",) and m.requires.extensions == ("render",)
+    assert (m.config.section, m.config.schema) == ("plugins.text_model", "supervisor_plugin_textgen.config:Settings")
+    assert m.requires.resources == ("gpu",) and m.requires.plugins == ("render",)
     assert m.requires.services == ("http://127.0.0.1:11434",)
-    assert m.migrations == "supervisor_ext_textgen.migrations" and m.source == "supervisor-extension.toml"
+    assert m.migrations == "supervisor_plugin_textgen.migrations" and m.source == "supervisor-plugin.toml"
 
 
 def test_the_smallest_manifest_needs_identity_version_and_framework():
     m = manifest.parse('identity = "notes"\nversion = "0.1.0"\nframework = ">=1.12"\n', source="m.toml")
     assert m.provides == {} and m.legacy_ids == {} and m.config is None and m.migrations is None
-    assert m.requires.resources == m.requires.services == m.requires.extensions == ()
+    assert m.requires.resources == m.requires.services == m.requires.plugins == ()
 
 
 def test_reading_a_manifest_imports_nothing_it_names(tmp_path):
-    """The schema and migrations modules are names, not imports: the loader decides before any extension code
+    """The schema and migrations modules are names, not imports: the loader decides before any plugin code
     runs (main tab, "Loading is staged and transactional")."""
-    path = tmp_path / "supervisor-extension.toml"
+    path = tmp_path / "supervisor-plugin.toml"
     path.write_text(FULL, encoding="utf-8")
     before = set(sys.modules)
     m = manifest.load(path)
     assert m.source == str(path)
-    assert not {name for name in set(sys.modules) - before if name.startswith("supervisor_ext_textgen")}
+    assert not {name for name in set(sys.modules) - before if name.startswith("supervisor_plugin_textgen")}
 
 
 def test_every_problem_is_reported_at_once():
@@ -90,13 +90,13 @@ def test_every_problem_is_reported_at_once():
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[legacy_ids]\nhooks = ["overview_panel"]\n',
      "unknown kind 'hooks'"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "x"\nschema = "m:C"\n',
-     "extensions.x"),
-    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "extensions.x"\nschema = "m.C"\n',
+     "plugins.x"),
+    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "plugins.x"\nschema = "m.C"\n',
      "module:Class"),
-    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "extensions.x"\nschema = "m:C"\n'
+    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[config]\nsection = "plugins.x"\nschema = "m:C"\n'
      'legacy_sections = ["ok", "not a key"]\n', "legacy_sections"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[requires]\nresources = ["tpu"]\n', "unknown resource"),
-    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[requires]\nextensions = ["x"]\n', "itself"),
+    ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\n[requires]\nplugins = ["x"]\n', "itself"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\nmigrations = "not a module"\n', "migrations"),
     ('identity = "x"\nversion = "1.0.0"\nframework = ">=1.12"\nprovides = "all"\n', "provides must be a table"),
 ], ids=["no-identity", "no-version", "no-framework", "provides-not-a-list", "duplicate", "route-without-slash",
@@ -108,7 +108,7 @@ def test_each_rule_names_its_problem(text, expected):
 
 
 def test_a_toml_syntax_error_names_the_file(tmp_path):
-    path = tmp_path / "supervisor-extension.toml"
+    path = tmp_path / "supervisor-plugin.toml"
     path.write_text('identity = "x\n', encoding="utf-8")
     with pytest.raises(manifest.ManifestError) as caught:
         manifest.load(path)
@@ -134,7 +134,7 @@ def test_an_identifier_belongs_to_the_identity_or_is_not_namespaced(kind, name, 
 
 
 def test_an_identifier_neither_namespaced_nor_legacy_is_refused_and_a_legacy_one_is_accepted():
-    """The namespace rule: an extension older than the rule keeps its existing names as legacy_ids."""
+    """The namespace rule: a plugin older than the rule keeps its existing names as legacy_ids."""
     base = 'identity = "ballots"\nversion = "1.0.0"\nframework = ">=1.12"\n[provides]\n'
     text = base + 'commands = ["vote.cast", "ballots.close"]\nroutes = ["/review"]\n'
     found = problems_of(text)

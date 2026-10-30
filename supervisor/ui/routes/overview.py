@@ -15,7 +15,7 @@ from ... import jobs as jobs_mod
 from ... import progress as progress_mod
 from ... import tasks as tasks_mod
 from ... import timeouts as timeouts_mod
-from ... import extensions as extensions_mod
+from ... import plugins as plugins_mod
 from ... import project as project_mod
 from ... import updates as updates_mod
 from ...models.task import TaskStatus
@@ -27,9 +27,9 @@ from ..deps import act, decode_flash, render
 router = APIRouter()
 
 def _panels(layout: Layout) -> list[dict]:
-    """Project-specific resource panels (extensions register `overview_panel`); a crashing panel shows its error."""
+    """Project-specific resource panels (plugins register `overview_panel`); a crashing panel shows its error."""
     out = []
-    for fn in extensions_mod.load(layout).overview_panels:
+    for fn in plugins_mod.load(layout).overview_panels:
         try:
             panel = fn(layout) or {}
             out.append({"title": str(panel.get("title") or getattr(fn, "__name__", "panel")),

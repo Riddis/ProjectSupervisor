@@ -1,10 +1,10 @@
-"""The extension manifest, `supervisor-extension.toml` (boundary plan phase 3; docs/EXTENSION_STANDARD.md).
+"""The plugin manifest, `supervisor-plugin.toml` (boundary plan phase 3; docs/PLUGIN_STANDARD.md).
 
-A manifest says who an extension is (`identity`, the stable name saved state refers to), its own `version`, which
+A manifest says who a plugin is (`identity`, the stable name saved state refers to), its own `version`, which
 framework versions it supports (`framework`, a PEP 440 range), what it registers (`provides`, with `legacy_ids` for
 identifiers older than the namespace rule), its configuration section and schema, what it needs (`requires`) and
-where its migrations are. The framework reads it before anything the extension ships is imported: the schema and
-migrations are module names here, imported later and only once the extension is approved.
+where its migrations are. The framework reads it before anything the plugin ships is imported: the schema and
+migrations are module names here, imported later and only once the plugin is approved.
 
 Parsing is strict and complete: an unknown key is a problem (a misspelt key would otherwise be ignored silently), and
 every problem is reported at once in `ManifestError.problems`."""
@@ -20,7 +20,7 @@ from packaging.version import InvalidVersion, Version
 
 from . import __version__
 
-FILENAME = "supervisor-extension.toml"
+FILENAME = "supervisor-plugin.toml"
 
 # What `provides` may list. Every kind but `hooks` holds identifiers, which must start with the identity or be listed
 # in `legacy_ids`; `hooks` names the registry hooks that register something without an identifier of its own.
@@ -47,7 +47,7 @@ class ManifestError(ValueError):
 
 @dataclass(frozen=True)
 class Config:
-    section: str                                            # extensions.<identity>
+    section: str                                            # plugins.<identity>
     schema: str                                             # module:Class, imported only after approval
     legacy_sections: tuple[str, ...] = ()                   # top-level routing.yaml sections the values came from
 
@@ -56,7 +56,7 @@ class Config:
 class Requires:
     resources: tuple[str, ...] = ()
     services: tuple[str, ...] = ()
-    extensions: tuple[str, ...] = ()                        # identities this one calls into; they load first
+    plugins: tuple[str, ...] = ()                        # identities this one calls into; they load first
 
 
 @dataclass(frozen=True)
@@ -72,14 +72,14 @@ class Manifest:
     migrations: str | None = None
 
     def supports(self, version: str = __version__) -> bool:
-        """Whether the framework `version` (default: the one installed) is in this extension's range, by number."""
+        """Whether the framework `version` (default: the one installed) is in this plugin's range, by number."""
         return SpecifierSet(self.framework).contains(Version(version), prereleases=True)
 
     def unsupported_reason(self, version: str = __version__) -> str | None:
-        """None when supported; otherwise a sentence naming the extension, its range and the framework version."""
+        """None when supported; otherwise a sentence naming the plugin, its range and the framework version."""
         if self.supports(version):
             return None
-        return (f"extension {self.identity!r} {self.version} supports framework {self.framework}; "
+        return (f"plugin {self.identity!r} {self.version} supports framework {self.framework}; "
                 f"this is framework {version}")
 
 
@@ -129,7 +129,7 @@ def parse(text: str, source: str) -> Manifest:
         try:
             SpecifierSet(framework)
         except InvalidSpecifier:
-            problems.append(f"framework {framework!r} is not a version range (PEP 440, e.g. \">=1.12,<2\")")
+            problems.append(f"framework {framework!r} is not a version range (PEP 440, e.g. \">=2.0,<3\")")
 
     provides = _names_table(data, "provides", IDENTIFIER_KINDS + ("hooks",), problems)
     for hook in provides.get("hooks", ()):
@@ -154,7 +154,7 @@ def parse(text: str, source: str) -> Manifest:
     requires = _requires(data, identity, problems)
     migrations = data.get("migrations")
     if migrations is not None and not (isinstance(migrations, str) and _MODULE.match(migrations)):
-        problems.append(f"migrations must be a module name (e.g. my_extension.migrations), not {migrations!r}")
+        problems.append(f"migrations must be a module name (e.g. my_plugin.migrations), not {migrations!r}")
 
     if problems:
         raise ManifestError(source, problems)
@@ -205,8 +205,8 @@ def _config(data: dict, identity: str | None, problems: list[str]) -> Config | N
         return None
     section, schema = table.get("section"), table.get("schema")
     ok = True
-    if identity is not None and section != f"extensions.{identity}":
-        problems.append(f"config.section must be extensions.{identity} (an extension owns only its own section), "
+    if identity is not None and section != f"plugins.{identity}":
+        problems.append(f"config.section must be plugins.{identity} (a plugin owns only its own section), "
                         f"not {section!r}")
         ok = False
     module, _, name = schema.partition(":") if isinstance(schema, str) else ("", "", "")
@@ -226,14 +226,14 @@ def _requires(data: dict, identity: str | None, problems: list[str]) -> Requires
     if not isinstance(table, dict):
         problems.append("requires must be a table")
         return Requires()
-    lists = _names_table({"requires": table}, "requires", ("resources", "services", "extensions"), problems)
+    lists = _names_table({"requires": table}, "requires", ("resources", "services", "plugins"), problems)
     for resource in lists.get("resources", ()):
         if resource not in RESOURCES:
             problems.append(f"requires.resources: unknown resource {resource!r} (allowed: {', '.join(RESOURCES)})")
-    for other in lists.get("extensions", ()):
+    for other in lists.get("plugins", ()):
         if other == identity:
-            problems.append(f"requires.extensions: {identity!r} cannot require itself")
+            problems.append(f"requires.plugins: {identity!r} cannot require itself")
         elif not _IDENTITY.match(other):
-            problems.append(f"requires.extensions: {other!r} is not an identity")
+            problems.append(f"requires.plugins: {other!r} is not an identity")
     return Requires(resources=lists.get("resources", ()), services=lists.get("services", ()),
-                    extensions=lists.get("extensions", ()))
+                    plugins=lists.get("plugins", ()))

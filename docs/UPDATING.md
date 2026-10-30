@@ -60,8 +60,8 @@ config format change). `docs/BOUNDARY.md` describes the gates. The rules:
   `supervisor/migrations.py` (idempotent, honours `dry_run`) and a **Migration** line in `CHANGELOG.md`.
 - `supervisor/template/` is the only place project files are born; keep it generic (`tests/test_framework.py`
   checks it) and keep its comments current — they are the documentation most owners actually read.
-- Extension hooks are an API: adding one is a minor bump; changing one is a major bump with a migration note
-  telling extension authors what to change.
+- Plugin hooks are an API: adding one is a minor bump; changing one is a major bump with a migration note
+  telling plugin authors what to change.
 
 ## Multiple machines / a friend's machine
 

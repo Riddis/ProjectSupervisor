@@ -1,7 +1,7 @@
-"""Gate G2 (supervisor.api_contract): the public extension API's recorded contract. What a contract records, which
-differences break callers and which are additions, the check that ties the code, docs/extension_api.json, the last
-release tag's contract, the CHANGELOG and docs/EXTENSION_API.md together, and the repository's own contract
-matching its code. Each planted module is a throwaway file, so the rules are tested apart from supervisor.ext."""
+"""Gate G2 (supervisor.api_contract): the public plugin API's recorded contract. What a contract records, which
+differences break callers and which are additions, the check that ties the code, docs/plugin_api.json, the last
+release tag's contract, the CHANGELOG and docs/PLUGIN_API.md together, and the repository's own contract
+matching its code. Each planted module is a throwaway file, so the rules are tested apart from supervisor.plugin."""
 import importlib.util
 import json
 import subprocess
@@ -182,9 +182,9 @@ def test_identical_contracts_differ_in_nothing(tmp_path):
 
 # ---------------------------------------------------------------- the check
 
-DOC = ("# Extension API\n\nIntro.\n\n## Files\n\n### `write`\n\n`write(path, data)` writes `data`; raises OSError when it "
+DOC = ("# Plugin API\n\nIntro.\n\n## Files\n\n### `write`\n\n`write(path, data)` writes `data`; raises OSError when it "
        "cannot.\n\n### `Lane`\n\nA lane.\n\n### `LIMIT`\n\nThree.\n\n### `extra`\n\nExtra.\n")
-LOG = "# Changelog\n\n## Unreleased\n\n- **Extension API:** added `extra`.\n\n## 1.11.0 — 2026-11-01\n\n- old\n"
+LOG = "# Changelog\n\n## Unreleased\n\n- **Plugin API:** added `extra`.\n\n## 1.11.0 — 2026-11-01\n\n- old\n"
 
 
 def run_check(current, recorded="same", baseline=None, version="1.12.0", baseline_version="1.11.0",
@@ -195,7 +195,7 @@ def run_check(current, recorded="same", baseline=None, version="1.12.0", baselin
 
 
 def test_the_check_fails_when_the_recorded_contract_is_not_the_code(tmp_path):
-    """A planted change: the code moved on and docs/extension_api.json was not recorded again."""
+    """A planted change: the code moved on and docs/plugin_api.json was not recorded again."""
     old, new = planted(tmp_path, BASE), planted(tmp_path, BASE.replace("dict, *,", "dict, mode: str, *,"))
     result = run_check(new, recorded=old, baseline=None)
     assert not result.ok
@@ -219,13 +219,13 @@ def test_a_breaking_change_needs_a_major_version(tmp_path):
     assert any("deprecat" in n for n in accepted.notes)            # the reviewer still checks the deprecation window
 
 
-def test_an_addition_needs_an_extension_api_changelog_line_naming_it(tmp_path):
+def test_an_addition_needs_a_plugin_api_changelog_line_naming_it(tmp_path):
     old = planted(tmp_path, BASE)
     new = planted(tmp_path, BASE.replace('"LIMIT"]', '"LIMIT", "extra"]\ndef extra():\n    pass'))
     assert run_check(new, baseline=old).ok
     missing = run_check(new, baseline=old, changelog=LOG.replace("added `extra`", "added things"))
     assert not missing.ok and any("extra" in p and "CHANGELOG" in p for p in missing.problems)
-    unlabelled = run_check(new, baseline=old, changelog=LOG.replace("**Extension API:** ", ""))
+    unlabelled = run_check(new, baseline=old, changelog=LOG.replace("**Plugin API:** ", ""))
     assert not unlabelled.ok
 
 
@@ -238,8 +238,8 @@ def test_an_addition_is_not_a_patch_release(tmp_path):
 
 
 def test_every_public_name_is_documented(tmp_path):
-    result = run_check(planted(tmp_path, BASE), api_doc="# Extension API\n\n`write` and `Lane`.\n")
-    assert not result.ok and any("LIMIT" in p and "EXTENSION_API.md" in p for p in result.problems)
+    result = run_check(planted(tmp_path, BASE), api_doc="# Plugin API\n\n`write` and `Lane`.\n")
+    assert not result.ok and any("LIMIT" in p and "PLUGIN_API.md" in p for p in result.problems)
     assert not run_check(planted(tmp_path, BASE), api_doc=None).ok
 
 
@@ -260,13 +260,35 @@ def test_the_previous_contract_is_read_from_the_last_tag(tmp_path):
     git(repo, "commit", "-qm", "first")
     git(repo, "tag", "-a", "v1.0.0", "-m", "1.0.0")
     assert ac.previous_contract(repo) == ("v1.0.0", None)            # a tag from before the contract existed
-    (repo / "docs" / "extension_api.json").write_text(json.dumps({"format": 1, "names": {}}), encoding="utf-8")
+    (repo / "docs" / "plugin_api.json").write_text(json.dumps({"format": 1, "names": {}}), encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "-qm", "second")
     git(repo, "tag", "-a", "v1.1.0", "-m", "1.1.0")
-    (repo / "docs" / "extension_api.json").write_text(json.dumps({"format": 1, "names": {"x": {}}}), encoding="utf-8")
+    (repo / "docs" / "plugin_api.json").write_text(json.dumps({"format": 1, "names": {"x": {}}}), encoding="utf-8")
     git(repo, "commit", "-qam", "third, untagged")
     assert ac.previous_contract(repo) == ("v1.1.0", {"format": 1, "names": {}})   # the tag's file, not the tree's
+
+
+
+def test_a_release_from_before_the_plugin_names_is_read_under_its_own_file_names(tmp_path):
+    """2.0.0 renamed the contract files (docs/extension_api.json, docs/EXTENSION_API.md before). The last release
+    carries them under the old names: read as no contract at all, G2 would pass any change unchecked."""
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    released = {"format": 1, "names": {"x": {"kind": "function"}}}
+    (repo / "docs" / "extension_api.json").write_text(json.dumps(released), encoding="utf-8")
+    (repo / "docs" / "EXTENSION_API.md").write_text("# API\n\n### `x`\n\nDoes x.\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "a release before the rename")
+    git(repo, "tag", "-a", "v1.0.0", "-m", "1.0.0")
+    git(repo, "mv", "docs/extension_api.json", "docs/plugin_api.json")
+    git(repo, "mv", "docs/EXTENSION_API.md", "docs/PLUGIN_API.md")
+    git(repo, "commit", "-qm", "the rename")
+    assert ac.previous_contract(repo) == ("v1.0.0", released)
+    assert ac.document_at(repo, "v1.0.0") == "# API\n\n### `x`\n\nDoes x.\n"
 
 
 def test_a_shallow_clone_cannot_stand_in_for_the_previous_contract(tmp_path):
@@ -289,17 +311,17 @@ def test_a_shallow_clone_cannot_stand_in_for_the_previous_contract(tmp_path):
 # ---------------------------------------------------------------- this repository
 
 def test_the_recorded_contract_is_the_code():
-    """docs/extension_api.json describes supervisor.ext as it is: G3 catches a stale contract too, not only G2."""
-    import supervisor.ext
+    """docs/plugin_api.json describes supervisor.plugin as it is: G3 catches a stale contract too, not only G2."""
+    import supervisor.plugin
     recorded = json.loads((REPO / ac.CONTRACT_FILE).read_text(encoding="utf-8"))
-    assert ac.describe(supervisor.ext) == recorded
+    assert ac.describe(supervisor.plugin) == recorded
 
 
 def test_the_command_line_check_passes_on_this_repository():
     out = subprocess.run([sys.executable, "-m", "supervisor.api_contract", "check", "--against", "none"], cwd=REPO,
                          capture_output=True, text=True, encoding="utf-8", check=False)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert "extension API contract: OK" in out.stdout
+    assert "plugin API contract: OK" in out.stdout
 
 
 @pytest.mark.parametrize("old,new,broken_call", [
@@ -364,7 +386,7 @@ NO_API = "# Changelog\n\n## 1.11.1 - 2026-11-02\n\n- Fixed something else. No AP
 def test_every_public_name_has_its_own_documented_section(tmp_path):
     """A bare mention is not documentation: each name needs a `### `name`` section with text."""
     c = planted(tmp_path, BASE)
-    names_only = "# Extension API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n"
+    names_only = "# Plugin API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n"
     result = run_check(c, api_doc=names_only, baseline=None)
     assert not result.ok and any("write" in p and "section" in p for p in result.problems)
     empty = DOC.replace("Three.", "")
@@ -376,7 +398,7 @@ def test_the_review_probe_deleting_every_description_is_caught(tmp_path):
     """Review 1.11.0 F5's probe: the same signatures, a document of bare names, a patch release, no API line."""
     c = planted(tmp_path, BASE)
     result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API,
-                       api_doc="# Extension API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n")
+                       api_doc="# Plugin API\n\n`write`, `Lane`, `LIMIT`, `extra`.\n")
     assert not result.ok
 
 
@@ -394,12 +416,12 @@ def test_a_changed_documented_guarantee_must_be_classified(tmp_path):
 
 
 @pytest.mark.parametrize("entry,version,ok", [
-    ("- **Extension API:** `write` returns None instead of raising.", "1.12.0", True),      # compatible: minor
-    ("- **Extension API:** `write` returns None instead of raising.", "1.11.1", False),     # not in a patch
-    ("- **Extension API (editorial):** `write`'s wording.", "1.11.1", True),               # editorial: any version
-    ("- **Extension API (breaking):** `write` no longer raises.", "1.12.0", False),         # breaking: major only
-    ("- **Extension API (breaking):** `write` no longer raises.", "2.0.0", True),
-    ("- **Extension API:** `Lane` gains nothing.", "1.12.0", False),                         # names the wrong thing
+    ("- **Plugin API:** `write` returns None instead of raising.", "1.12.0", True),      # compatible: minor
+    ("- **Plugin API:** `write` returns None instead of raising.", "1.11.1", False),     # not in a patch
+    ("- **Plugin API (editorial):** `write`'s wording.", "1.11.1", True),               # editorial: any version
+    ("- **Plugin API (breaking):** `write` no longer raises.", "1.12.0", False),         # breaking: major only
+    ("- **Plugin API (breaking):** `write` no longer raises.", "2.0.0", True),
+    ("- **Plugin API:** `Lane` gains nothing.", "1.12.0", False),                         # names the wrong thing
 ])
 def test_the_classification_decides_the_version(tmp_path, entry, version, ok):
     c = planted(tmp_path, BASE)
@@ -422,7 +444,7 @@ def test_a_tag_with_a_contract_but_no_document_is_an_error(tmp_path):
     c = planted(tmp_path, BASE)
     result = run_check(c, baseline=c, version="1.11.1", baseline_version="1.11.0", changelog=NO_API,
                        baseline_doc=None)
-    assert not result.ok and any("EXTENSION_API.md" in p for p in result.problems)
+    assert not result.ok and any("PLUGIN_API.md" in p for p in result.problems)
 
 
 def test_the_previous_document_is_read_from_the_last_tag(tmp_path):
@@ -431,11 +453,11 @@ def test_the_previous_document_is_read_from_the_last_tag(tmp_path):
     git(repo, "init", "-q")
     git(repo, "config", "user.email", "t@example.com")
     git(repo, "config", "user.name", "t")
-    (repo / "docs" / "EXTENSION_API.md").write_text("tagged text\n", encoding="utf-8")
+    (repo / "docs" / "PLUGIN_API.md").write_text("tagged text\n", encoding="utf-8")
     git(repo, "add", ".")
     git(repo, "commit", "-qm", "first")
     git(repo, "tag", "-a", "v1.0.0", "-m", "1.0.0")
-    (repo / "docs" / "EXTENSION_API.md").write_text("later text\n", encoding="utf-8")
+    (repo / "docs" / "PLUGIN_API.md").write_text("later text\n", encoding="utf-8")
     git(repo, "commit", "-qam", "second")
     assert ac.document_at(repo, "v1.0.0") == "tagged text\n"
 

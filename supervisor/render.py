@@ -1,5 +1,5 @@
 """Rendered projections of the state store (never parsed back): TASKS, STATE, ISSUES, DECISIONS, HUMAN_INBOX,
-OWNER_TASKS, plus any projection an extension registers. Deterministic given the store (timestamps come from the data, plus one render stamp)."""
+OWNER_TASKS, plus any projection a plugin registers. Deterministic given the store (timestamps come from the data, plus one render stamp)."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from . import extensions as extensions_mod
+from . import plugins as plugins_mod
 from . import project as project_mod
 from . import gates as gates_mod
 from . import store, tasks as tasks_mod
@@ -27,7 +27,7 @@ _held = threading.local()        # render-lock paths this thread holds: the lock
 
 @contextmanager
 def render_lock(layout: Layout):
-    """`state/.render.lock`, held for one projection's read and write. Reentrant within a thread, so an extension
+    """`state/.render.lock`, held for one projection's read and write. Reentrant within a thread, so a plugin
     projection that itself calls a built-in render_* function does not wait on its own lock; across threads and
     processes it orders renders. Waits up to 30 s, then raises LockHeld (render_all logs that view and goes on)."""
     from .locks import FileLock
@@ -244,7 +244,7 @@ def render_all(layout: Layout, **kw) -> list[Path]:
     out = [_guarded(layout, fn) for fn in (render_tasks, render_issues, render_decisions, render_inbox, render_owner_tasks)]
     out.append(_guarded(layout, render_state, **kw))
     out = [p for p in out if p is not None]
-    for fn in extensions_mod.load(layout).projections:
+    for fn in plugins_mod.load(layout).projections:
         try:
             with render_lock(layout):                       # a registered projection reads and writes under it too
                 out.append(fn(layout))

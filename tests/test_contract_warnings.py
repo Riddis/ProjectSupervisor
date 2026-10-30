@@ -72,7 +72,7 @@ def test_supervisor_check_reports_them_and_still_passes(tmp_path, monkeypatch):
 
 
 EXT = '''
-from supervisor.ext import Adapter
+from supervisor.plugin import Adapter
 
 def tally(root, run_dir, **params):
     return {"status": "COMPLETE", "artifacts": [], "notes": ""}
@@ -96,12 +96,12 @@ adapters = ["tally_lane"]
 
 
 def test_a_job_naming_an_unregistered_lane_or_function_is_warned(tmp_path):
-    """1.13.0, a skill-trial finding (extension-promote, round 2): nothing checked that a job's adapter or python
-    function exists, so a task naming a lane or a job that no extension registers imported in silence and failed only
-    when it ran ("unknown python job"). Names an extension's manifest declares count."""
+    """1.13.0, a skill-trial finding (plugin-promote, round 2): nothing checked that a job's adapter or python
+    function exists, so a task naming a lane or a job that no plugin registers imported in silence and failed only
+    when it ran ("unknown python job"). Names a plugin's manifest declares count."""
     try:
         lay = testing.project(tmp_path, routing=ROUTING, modules={"tally": EXT},
-                              files={"extensions/tally.toml": TALLY_MANIFEST})
+                              files={"plugins/tally.toml": TALLY_MANIFEST})
         (lay.state / "tasks_seed.yaml").write_text(yaml.safe_dump({"tasks": [
             contract("T0-01", job={"adapter": "nolane"}),
             contract("T0-02", job={"adapter": "python", "fn": "nojob"}),
@@ -145,14 +145,14 @@ def snapshot(root) -> dict:
     return {p.relative_to(root).as_posix(): (p.read_bytes() if p.is_file() else None) for p in root.rglob("*")}
 
 
-def test_dry_run_and_check_write_nothing_even_when_an_extension_fails(tmp_path, monkeypatch):
+def test_dry_run_and_check_write_nothing_even_when_a_plugin_fails(tmp_path, monkeypatch):
     """Review 1.13.0 round 2 (P2): task-author and runtime-diagnose promise that `task import --dry-run` writes nothing
-    and that `check` only reads, but both set the project's extensions up: a failed optional extension appended
-    `extension_error` to state/log.jsonl, and setup is project code that may write anything. Both now read the
-    project as it is: no extension set up, no folder created, every byte unchanged, and the warnings still shown."""
+    and that `check` only reads, but both set the project's plugins up: a failed optional plugin appended
+    `plugin_error` to state/log.jsonl, and setup is project code that may write anything. Both now read the
+    project as it is: no plugin set up, no folder created, every byte unchanged, and the warnings still shown."""
     try:
         lay = testing.project(tmp_path, routing=ROUTING, modules={"broken": BROKEN},
-                              extensions=[{"name": "broken", "required": False}])
+                              plugins=[{"name": "broken", "required": False}])
         (lay.state / "tasks_seed.yaml").write_text(yaml.safe_dump({"tasks": [
             contract("T0-01", job={"adapter": "python", "fn": "missing"})]}, sort_keys=False), encoding="utf-8")
         monkeypatch.setenv("SUPERVISOR_ROOT", str(lay.root))
@@ -175,12 +175,12 @@ def test_dry_run_and_check_write_nothing_even_when_an_extension_fails(tmp_path, 
         testing.reset()
 
 
-def test_a_job_an_extension_manifest_declares_counts_without_running_setup(tmp_path, monkeypatch):
-    """The names come from the built-ins and each extension's manifest (`provides`), which declares exactly what its
-    setup() registers (G5): no extension code runs."""
+def test_a_job_a_plugin_manifest_declares_counts_without_running_setup(tmp_path, monkeypatch):
+    """The names come from the built-ins and each plugin's manifest (`provides`), which declares exactly what its
+    setup() registers (G5): no plugin code runs."""
     try:
         lay = testing.project(tmp_path, routing=ROUTING, modules={"marks": MARKS},
-                              files={"extensions/marks.toml": MARKS_MANIFEST})
+                              files={"plugins/marks.toml": MARKS_MANIFEST})
         (lay.state / "tasks_seed.yaml").write_text(yaml.safe_dump({"tasks": [
             contract("T0-01", job={"adapter": "python", "fn": "marks_tally"}),
             contract("T0-02", job={"adapter": "python", "fn": "marks_other"})]}, sort_keys=False), encoding="utf-8")
@@ -193,12 +193,12 @@ def test_a_job_an_extension_manifest_declares_counts_without_running_setup(tmp_p
         testing.reset()
 
 
-def test_an_extension_without_a_manifest_is_named_in_the_warning(tmp_path):
-    """An extension without a manifest (still loading in 1.12.x, D1) declares nothing that can be read without running
+def test_a_plugin_without_a_manifest_is_named_in_the_warning(tmp_path):
+    """A plugin without a manifest (still loading in 1.12.x, D1) declares nothing that can be read without running
     it, so a warning says its names were not checked."""
     try:
         lay = project(tmp_path, contract("T0-01", job={"adapter": "python", "fn": "tally"}))
-        testing.add_extensions(lay, {"tally": EXT})
+        testing.add_plugins(lay, {"tally": EXT})
         found = warnings_of(lay)
         assert any("T0-01" in w and "'tally'" in w and "not checked against tally" in w for w in found), found
     finally:

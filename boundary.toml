@@ -10,8 +10,8 @@ allowed = [
   "fastapi", "starlette", "uvicorn", "jinja2", "multipart", "sse_starlette",
 ]
 # Files that may load code dynamically (import_module / __import__ / spec_from_file_location with a computed name).
-# The extension loader is the one sanctioned path from the framework to project code.
-dynamic_loaders = ["supervisor/extensions.py"]
+# The plugin loader is the one sanctioned path from the framework to project code.
+dynamic_loaders = ["supervisor/plugins.py"]
 
 [literals]
 # G1b. Loopback, bind-all, the reserved example/test names (RFC 2606, RFC 6761) and templated hosts always pass.

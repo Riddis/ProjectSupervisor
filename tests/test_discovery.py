@@ -1,10 +1,10 @@
-"""Discovery without import (phase 3 step 2): for each name in project.yaml `extensions:`, find the extension and read
-its manifest, and execute nothing the extension ships. A project-local extension's manifest sits beside its module
-(`extensions/<name>.toml`) or inside its package folder; an installed one is found through the entry point group
-`supervisor.extensions` and its manifest read from the distribution's file list, or, for an editable install whose
+"""Discovery without import (phase 3 step 2): for each name in project.yaml `plugins:`, find the plugin and read
+its manifest, and execute nothing the plugin ships. A project-local plugin's manifest sits beside its module
+(`plugins/<name>.toml`) or inside its package folder; an installed one is found through the entry point group
+`supervisor.plugins` and its manifest read from the distribution's file list, or, for an editable install whose
 file list does not show it, beside the origin `importlib.util.find_spec` reports for its top-level package. Decision
 D5: a project-local manifest wins; the same identity from two sources is refused, not chosen silently. Decision D1:
-an extension without a manifest is still found (and loads with a warning, later steps)."""
+a plugin without a manifest is still found (and loads with a warning, later steps)."""
 from __future__ import annotations
 
 import sys
@@ -19,11 +19,11 @@ TRAP = "import pathlib\npathlib.Path({marker!r}).write_text('imported')\ndef set
 
 
 def local_module(layout, name: str, marker: Path, manifest: str | None = MANIFEST) -> Path:
-    layout.extensions.mkdir(parents=True, exist_ok=True)
-    module = layout.extensions / f"{name}.py"
+    layout.plugins.mkdir(parents=True, exist_ok=True)
+    module = layout.plugins / f"{name}.py"
     module.write_text(TRAP.format(marker=str(marker)), encoding="utf-8")
     if manifest is not None:
-        (layout.extensions / f"{name}.toml").write_text(manifest.format(identity=name), encoding="utf-8")
+        (layout.plugins / f"{name}.toml").write_text(manifest.format(identity=name), encoding="utf-8")
     return module
 
 
@@ -34,13 +34,13 @@ def installed(site: Path, identity: str, package: str, marker: Path, *, record_m
     pkg = site / package
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(TRAP.format(marker=str(marker)), encoding="utf-8")
-    (pkg / "supervisor-extension.toml").write_text(MANIFEST.format(identity=manifest_identity or identity),
+    (pkg / "supervisor-plugin.toml").write_text(MANIFEST.format(identity=manifest_identity or identity),
                                                    encoding="utf-8")
     info = site / f"{package}-1.0.0.dist-info"
     info.mkdir()
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {package}\nVersion: 1.0.0\n", encoding="utf-8")
-    (info / "entry_points.txt").write_text(f"[supervisor.extensions]\n{identity} = {package}\n", encoding="utf-8")
-    listed = [f"{package}/__init__.py"] + ([f"{package}/supervisor-extension.toml"] if record_manifest
+    (info / "entry_points.txt").write_text(f"[supervisor.plugins]\n{identity} = {package}\n", encoding="utf-8")
+    listed = [f"{package}/__init__.py"] + ([f"{package}/supervisor-plugin.toml"] if record_manifest
                                            else [f"__editable__.{package}_finder.py"])
     (info / "RECORD").write_text("".join(f"{f},,\n" for f in listed), encoding="utf-8")
     return pkg
@@ -59,27 +59,27 @@ def test_a_local_module_and_its_manifest_are_found_without_running_it(layout, tm
     module = local_module(layout, "notes", marker)
     found = discovery.find(layout, "notes")
     assert found.source == "local" and found.location == module and not found.problems
-    assert found.manifest.identity == "notes" and found.manifest.source == str(layout.extensions / "notes.toml")
+    assert found.manifest.identity == "notes" and found.manifest.source == str(layout.plugins / "notes.toml")
     assert not marker.exists()
 
 
 def test_a_local_package_keeps_its_manifest_inside(layout, tmp_path):
     marker = tmp_path / "imported.txt"
-    pkg = layout.extensions / "notes"
+    pkg = layout.plugins / "notes"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text(TRAP.format(marker=str(marker)), encoding="utf-8")
-    (pkg / "supervisor-extension.toml").write_text(MANIFEST.format(identity="notes"), encoding="utf-8")
+    (pkg / "supervisor-plugin.toml").write_text(MANIFEST.format(identity="notes"), encoding="utf-8")
     found = discovery.find(layout, "notes")
     assert found.source == "local" and found.location == pkg and found.manifest.identity == "notes"
     assert not marker.exists()
 
 
-def test_an_installed_extension_is_found_through_its_entry_point_without_import(layout, tmp_path, site):
+def test_an_installed_plugin_is_found_through_its_entry_point_without_import(layout, tmp_path, site):
     marker = tmp_path / "imported.txt"
     pkg = installed(site, "notes", "notes_ext", marker)
     found = discovery.find(layout, "notes")
     assert found.source == "installed" and found.location == pkg and not found.problems
-    assert found.manifest.identity == "notes" and Path(found.manifest.source) == pkg / "supervisor-extension.toml"
+    assert found.manifest.identity == "notes" and Path(found.manifest.source) == pkg / "supervisor-plugin.toml"
     assert not marker.exists() and "notes_ext" not in sys.modules
 
 
@@ -114,8 +114,8 @@ def test_a_broken_manifest_is_reported_not_raised(layout, tmp_path):
     assert found.manifest is None and any("version is required" in p for p in found.problems)
 
 
-def test_an_extension_without_a_manifest_is_still_found_as_legacy(layout, tmp_path):
-    """D1: 1.12.x keeps loading extensions that have no manifest yet (with a doctor WARN, later steps)."""
+def test_a_plugin_without_a_manifest_is_still_found_as_legacy(layout, tmp_path):
+    """D1: 1.12.x keeps loading plugins that have no manifest yet (with a doctor WARN, later steps)."""
     module = local_module(layout, "notes", tmp_path / "a.txt", manifest=None)
     found = discovery.find(layout, "notes")
     assert found.source == "local" and found.location == module and found.manifest is None and not found.problems
@@ -131,4 +131,4 @@ def test_an_installed_module_without_an_entry_point_is_legacy_and_not_imported(l
 
 def test_a_name_found_nowhere_says_where_it_looked(layout):
     found = discovery.find(layout, "nowhere")
-    assert found.source is None and any("extensions" in p and "supervisor.extensions" in p for p in found.problems)
+    assert found.source is None and any("plugins" in p and "supervisor.plugins" in p for p in found.problems)

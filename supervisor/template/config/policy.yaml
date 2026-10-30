@@ -24,4 +24,4 @@ secrets:
     - {name: bearer_header,      regex: '(?i)authorization\s*[:=]\s*bearer\s+[A-Za-z0-9._\-]{16,}'}
     - {name: assigned_secret,    regex: '(?i)\b[A-Za-z0-9_]*(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD)\b\s*[:=]\s*["'']?[A-Za-z0-9/+_.\-]{16,}'}
 
-# A project may add its own sections here (an extension reads them with supervisor.policy.section(name)).
+# A project may add its own sections here (a plugin reads them with supervisor.policy.section(name)).

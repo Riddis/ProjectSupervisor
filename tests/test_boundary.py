@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 BASE_CONFIG = """
 [imports]
 allowed = ["yaml", "pydantic"]
-dynamic_loaders = ["supervisor/extensions.py"]
+dynamic_loaders = ["supervisor/plugins.py"]
 [literals]
 allowed_url_hosts = ["github.com"]
 user_names = ["jdoe"]
@@ -45,26 +45,26 @@ def rules(root, **kw):
 # ---------------------------------------------------------------- G1a
 
 @pytest.mark.parametrize("code,module", [
-    ("import extensions.render\n", "extensions.render"),                  # a project's extension
+    ("import plugins.render\n", "plugins.render"),                  # a project's plugin
     ("from engine.qa import score\n", "engine.qa"),                       # a project's own package
-    ("import supervisor_ext_textgen\n", "supervisor_ext_textgen"),        # an extension package
-    ("import importlib\nimportlib.import_module('extensions.bench')\n", "extensions.bench"),
+    ("import supervisor_plugin_textgen\n", "supervisor_plugin_textgen"),        # a plugin package
+    ("import importlib\nimportlib.import_module('plugins.bench')\n", "plugins.bench"),
 ])
-def test_g1a_refuses_imports_of_project_or_extension_code(tmp_path, code, module):
+def test_g1a_refuses_imports_of_project_or_plugin_code(tmp_path, code, module):
     found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code}))
     assert ("G1a", "supervisor/mod.py", module) in found
 
 
 @pytest.mark.parametrize("code", [
-    "from importlib import import_module as load\nload('extensions.bench')\n",
+    "from importlib import import_module as load\nload('plugins.bench')\n",
     "from importlib import import_module as load\nname = 'x'\nload(name)\n",
-    "import importlib\nload = importlib.import_module\nagain = load\nagain('extensions.bench')\n",
-    "import importlib\ngetattr(importlib, 'import_module')('extensions.bench')\n",
-    "import functools, importlib\nf = functools.partial(importlib.import_module, 'extensions.bench')\n",
-    "import importlib\nmods = list(map(importlib.import_module, ['extensions.bench']))\n",
+    "import importlib\nload = importlib.import_module\nagain = load\nagain('plugins.bench')\n",
+    "import importlib\ngetattr(importlib, 'import_module')('plugins.bench')\n",
+    "import functools, importlib\nf = functools.partial(importlib.import_module, 'plugins.bench')\n",
+    "import importlib\nmods = list(map(importlib.import_module, ['plugins.bench']))\n",
     "from importlib.util import spec_from_file_location as locate\nlocate('m', 'p.py')\n",
     "import runpy\nrunpy.run_path('plugin.py')\n",
-    "from builtins import __import__ as imp\nimp('extensions.bench')\n",
+    "from builtins import __import__ as imp\nimp('plugins.bench')\n",
 ])
 def test_g1a_sees_dynamic_imports_however_the_loader_is_named(tmp_path, code):
     """Review of 1.9.0 (P2): an alias of import_module (`as load`, an assignment, getattr, partial) escaped G1a."""
@@ -77,9 +77,9 @@ def test_g1a_sees_dynamic_imports_however_the_loader_is_named(tmp_path, code):
     # rebinding to two different loaders made the old fixpoint flip between them forever
     ("import importlib, runpy\nload = importlib.import_module\nload = runpy.run_path\nload('plugin.py')\n",
      "dynamic import_module/run_path() outside the listed loaders"),
-    ("import importlib, runpy\nload = runpy.run_path\nload = importlib.import_module\nload('extensions.bench')\n",
+    ("import importlib, runpy\nload = runpy.run_path\nload = importlib.import_module\nload('plugins.bench')\n",
      "dynamic import_module/run_path() outside the listed loaders"),
-    ("import importlib\na = importlib.import_module\nb = a\na = b\nb('extensions.bench')\n", "dynamic import"),
+    ("import importlib\na = importlib.import_module\nb = a\na = b\nb('plugins.bench')\n", "dynamic import"),
 ])
 def test_g1a_alias_analysis_ends_on_rebinding_and_cycles(tmp_path, code, expected):
     """Review of 1.9.0, second round (P2): a name rebound to different loaders never let the alias fixpoint settle.
@@ -99,7 +99,7 @@ def test_g1a_an_aliased_loader_with_a_framework_or_stdlib_name_passes(tmp_path):
 
 def test_g1a_refuses_a_computed_dynamic_import_outside_the_loader(tmp_path):
     code = "import importlib\nname = 'x'\nimportlib.import_module(name)\n"
-    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code, "supervisor/extensions.py": code}))
+    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code, "supervisor/plugins.py": code}))
     assert [f for f in found if f[0] == "G1a"] == [("G1a", "supervisor/mod.py", "")]   # the loader may
 
 
@@ -107,8 +107,8 @@ def test_g1a_allows_stdlib_the_framework_and_declared_dependencies(tmp_path):
     code = ("from __future__ import annotations\nimport os, json\nimport yaml\nfrom pydantic import BaseModel\n"
             "from supervisor import tasks\nfrom .store import now_iso\nimport importlib\n"
             "importlib.import_module('supervisor.adapters')\n")
-    tmpl = "from extensions import mine\n"                                # the template is project code
-    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code, "supervisor/template/extensions/x.py": tmpl}))
+    tmpl = "from plugins import mine\n"                                # the template is project code
+    found, _ = rules(framework(tmp_path, {"supervisor/mod.py": code, "supervisor/template/plugins/x.py": tmpl}))
     assert found == []
 
 
@@ -192,7 +192,7 @@ def test_module_entry_point_exit_codes(tmp_path):
                                       cwd=REPO, capture_output=True, text=True, env={"CI": "1", "PATH": ""}, check=False)
     ok = run(clean)
     assert ok.returncode == 0 and json.loads(ok.stdout)["ok"] is True
-    (clean / "supervisor" / "bad.py").write_text("import extensions\n", encoding="utf-8")
+    (clean / "supervisor" / "bad.py").write_text("import plugins\n", encoding="utf-8")
     bad = run(clean)
     assert bad.returncode == 1 and json.loads(bad.stdout)["violations"][0]["rule"] == "G1a"
     (clean / "boundary.toml").unlink()

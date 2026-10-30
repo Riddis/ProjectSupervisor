@@ -73,14 +73,14 @@ def _is_score_block(entry, extra_keys=()) -> bool:
 
 
 def _kinds(layout: Layout) -> tuple[dict, list[str], dict]:
-    """(labels, order, extension kinds) — the built-in groups plus every kind an extension claimed
+    """(labels, order, plugin kinds) — the built-in groups plus every kind a plugin claimed
     (registry.inbox_kind), in registration order after the built-ins."""
-    from ... import extensions as extensions_mod
+    from ... import plugins as plugins_mod
     labels = dict(KIND_LABELS)
-    ext = dict(extensions_mod.load(layout).inbox_kinds)
-    for kind, info in ext.items():
+    plugin = dict(plugins_mod.load(layout).inbox_kinds)
+    for kind, info in plugin.items():
         labels[kind] = info.label
-    return labels, list(labels), ext
+    return labels, list(labels), plugin
 
 
 def _evidence_view(layout: Layout, ref: str) -> dict:
@@ -123,10 +123,10 @@ def _approval_evidence(layout: Layout, item: dict) -> list[dict]:
 
 
 def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None) -> dict:
-    """`info` is the extension's InboxKind for the item's kind, if claimed. An extension page owns the detail of its
+    """`info` is the plugin's InboxKind for the item's kind, if claimed. A plugin page owns the detail of its
     items: `show_evidence=False` keeps the per-option rows (and their scores) off this card — the owner sees a count
     and a link to the page — and `answerable=False` replaces the generic form with that link. `unknown` (see
-    inbox.ownership_unknown) means the kind's owner may be a required extension that failed to load: the card is then
+    inbox.ownership_unknown) means the kind's owner may be a required plugin that failed to load: the card is then
     rendered blind and without the form, and says why."""
     sub_items = item.get("items") or []
     blind = (info is not None and not info.show_evidence) or bool(unknown)
@@ -189,8 +189,8 @@ def answer_item(item_id: str, request: Request, response: str = Form(""), text: 
                 note: str = Form(""), csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
     require_csrf(request, csrf_token)
     item = _get_item(layout, item_id)
-    refusal = inbox_mod.owned_by_extension(layout, item)
-    if refusal:                                          # the extension's page is the door; name it in the error
+    refusal = inbox_mod.owned_by_plugin(layout, item)
+    if refusal:                                          # the plugin's page is the door; name it in the error
         raise HTTPException(status_code=400, detail=refusal)
     text = text.strip()
     if response and text:

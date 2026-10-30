@@ -27,7 +27,7 @@
   with `active: false` is never dispatched: its tasks are parked with a `schedule_skip` log entry until the owner
   activates the role.
 - Limits (`config/routing.yaml: limits`): `max_agent_jobs` (model-lane jobs of any kind), `max_resource_jobs`
-  (extension lanes with `gpu = True`). Tasks whose `owned_paths` overlap a running job's are never dispatched together.
+  (plugin lanes with `gpu = True`). Tasks whose `owned_paths` overlap a running job's are never dispatched together.
 - Capacity: `state/runtime/usage_claude.json` / `usage_codex.json` hold the measured windows; a lane below its
   reserve defers (no attempt spent) until the reset or an owner `capacity.reset`.
 - `--unattended`: a `claude_cli` pick becomes `claude_api` while API credits remain, but only when
