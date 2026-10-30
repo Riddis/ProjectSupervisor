@@ -369,9 +369,27 @@ def _unexpected_rewrite(before: str, after: str) -> bool:
     return expected != after_doc
 
 
+def _rewrite_unparsable(before: str, after: str) -> bool:
+    """Whether `after` is TOML a rewrite broke, although `before` parsed fine (review 2.0.0 F3: `[requires]
+    extensions = []` next to `plugins = []` is valid TOML; renaming `extensions` to `plugins` then produces two
+    `plugins` keys, which does not parse). `before` failing to parse is its own, pre-existing error — doctor's to
+    report, never this check's or the rewrite's — so it is never read here as something the transformation broke."""
+    try:
+        tomllib.loads(before)
+    except tomllib.TOMLDecodeError:
+        return False
+    try:
+        tomllib.loads(after)
+    except tomllib.TOMLDecodeError:
+        return True
+    return False
+
+
 def _still_old(text: str) -> bool:
     """Whether a rewritten manifest still reads the old names (a form no rule above renames), so the plugin would
-    not load after migrate recorded 2.0.0 (review 2.0.0). A manifest TOML cannot read is doctor's to report."""
+    not load after migrate recorded 2.0.0 (review 2.0.0). Called only once `_rewrite_unparsable` has cleared `text`,
+    so a TOMLDecodeError reaching here is always the original manifest's own, pre-existing error (doctor's to
+    report), never one the rewrite just created."""
     try:
         doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
@@ -501,6 +519,11 @@ def _plugins_rename(layout: Layout, dry_run: bool) -> list[str]:
                          *folder.glob("*/supervisor-plugin.toml")]):
             text = p.read_text(encoding="utf-8")
             changed = _renamed_manifest(text)
+            if _rewrite_unparsable(text, changed):           # decided before anything is written (review 2.0.0 F3)
+                raise MigrationError(f"{p.relative_to(layout.root).as_posix()}: renaming extensions to plugins "
+                                     f"would make this parseable TOML unreadable (likely both `extensions` and "
+                                     f"`plugins` already set in the same table) — this is the rename's error, not "
+                                     f"the manifest's: keep one name by hand, then run `supervisor migrate` again")
             if _still_old(changed):                          # decided before anything is written
                 raise MigrationError(f"{p.relative_to(layout.root).as_posix()}: its `[requires] extensions` or "
                                      f"`section = \"extensions.<identity>\"` is in a form migrate cannot rename: "
