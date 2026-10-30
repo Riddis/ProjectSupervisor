@@ -280,3 +280,44 @@ def test_a_dotted_name_the_old_folder_does_not_hold_is_left_alone(tmp_path):
     (lay.root / "project.yaml").write_bytes(PROJECT.replace("- beta\r\n", "- beta\r\n- extensions.elsewhere\r\n").encode())
     notes = migrations.run(lay, dry_run=True)
     assert "project.yaml: extensions renamed plugins" in notes
+
+
+# Review 2.0.0 F3: `[requires] extensions = []` and `plugins = []` together is valid TOML. The rename produced two
+# `plugins` keys; parsing that result failed, but `_still_old` caught the TOMLDecodeError its own rewrite raised and
+# returned False, so preflight read "not old any more" and accepted the rewrite, which the apply path then wrote as
+# invalid text after project.yaml, routing.yaml and the folder had already moved. The conflict is refused before
+# any write, and the dry run reports that refusal rather than announcing the migration.
+BOTH_KEYS_MANIFEST = HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\nextensions = []\r\nplugins = []\r\n'
+
+
+def test_a_manifest_with_both_requires_keys_stops_migrate_before_any_write(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(BOTH_KEYS_MANIFEST.encode())
+    before = snapshot(lay.root)
+    with pytest.raises(migrations.MigrationError, match="alpha.toml"):
+        migrations.run(lay)
+    assert snapshot(lay.root) == before
+
+
+def test_a_dry_run_of_the_both_keys_manifest_refuses_rather_than_announcing_the_migration(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(BOTH_KEYS_MANIFEST.encode())
+    before = snapshot(lay.root)
+    with pytest.raises(migrations.MigrationError, match="alpha.toml"):
+        migrations.run(lay, dry_run=True)
+    assert snapshot(lay.root) == before
+
+
+# The same guard has to hold for a rewrite the F3 case did not name, not just the one manifest form the review
+# demonstrated: whatever made parseable TOML unparsable, fail closed, and never because the input itself was already
+# unreadable (that TOMLDecodeError is doctor's to report, not this check's — the two are kept distinct).
+def test_a_rewrite_that_breaks_parsing_is_refused_fail_closed():
+    before = "a = 1\r\n"
+    after = "a = 1\r\na = 2\r\n"                                # a generic duplicate key, nothing to do with plugins
+    assert migrations._rewrite_unparsable(before, after)
+
+
+def test_an_already_invalid_input_is_not_blamed_on_the_rewrite():
+    before = "not [ valid toml"
+    after = "also not valid, but a different error"
+    assert not migrations._rewrite_unparsable(before, after)
