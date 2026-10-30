@@ -234,8 +234,26 @@ _OLD_DOTTED = re.compile(r"""^([ \t]*requires[ \t]*\.[ \t]*)(["']?)extensions\2(
 # (`_table_span`, `_in_table`): `extensions` is renamed only where `[requires]` declares it, `section` only where
 # `[config]` does, never anywhere else in the file.
 _INLINE_TABLE = re.compile(r"""^[ \t]*(?:requires|config)[ \t]*=[ \t]*\{.*\}.*$""", re.MULTILINE)
-_OLD_SECTION_LINE = re.compile(r"""^([ \t]*section[ \t]*=[ \t]*)(["'])extensions\.""", re.MULTILINE)
-_TABLE_HEADER = re.compile(r"""^[ \t]*\[[ \t]*([A-Za-z_][A-Za-z0-9_-]*)[ \t]*\][ \t]*(?:#.*)?$""", re.MULTILINE)
+# A key may be bare or quoted (`section` or `"section"`/`'section'`); either spelling names the same TOML field.
+_OLD_SECTION_LINE = re.compile(r"""^([ \t]*)(["']?)section\2([ \t]*=[ \t]*)(["'])extensions\.""", re.MULTILINE)
+# `config.section = "extensions.<id>"`: the same field as `_OLD_SECTION_LINE`, written as a top-level dotted key
+# rather than inside a `[config]` table (TOML allows both for the same field).
+_OLD_DOTTED_SECTION = re.compile(
+    r"""^([ \t]*config[ \t]*\.[ \t]*)(["']?)section\2([ \t]*=[ \t]*)(["'])extensions\.""", re.MULTILINE)
+# A table's header name may be bare or quoted (`[requires]`, `["requires"]`, `['requires']`); same table either way.
+_TABLE_HEADER = re.compile(
+    r"""^[ \t]*\[[ \t]*(?:([A-Za-z_][A-Za-z0-9_-]*)|"((?:[^"\\]|\\.)*)"|'([^']*)')[ \t]*\][ \t]*(?:\#.*)?$""",
+    re.MULTILINE)
+
+
+def _header_name(header: re.Match) -> str:
+    """The table name a `_TABLE_HEADER` match actually declares, quoted or not (TOML's basic-string escapes
+    unescaped for the quoted form; the names migrate looks for, `requires` and `config`, never need them)."""
+    if header.group(1) is not None:
+        return header.group(1)
+    if header.group(2) is not None:
+        return header.group(2).replace("\\\\", "\\").replace('\\"', '"')
+    return header.group(3)
 
 
 def _table_span(text: str, name: str) -> tuple[int, int] | None:
@@ -244,7 +262,7 @@ def _table_span(text: str, name: str) -> tuple[int, int] | None:
     not this)."""
     headers = list(_TABLE_HEADER.finditer(text))
     for i, h in enumerate(headers):
-        if h.group(1) == name:
+        if _header_name(h) == name:
             return h.end(), headers[i + 1].start() if i + 1 < len(headers) else len(text)
     return None
 
@@ -328,11 +346,14 @@ def _rewrite_inline(line: str) -> str:
         out.append(body[pos:ks])
         out.append(_requote(body[ks:ke], "plugins") if name == "extensions" else body[ks:ke])
         out.append(body[ke:vs])
-        value = body[vs:ve]
+        raw_value = body[vs:ve]
+        value = raw_value.rstrip()                       # the value token, apart from whitespace before `,`/`}`
+        trailing = raw_value[len(value):]
         if (name == "section" and len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'"
                 and value[1:-1].startswith("extensions.")):
             value = value[0] + "plugins." + value[1:-1][len("extensions."):] + value[-1]
         out.append(value)
+        out.append(trailing)
         pos = ve
     out.append(body[pos:])
     return line[:start + 1] + "".join(out) + line[end:]
@@ -341,8 +362,9 @@ def _rewrite_inline(line: str) -> str:
 def _renamed_manifest(text: str) -> str:
     text = _in_table(text, "requires", lambda body: _OLD_REQUIRES.sub(r"\1\2plugins\2", body))
     text = _OLD_DOTTED.sub(r"\1\2plugins\2", text)       # `requires.extensions`, scoped by the key itself
+    text = _OLD_DOTTED_SECTION.sub(r"\1\2section\2\3\4plugins.", text)   # `config.section = "extensions...`
     text = _INLINE_TABLE.sub(lambda m: _rewrite_inline(m.group(0)), text)
-    return _in_table(text, "config", lambda body: _OLD_SECTION_LINE.sub(r"\1\2plugins.", body))
+    return _in_table(text, "config", lambda body: _OLD_SECTION_LINE.sub(r"\1\2section\2\3\4plugins.", body))
 
 
 def _unexpected_rewrite(before: str, after: str) -> bool:
