@@ -499,8 +499,12 @@ def check_project_info(root: Path, cfg: dict, terms: dict[str, list[str]] | None
 
 
 def _members(target: Path):
-    """(path, bytes or None) of each file in `target`: a folder (what git tracks or would add there, else every file
-    but caches), a wheel or zip, or a tar archive (an sdist). Bytes are None when the file cannot be read."""
+    """(label, real path, bytes or None) of each file in `target`: a folder (what git tracks or would add there,
+    else every file but caches), a wheel or zip, or a tar archive (an sdist). `label` is the display name used in a
+    Finding, archive-prefixed (`archive-name!member/path`) for a wheel or tar; `real path` is the member's actual
+    path, used to decide whether a package allowance applies, and never carries that display prefix — an ordinary
+    folder's member is never relabelled, so a directory named with a literal `!` cannot be mistaken for one (review
+    2.0.0 R1, F2). Bytes are None when the file cannot be read."""
     import tarfile
     import zipfile
     if target.is_dir():
@@ -508,21 +512,22 @@ def _members(target: Path):
         # then every file is read, never none
         for p in repository_files(target) or _walk_files(target):
             if p.is_file():
+                rel = _rel(target, p)
                 try:
-                    yield _rel(target, p), p.read_bytes()
+                    yield rel, rel, p.read_bytes()
                 except OSError:
-                    yield _rel(target, p), None
+                    yield rel, rel, None
     elif zipfile.is_zipfile(target):
         with zipfile.ZipFile(target) as z:
             for info in z.infolist():
                 if not info.is_dir():
-                    yield f"{target.name}!{info.filename}", z.read(info)
+                    yield f"{target.name}!{info.filename}", info.filename, z.read(info)
     elif tarfile.is_tarfile(target):
         with tarfile.open(target) as t:
             for info in t.getmembers():
                 if info.isfile():
                     f = t.extractfile(info)
-                    yield f"{target.name}!{info.name}", f.read() if f else None
+                    yield f"{target.name}!{info.name}", info.name, f.read() if f else None
     else:
         raise ConfigError(f"{target}: not a folder, a wheel, a zip or a tar archive")
 
@@ -539,13 +544,13 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
     rules = [(project, rx) for project, words in terms.items() if (rx := _term_re(words)) is not None]
     scope = _allowance_scope(target) if any(allowed.values() for allowed in (allowed or {}).values()) else None
     out = []
-    for rel, data in _members(target):
+    for rel, real, data in _members(target):
         try:
             lines = data.decode("utf-8").splitlines() if data is not None else []
         except UnicodeDecodeError:
             lines = []
         for project, rx in rules:
-            ok = _allowed_here(scope, rel.split("!", 1)[-1], (allowed or {}).get(project) or {})
+            ok = _allowed_here(scope, real, (allowed or {}).get(project) or {})
             detail = f"a word of project {project!r} in {where or target.name}"
             out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)
                     if m.group(0).lower() not in ok]
