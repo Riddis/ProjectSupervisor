@@ -25,7 +25,11 @@ from .paths import Layout
 
 REVISION_BUDGET = 2
 ISSUE_TITLES = {"worker_blocked": "worker reported BLOCKED", "worker_failed": "worker run failed repeatedly",
-                "stalled": "stopped with nothing routing it"}
+                "stalled": "stopped with nothing routing it", "continuations_exhausted": "continuation budget exhausted"}
+# retry=False decisions never get a second try at the same brief; the note explains why in the failure's own terms
+# instead of a stock worker_blocked sentence (D-010 Consequences: this is also where continuations-exhausted lands).
+NO_RETRY_NOTES = {"worker_blocked": "the worker reported it cannot proceed; retrying the same brief would repeat it",
+                  "continuations_exhausted": "the continuation budget is spent; resubmitting the same brief would need another"}
 
 
 def last_decision_at(layout: Layout, task_id: str) -> str:
@@ -82,6 +86,24 @@ def open_issue(layout: Layout, title: str, severity: str, owner_role: str, detai
         store.write_new(layout.issues / f"{iid}.yaml", doc)
     tasks_mod.log(layout, "issue_opened", "escalation", id=iid, title=title)
     return doc
+
+
+def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task: str | None, actor: str) -> dict:
+    """The only way state/issues/ is closed: the `issue.resolve` command (supervisor.commands), queued like every
+    other command. Idempotent: an already-resolved issue is a no-op, not a second write — a status open issue
+    records are never anything but open until this runs."""
+    p = layout.issues / f"{issue_id}.yaml"
+    if not p.exists():
+        raise ValueError(f"no such issue {issue_id!r}")
+    if store.read(p).get("status") == "resolved":
+        return {"skipped": "already resolved", "id": issue_id}
+    def fn(doc):
+        doc.update(status="resolved", resolution=resolution, resolved_by=actor, resolved_by_task=resolving_task,
+                   resolved_at=store.now_iso())
+        return doc
+    store.update(p, fn, lock_path=layout.state / ".issues.lock")
+    tasks_mod.log(layout, "issue_resolved", actor, id=issue_id, resolution=resolution[:200], task=resolving_task)
+    return {"id": issue_id, "status": "resolved"}
 
 
 def find_issue(layout: Layout, task_id: str, signature: str) -> dict | None:
@@ -220,7 +242,7 @@ def record_failure(supervisor, task_id: str, source: str, detail: str, event: st
     state["revisions"] += 1
     if not retry:
         decision = {"action": "escalate", "signature": sig,
-                    "note": f"{source}: the worker reported it cannot proceed; retrying the same brief would repeat it"}
+                    "note": f"{source}: {NO_RETRY_NOTES.get(source, 'retrying the same brief would repeat it')}"}
     elif repeat or state["revisions"] > REVISION_BUDGET:
         decision = {"action": "escalate", "signature": sig,
                     "note": (f"{source} failed again with the same signature" if repeat else

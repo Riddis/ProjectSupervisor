@@ -162,9 +162,13 @@ class Supervisor:
         tasks_mod.log(self.layout, "job_requeued", "loop", task=task_id, attempt=rec["attempt_id"], reason=reason,
                       result=result.status, error=result.error, until=until, continuation=n + 1)
         if n >= self.MAX_CONTINUATIONS:
+            # D-010 Consequences: this used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
+            # retry=False because a blind re-dispatch of the same brief needs a continuation chain too — the
+            # diagnosis route (bounded by its own DIAGNOSIS_BUDGET) decides requeue/defer/architect/owner instead.
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
-            tasks_mod.set_status(self.layout, task_id, TaskStatus.BLOCKED, actor="loop",
-                                 note=f"{rec['attempt_id']}: {reason} after {n} continuations — owner decision needed")
+            escalation_mod.record_failure(self, task_id, "continuations_exhausted",
+                                          f"{rec['attempt_id']}: {reason} after {n} continuations",
+                                          event=f"{rec['attempt_id']}:continuations", retry=False)
             return
         kind = (rec.get("spec") or {}).get("kind", "delivery")
         if kind == "review":
