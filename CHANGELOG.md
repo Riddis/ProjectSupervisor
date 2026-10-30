@@ -76,6 +76,15 @@ reviewer checks each entry below.
   actually renames. The rewrite now reads each table structurally — key by key for an inline table, by table span
   for a plain one — and refuses, before any write, if the result differs from `requires.extensions` →
   `requires.plugins` and `config.section`'s `extensions.` prefix anywhere else.
+- **Fixed: `supervisor migrate`'s structural rewrite (the previous entry) stopped recognizing manifest forms it
+  used to migrate.** The value-span comparison included the whitespace in front of a `,`/`}`, so ordinary inline
+  formatting (a space before the comma, `section` listed last) left the value looking unquoted and the whole
+  migration was refused; a quoted table header (`["config"]`), a quoted `section` key, and `config.section`
+  written as a top-level dotted key were not located at all. Each was valid 1.13.0 TOML that migrated before the
+  previous entry's fix. The value token is now read apart from its trailing whitespace, which is preserved
+  unchanged, and the table-header, section-line and dotted-section locators recognize the quoted and dotted
+  spellings as the same TOML fields. Both parsed-document safeguards are unchanged, and no global string
+  replacement was reintroduced.
 - **Fixed: a project's package-name allowance in the words scan was not contained to `packages/`.** `supervisor
   boundary --words` (and G1d) split every scanned path on its first `!` before checking the package allowance,
   though `!` is also a legal character in an ordinary folder name; a folder named `outside!packages/<distribution>/
