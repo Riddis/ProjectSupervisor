@@ -171,6 +171,44 @@ def test_every_form_of_the_old_names_in_a_manifest_is_renamed_and_the_plugin_loa
     testing.reset()
 
 
+# Review 2.0.0 F1: `_OLD_SECTION` matched every quoted string beginning `extensions.`, wherever it occurred in the
+# manifest, not just `config.section`'s value. A legacy `extensions.<name>` command identifier (kept in
+# `legacy_ids` on purpose, for an identifier older than the namespace rule) and syntax-looking text inside an
+# unrelated string were silently rewritten too. Only `requires.extensions` (the key) and `config.section` (the
+# value's `extensions.` prefix) may change; every other value, every comment and the line endings stay exactly as
+# they were.
+F1_MANIFEST = (HEAD_LINES
+              + '\r\n# a plugin that kept its old command name on purpose\r\n'
+                '[provides]\r\ndoctor_checks = ["alpha"]\r\ncommands = ["extensions.submit"]\r\n'
+              + '\r\n[legacy_ids]\r\ncommands = ["extensions.submit"]\r\n'
+              + CONFIG_TABLE
+              + '\r\n[requires]\r\nservices = ["remote, extensions = [x]"]\r\nextensions = ["beta"]\r\n')
+F1_EXPECTED = F1_MANIFEST.replace('section = "extensions.alpha"', 'section = "plugins.alpha"').replace(
+    'extensions = ["beta"]', 'plugins = ["beta"]')
+
+
+def test_f1_a_legacy_command_identifier_and_a_syntax_looking_string_are_kept(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(F1_MANIFEST.encode())
+    migrations.run(lay)
+    assert (lay.root / "plugins" / "alpha.toml").read_bytes() == F1_EXPECTED.encode()
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+
+def test_f1_the_same_manifest_with_lf_line_endings(tmp_path):
+    lay = old_project(tmp_path)
+    (lay.root / "extensions" / "alpha.toml").write_bytes(F1_MANIFEST.replace("\r\n", "\n").encode())
+    migrations.run(lay)
+    text = (lay.root / "plugins" / "alpha.toml").read_bytes()
+    assert text == F1_EXPECTED.replace("\r\n", "\n").encode()
+    assert b"\r" not in text
+    reg = plugins.load(lay)
+    assert sorted(reg.loaded) == ["alpha", "beta"] and reg.errors == []
+    testing.reset()
+
+
 def test_a_manifest_that_still_reads_the_old_names_stops_migrate_before_any_write(tmp_path):
     lay = old_project(tmp_path)
     escaped = HEAD_LINES + PROVIDES + CONFIG_TABLE + '\r\n[requires]\r\n"\\u0065xtensions" = ["beta"]\r\n'
