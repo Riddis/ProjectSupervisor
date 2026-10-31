@@ -88,14 +88,30 @@ def open_issue(layout: Layout, title: str, severity: str, owner_role: str, detai
     return doc
 
 
+_ISSUE_ID_RE = re.compile(r"^I-\d+$")                 # the exact shape _next_issue_id generates, nothing wider
+
+
 def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task: str | None, actor: str) -> dict:
     """The only way state/issues/ is closed: the `issue.resolve` command (supervisor.commands), queued like every
     other command. Idempotent: an already-resolved issue is a no-op, not a second write — a status open issue
-    records are never anything but open until this runs."""
-    p = layout.issues / f"{issue_id}.yaml"
+    records are never anything but open until this runs.
+
+    `issue_id` is attacker-reachable text (R3): rejecting the format up front (`I-<digits>`, nothing else) already
+    refuses every separator, `..` traversal and absolute id, because none of those match it. The containment check
+    is kept anyway as a second, independent layer, and the loaded record's own `id`/`severity`/`status` fields are
+    checked before any write so a contained but wrong-shaped record (not an issue at all) cannot be mistaken for
+    one — all three checks run before the file is even opened for update."""
+    if not isinstance(issue_id, str) or not _ISSUE_ID_RE.match(issue_id):
+        raise ValueError(f"invalid issue id {issue_id!r}")
+    p = (layout.issues / f"{issue_id}.yaml").resolve()
+    if p.parent != layout.issues.resolve():
+        raise ValueError(f"invalid issue id {issue_id!r}")
     if not p.exists():
         raise ValueError(f"no such issue {issue_id!r}")
-    if store.read(p).get("status") == "resolved":
+    doc = store.read(p)
+    if doc.get("id") != issue_id or "severity" not in doc or doc.get("status") not in ("open", "resolved"):
+        raise ValueError(f"not an issue record: {issue_id!r}")
+    if doc.get("status") == "resolved":
         return {"skipped": "already resolved", "id": issue_id}
     def fn(doc):
         doc.update(status="resolved", resolution=resolution, resolved_by=actor, resolved_by_task=resolving_task,
