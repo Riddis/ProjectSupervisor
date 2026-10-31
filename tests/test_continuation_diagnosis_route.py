@@ -308,3 +308,83 @@ def test_a_replay_after_new_continuations_already_exist_retires_only_the_old_gra
     assert len(fresh) == 1                                              # the fresh chain's own continuation
     escalation.grant_continuations(layout, "T", reason="late-arriving replay")
     assert old_markers(layout, "T") == fresh                            # the fresh marker is untouched
+
+
+# ------------------------------------------------------------------ F3 regressions: a capped attempt stays
+# recoverable until its escalation is durable
+
+
+def _raise(*_a, **_k):
+    raise RuntimeError("crash before escalation")
+
+
+def test_a_capped_attempt_interrupted_before_requeue_s_own_escalation_is_finished_by_reconcile_alone(layout, fake_claude, monkeypatch):
+    """requeue()'s cap branch marks the attempt DONE/continued/capped, then calls escalation.record_failure() for
+    it. A crash between those two writes used to leave the job terminal and the task IN_PROGRESS with no issue or
+    diagnosis, and nothing — not the torn-write repair above (it skips anything already `continued`), not the
+    stall sweep (it excludes IN_PROGRESS tasks) — ever revisited it. A fresh Supervisor's own reconcile(), with no
+    owner step, must finish it instead."""
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    rec = continuation_chain(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    real_record_failure = escalation.record_failure
+    monkeypatch.setattr(escalation, "record_failure", _raise)
+    with pytest.raises(RuntimeError):
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+    monkeypatch.setattr(escalation, "record_failure", real_record_failure)
+    # exactly the state the real crash point leaves durable: the cap write landed, the escalation call did not
+    capped = jobs.read(layout, rec["attempt_id"])
+    assert capped["phase"] == "DONE" and capped.get("continued") is True and capped.get("capped") is True
+    assert jobs.open_records(layout) == []
+    assert list(layout.issues.glob("I-*.yaml")) == []
+    assert diag_records(layout, "T") == []
+    assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS
+    assert sup.sweep_stalled() == []                       # the stall sweep excludes IN_PROGRESS tasks (not its job)
+    deliveries_before = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                         if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    fresh = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        fresh.reconcile()
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1
+    manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
+    assert len(manager_diags) == 1                          # idempotent: three reconcile() calls, one diagnosis
+    assert tasks.load(layout, "T").status != TaskStatus.IN_PROGRESS
+    deliveries_after = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                        if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    assert deliveries_after == deliveries_before             # no bypassing requeue past the cap
+
+
+def test_a_capped_attempt_interrupted_before_repair_s_own_escalation_is_finished_by_reconcile_alone(layout, fake_claude, monkeypatch):
+    """The recovery-cap branch: repair_continuations() enforcing the cap itself, for a torn write AT the boundary
+    (continued never set, as test_repair_continuations_enforces_the_same_cap_as_requeue builds), repeats the same
+    write-then-escalate ordering — and can be interrupted the exact same way. A fresh Supervisor's reconcile()
+    alone must still finish it, not a DONE/DEFERRED record missing the continued flag (the weaker, pre-existing
+    case that test already covers end-to-end in one call)."""
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = continuation_chain(layout, "T")                  # 3 prior continuations already recorded
+    jobs.set_phase(layout, rec["attempt_id"], "DONE", result="DEFERRED")   # torn write AT the cap boundary
+    real_record_failure = escalation.record_failure
+    monkeypatch.setattr(escalation, "record_failure", _raise)
+    with pytest.raises(RuntimeError):
+        sup.repair_continuations()
+    monkeypatch.setattr(escalation, "record_failure", real_record_failure)
+    capped = jobs.read(layout, rec["attempt_id"])
+    assert capped["phase"] == "DONE" and capped.get("continued") is True and capped.get("capped") is True
+    assert list(layout.issues.glob("I-*.yaml")) == []
+    assert diag_records(layout, "T") == []
+    assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS
+    deliveries_before = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                         if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    fresh = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        fresh.reconcile()
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1
+    manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
+    assert len(manager_diags) == 1
+    assert tasks.load(layout, "T").status != TaskStatus.IN_PROGRESS
+    deliveries_after = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                        if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    assert deliveries_after == deliveries_before             # no bypassing requeue past the cap
