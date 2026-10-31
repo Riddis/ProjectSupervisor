@@ -28,5 +28,8 @@ testpaths = ["tests"]
 
 # What CI drives on the installed wheel when this package lives under the framework repository's packages/
 # (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
-[tool.supervisor.ci]
-lane = "local_llm"
+# `lane` is left unset although this package does register an adapter: the lane talks HTTP to a model server on
+# the loopback address and holds the GPU slot, and a CI runner has neither. tools/ci_installed_plugin.py --lane
+# plants a task with an `output` key no process-family adapter honours and requires it to reach COMPLETE, so
+# naming this lane there is a job that cannot pass. CI drives steps 1-3 (found as installed, loaded, G5) plus
+# this package's own suite, which stands up a fake server of its own. Left unset deliberately, not forgotten.

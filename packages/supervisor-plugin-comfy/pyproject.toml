@@ -28,7 +28,8 @@ testpaths = ["tests"]
 
 # What CI drives on the installed wheel when this package lives under the framework repository's packages/
 # (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
-# The comfy lane itself (boundary plan phase 5, step 3) has not moved in yet; `lane` names it ahead of that move
-# so CI starts driving it the moment it exists, instead of a second edit then.
-[tool.supervisor.ci]
-lane = "comfy"
+# This package's lane (boundary plan phase 5, step 3) has not moved in yet, and `lane` will stay unset after it
+# does: that lane drives a generation service over HTTP and needs a GPU, which a CI runner has neither of, and
+# tools/ci_installed_plugin.py --lane plants a task with an `output` key no process-family adapter honours and
+# requires it to reach COMPLETE. CI drives steps 1-3 (found as installed, loaded, G5) plus this package's own
+# suite. Left unset deliberately, not forgotten.
