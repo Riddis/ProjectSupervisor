@@ -37,14 +37,50 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. A diagnosis
 # never supplies `argv` itself: `job_fix` may only ever name `params`, mapping a NAME the job already declared
 # (in its own `fix_params`, written only by task.set_job/commands.apply_job, never by a diagnosis) to a new value.
-# `fix_params[name]` fixes which argv slot that name corrects (`index`, always >= PARAM_MIN_INDEX, so the
-# interpreter at argv[0] and the script/module at argv[1] are never a parameter) and how its value is checked
-# (`pattern`, a regex the value must fullmatch, or `kind: "path"`, which instead requires the value to resolve
-# inside the project). Every other field of the job (its adapter, every limit, owned_paths, ...) is untouched,
-# whatever a diagnosis proposes — task.set_job (via commands.apply_job) stays the single writer, replacing only
-# `argv`, and every application or refusal is logged (diagnosis_job_fixed).
+# `fix_params[name]` fixes which argv slot that name corrects (`index`) and how its value is checked (`pattern`, a
+# regex the value must fullmatch, or `kind: "path"`, which instead requires the value to resolve inside the
+# project). Every other field of the job (its adapter, every limit, owned_paths, ...) is untouched, whatever a
+# diagnosis proposes — task.set_job (via commands.apply_job) stays the single writer, replacing only `argv`, and
+# every application or refusal is logged (diagnosis_job_fixed).
+#
+# Which indices are even eligible is not PARAM_MIN_INDEX alone: that is only the absolute floor, never 0 or 1 for
+# any command. The real boundary is _command_prefix(argv) — this argv's own layout, read fresh from the CURRENT
+# job every time, never from fix_params — the length of the trusted, immutable executable+script prefix a
+# diagnosis can never move into. A command whose layout this cannot read (any interpreter option it does not
+# recognise, on any executable) has NO eligible index at all: refusing the whole command is the safe answer when
+# the slot that selects executable code cannot be pinned down, not assuming argv[1] is the script just because it
+# does not start with "-" (that assumption is what let `cmd.exe /c <script>` move the real script to argv[2]
+# while looking, to the old check, exactly like a trusted argv[1] script — round-2 review F1).
 JOB_FIX_FIELDS = {"process": ("params",)}
-PARAM_MIN_INDEX = 2             # argv[0] (interpreter) and argv[1] (script/module) are never a declared parameter
+PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
+
+# The only wrapper layout this interface knows how to read beyond "argv[0] is the executable, argv[1] is its
+# script/module": cmd.exe (or cmd) invoked with /c or /k, the two switches that hand it a command line to run
+# rather than an interactive session. For that one recognised shape the actual script moves to argv[2], so the
+# trusted prefix is 3 slots, not 2 — a declared parameter at index 2 is still the script itself and stays
+# ineligible. Anything else at argv[1] that looks like an option (starts with "-", Unix style, or "/", Windows
+# style) is a layout this interface does not know how to read and is refused outright: COMMAND_WRAPPERS is a
+# small, explicit registry of layouts it DOES understand, not a blacklist of strings it refuses.
+COMMAND_WRAPPERS = {("cmd.exe", "/c"): 3, ("cmd.exe", "/k"): 3, ("cmd", "/c"): 3, ("cmd", "/k"): 3}
+
+
+def _command_prefix(argv: list) -> int | None:
+    """The length of the trusted, immutable executable(+option)+script prefix for argv's own layout, or None when
+    that layout cannot be read: too few tokens to have a script at all, or an argv[1] that looks like an
+    interpreter option this interface does not have a registered layout for. Only an index at or after this
+    length is ever eligible to be a declared, correctable parameter — never the executable, never the option that
+    selects the wrapper's command line, never the script, whichever slot it actually lands on."""
+    if len(argv) < 2:
+        return None
+    exe_name = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    option = str(argv[1]).lower()
+    wrapped = COMMAND_WRAPPERS.get((exe_name, option))
+    if wrapped is not None:
+        return wrapped if len(argv) > wrapped - 1 else None
+    if str(argv[1]).startswith("-") or str(argv[1]).startswith("/"):
+        return None
+    return PARAM_MIN_INDEX
+
 
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
@@ -217,15 +253,19 @@ def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | N
     params_proposed = proposed.get("params") if "params" in allowed else None
     schema = current.get("fix_params") or {}
     argv = list(current.get("argv") or [])
-    # Nothing is a mutable parameter unless the job itself has a trusted executable at argv[0] and a trusted
-    # script/module at argv[1] — never an interpreter option such as -c/-m, which would let a validated-looking
-    # parameter still select arbitrary code (the pinning gap this interface closes).
-    has_trusted_script = len(argv) > PARAM_MIN_INDEX - 1 and not str(argv[PARAM_MIN_INDEX - 1]).startswith("-")
+    # Nothing is a mutable parameter unless this argv's own layout can be read (_command_prefix) AND the declared
+    # index lands at or after the trusted prefix that layout establishes — never the executable, never an
+    # interpreter option, never the script, whichever slot it actually occupies for this command (the pinning gap
+    # round-2 review F1 closes: a layout this cannot read, or an index inside its trusted prefix, has no eligible
+    # slot at all, so a diagnosis can never widen what "the script" means by declaring one).
+    prefix_len = _command_prefix(argv)
     applied_params: dict = {}
     if isinstance(params_proposed, dict):
         for name, value in params_proposed.items():
             spec = schema.get(name)
-            if has_trusted_script and isinstance(spec, dict) and _param_ok(layout, spec, value) and spec["index"] < len(argv):
+            if (prefix_len is not None and isinstance(spec, dict) and isinstance(spec.get("index"), int)
+                    and not isinstance(spec.get("index"), bool) and spec["index"] >= prefix_len
+                    and _param_ok(layout, spec, value) and spec["index"] < len(argv)):
                 argv[spec["index"]] = value
                 applied_params[name] = value
             else:
