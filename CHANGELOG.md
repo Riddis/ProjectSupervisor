@@ -10,34 +10,58 @@ diagnosis's job correction both now go through the manager's diagnosis route ins
 command that closes an issue record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps
 before the tag — an unconfined diagnosis `argv`, two CI jobs red on the exact reviewed head, `issue.resolve`
 accepting a path outside `state/issues/`, and a continuation grant that recovery could bypass after a manager
-requeue — each closed by a commit on this branch before any of this is released; what follows already describes
-the corrected shape, not the gap.
+requeue — each closed by its own commit before round 2. Round-2 review
+(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found four more gaps in those same fixes — a Windows command form
+that still let a diagnosis replace the program being run, a continuation grant whose retirement a crash-and-replay
+could leave unfinished or redo, a capped attempt a crash could strand before its own escalation was durable, and a
+manager-to-architect hand-off that lost its grant generation and reused an already-spent architect answer — each
+closed by its own commit too (`docs/releases/2.1.0/F1-command-layout-contract.md` through
+`F4-architect-grant-generation.md`). What follows already describes the corrected shape after both rounds, not
+either round's gap.
 
 **Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
 to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
-`supervisor doctor`, start. An issue resolved under 2.1.0, or a process job whose `fix_params` a diagnosis
-corrected, are plain state either way; 2.0.0 reads them as ordinary issue and job fields it already understood.
+`supervisor doctor`, start. An issue resolved under 2.1.0, a process job whose `fix_params` a diagnosis corrected,
+or a continuation job record carrying its grant generation (`continuation_grant`), are plain state either way;
+2.0.0 reads them as ordinary issue and job fields it already understood.
 
 - **Changed: continuations exhausted routes through the manager's diagnosis, not straight to the owner.**
   `Supervisor.requeue()`'s `MAX_CONTINUATIONS` branch now calls `escalation.record_failure(..., retry=False)`
   instead of setting the task `BLOCKED` with an owner-decision note itself, so the diagnosis route's own budget
   (two requeues, then the owner) governs it like every other stopped retry chain.
-- **Changed: a manager-granted continuation chain is explicit and replay-safe, and recovery keeps the cap.**
-  A manager `requeue` now retires every prior continuation marker exactly once
-  (`escalation.grant_continuations`/`current_grant`), so the next continuation after a grant does not hit the old
-  cap immediately and a repeat exhaustion reaches its own fresh diagnosis instead of reusing the spent one's
-  issue. `Supervisor.repair_continuations` now enforces the same `MAX_CONTINUATIONS` cap `requeue()` does, so a
-  torn write landing exactly at the cap boundary is repaired as a capped stop, not redispatched past it. Closes
-  the race CI's two `G3 suite` jobs hit against the first candidate head (round-1 review R2, R4): the same
-  assertion now reads the recorded `escalation -> READY` transition instead of a live status a relaunch can
-  already have overtaken.
+- **Changed: a manager-granted continuation chain is explicit, its retirement is resumable, and a capped attempt
+  stays recoverable until its escalation is durable.** A manager `requeue` tags every continuation attempt it
+  dispatches with the grant generation it belongs to (`continuation_grant`) and retires every marker from an
+  older generation, read fresh on each call rather than gated on whether that call happened to be the one that
+  made the grant — so a crash between the grant's own durable write and its retirement loop, or partway through
+  that loop, is finished by whichever later replay (a fresh `settle()`, a re-applied owner delivery-REQUEUE
+  decision) reaches it next, never under-retiring an old marker or over-retiring a fresh one. `Supervisor.
+  repair_continuations` enforces the same `MAX_CONTINUATIONS` cap `requeue()` does, so a torn write landing
+  exactly at the cap boundary is repaired as a capped stop, not redispatched past it; both of `loop.py`'s cap
+  branches (the ordinary cap and the recovery-cap) now leave a crash between marking the attempt handled and
+  recording its escalation in a shape plain `reconcile()` finds and finishes on its own, instead of a terminal
+  job record no recovery path ever revisits. A manager-to-architect hand-off carries the originating diagnosis's
+  own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
+  diagnosis instead of the already-answered record from the generation that granted it, and never tells the
+  owner the architect lane is unavailable when it is not. Together these close the race CI's two `G3 suite` jobs
+  hit against the first candidate head (round-1 review R2, R4) and the four replay/recovery/routing gaps round-2
+  review found in that same mechanism (F2, F3, F4): the recorded `escalation -> READY` transition, a
+  generation-scoped retirement boundary, and a generation-tagged architect hand-off are what now make the grant
+  replay-safe end to end, not only across the one crash point the first attempt covered.
 - **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
-  which `argv` slots are correctable and how (`fix_params`: an index `>= 2` — the interpreter and the script
-  themselves are never reachable this way — with a regex `pattern` or a `kind: "path"` check resolved inside the
-  project root). A diagnosis's `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other
-  field it names, any undeclared parameter name, or a value that fails its declared check, is dropped and
-  logged, never applied — a diagnosis can correct a stale argument (a sha, a path) but can never install a
-  different program, interpreter option or free-form argv (round-1 review R1).
+  which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
+  executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
+  The trusted prefix is read from the command's own layout, not assumed: fewer than two tokens, or a wrapper
+  whose child re-parses its own command line (`cmd.exe`/`cmd` with `/c`/`/k`, `powershell`/`pwsh` with
+  `-Command`, `sh`/`bash`/`zsh` with `-c`), has **no** eligible index at all — not a protected prefix with a
+  mutable tail — because the child's own parser, not an index, decides where one argument ends and the next
+  command begins; otherwise the plain two-token layout applies, trusted prefix 2, and nothing before it is ever
+  eligible regardless of what a job declares. A diagnosis's `job_fix` may only ever supply
+  `{"params": {"<name>": "<value>"}}`; any other field it names, any undeclared parameter name, an index inside
+  the trusted prefix, or a value that fails its declared check, is dropped and logged, never applied — a
+  diagnosis can correct a stale argument (a sha, an in-project path) but can never install a different program,
+  interpreter option, free-form argv or an alternate script through a command form whose own layout places the
+  script past index 1 (round-1 review R1; round-2 review F1).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
