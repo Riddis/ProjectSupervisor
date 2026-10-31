@@ -82,9 +82,12 @@ def _records(layout: Layout, task_id: str) -> list[dict]:
     return [r for r in jobs_mod.for_task(layout, task_id) if (r.get("spec") or {}).get("kind") == KIND]
 
 
-def already(layout: Layout, task_id: str, signature: str, level: str) -> dict | None:
+def already(layout: Layout, task_id: str, signature: str, level: str, grant: int = 0) -> dict | None:
+    """`grant` (`escalation.current_grant`) excludes a diagnosis dispatched under an earlier grant generation (R4):
+    a repeat failure after a fresh grant must reach its OWN diagnosis, not the one the spent grant already answered."""
     for r in _records(layout, task_id):
-        if r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED":
+        if (r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED"
+                and int(r.get("diag_grant") or 0) == grant):
             return r
     return None
 
@@ -121,15 +124,16 @@ def _task_view(layout: Layout, task: Task, role: str, adapter_name: str, prompt:
 
 
 def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, level: str = "manager",
-             issue_id: str | None = None) -> dict | None:
-    """One diagnosis job for (task, signature, level), or None when one exists, the route is disabled, the role's lane
-    is unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before)."""
+             issue_id: str | None = None, grant: int = 0) -> dict | None:
+    """One diagnosis job for (task, signature, level), or None when one exists under the same grant generation
+    (`grant`, R4), the route is disabled, the role's lane is unavailable, or its capacity is out (the escalation
+    then stands as an issue + BLOCKED task, as before)."""
     from . import review
     layout = supervisor.layout
     cfg = settings(layout)
     if not cfg["enabled"] or level not in LEVELS:
         return None
-    if already(layout, task.id, signature, level):
+    if already(layout, task.id, signature, level, grant=grant):
         return None
     role = cfg["roles"][level]
     try:
@@ -142,7 +146,8 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
     view = _task_view(layout, task, role, adapter_name, brief(layout, task, role, level, source, detail, issue_id), overrides)
     rec = supervisor.dispatch(view, adapter_name, note=f"diagnosis:{role}", kind=KIND,
                               extra={"diag_signature": signature, "diag_level": level, "diag_issue": issue_id,
-                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role})
+                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role,
+                                     "diag_grant": grant})
     tasks_mod.log(layout, "diagnosis_dispatched", "escalation", task=task.id, role=role, level=level, issue=issue_id,
                   attempt=(rec or {}).get("attempt_id"))
     return rec
@@ -291,7 +296,11 @@ def ingest(supervisor, rec: dict, result) -> dict:
             doc.setdefault("guidance", []).append({"at": store.now_iso(), "by": role, "text": guidance})
         tasks_mod._update(layout, task.id, fn)
         fix = propose_job_fix(layout, task, role, obj.get("job_fix"))
-        escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis")
+        # Explicit, replay-safe grant (R4): keyed by this diagnosis job's own attempt id, so a crash between this
+        # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends it only once.
+        granted = escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis", key=rec["attempt_id"])
+        if granted:
+            escalation.grant_continuations(layout, task.id, reason=f"requeued by {role} diagnosis")
         if task.status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation",
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")

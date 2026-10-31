@@ -76,12 +76,15 @@ def _next_issue_id(layout: Layout) -> str:
 
 
 def open_issue(layout: Layout, title: str, severity: str, owner_role: str, detail: str,
-              resolution_task: str | None = None, signature: str | None = None) -> dict:
+              resolution_task: str | None = None, signature: str | None = None, grant: int = 0) -> dict:
+    """`grant` (`current_grant`) tags the issue with the continuation/retry grant generation it was opened under
+    (R4): `find_issue` only reuses an issue from the SAME generation, so a fresh grant's own exhaustion never
+    reuses one a spent grant already opened."""
     layout.issues.mkdir(parents=True, exist_ok=True)
     with FileLock(layout.state / ".issues.lock", owner="escalation", timeout=5.0):
         iid = _next_issue_id(layout)
         doc = {"id": iid, "title": title, "status": "open", "severity": severity, "owner_role": owner_role,
-               "detail": detail, "resolution_task": resolution_task, "signature": signature,
+               "detail": detail, "resolution_task": resolution_task, "signature": signature, "grant": grant,
                "opened": store.now_iso()}
         store.write_new(layout.issues / f"{iid}.yaml", doc)
     tasks_mod.log(layout, "issue_opened", "escalation", id=iid, title=title)
@@ -122,15 +125,20 @@ def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task
     return {"id": issue_id, "status": "resolved"}
 
 
-def find_issue(layout: Layout, task_id: str, signature: str) -> dict | None:
-    """An issue already opened for this task and failure signature — so replaying an interrupted escalation (or the
-    same signature arriving twice) cannot stack duplicate issues on the owner."""
+def find_issue(layout: Layout, task_id: str, signature: str, grant: int = 0) -> dict | None:
+    """An issue already opened for this task and failure signature under the SAME grant generation (`current_grant`,
+    R4) — so replaying an interrupted escalation (or the same signature arriving twice within one grant) cannot
+    stack duplicate issues on the owner, but the normalized signature of a repeat "continuations_exhausted" failure
+    (identical before and after a fresh grant, strictly by text) does not reuse an issue the SPENT grant already
+    opened — that would dedupe every later exhaustion away and the sequence could never reach its own diagnosis or
+    the owner."""
     for p in sorted(layout.issues.glob("I-*.yaml")):
         try:
             doc = store.read(p)
         except (OSError, ValueError):
             continue
-        if doc.get("resolution_task") == task_id and doc.get("signature") == signature and doc.get("status") == "open":
+        if (doc.get("resolution_task") == task_id and doc.get("signature") == signature
+                and doc.get("status") == "open" and int(doc.get("grant") or 0) == grant):
             return doc
     return None
 
@@ -182,13 +190,14 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     if decision["action"] == "retry":
         dispatch_revision(supervisor, task, source, detail, bool(decision.get("senior")), event=decision.get("event"))
         return {"action": "retry", "revision": decision["revision"], "senior": decision["senior"], "signature": sig}
-    issue = find_issue(layout, task.id, sig)
+    grant = current_grant(layout, task.id)
+    issue = find_issue(layout, task.id, sig, grant=grant)
     if issue is None:
         note = decision.get("note", "")
         issue = open_issue(layout, title=f"{task.id}: {ISSUE_TITLES.get(source, f'repeated {source} failure')}", severity="high",
                           owner_role=task.owner_role, signature=sig,
                           detail=f"{detail}\n\n{note}. Automatic retries stopped; diagnosis requested.",
-                          resolution_task=task.id)
+                          resolution_task=task.id, grant=grant)
         if task.status == TaskStatus.IN_PROGRESS:
             tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"{note} ({issue['id']})")
         else:
@@ -203,7 +212,7 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
         out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
                                                      f"diagnosis budget of {diagnosis_mod.DIAGNOSIS_BUDGET} requeues spent")
         return out
-    rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"])
+    rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"], grant=grant)
     if rec:
         out["diagnosis"] = rec.get("attempt_id")
     return out
@@ -223,6 +232,25 @@ def reset_retries(layout: Layout, task_id: str, reason: str = "", key: str | Non
     grants.append({"at": store.now_iso(), "reason": reason, **({"key": key} if key else {})})
     _save(layout, task_id, state)
     return True
+
+
+def current_grant(layout: Layout, task_id: str) -> int:
+    """The task's current continuation/retry grant generation: 0 until the first reset_retries() grant, then the
+    number of genuine grants made so far (`state["resets"]`, itself already replay-safe). An issue or diagnosis
+    tagged with an earlier generation belongs to a spent grant and must never dedupe a later one (R4: `find_issue`,
+    `diagnosis.already`)."""
+    return int(_load(layout, task_id).get("resets") or 0)
+
+
+def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
+    """A fresh continuation grant (D-010/R4): every continuation marker already recorded for this task stops
+    counting toward Supervisor.MAX_CONTINUATIONS, the same way an owner REQUEUE resume has always retired them
+    (supervisor.inbox). Call only after reset_retries() reports a genuinely new grant (its `key` makes that
+    replay-safe) — this function itself is not idempotent and must not run twice for the same grant."""
+    for r in jobs_mod.for_task(layout, task_id):
+        prior = str(r.get("deferred_reason", ""))
+        if prior.startswith("continuation"):
+            jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], deferred_reason=f"reset ({reason}): {prior}")
 
 
 def _replay(supervisor, task: Task, state: dict, event: str, source: str, detail: str) -> dict:
