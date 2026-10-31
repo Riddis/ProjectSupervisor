@@ -44,40 +44,53 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # every application or refusal is logged (diagnosis_job_fixed).
 #
 # Which indices are even eligible is not PARAM_MIN_INDEX alone: that is only the absolute floor, never 0 or 1 for
-# any command. The real boundary is _command_prefix(argv) — this argv's own layout, read fresh from the CURRENT
-# job every time, never from fix_params — the length of the trusted, immutable executable+script prefix a
-# diagnosis can never move into. A command whose layout this cannot read (any interpreter option it does not
-# recognise, on any executable) has NO eligible index at all: refusing the whole command is the safe answer when
-# the slot that selects executable code cannot be pinned down, not assuming argv[1] is the script just because it
-# does not start with "-" (that assumption is what let `cmd.exe /c <script>` move the real script to argv[2]
-# while looking, to the old check, exactly like a trusted argv[1] script — round-2 review F1).
+# any command. The real boundary is _command_prefix(layout, argv) — this argv's own layout, read fresh from the
+# CURRENT job every time, never from fix_params — the length of the trusted, immutable executable+script prefix
+# a diagnosis can never move into, or None when no index at all is eligible: a layout this cannot read (argv[1]
+# is not an actual file, so it cannot even confirm that is the script), or a wrapper whose child re-parses its
+# own command line (SHELL_REPARSING — cmd.exe /c, powershell -Command, sh/bash -c — where no index past the
+# wrapper is provably safe, because the child's own parser, not an index, decides where one argument ends). The
+# old check assumed argv[1] was the script whenever it did not start with "-", which is what let
+# `cmd.exe /c <script>` move the real script to argv[2] while looking, to that check, exactly like a trusted
+# argv[1] script (round-2 review F1); registering that wrapper's argv[2] as a 3-slot "trusted prefix" with a
+# correctable index past it was a second, narrower version of the same mistake — cmd.exe re-parses whatever it
+# is handed, so a `kind: path` value with no spaces and an "&" in it still runs a second program.
 JOB_FIX_FIELDS = {"process": ("params",)}
 PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
 
-# The only wrapper layout this interface knows how to read beyond "argv[0] is the executable, argv[1] is its
-# script/module": cmd.exe (or cmd) invoked with /c or /k, the two switches that hand it a command line to run
-# rather than an interactive session. For that one recognised shape the actual script moves to argv[2], so the
-# trusted prefix is 3 slots, not 2 — a declared parameter at index 2 is still the script itself and stays
-# ineligible. Anything else at argv[1] that looks like an option (starts with "-", Unix style, or "/", Windows
-# style) is a layout this interface does not know how to read and is refused outright: COMMAND_WRAPPERS is a
-# small, explicit registry of layouts it DOES understand, not a blacklist of strings it refuses.
-COMMAND_WRAPPERS = {("cmd.exe", "/c"): 3, ("cmd.exe", "/k"): 3, ("cmd", "/c"): 3, ("cmd", "/k"): 3}
+# A wrapper whose child re-parses its own command line (cmd.exe /c|/k, powershell/pwsh -Command, sh/bash/zsh -c)
+# has NO slot that is provably safe to mutate, however far past argv[1] it sits: the child's own parser, not this
+# interface's index arithmetic, decides where one argument ends and the next command begins, and a value that is
+# otherwise a perfectly ordinary in-project path (one with "&", "|", ";", a space, ...) can make the wrapper run
+# a second, different program (round-2 review F1, architecture note: a `kind: path` value containing "&" passes
+# `contained()` — that only resolves and compares roots — and an argument list2cmdline leaves unquoted because it
+# has no spaces is exactly what cmd.exe then splits on). SHELL_REPARSING is therefore not a registry of layouts
+# with a usable prefix at all: matching it means "no eligible index", full stop — the whole command is refused
+# for a job_fix, the same as a layout this interface cannot read.
+SHELL_REPARSING = {("cmd.exe", "/c"), ("cmd.exe", "/k"), ("cmd", "/c"), ("cmd", "/k"),
+                   ("powershell.exe", "-command"), ("powershell", "-command"),
+                   ("pwsh.exe", "-command"), ("pwsh", "-command"),
+                   ("sh", "-c"), ("sh.exe", "-c"), ("bash", "-c"), ("bash.exe", "-c"), ("zsh", "-c")}
 
 
-def _command_prefix(argv: list) -> int | None:
-    """The length of the trusted, immutable executable(+option)+script prefix for argv's own layout, or None when
-    that layout cannot be read: too few tokens to have a script at all, or an argv[1] that looks like an
-    interpreter option this interface does not have a registered layout for. Only an index at or after this
-    length is ever eligible to be a declared, correctable parameter — never the executable, never the option that
-    selects the wrapper's command line, never the script, whichever slot it actually lands on."""
+def _command_prefix(layout: Layout, argv: list) -> int | None:
+    """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
+    is eligible at all: too few tokens to have a script, a wrapper that re-parses its own command line
+    (SHELL_REPARSING — no slot is safe, not even one), or an argv[1] that is not an actual file (so this cannot
+    even confirm it is looking at a script rather than a flag, a subcommand or an inline snippet like "-c").
+    Checking "is this an existing file" rather than "does this start with - or /" is what makes the one plain
+    layout this interface does understand (argv[0] executable, argv[1] script) read the same way on every
+    platform: an absolute POSIX script path starts with "/" too, and is not an option."""
     if len(argv) < 2:
         return None
     exe_name = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
     option = str(argv[1]).lower()
-    wrapped = COMMAND_WRAPPERS.get((exe_name, option))
-    if wrapped is not None:
-        return wrapped if len(argv) > wrapped - 1 else None
-    if str(argv[1]).startswith("-") or str(argv[1]).startswith("/"):
+    if (exe_name, option) in SHELL_REPARSING:
+        return None
+    try:
+        if not (layout.root / str(argv[1])).is_file():
+            return None
+    except OSError:
         return None
     return PARAM_MIN_INDEX
 
@@ -256,9 +269,10 @@ def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | N
     # Nothing is a mutable parameter unless this argv's own layout can be read (_command_prefix) AND the declared
     # index lands at or after the trusted prefix that layout establishes — never the executable, never an
     # interpreter option, never the script, whichever slot it actually occupies for this command (the pinning gap
-    # round-2 review F1 closes: a layout this cannot read, or an index inside its trusted prefix, has no eligible
-    # slot at all, so a diagnosis can never widen what "the script" means by declaring one).
-    prefix_len = _command_prefix(argv)
+    # round-2 review F1 closes: a layout this cannot read, a shell wrapper that re-parses its own command line,
+    # or an index inside its trusted prefix, has no eligible slot at all, so a diagnosis can never widen what
+    # "the script" means by declaring one).
+    prefix_len = _command_prefix(layout, argv)
     applied_params: dict = {}
     if isinstance(params_proposed, dict):
         for name, value in params_proposed.items():
