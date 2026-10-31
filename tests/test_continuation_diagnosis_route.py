@@ -32,6 +32,21 @@ def continuation_chain(layout, tid, start=1):
     return jobs.read(layout, f"{tid}.a{start + n}")
 
 
+def reconcile_until(sup, predicate, timeout=25):
+    """Poll `sup.reconcile()` (never `once()`) until `predicate()` is true. The manager diagnosis dispatched by
+    `escalation.record_failure()` runs as a real subprocess (`FakeDiagnosisClaude`), so a fixed count of calls
+    races it; `reconcile()` alone settles it (and any grant it makes) without ever reaching `once()`'s scheduler
+    step, which would launch the freshly-granted continuation's own delivery attempt through the same fake
+    adapter and fail it — the race `grants()` below is already written to read around, not to re-trigger."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sup.reconcile()
+        if predicate():
+            return
+        time.sleep(0.1)
+    raise AssertionError("condition never became true")
+
+
 def grants(layout, tid):
     """The grants the escalation route made for `tid`, read from the task's history rather than its live status.
     once() ingests a finished diagnosis in reconcile() and plans the same iteration, so the loop can launch the task
@@ -482,7 +497,11 @@ def test_a_capped_attempt_s_issue_without_its_status_transition_is_finished_by_r
     (it only ran `if issue is None`), while the dispatch below it still ran unconditionally: a manager requeue on
     a task still IN_PROGRESS never sets READY (diagnosis.ingest only does that for BLOCKED/FAILED), stranding it
     IN_PROGRESS with no open job. A fresh Supervisor's own reconcile() must finish the status transition too, not
-    just whatever ran past it, and the requeued chain must reach READY."""
+    just whatever ran past it, and the requeued chain must reach READY. The manager diagnosis runs as a real
+    subprocess (FakeDiagnosisClaude), so ordinary reconcile() cycles are driven through reconcile_until's poll
+    rather than a fixed count of calls racing it; reconcile() alone (never once()) is also what keeps this
+    deterministic, since once()'s scheduler step would launch the just-granted continuation's own delivery
+    attempt through the same fake adapter and fail it before this test ever gets to assert anything."""
     os.environ["FAKE_DIAGNOSIS_ACTION"] = "requeue"
     make_task(layout, "T")
     tasks.set_status(layout, "T", "IN_PROGRESS")
@@ -502,8 +521,7 @@ def test_a_capped_attempt_s_issue_without_its_status_transition_is_finished_by_r
     deliveries_before = {r["attempt_id"] for r in jobs.for_task(layout, "T")
                          if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
     fresh = Supervisor(layout, sleep_s=0)
-    for _ in range(3):
-        fresh.reconcile()
+    reconcile_until(fresh, lambda: tasks.load(layout, "T").status == TaskStatus.READY)
     assert len(list(layout.issues.glob("I-*.yaml"))) == 1                        # no second issue
     manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
     assert len(manager_diags) == 1                                              # idempotent: one diagnosis
@@ -517,9 +535,11 @@ def test_a_capped_attempt_s_issue_without_its_status_transition_is_finished_by_r
 def test_a_capped_attempt_s_blocked_status_without_its_manager_dispatch_is_finished_by_reconcile_alone(layout, fake_claude, monkeypatch):
     """A crash between the BLOCKED write and the manager dispatch used to make the recovery guard
     (`_repair_capped_escalation`) return at once: it read "left IN_PROGRESS" as proof the escalation had
-    finished, but BLOCKED is this same event's own intermediate state, not only a sign of something else. Three
-    reconciles must dispatch the manager diagnosis (not nothing), and the later stall sweep must not raise an
-    owner item for a task whose diagnosis budget was never touched and whose manager lane was free."""
+    finished, but BLOCKED is this same event's own intermediate state, not only a sign of something else. Ordinary
+    reconcile() cycles must dispatch the manager diagnosis (not nothing), and the later stall sweep must not raise
+    an owner item for a task whose diagnosis budget was never touched and whose manager lane was free. The
+    dispatch runs as a real subprocess, so reconcile_until's poll drives reconcile() here too, rather than a fixed
+    count of calls racing it."""
     os.environ["FAKE_DIAGNOSIS_ACTION"] = "requeue"
     make_task(layout, "T")
     tasks.set_status(layout, "T", "IN_PROGRESS")
@@ -536,8 +556,7 @@ def test_a_capped_attempt_s_blocked_status_without_its_manager_dispatch_is_finis
     assert jobs.open_records(layout) == []
     assert tasks.load(layout, "T").status == TaskStatus.BLOCKED
     fresh = Supervisor(layout, sleep_s=0)
-    for _ in range(3):
-        fresh.reconcile()
+    reconcile_until(fresh, lambda: len([r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]) == 1)
     assert len(list(layout.issues.glob("I-*.yaml"))) == 1                        # no second issue
     manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
     assert len(manager_diags) == 1                                              # the dispatch the crash skipped
