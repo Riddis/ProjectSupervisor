@@ -17,9 +17,10 @@ an older framework ignores it.
   recorded writes alone explain: a chain of them from the snapshot's content to the content now. An agent's own
   edit of the same file, before or after the owner's, or an agent putting the owner's values back, breaks the
   chain and still fails.
-- **Fixed: the Capacity page showed Claude's `seven_day_overage_included` window by its raw key.** It is now
-  labelled "7-day, overage included". Its gating is unchanged: a label other than "5-hour" or "7-day" takes no
-  owner floor, so it holds dispatch only when exhausted, and the 7-day floor is not applied to it a second time.
+- **Fixed: the Capacity page showed Claude's `seven_day_overage_included` window by its raw key.** It is the
+  window Claude reports once Fable runs, now labelled "Fable". Its gating is unchanged: a label other than
+  "5-hour" or "7-day" takes no owner floor, so it holds dispatch only when exhausted, and the 7-day floor is not
+  applied to it a second time.
 
 ## 2.1.0 — 2026-10-31
 

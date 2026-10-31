@@ -146,8 +146,8 @@ def test_the_overview_names_what_holds_dispatch(lay):
 
 
 def test_the_overage_window_is_labelled_and_takes_no_owner_floor():
-    """Claude reports `seven_day_overage_included` beside `seven_day`; the Capacity page showed the raw key. Its
-    label is readable and is not "7-day", so the owner's 7-day floor does not gate on it a second time."""
-    assert up.window_label("claude", "seven_day_overage_included") == "7-day, overage included"
+    """Claude reports `seven_day_overage_included` beside `seven_day` once Fable runs; the Capacity page showed the
+    raw key. It is labelled Fable, not "7-day", so the owner's 7-day floor does not gate on it a second time."""
+    assert up.window_label("claude", "seven_day_overage_included") == "Fable"
     assert up.window_floor("claude", {"name": "seven_day_overage_included"}) == (0, None)
     assert up.window_floor("claude", {"name": "seven_day"})[1] == "weekly_gate_percent"
