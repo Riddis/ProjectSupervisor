@@ -226,8 +226,8 @@ def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping
     assert diagnosis.count_requeues(layout, "T") == diagnosis.DIAGNOSIS_BUDGET
 
 
-# ------------------------------------------------------------------ F4 regression: the architect transition
-# carries its grant generation
+# ------------------------------------------------------------------ F4/F7 regression: the architect transition
+# carries its grant generation, and a replayed hand-off reuses it rather than reading it as unavailable
 
 
 def test_a_fresh_manager_architect_handoff_reaches_its_own_architect_each_generation(layout):
@@ -238,6 +238,15 @@ def test_a_fresh_manager_architect_handoff_reaches_its_own_architect_each_genera
     owner was told the architect lane was unavailable. One manager → architect → requeue round per generation, plus
     the ordinary budget-spent transition, must not reproduce that: each generation reaches its OWN architect
     diagnosis, with no owner item until DIAGNOSIS_BUDGET (counted across both levels) is actually spent.
+
+    Round-3 review F7: an interrupted hand-off WITHIN one generation is a second way `dispatch` returning `None`
+    reads as "lane unavailable" — `already()` matches the architect record `dispatch` itself just created, not
+    only a stale one from an earlier grant. If the process stops after that architect job record is durable but
+    before the manager's own `ingest()` call returns, a replay (the same manager rec/result ingested again, exactly
+    the crash `ingest`'s own docstring already names for `requeue`) must reuse that matching architect transition —
+    not create a second architect job, and not tell the owner the lane is unavailable when it is in fact already
+    answering. Exercised right after generation 0's hand-off, before the architect itself has answered, so a
+    wrongly-created owner item here could not be mistaken for the ordinary budget-spent one later in this test.
 
     Lane selection and final dispatch are stubbed to record a job synchronously, the same way the round-2
     reviewer's probe (runs/T2-32/T2-32.a1/probes.py, `architect_grant_lost`) isolated the routing bug from a real
@@ -272,6 +281,15 @@ def test_a_fresh_manager_architect_handoff_reaches_its_own_architect_each_genera
         assert out["action"] == "architect"
         architect0 = created[-1]
         assert architect0["diag_level"] == "architect" and architect0["diag_grant"] == 0
+
+        # F7: replay the SAME manager hand-off before architect0 itself has answered — the architect job it
+        # already made durable must be reused, not read as an unavailable lane.
+        replay_out = diagnosis.ingest(sup, manager0, answer("architect"))
+        assert replay_out["action"] == "architect"            # was "owner" before the fix (F7's exact symptom)
+        assert replay_out.get("attempt") == architect0["attempt_id"]     # the existing transition, not a fresh one
+        assert [r for r in created if r.get("diag_level") == "architect"] == [architect0]   # no second architect
+        assert inbox.open_items(layout, "owner") == []
+
         diagnosis.ingest(sup, architect0, answer("requeue"))
         assert diagnosis.count_requeues(layout, "T") == 1
         assert inbox.open_items(layout, "owner") == []
