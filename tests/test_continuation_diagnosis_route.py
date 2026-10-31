@@ -4,6 +4,7 @@ note that only the owner's inbox ever saw. The continuation cap itself still hol
 requeue budget (DIAGNOSIS_BUDGET) still bounds how many times a diagnosis may grant a fresh continuation chain."""
 import os
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -208,6 +209,86 @@ def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping
         raise AssertionError("the sequence ran past DIAGNOSIS_BUDGET without ever reaching the owner")
     assert len(owner_items) == 1
     assert diagnosis.count_requeues(layout, "T") == diagnosis.DIAGNOSIS_BUDGET
+
+
+# ------------------------------------------------------------------ F4 regression: the architect transition
+# carries its grant generation
+
+
+def test_a_fresh_manager_architect_handoff_reaches_its_own_architect_each_generation(layout):
+    """Round-2 review F4: `diagnosis.ingest`'s `architect` branch dispatched the next level without the
+    originating diagnosis's own grant, so `dispatch`'s default (`grant=0`) let a generation-1 manager's architect
+    request dedupe against the generation-0 architect record — `already()` only excludes by grant generation, and
+    the omitted `grant` made every architect request look like generation 0. `dispatch` then returned None and the
+    owner was told the architect lane was unavailable. One manager → architect → requeue round per generation, plus
+    the ordinary budget-spent transition, must not reproduce that: each generation reaches its OWN architect
+    diagnosis, with no owner item until DIAGNOSIS_BUDGET (counted across both levels) is actually spent.
+
+    Lane selection and final dispatch are stubbed to record a job synchronously, the same way the round-2
+    reviewer's probe (runs/T2-32/T2-32.a1/probes.py, `architect_grant_lost`) isolated the routing bug from a real
+    model session; `diagnosis.dispatch`/`already`/`ingest`, `escalation`'s grant accounting and `inbox.create` are
+    all production code."""
+    created = []
+
+    def fake_dispatch(task, adapter_name, **kwargs):
+        n = max([int(r["attempt_id"].rsplit(".a", 1)[1]) for r in jobs.for_task(layout, "T")] + [0]) + 1
+        rec = jobs.write(layout, dict(attempt_id=f"T.a{n}", task_id="T", adapter=adapter_name, phase="RUNNING",
+                                      spec={"kind": kwargs.get("kind", "delivery")}, handle={}, **kwargs.get("extra", {})))
+        created.append(rec)
+        return rec
+
+    def answer(action, **extra):
+        return Result(status="COMPLETE", raw=dict(kind="diagnosis", action=action, summary="probe", guidance="retry", **extra))
+
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    sup = Supervisor(layout, sleep_s=0)
+    with patch.object(diagnosis, "settings", return_value={"enabled": True, "roles": diagnosis.DEFAULT_ROLES}), \
+         patch("supervisor.review.lane_for", return_value=("claude_cli", {}, False)), \
+         patch.object(sup, "dispatch", side_effect=fake_dispatch):
+
+        # Generation 0: the continuation cap escalates to a fresh manager diagnosis, which hands off to the
+        # architect, who grants a fresh continuation chain.
+        rec = continuation_chain(layout, "T")
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+        manager0 = created[-1]
+        assert manager0["diag_level"] == "manager" and manager0["diag_grant"] == 0
+        out = diagnosis.ingest(sup, manager0, answer("architect"))
+        assert out["action"] == "architect"
+        architect0 = created[-1]
+        assert architect0["diag_level"] == "architect" and architect0["diag_grant"] == 0
+        diagnosis.ingest(sup, architect0, answer("requeue"))
+        assert diagnosis.count_requeues(layout, "T") == 1
+        assert inbox.open_items(layout, "owner") == []
+        tasks.set_status(layout, "T", "IN_PROGRESS")
+
+        # Generation 1: exhausting the fresh chain reaches a fresh manager diagnosis (already covered by R4/F2);
+        # its architect hand-off is where F4 broke — the manager's request must reach a FRESH architect diagnosis,
+        # not the spent generation-0 record, and must not tell the owner the lane is unavailable before the new
+        # architect even answers.
+        rec = continuation_chain(layout, "T", start=20)
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+        manager1 = created[-1]
+        assert manager1["diag_level"] == "manager" and manager1["diag_grant"] == 1
+        out = diagnosis.ingest(sup, manager1, answer("architect"))
+        assert out["action"] == "architect"                      # was "owner" before the fix (F4's exact symptom)
+        assert inbox.open_items(layout, "owner") == []            # no premature owner item
+        architect_recs = [r for r in created if r.get("diag_level") == "architect"]
+        assert len(architect_recs) == 2                           # a fresh architect diagnosis per generation
+        architect1 = architect_recs[-1]
+        assert architect1["attempt_id"] != architect0["attempt_id"] and architect1["diag_grant"] == 1
+        diagnosis.ingest(sup, architect1, answer("requeue"))
+        assert diagnosis.count_requeues(layout, "T") == diagnosis.DIAGNOSIS_BUDGET
+        tasks.set_status(layout, "T", "IN_PROGRESS")
+
+        # Generation 2: the budget (counted across manager and architect requeues alike) is already spent, so this
+        # exhaustion must go straight to the owner — no third manager diagnosis.
+        rec = continuation_chain(layout, "T", start=40)
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+
+    assert len(inbox.open_items(layout, "owner")) == 1
+    manager_recs = [r for r in created if r.get("diag_level") == "manager"]
+    assert len(manager_recs) == 2                                 # the budget stopped a third manager diagnosis
 
 
 # ------------------------------------------------------------------ F2 regressions: resumable retirement
