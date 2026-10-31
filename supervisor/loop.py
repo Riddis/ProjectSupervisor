@@ -555,18 +555,30 @@ class Supervisor:
         A reroute (result REROUTED) not yet marked `continued`: when an attempt names it (`rerouted_from`), or any
         later attempt exists, the work already went on and the record is only marked; when it is the task's newest
         attempt, a crash came before its successor was written and it is queued on `rerouted_to` now. Attempts are
-        ordered by number (jobs.for_task), so attempt 10 is newer than attempt 9."""
+        ordered by number (jobs.for_task), so attempt 10 is newer than attempt 9.
+
+        F3: the cap branches below (here and in requeue()) both mark an attempt DONE/continued/capped BEFORE calling
+        escalation.record_failure() for it, so a crash between those two writes leaves a capped attempt with
+        `continued` already set — invisible to the torn-write repair above, which skips anything already
+        `continued` — while the task is still IN_PROGRESS with no issue or diagnosis to show for it. Nothing else
+        ever revisits such a record (it is not open, not a reroute, and the stall sweep excludes IN_PROGRESS
+        tasks), so _repair_capped_escalation() finishes it here: the task being stuck IN_PROGRESS behind its own
+        last, capped record is exactly the symptom of that missing call, whichever cap branch left it, and
+        record_failure() is itself replay-safe, so finishing it again when it already succeeded is a no-op."""
         seen = set()
         for rec in sorted(jobs_mod.all_records(self.layout), key=lambda r: r["attempt_id"]):
             seen.add(rec["task_id"])
         for task_id in seen:
             recs = jobs_mod.for_task(self.layout, task_id)
             last = recs[-1]
+            if self._repair_reroutes(task_id, recs):
+                continue
+            if last["phase"] == "DONE" and last.get("capped") and last.get("continued"):
+                self._repair_capped_escalation(task_id, last, recs)
+                continue
             run_dir = (last.get("spec") or {}).get("run_dir")
             needs = last.get("result") == "DEFERRED" or (last.get("result") in ("PARTIAL", "BLOCKED") and run_dir
                                                            and handoff.incomplete(Path(run_dir)))
-            if self._repair_reroutes(task_id, recs):
-                continue
             if last["phase"] == "DONE" and needs and not last.get("continued") and last["adapter"] in REGISTRY:
                 try:
                     task = tasks_mod.load(self.layout, task_id)
@@ -586,6 +598,25 @@ class Supervisor:
                 self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit",
                               extra={"continuation_grant": escalation_mod.current_grant(self.layout, task_id)})
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
+
+    def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
+        """F3: finish a capped attempt (requeue()'s or repair_continuations()'s own cap branch) whose
+        escalation.record_failure() call never completed — the task is still IN_PROGRESS behind it, since that
+        call is the only thing that ever moves it on (opening the issue, or routing straight to the owner once
+        the diagnosis budget is spent). Once it has run, the task leaves IN_PROGRESS and this is a no-op on every
+        later reconcile(): record_failure() replays its own durable decision instead of repeating it, so calling
+        it again here — whether this is the first real attempt or a replay of one a crash interrupted — never
+        opens a second issue or dispatches a second diagnosis."""
+        try:
+            task = tasks_mod.load(self.layout, task_id)
+        except Exception:
+            return
+        if task.status != TaskStatus.IN_PROGRESS:
+            return                                        # already escalated (or moved on since)
+        prior = self._continuations(recs)
+        escalation_mod.record_failure(self, task_id, "continuations_exhausted",
+                                      f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
+                                      event=f"{last['attempt_id']}:continuations", retry=False)
 
     def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:
         """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here)."""
