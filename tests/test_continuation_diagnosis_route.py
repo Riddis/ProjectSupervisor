@@ -5,6 +5,8 @@ requeue budget (DIAGNOSIS_BUDGET) still bounds how many times a diagnosis may gr
 import os
 import time
 
+import pytest
+
 from supervisor import diagnosis, escalation, inbox, jobs, tasks
 from supervisor.adapters.base import Result
 from supervisor.loop import Supervisor
@@ -206,3 +208,103 @@ def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping
         raise AssertionError("the sequence ran past DIAGNOSIS_BUDGET without ever reaching the owner")
     assert len(owner_items) == 1
     assert diagnosis.count_requeues(layout, "T") == diagnosis.DIAGNOSIS_BUDGET
+
+
+# ------------------------------------------------------------------ F2 regressions: resumable retirement
+
+
+def old_markers(layout, tid="T"):
+    return [r for r in jobs.for_task(layout, tid) if str(r.get("deferred_reason", "")).startswith("continuation")]
+
+
+def start_manager_grant(layout, sup):
+    """A task one continuation past the cap (three prior markers, exactly `old_markers`'s count below) with a
+    manager diagnosis already waiting for its `requeue` verdict — built by hand, the same way
+    `test_the_continuation_cap_is_still_enforced_once_the_diagnosis_budget_is_spent` does, so this test decides
+    the grant itself (via a synthetic Result) instead of waiting on a real subprocess: `run_until` would let the
+    loop's OWN settle()/ingest() grant it first, leaving nothing left for this test's injected crash to interrupt."""
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    continuation_chain(layout, "T")
+    tasks.set_status(layout, "T", "BLOCKED", note="T.a4: capacity limit after 3 continuations")
+    # attempt 5, not some far-off number: requeue()'s own crash-safety check ("a newer attempt already exists",
+    # loop.py:157) keys off the attempt number alone, and a gap here would make a later fresh continuation's
+    # attempt number look OLDER than this diagnosis job and never get dispatched.
+    return jobs.write(layout, {"attempt_id": "T.a5", "task_id": "T", "adapter": "claude_cli", "phase": "RUNNING",
+                              "spec": {"kind": "diagnosis"}, "handle": {}, "diag_level": "manager", "diag_role": "senior_pm",
+                              "diag_signature": "s1", "diag_issue": None})
+
+
+def requeue_result():
+    return Result(status="COMPLETE", raw={"kind": "diagnosis", "action": "requeue", "summary": "again", "guidance": "retry"})
+
+
+def test_a_crash_before_retirement_starts_in_the_diagnosis_path_is_finished_on_replay(layout, fake_claude, monkeypatch):
+    """The reset (escalation.reset_retries) is one durable write; retirement (escalation.grant_continuations) is a
+    second one. A crash between them left the grant spent and every old marker still counted (F2). Gating
+    grant_continuations on `reset_retries`'s own "was this fresh" flag is exactly what left it unreachable on a
+    replay (the key guard answers False); it must run every time instead, resumably."""
+    sup = Supervisor(layout, sleep_s=0)
+    diag = start_manager_grant(layout, sup)
+    real_grant = escalation.grant_continuations
+    monkeypatch.setattr(escalation, "grant_continuations", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash before retirement")))
+    with pytest.raises(RuntimeError):
+        diagnosis.ingest(sup, diag, requeue_result())
+    assert escalation._load(layout, "T").get("resets") == 1            # the reset is already durable
+    assert len(old_markers(layout, "T")) == 3                          # nothing retired yet
+    assert tasks.load(layout, "T").status == TaskStatus.BLOCKED        # never reached READY with retirement unfinished
+    monkeypatch.setattr(escalation, "grant_continuations", real_grant)
+    out = diagnosis.ingest(sup, diag, requeue_result())                # replay: settle() would re-collect the same result
+    assert out["action"] == "requeue"
+    assert escalation._load(layout, "T").get("resets") == 1            # still one grant, never a second
+    assert old_markers(layout, "T") == []                               # the replay finished retiring every old marker
+
+
+def test_a_crash_partway_through_the_retirement_loop_in_the_diagnosis_path_is_finished_on_replay(layout, fake_claude, monkeypatch):
+    """escalation.py:250-253's per-record loop can itself be interrupted after retiring some markers but not all
+    (F2); a replay must finish retiring exactly the rest, not restart from scratch and not skip them."""
+    sup = Supervisor(layout, sleep_s=0)
+    diag = start_manager_grant(layout, sup)
+    real_set_phase = jobs.set_phase
+    calls = {"n": 0}
+
+    def flaky_set_phase(layout_, attempt_id, phase, **fields):
+        if str(fields.get("deferred_reason", "")).startswith("reset ("):
+            calls["n"] += 1
+            if calls["n"] == 2:                     # the loop crashes after retiring exactly the first marker
+                raise RuntimeError("crash partway through retirement")
+        return real_set_phase(layout_, attempt_id, phase, **fields)
+    monkeypatch.setattr(jobs, "set_phase", flaky_set_phase)
+    with pytest.raises(RuntimeError):
+        diagnosis.ingest(sup, diag, requeue_result())
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert len(old_markers(layout, "T")) == 2                          # exactly one of the three was retired
+    assert tasks.load(layout, "T").status == TaskStatus.BLOCKED
+    monkeypatch.setattr(jobs, "set_phase", real_set_phase)
+    out = diagnosis.ingest(sup, diag, requeue_result())                # replay finishes the other two
+    assert out["action"] == "requeue"
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert old_markers(layout, "T") == []
+
+
+def test_a_replay_after_new_continuations_already_exist_retires_only_the_old_grant(layout, fake_claude):
+    """The existing test (`test_a_manager_requeue_grants_a_fresh_continuation_chain_once_and_a_replay_grants_none`)
+    only replays a grant that already retired everything before any fresh continuation existed. F2's third gap:
+    once the fresh chain has earned its own continuation, a late-arriving replay of the grant decision (the exact
+    settle()-re-collects-the-same-result path `diagnosis.ingest` documents, or a second call to
+    `escalation.grant_continuations` itself) must retire none of it — only a marker older than the CURRENT grant,
+    never one the fresh chain already created under it."""
+    sup = Supervisor(layout, sleep_s=0)
+    diag = start_manager_grant(layout, sup)
+    diagnosis.ingest(sup, diag, requeue_result())
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert old_markers(layout, "T") == []                               # the grant fully retired the old chain
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    n = len(jobs.for_task(layout, "T")) + 1
+    rec2 = jobs.write(layout, {"attempt_id": f"T.a{n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
+                              "spec": {"kind": "delivery"}, "handle": {}})
+    sup.requeue(rec2, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+    fresh = old_markers(layout, "T")
+    assert len(fresh) == 1                                              # the fresh chain's own continuation
+    escalation.grant_continuations(layout, "T", reason="late-arriving replay")
+    assert old_markers(layout, "T") == fresh                            # the fresh marker is untouched
