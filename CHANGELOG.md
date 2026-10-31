@@ -51,12 +51,16 @@ or a continuation job record carrying its grant generation (`continuation_grant`
 - **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
   which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
   executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
-  The trusted prefix is read from the command's own layout, not assumed: fewer than two tokens, or a wrapper
-  whose child re-parses its own command line (`cmd.exe`/`cmd` with `/c`/`/k`, `powershell`/`pwsh` with
-  `-Command`, `sh`/`bash`/`zsh` with `-c`), has **no** eligible index at all — not a protected prefix with a
+  The trusted prefix is read from the command's own grammar, not from what happens to exist on disk: fewer than
+  two tokens, a wrapper whose child re-parses its own command line (`cmd.exe`/`cmd` with `/c`/`/k`,
+  `powershell`/`pwsh` with `-Command`, `sh`/`bash`/`zsh` with `-c`), or an `argv[1]` that is itself an
+  interpreter option rather than a script (anything `"-"`-prefixed — `-c`, `-m`, `-e`, ... — for every
+  interpreter, not only the ones just named), has **no** eligible index at all — not a protected prefix with a
   mutable tail — because the child's own parser, not an index, decides where one argument ends and the next
-  command begins; otherwise the plain two-token layout applies, trusted prefix 2, and nothing before it is ever
-  eligible regardless of what a job declares. A diagnosis's `job_fix` may only ever supply
+  command begins, and a project that happens to contain a same-named file must not turn that option into a
+  script either (round-3 review F5); otherwise the plain two-token layout applies, trusted prefix 2, decided by
+  whether `argv[1]` resolves to an actual file under the project root, and nothing before it is ever eligible
+  regardless of what a job declares. A diagnosis's `job_fix` may only ever supply
   `{"params": {"<name>": "<value>"}}`; any other field it names, any undeclared parameter name, an index inside
   the trusted prefix, or a value that fails its declared check, is dropped and logged, never applied — a
   diagnosis can correct a stale argument (a sha, an in-project path) but can never install a different program,

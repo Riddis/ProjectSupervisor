@@ -76,19 +76,26 @@ SHELL_REPARSING = {("cmd.exe", "/c"), ("cmd.exe", "/k"), ("cmd", "/c"), ("cmd", 
 def _command_prefix(layout: Layout, argv: list) -> int | None:
     """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
     is eligible at all: too few tokens to have a script, a wrapper that re-parses its own command line
-    (SHELL_REPARSING — no slot is safe, not even one), or an argv[1] that is not an actual file (so this cannot
-    even confirm it is looking at a script rather than a flag, a subcommand or an inline snippet like "-c").
-    Checking "is this an existing file" rather than "does this start with - or /" is what makes the one plain
-    layout this interface does understand (argv[0] executable, argv[1] script) read the same way on every
-    platform: an absolute POSIX script path starts with "/" too, and is not an option."""
+    (SHELL_REPARSING — no slot is safe, not even one), an argv[1] that the command's own grammar never treats as
+    a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer — "-c", "-m", "-e", ...,
+    for every interpreter, not only the ones SHELL_REPARSING names), or an argv[1] that is not an actual file (so
+    this cannot even confirm it is looking at a script rather than a subcommand or bare word). Checking "is this
+    an existing file" only AFTER ruling out an option is what makes the one plain layout this interface does
+    understand (argv[0] executable, argv[1] script) read the same way on every platform without a filesystem
+    collision turning an option into a script: an absolute POSIX script path starts with "/" too, and is not an
+    option, but a project that happens to contain a file literally named "-c" must not make `-c` one either
+    (round-3 review F5) — the grammar, not what exists on disk, decides which token is the script."""
     if len(argv) < 2:
         return None
     exe_name = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
     option = str(argv[1]).lower()
     if (exe_name, option) in SHELL_REPARSING:
         return None
+    script = str(argv[1])
+    if script.startswith("-"):
+        return None
     try:
-        if not (layout.root / str(argv[1])).is_file():
+        if not (layout.root / script).is_file():
             return None
     except OSError:
         return None
