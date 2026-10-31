@@ -17,10 +17,12 @@ checked against the job records, so a replayed escalation cannot spend a second 
 Supervisor.dispatch → launch → supervisor.gate like every other job (decision, capacity floor, agent limit)."""
 from __future__ import annotations
 
+import re
+
 import yaml
 
 from . import inbox as inbox_mod, jobs as jobs_mod, scheduler, store, tasks as tasks_mod
-from ._vendor.contract import CapacityDeferred
+from ._vendor.contract import CapacityDeferred, contained
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
 from .paths import Layout
@@ -31,21 +33,29 @@ LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
 DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
 
-# A `requeue` on a non-agent (process) job may also carry a corrected `argv` — the one thing a bare requeue cannot
-# repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. Bounded to
-# exactly these fields per adapter: the job's adapter, every limit (timeout_s, idle_timeout_s, ...) and every other
-# field (fn, role, model, prompt, ...) are never touched, whatever a diagnosis proposes — task.set_job (via
-# commands.apply_job) stays the single writer and every application is logged (diagnosis_job_fixed).
-JOB_FIX_FIELDS = {"process": ("argv",)}
+# A `requeue` on a non-agent (process) job may also carry a corrected command — the one thing a bare requeue cannot
+# repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. A diagnosis
+# never supplies `argv` itself: `job_fix` may only ever name `params`, mapping a NAME the job already declared
+# (in its own `fix_params`, written only by task.set_job/commands.apply_job, never by a diagnosis) to a new value.
+# `fix_params[name]` fixes which argv slot that name corrects (`index`, always >= PARAM_MIN_INDEX, so the
+# interpreter at argv[0] and the script/module at argv[1] are never a parameter) and how its value is checked
+# (`pattern`, a regex the value must fullmatch, or `kind: "path"`, which instead requires the value to resolve
+# inside the project). Every other field of the job (its adapter, every limit, owned_paths, ...) is untouched,
+# whatever a diagnosis proposes — task.set_job (via commands.apply_job) stays the single writer, replacing only
+# `argv`, and every application or refusal is logged (diagnosis_job_fixed).
+JOB_FIX_FIELDS = {"process": ("params",)}
+PARAM_MIN_INDEX = 2             # argv[0] (interpreter) and argv[1] (script/module) are never a declared parameter
 
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
     'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","job_fix":"(requeue, '
-    'optional, process jobs only) {\\"argv\\": [...]} — the corrected command; omit unless the job itself (not the '
-    'agent) is wrong, e.g. a stale --sha. Every other field of the job (its adapter, timeout, ...) is kept exactly as '
-    'it was, whatever this names","blocked_on":"(defer) what must happen first","question":"(owner) the one decision '
-    'or action only the owner can take"}\n```\n'
+    'optional, process jobs only) {\\"params\\": {\\"<name>\\": \\"<value>\\"}} — a correction for a parameter the '
+    'job itself already declares (its own fix_params), e.g. a stale --sha; never a new command. Omit unless the job '
+    '(not the agent) is wrong. A name the job did not declare, or a value that fails its declared check, is dropped, '
+    'not applied. Every other field of the job (its adapter, timeout, argv positions it did not declare) is kept '
+    'exactly as it was, whatever this names","blocked_on":"(defer) what must happen first","question":"(owner) the '
+    'one decision or action only the owner can take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
     "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
     "`owner` is for product choices, spending, external commitments, or physical actions on the workstation.\n")
@@ -164,13 +174,33 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
         pass
 
 
+def _param_ok(layout: Layout, spec: dict, value) -> bool:
+    """Whether `value` satisfies the job's own declared check for one `fix_params` entry. Never trusts the
+    diagnosis for anything but the value itself: the slot (`index`), the check (`pattern`/`kind`) and (for a
+    path) the root it must resolve inside all come from the job, which only task.set_job ever writes."""
+    if not isinstance(value, str) or not value:
+        return False
+    index = spec.get("index")
+    if not isinstance(index, int) or isinstance(index, bool) or index < PARAM_MIN_INDEX:
+        return False
+    if spec.get("kind") == "path":
+        try:
+            return contained(layout.root / value, [layout.root], root=layout.root)
+        except (OSError, ValueError):
+            return False
+    pattern = spec.get("pattern")
+    return isinstance(pattern, str) and re.fullmatch(pattern, value) is not None
+
+
 def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | None:
-    """Apply a diagnosis-proposed job correction, bounded to JOB_FIX_FIELDS[adapter]. None when there is nothing
-    to apply (an agent job, an unlisted adapter, or no usable fields) — the ordinary `requeue` guidance still runs
-    in that case. Every field `proposed` names outside the allow-list is dropped, never applied and never raises
-    the job's adapter, timeout or any other limit: `new_job` starts from the CURRENT job and only overwrites the
-    allowed keys, so an unlisted field (including `adapter` itself) keeps its current value even if `proposed`
-    names a different one."""
+    """Apply a diagnosis-proposed job correction through the declared interface only: `proposed` may name nothing
+    but `params` (JOB_FIX_FIELDS[adapter]), and every entry in `params` must name a parameter the job itself
+    already declared in its own `fix_params` (never written by a diagnosis) and supply a value that parameter's
+    declared check accepts. None when there is nothing to apply (an agent job, an unlisted adapter, or no usable
+    fields) — the ordinary `requeue` guidance still runs in that case. A name or value that fails is dropped, never
+    applied; only the job's `argv`, and only at the declared, validated slots, is ever rewritten — `new_job` starts
+    from the CURRENT job with a copy of its `argv`, so the adapter, every limit, owned_paths and every other field
+    (including `fix_params` itself) keep their current value whatever `proposed` names."""
     if not isinstance(proposed, dict) or not proposed:
         return None
     from . import commands as commands_mod
@@ -178,11 +208,33 @@ def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | N
     allowed = JOB_FIX_FIELDS.get(current.get("adapter"))
     if not allowed:
         return None
-    applied = {k: v for k, v in proposed.items() if k in allowed}
-    dropped = sorted(set(proposed) - set(applied))
-    if not applied:
-        return {"applied": {}, "dropped": dropped} if dropped else None
-    commands_mod.apply_job(layout, task.id, {**current, **applied}, actor=f"diagnosis:{role}")
+    dropped = sorted(set(proposed) - set(allowed))
+    params_proposed = proposed.get("params") if "params" in allowed else None
+    schema = current.get("fix_params") or {}
+    argv = list(current.get("argv") or [])
+    # Nothing is a mutable parameter unless the job itself has a trusted executable at argv[0] and a trusted
+    # script/module at argv[1] — never an interpreter option such as -c/-m, which would let a validated-looking
+    # parameter still select arbitrary code (the pinning gap this interface closes).
+    has_trusted_script = len(argv) > PARAM_MIN_INDEX - 1 and not str(argv[PARAM_MIN_INDEX - 1]).startswith("-")
+    applied_params: dict = {}
+    if isinstance(params_proposed, dict):
+        for name, value in params_proposed.items():
+            spec = schema.get(name)
+            if has_trusted_script and isinstance(spec, dict) and _param_ok(layout, spec, value) and spec["index"] < len(argv):
+                argv[spec["index"]] = value
+                applied_params[name] = value
+            else:
+                dropped.append(f"params.{name}")
+    elif "params" in proposed:
+        dropped.append("params")
+    dropped = sorted(dropped)
+    if not applied_params:
+        if dropped:
+            tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied={}, dropped=dropped)
+            return {"applied": {}, "dropped": dropped}
+        return None
+    commands_mod.apply_job(layout, task.id, {**current, "argv": argv}, actor=f"diagnosis:{role}")
+    applied = {"params": applied_params}
     tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied=applied, dropped=dropped)
     return {"applied": applied, "dropped": dropped}
 

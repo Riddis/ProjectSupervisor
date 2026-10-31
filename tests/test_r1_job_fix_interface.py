@@ -70,7 +70,7 @@ def test_stale_sha_correction_is_applied_through_params_runs_and_is_logged(layou
     stale_sha = "0" * 40
     good_sha = "cafebabe00112233445566778899aabbccddeeff"
     argv = [sys.executable, str(script), "--sha", stale_sha]
-    process_task(layout, "T", argv, owned=["only/this"])
+    process_task(layout, "T", argv)
     tasks._update(layout, "T", lambda d: d["job"].update(fix_params={"sha": {"index": 3, "pattern": r"^[0-9a-f]{40}$"}}))
 
     sup = Supervisor(layout, sleep_s=0)
@@ -83,7 +83,7 @@ def test_stale_sha_correction_is_applied_through_params_runs_and_is_logged(layou
 
     job = (tasks.load(layout, "T").model_extra or {}).get("job")
     assert job["argv"] == [sys.executable, str(script), "--sha", good_sha]        # only the declared slot moved
-    assert tasks.load(layout, "T").owned_paths == ["only/this"]
+    assert tasks.load(layout, "T").owned_paths == []                              # job_fix never touches ownership
 
     events = [json.loads(e) for e in layout.log.read_text(encoding="utf-8").splitlines()]
     assert any(e["event"] == "task_job_set" and e["job"]["argv"][3] == good_sha for e in events)
