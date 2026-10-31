@@ -15,6 +15,7 @@ would refuse every POSIX absolute script path too."""
 import json
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -153,3 +154,82 @@ def test_command_prefix_refuses_every_shell_that_reparses_its_own_command_line(l
 def test_command_prefix_refuses_too_few_tokens(layout):
     assert diagnosis._command_prefix(layout, ["/usr/bin/python3"]) is None
     assert diagnosis._command_prefix(layout, []) is None
+
+
+# Round-3 review F5 (docs/reviews/RELEASE_REVIEW_2.1.0_round3.md lines 33-58): the file-existence check above
+# treated ANY existing file named by argv[1] as proof of a trusted script, including a file that happens to
+# share a name with an interpreter option. A project containing an ordinary file named "-c" made
+# `_command_prefix` return 2 for `[python, '-c', <program>]`, exposing the inline program itself (index 2) as a
+# correctable `fix_params` parameter — the exact regression round 2 already closed by rejecting an argv[1]
+# starting with "-". The command's own grammar, not a filesystem collision, decides this: an argv[1] that is an
+# interpreter option is never a script, whatever happens to exist on disk under that name.
+
+def test_command_prefix_refuses_an_interpreter_option_even_when_a_same_named_file_exists(layout):
+    (layout.root / "-c").write_text("fixture, never executed", encoding="utf-8")
+    (layout.root / "-m").write_text("fixture, never executed", encoding="utf-8")
+    assert diagnosis._command_prefix(layout, [sys.executable, "-c", "print(1)"]) is None
+    assert diagnosis._command_prefix(layout, [sys.executable, "-m", "json.tool"]) is None
+    # the general invariant, not a longer exact-pair blacklist: an unrelated "-"-prefixed exe/option combination,
+    # one SHELL_REPARSING was never meant to list, is refused the same way.
+    assert diagnosis._command_prefix(layout, ["/usr/bin/ruby", "-e", "puts 1"]) is None
+
+
+def test_an_option_lookalike_file_grants_no_prefix_so_the_proposal_is_refused_before_storage_or_launch(layout):
+    """The round-3 reviewer's probe (runs/T2-47/T2-47.a2/extra.py, observation `option_file_lookalike`): a
+    disposable project contains an ordinary file named "-c", a task runs `[python, '-c', 'print(11)']`, owns
+    only `only/this`, and declares `fix_params: {"input": {"index": 2, "kind": "path"}}`. A diagnosis proposing
+    only `print(22)` must be refused outright — never stored on the task's job, never the command the adapter
+    next launches — so the inline program the child actually runs stays `print(11)`."""
+    lookalike = layout.root / "-c"
+    lookalike.write_text("fixture, never executed", encoding="utf-8")
+    original = [sys.executable, "-c", "print(11)"]
+    process_task(layout, "T", original, owned=["only/this"], fix_params={"input": {"index": 2, "kind": "path"}})
+    assert diagnosis._command_prefix(layout, original) is None       # the lookalike file grants no prefix at all
+
+    sup = Supervisor(layout, sleep_s=0)
+    rec = diag_rec(layout, "T")
+    out = diagnosis.ingest(sup, rec, Result(status="COMPLETE", raw={"kind": "diagnosis", "action": "requeue",
+                                                                      "summary": "repair job", "guidance": "retry",
+                                                                      "job_fix": {"params": {"input": "print(22)"}}}))
+    assert out.get("job_fix", {}).get("applied") == {}
+    assert "params.input" in out.get("job_fix", {}).get("dropped", [])
+
+    task = tasks.load(layout, "T")
+    job = (task.model_extra or {}).get("job")
+    assert job["argv"] == original                                  # argv[1] (the option) and argv[2] untouched
+    assert task.owned_paths == ["only/this"]
+
+    # the exact command the process adapter would launch next must also be the unchanged, original one
+    spec = ProcessAdapter().prepare(layout, task, "T.a10")
+    assert spec["argv"] == original
+    child = subprocess.run(ProcessAdapter().command(spec), cwd=spec["root"], capture_output=True, text=True, timeout=15)
+    assert child.returncode == 0 and child.stdout.strip() == "11"    # the original inline program ran, not "22"
+
+    events = [json.loads(e) for e in layout.log.read_text(encoding="utf-8").splitlines()]
+    assert any(e["event"] == "diagnosis_job_fixed" and "params.input" in (e.get("dropped") or []) for e in events)
+
+
+def test_the_legitimate_stale_sha_correction_still_applies_through_the_single_writer(layout):
+    """The lookalike fix must not narrow the legitimate case it sits alongside: a real absolute script path
+    with a declared parameter (R1's own stale-sha positive case,
+    tests/test_r1_job_fix_interface.py::test_stale_sha_correction_is_applied_through_params_runs_and_is_logged)
+    is still corrected through commands.apply_job, in the same project that also contains an interpreter-option
+    lookalike file."""
+    (layout.root / "-c").write_text("fixture, never executed", encoding="utf-8")   # same disposable project
+    script = layout.root / "check_sha.py"
+    script.write_text("pass\n", encoding="utf-8")
+    stale_sha = "0" * 40
+    good_sha = "cafebabe00112233445566778899aabbccddeeff"
+    argv = [sys.executable, str(script), "--sha", stale_sha]
+    process_task(layout, "T", argv, fix_params={"sha": {"index": 3, "pattern": r"^[0-9a-f]{40}$"}})
+    assert diagnosis._command_prefix(layout, argv) == 2              # the real script still yields its prefix
+
+    sup = Supervisor(layout, sleep_s=0)
+    rec = diag_rec(layout, "T")
+    out = diagnosis.ingest(sup, rec, Result(status="COMPLETE", raw={"kind": "diagnosis", "action": "requeue",
+                                                                      "summary": "its --sha is stale",
+                                                                      "guidance": "the pinned commit moved",
+                                                                      "job_fix": {"params": {"sha": good_sha}}}))
+    assert out["job_fix"] == {"applied": {"params": {"sha": good_sha}}, "dropped": []}
+    job = (tasks.load(layout, "T").model_extra or {}).get("job")
+    assert job["argv"] == [sys.executable, str(script), "--sha", good_sha]
