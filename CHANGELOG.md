@@ -3,6 +3,48 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.1.0 — 2026-10-31
+
+Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap and a
+diagnosis's job correction both now go through the manager's diagnosis route instead of around it, and the first
+command that closes an issue record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps
+before the tag — an unconfined diagnosis `argv`, two CI jobs red on the exact reviewed head, `issue.resolve`
+accepting a path outside `state/issues/`, and a continuation grant that recovery could bypass after a manager
+requeue — each closed by a commit on this branch before any of this is released; what follows already describes
+the corrected shape, not the gap.
+
+**Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
+to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
+`supervisor doctor`, start. An issue resolved under 2.1.0, or a process job whose `fix_params` a diagnosis
+corrected, are plain state either way; 2.0.0 reads them as ordinary issue and job fields it already understood.
+
+- **Changed: continuations exhausted routes through the manager's diagnosis, not straight to the owner.**
+  `Supervisor.requeue()`'s `MAX_CONTINUATIONS` branch now calls `escalation.record_failure(..., retry=False)`
+  instead of setting the task `BLOCKED` with an owner-decision note itself, so the diagnosis route's own budget
+  (two requeues, then the owner) governs it like every other stopped retry chain.
+- **Changed: a manager-granted continuation chain is explicit and replay-safe, and recovery keeps the cap.**
+  A manager `requeue` now retires every prior continuation marker exactly once
+  (`escalation.grant_continuations`/`current_grant`), so the next continuation after a grant does not hit the old
+  cap immediately and a repeat exhaustion reaches its own fresh diagnosis instead of reusing the spent one's
+  issue. `Supervisor.repair_continuations` now enforces the same `MAX_CONTINUATIONS` cap `requeue()` does, so a
+  torn write landing exactly at the cap boundary is repaired as a capped stop, not redispatched past it. Closes
+  the race CI's two `G3 suite` jobs hit against the first candidate head (round-1 review R2, R4): the same
+  assertion now reads the recorded `escalation -> READY` transition instead of a live status a relaunch can
+  already have overtaken.
+- **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
+  which `argv` slots are correctable and how (`fix_params`: an index `>= 2` — the interpreter and the script
+  themselves are never reachable this way — with a regex `pattern` or a `kind: "path"` check resolved inside the
+  project root). A diagnosis's `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other
+  field it names, any undeclared parameter name, or a value that fails its declared check, is dropped and
+  logged, never applied — a diagnosis can correct a stale argument (a sha, a path) but can never install a
+  different program, interpreter option or free-form argv (round-1 review R1).
+- **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
+  whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
+  issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
+  or absolute id, or a contained file that is not shaped like an issue, is refused with nothing written (round-1
+  review R3). `ISSUES.md` gained **Resolved by** and **Resolving task** columns and shows the recorded
+  `resolution` text once one is closed.
+
 ## 2.0.0 — 2026-10-29
 
 Phase 5 of the boundary plan (docs/BOUNDARY.md), the framework part, and a rename. "Extension" is now "plugin"

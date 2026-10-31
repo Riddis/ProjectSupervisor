@@ -144,6 +144,10 @@ class Supervisor:
 
     MAX_CONTINUATIONS = 3
 
+    @staticmethod
+    def _continuations(recs: list[dict]) -> list[dict]:
+        return [r for r in recs if str(r.get("deferred_reason", "")).startswith("continuation")]
+
     def requeue(self, rec: dict, result: Result, reason: str) -> None:
         """Capacity limit or handoff-incomplete: queue a continuation attempt FIRST (crash-safe), then close this attempt
         without a delivery; the adapter's prepare() points the fresh session at the prior HANDOFF.md. Capped per task:
@@ -154,7 +158,7 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
                                error=result.error, continued=True)       # continuation already queued before a crash
             return
-        prior = [r for r in all_recs if str(r.get("deferred_reason", "")).startswith("continuation")]
+        prior = self._continuations(all_recs)
         n = len(prior)
         until = result.reset_epoch or time.time()
         if result.status == "DEFERRED" and not result.raw.get("measured_window"):
@@ -162,9 +166,16 @@ class Supervisor:
         tasks_mod.log(self.layout, "job_requeued", "loop", task=task_id, attempt=rec["attempt_id"], reason=reason,
                       result=result.status, error=result.error, until=until, continuation=n + 1)
         if n >= self.MAX_CONTINUATIONS:
-            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
-            tasks_mod.set_status(self.layout, task_id, TaskStatus.BLOCKED, actor="loop",
-                                 note=f"{rec['attempt_id']}: {reason} after {n} continuations — owner decision needed")
+            # D-010 Consequences: this used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
+            # retry=False because a blind re-dispatch of the same brief needs a continuation chain too — the
+            # diagnosis route (bounded by its own DIAGNOSIS_BUDGET) decides requeue/defer/architect/owner instead.
+            # `continued`+`capped` (R4): an intentionally capped attempt, never a torn write repair_continuations()
+            # must re-dispatch — a fresh continuation grant (escalation.grant_continuations) is the only way past it.
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                               error=result.error, continued=True, capped=True)
+            escalation_mod.record_failure(self, task_id, "continuations_exhausted",
+                                          f"{rec['attempt_id']}: {reason} after {n} continuations",
+                                          event=f"{rec['attempt_id']}:continuations", retry=False)
             return
         kind = (rec.get("spec") or {}).get("kind", "delivery")
         if kind == "review":
@@ -553,9 +564,19 @@ class Supervisor:
                     task = tasks_mod.load(self.layout, task_id)
                 except Exception:
                     continue
-                if task.status == TaskStatus.IN_PROGRESS:
-                    self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
-                    jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
+                if task.status != TaskStatus.IN_PROGRESS:
+                    continue
+                prior = self._continuations(recs)
+                if len(prior) >= self.MAX_CONTINUATIONS:
+                    # R4: recovery enforces the same cap as requeue() — a torn write exactly at the cap boundary is
+                    # still a capped attempt, never a fresh continuation repair may dispatch past the budget.
+                    jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True, capped=True)
+                    escalation_mod.record_failure(self, task_id, "continuations_exhausted",
+                                                  f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
+                                                  event=f"{last['attempt_id']}:continuations", retry=False)
+                    continue
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
+                jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:
         """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here)."""

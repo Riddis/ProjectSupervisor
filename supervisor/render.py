@@ -102,9 +102,13 @@ def render_tasks(layout: Layout) -> Path:
 def render_issues(layout: Layout) -> Path:
     def build() -> list[str]:
         rows = [store.read(p) for p in sorted(layout.issues.glob("*.yaml"))]
-        lines = ["# ISSUES (rendered — records live in state/issues/)", "", "| ID | Status | Severity | Title | Owner | Resolution |", "|---|---|---|---|---|---|"]
+        lines = ["# ISSUES (rendered — records live in state/issues/)", "",
+                 "| ID | Status | Severity | Title | Owner | Resolution | Resolved by | Resolving task |",
+                 "|---|---|---|---|---|---|---|---|"]
         for r in rows:
-            lines.append(f"| {r.get('id')} | {r.get('status')} | {r.get('severity')} | {r.get('title')} | {r.get('owner_role')} | {r.get('resolution_task') or '—'} |")
+            lines.append(f"| {r.get('id')} | {r.get('status')} | {r.get('severity')} | {r.get('title')} | "
+                         f"{r.get('owner_role')} | {r.get('resolution') or r.get('resolution_task') or '—'} | "
+                         f"{r.get('resolved_by') or '—'} | {r.get('resolved_by_task') or '—'} |")
         return lines
     return _render_write(layout, layout.root / "ISSUES.md", build)
 

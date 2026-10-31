@@ -17,10 +17,12 @@ checked against the job records, so a replayed escalation cannot spend a second 
 Supervisor.dispatch → launch → supervisor.gate like every other job (decision, capacity floor, agent limit)."""
 from __future__ import annotations
 
+import re
+
 import yaml
 
-from . import inbox as inbox_mod, jobs as jobs_mod, store, tasks as tasks_mod
-from ._vendor.contract import CapacityDeferred
+from . import inbox as inbox_mod, jobs as jobs_mod, scheduler, store, tasks as tasks_mod
+from ._vendor.contract import CapacityDeferred, contained
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
 from .paths import Layout
@@ -31,11 +33,29 @@ LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
 DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
 
+# A `requeue` on a non-agent (process) job may also carry a corrected command — the one thing a bare requeue cannot
+# repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. A diagnosis
+# never supplies `argv` itself: `job_fix` may only ever name `params`, mapping a NAME the job already declared
+# (in its own `fix_params`, written only by task.set_job/commands.apply_job, never by a diagnosis) to a new value.
+# `fix_params[name]` fixes which argv slot that name corrects (`index`, always >= PARAM_MIN_INDEX, so the
+# interpreter at argv[0] and the script/module at argv[1] are never a parameter) and how its value is checked
+# (`pattern`, a regex the value must fullmatch, or `kind: "path"`, which instead requires the value to resolve
+# inside the project). Every other field of the job (its adapter, every limit, owned_paths, ...) is untouched,
+# whatever a diagnosis proposes — task.set_job (via commands.apply_job) stays the single writer, replacing only
+# `argv`, and every application or refusal is logged (diagnosis_job_fixed).
+JOB_FIX_FIELDS = {"process": ("params",)}
+PARAM_MIN_INDEX = 2             # argv[0] (interpreter) and argv[1] (script/module) are never a declared parameter
+
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
-    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) what '
-    'must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
+    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","job_fix":"(requeue, '
+    'optional, process jobs only) {\\"params\\": {\\"<name>\\": \\"<value>\\"}} — a correction for a parameter the '
+    'job itself already declares (its own fix_params), e.g. a stale --sha; never a new command. Omit unless the job '
+    '(not the agent) is wrong. A name the job did not declare, or a value that fails its declared check, is dropped, '
+    'not applied. Every other field of the job (its adapter, timeout, argv positions it did not declare) is kept '
+    'exactly as it was, whatever this names","blocked_on":"(defer) what must happen first","question":"(owner) the '
+    'one decision or action only the owner can take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
     "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
     "`owner` is for product choices, spending, external commitments, or physical actions on the workstation.\n")
@@ -62,9 +82,12 @@ def _records(layout: Layout, task_id: str) -> list[dict]:
     return [r for r in jobs_mod.for_task(layout, task_id) if (r.get("spec") or {}).get("kind") == KIND]
 
 
-def already(layout: Layout, task_id: str, signature: str, level: str) -> dict | None:
+def already(layout: Layout, task_id: str, signature: str, level: str, grant: int = 0) -> dict | None:
+    """`grant` (`escalation.current_grant`) excludes a diagnosis dispatched under an earlier grant generation (R4):
+    a repeat failure after a fresh grant must reach its OWN diagnosis, not the one the spent grant already answered."""
     for r in _records(layout, task_id):
-        if r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED":
+        if (r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED"
+                and int(r.get("diag_grant") or 0) == grant):
             return r
     return None
 
@@ -101,15 +124,16 @@ def _task_view(layout: Layout, task: Task, role: str, adapter_name: str, prompt:
 
 
 def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, level: str = "manager",
-             issue_id: str | None = None) -> dict | None:
-    """One diagnosis job for (task, signature, level), or None when one exists, the route is disabled, the role's lane
-    is unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before)."""
+             issue_id: str | None = None, grant: int = 0) -> dict | None:
+    """One diagnosis job for (task, signature, level), or None when one exists under the same grant generation
+    (`grant`, R4), the route is disabled, the role's lane is unavailable, or its capacity is out (the escalation
+    then stands as an issue + BLOCKED task, as before)."""
     from . import review
     layout = supervisor.layout
     cfg = settings(layout)
     if not cfg["enabled"] or level not in LEVELS:
         return None
-    if already(layout, task.id, signature, level):
+    if already(layout, task.id, signature, level, grant=grant):
         return None
     role = cfg["roles"][level]
     try:
@@ -122,7 +146,8 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
     view = _task_view(layout, task, role, adapter_name, brief(layout, task, role, level, source, detail, issue_id), overrides)
     rec = supervisor.dispatch(view, adapter_name, note=f"diagnosis:{role}", kind=KIND,
                               extra={"diag_signature": signature, "diag_level": level, "diag_issue": issue_id,
-                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role})
+                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role,
+                                     "diag_grant": grant})
     tasks_mod.log(layout, "diagnosis_dispatched", "escalation", task=task.id, role=role, level=level, issue=issue_id,
                   attempt=(rec or {}).get("attempt_id"))
     return rec
@@ -152,6 +177,71 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
         store.update(p, fn, lock_path=layout.state / ".issues.lock")
     except (OSError, ValueError):
         pass
+
+
+def _param_ok(layout: Layout, spec: dict, value) -> bool:
+    """Whether `value` satisfies the job's own declared check for one `fix_params` entry. Never trusts the
+    diagnosis for anything but the value itself: the slot (`index`), the check (`pattern`/`kind`) and (for a
+    path) the root it must resolve inside all come from the job, which only task.set_job ever writes."""
+    if not isinstance(value, str) or not value:
+        return False
+    index = spec.get("index")
+    if not isinstance(index, int) or isinstance(index, bool) or index < PARAM_MIN_INDEX:
+        return False
+    if spec.get("kind") == "path":
+        try:
+            return contained(layout.root / value, [layout.root], root=layout.root)
+        except (OSError, ValueError):
+            return False
+    pattern = spec.get("pattern")
+    return isinstance(pattern, str) and re.fullmatch(pattern, value) is not None
+
+
+def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | None:
+    """Apply a diagnosis-proposed job correction through the declared interface only: `proposed` may name nothing
+    but `params` (JOB_FIX_FIELDS[adapter]), and every entry in `params` must name a parameter the job itself
+    already declared in its own `fix_params` (never written by a diagnosis) and supply a value that parameter's
+    declared check accepts. None when there is nothing to apply (an agent job, an unlisted adapter, or no usable
+    fields) — the ordinary `requeue` guidance still runs in that case. A name or value that fails is dropped, never
+    applied; only the job's `argv`, and only at the declared, validated slots, is ever rewritten — `new_job` starts
+    from the CURRENT job with a copy of its `argv`, so the adapter, every limit, owned_paths and every other field
+    (including `fix_params` itself) keep their current value whatever `proposed` names."""
+    if not isinstance(proposed, dict) or not proposed:
+        return None
+    from . import commands as commands_mod
+    current = scheduler.job_spec(task)
+    allowed = JOB_FIX_FIELDS.get(current.get("adapter"))
+    if not allowed:
+        return None
+    dropped = sorted(set(proposed) - set(allowed))
+    params_proposed = proposed.get("params") if "params" in allowed else None
+    schema = current.get("fix_params") or {}
+    argv = list(current.get("argv") or [])
+    # Nothing is a mutable parameter unless the job itself has a trusted executable at argv[0] and a trusted
+    # script/module at argv[1] — never an interpreter option such as -c/-m, which would let a validated-looking
+    # parameter still select arbitrary code (the pinning gap this interface closes).
+    has_trusted_script = len(argv) > PARAM_MIN_INDEX - 1 and not str(argv[PARAM_MIN_INDEX - 1]).startswith("-")
+    applied_params: dict = {}
+    if isinstance(params_proposed, dict):
+        for name, value in params_proposed.items():
+            spec = schema.get(name)
+            if has_trusted_script and isinstance(spec, dict) and _param_ok(layout, spec, value) and spec["index"] < len(argv):
+                argv[spec["index"]] = value
+                applied_params[name] = value
+            else:
+                dropped.append(f"params.{name}")
+    elif "params" in proposed:
+        dropped.append("params")
+    dropped = sorted(dropped)
+    if not applied_params:
+        if dropped:
+            tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied={}, dropped=dropped)
+            return {"applied": {}, "dropped": dropped}
+        return None
+    commands_mod.apply_job(layout, task.id, {**current, "argv": argv}, actor=f"diagnosis:{role}")
+    applied = {"params": applied_params}
+    tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied=applied, dropped=dropped)
+    return {"applied": applied, "dropped": dropped}
 
 
 def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question: str, why: str) -> dict:
@@ -205,13 +295,21 @@ def ingest(supervisor, rec: dict, result) -> dict:
         def fn(doc):
             doc.setdefault("guidance", []).append({"at": store.now_iso(), "by": role, "text": guidance})
         tasks_mod._update(layout, task.id, fn)
-        escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis")
+        fix = propose_job_fix(layout, task, role, obj.get("job_fix"))
+        # Explicit, replay-safe grant (R4): keyed by this diagnosis job's own attempt id, so a crash between this
+        # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends it only once.
+        granted = escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis", key=rec["attempt_id"])
+        if granted:
+            escalation.grant_continuations(layout, task.id, reason=f"requeued by {role} diagnosis")
         if task.status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation",
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")
         else:
             tasks_mod.add_note(layout, task.id, f"{role} diagnosis: requeue — {summary[:200]}", actor="escalation")
-        return {"action": "requeue", "guidance": guidance}
+        out = {"action": "requeue", "guidance": guidance}
+        if fix:
+            out["job_fix"] = fix
+        return out
     if action == "defer":
         blocked_on = str(obj.get("blocked_on") or summary)[:1000]
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred — blocked on: {blocked_on[:300]}", actor="escalation")
