@@ -600,23 +600,34 @@ class Supervisor:
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
-        """F3: finish a capped attempt (requeue()'s or repair_continuations()'s own cap branch) whose
-        escalation.record_failure() call never completed — the task is still IN_PROGRESS behind it, since that
-        call is the only thing that ever moves it on (opening the issue, or routing straight to the owner once
-        the diagnosis budget is spent). Once it has run, the task leaves IN_PROGRESS and this is a no-op on every
-        later reconcile(): record_failure() replays its own durable decision instead of repeating it, so calling
-        it again here — whether this is the first real attempt or a replay of one a crash interrupted — never
-        opens a second issue or dispatches a second diagnosis."""
+        """F3/F6: finish a capped attempt (requeue()'s or repair_continuations()'s own cap branch) whose
+        escalation.record_failure() call never completed. That call's own side effects — the issue, the
+        IN_PROGRESS->BLOCKED transition, and the diagnosis or owner routing that follows — do not all land in one
+        write (escalation.py's `_apply`), so leaving IN_PROGRESS is not proof the event is finished: a crash
+        between the issue write and the status write leaves the task IN_PROGRESS with the issue already open, and
+        a crash between the status write and the routing leaves it BLOCKED with nothing routing it (round-3 F6).
+        `escalation.event_outcome` reads the event's own durable record instead of the task's current status, so
+        a BLOCKED task whose routing already landed, or one an owner's deliberate Hold put there for an unrelated
+        reason, is told apart from one still owed its routing: only the latter — pending, and still sitting in
+        the one status (IN_PROGRESS) or two statuses (IN_PROGRESS, BLOCKED) this event itself can leave it in —
+        is replayed here. record_failure() replays its own durable decision instead of repeating it, so calling
+        it again — whether this is the first real attempt or a replay of one a crash interrupted — never opens a
+        second issue or dispatches a second diagnosis."""
         try:
             task = tasks_mod.load(self.layout, task_id)
         except Exception:
             return
-        if task.status != TaskStatus.IN_PROGRESS:
-            return                                        # already escalated (or moved on since)
+        event = f"{last['attempt_id']}:continuations"
+        outcome = escalation_mod.event_outcome(self.layout, task_id, event)
+        if outcome == "routed":
+            return                                        # the cap's own routing already landed
+        allowed = (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED) if outcome == "pending" else (TaskStatus.IN_PROGRESS,)
+        if task.status not in allowed:
+            return                                        # a deliberate hold or cancellation moved it since - not ours
         prior = self._continuations(recs)
         escalation_mod.record_failure(self, task_id, "continuations_exhausted",
                                       f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
-                                      event=f"{last['attempt_id']}:continuations", retry=False)
+                                      event=event, retry=False)
 
     def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:
         """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here)."""

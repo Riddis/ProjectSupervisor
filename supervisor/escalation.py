@@ -38,6 +38,32 @@ def last_decision_at(layout: Layout, task_id: str) -> str:
     return max((str(d.get("at") or "") for d in _load(layout, task_id)["events"].values()), default="")
 
 
+def _mark_routed(layout: Layout, task_id: str, event: str | None) -> None:
+    """Durable proof that `event`'s escalate decision finished routing it (a dispatched diagnosis, or an owner
+    item once the budget is spent) - the fact `_repair_capped_escalation` (loop.py, round-3 F6) needs to stop
+    recovering it, instead of inferring completion from the task's current status, which a later, unrelated
+    hold or cancellation can also change."""
+    if not event:
+        return
+    state = _load(layout, task_id)
+    if event in state["events"] and not state["events"][event].get("routed"):
+        state["events"][event]["routed"] = True
+        _save(layout, task_id, state)
+
+
+def event_outcome(layout: Layout, task_id: str, event: str) -> str:
+    """Where `event`'s own escalation decision stands, for recovery: `""` when it never reached
+    `record_failure`'s durable decision write at all, `"pending"` when the decision is recorded but `_apply`'s
+    routing has not finished, `"routed"` once it has (`_mark_routed`). Never derived from the task's current
+    status: BLOCKED is both this decision's own intermediate state (issue opened, diagnosis still owed) and a
+    status an owner's deliberate Hold can set directly (D-010), and only this durable per-event record tells
+    the two apart."""
+    dec = _load(layout, task_id)["events"].get(event)
+    if not dec:
+        return ""
+    return "routed" if dec.get("routed") else "pending"
+
+
 def normalize(text: str) -> str:
     """Strip hashes/digests and numbers so two reports of the same underlying problem collapse to one signature."""
     norm = re.sub(r"[0-9a-f]{8,}", "<hash>", text or "", flags=re.IGNORECASE)
@@ -184,7 +210,15 @@ def _attempt_no(attempt_id: str) -> int:
 
 def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> dict:
     """Carry out a decision. Idempotent on purpose: the revision dispatch is guarded by the caller and the issue is
-    found-or-created by (task, signature), so replaying an interrupted escalation changes nothing."""
+    found-or-created by (task, signature), so replaying an interrupted escalation changes nothing.
+
+    The escalate branch's three side effects (the issue, the IN_PROGRESS->BLOCKED transition, the routing that
+    follows) are each finished on their own terms, not only when the issue is freshly opened (round-3 F6): a
+    crash between the issue write and the status write leaves the issue found-not-created on replay, and the
+    task must still leave IN_PROGRESS then, not stay stranded behind an issue that already exists. `_mark_routed`
+    closes the loop for `_repair_capped_escalation`, whose recovery guard must tell "this event's own routing
+    already landed" apart from "the task's status changed for some other reason" (a deliberate hold or
+    cancellation, R4/D-010) - that distinction cannot be read off the task's current status alone."""
     layout = supervisor.layout
     sig = decision["signature"]
     if decision["action"] == "retry":
@@ -192,16 +226,17 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
         return {"action": "retry", "revision": decision["revision"], "senior": decision["senior"], "signature": sig}
     grant = current_grant(layout, task.id)
     issue = find_issue(layout, task.id, sig, grant=grant)
-    if issue is None:
-        note = decision.get("note", "")
+    created = issue is None
+    note = decision.get("note", "")
+    if created:
         issue = open_issue(layout, title=f"{task.id}: {ISSUE_TITLES.get(source, f'repeated {source} failure')}", severity="high",
                           owner_role=task.owner_role, signature=sig,
                           detail=f"{detail}\n\n{note}. Automatic retries stopped; diagnosis requested.",
                           resolution_task=task.id, grant=grant)
-        if task.status == TaskStatus.IN_PROGRESS:
-            tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"{note} ({issue['id']})")
-        else:
-            tasks_mod.add_note(layout, task.id, f"{note} ({issue['id']}); automatic retries stopped", actor="escalation")
+    if task.status == TaskStatus.IN_PROGRESS:
+        tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"{note} ({issue['id']})")
+    elif created:
+        tasks_mod.add_note(layout, task.id, f"{note} ({issue['id']}); automatic retries stopped", actor="escalation")
     # The exception route: one bounded diagnosis by the manager role, instead of handing every stopped
     # retry chain to the owner. Idempotent per (task, signature, level); the diagnosis itself decides whether the
     # owner needs to hear about it. After DIAGNOSIS_BUDGET requeues the owner decides directly.
@@ -211,10 +246,11 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
         rec = {"diag_role": "diagnosis", "diag_level": "manager"}
         out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
                                                      f"diagnosis budget of {diagnosis_mod.DIAGNOSIS_BUDGET} requeues spent")
-        return out
-    rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"], grant=grant)
-    if rec:
-        out["diagnosis"] = rec.get("attempt_id")
+    else:
+        rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"], grant=grant)
+        if rec:
+            out["diagnosis"] = rec.get("attempt_id")
+    _mark_routed(layout, task.id, decision.get("event"))
     return out
 
 

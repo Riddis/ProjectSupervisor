@@ -40,7 +40,12 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   exactly at the cap boundary is repaired as a capped stop, not redispatched past it; both of `loop.py`'s cap
   branches (the ordinary cap and the recovery-cap) now leave a crash between marking the attempt handled and
   recording its escalation in a shape plain `reconcile()` finds and finishes on its own, instead of a terminal
-  job record no recovery path ever revisits. A manager-to-architect hand-off carries the originating diagnosis's
+  job record no recovery path ever revisits. That recovery finishes the cap event's own issue, status transition
+  and routing individually and idempotently too, not only reaching `escalation.record_failure()` once: a crash
+  between the issue write and the task's own BLOCKED transition, or between that transition and the manager
+  dispatch that follows it, is also completed by the next plain `reconcile()` — read from the event's own durable
+  record of what it has routed so far, never from the task's current status alone, so a deliberate later hold or
+  cancellation is left untouched (round-3 review F6). A manager-to-architect hand-off carries the originating diagnosis's
   own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
   diagnosis instead of the already-answered record from the generation that granted it, and never tells the
   owner the architect lane is unavailable when it is not. Together these close the race CI's two `G3 suite` jobs
