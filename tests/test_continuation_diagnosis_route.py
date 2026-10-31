@@ -469,3 +469,80 @@ def test_a_capped_attempt_interrupted_before_repair_s_own_escalation_is_finished
     deliveries_after = {r["attempt_id"] for r in jobs.for_task(layout, "T")
                         if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
     assert deliveries_after == deliveries_before             # no bypassing requeue past the cap
+
+
+# ------------------------------------------------------------------ F6 regressions: the cap event's own side
+# effects (the issue, the BLOCKED transition, the routing that follows) finish as one idempotent transition,
+# not merely "the task left IN_PROGRESS"
+
+
+def test_a_capped_attempt_s_issue_without_its_status_transition_is_finished_by_reconcile_alone(layout, fake_claude, monkeypatch):
+    """escalation._apply saves the issue, then moves the task off IN_PROGRESS, then dispatches the manager. A
+    crash between the issue write and the status write used to leave the status write skipped forever on replay
+    (it only ran `if issue is None`), while the dispatch below it still ran unconditionally: a manager requeue on
+    a task still IN_PROGRESS never sets READY (diagnosis.ingest only does that for BLOCKED/FAILED), stranding it
+    IN_PROGRESS with no open job. A fresh Supervisor's own reconcile() must finish the status transition too, not
+    just whatever ran past it, and the requeued chain must reach READY."""
+    os.environ["FAKE_DIAGNOSIS_ACTION"] = "requeue"
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    rec = continuation_chain(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    real_set_status = tasks.set_status
+    monkeypatch.setattr(tasks, "set_status", _raise)
+    with pytest.raises(RuntimeError):
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+    monkeypatch.setattr(tasks, "set_status", real_set_status)
+    # the issue landed, the status write that follows it in the same call did not
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1
+    assert diag_records(layout, "T") == []
+    assert jobs.open_records(layout) == []
+    assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS
+    assert sup.sweep_stalled() == []                       # the stall sweep excludes IN_PROGRESS tasks (not its job)
+    deliveries_before = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                         if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    fresh = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        fresh.reconcile()
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1                        # no second issue
+    manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
+    assert len(manager_diags) == 1                                              # idempotent: one diagnosis
+    assert tasks.load(layout, "T").status == TaskStatus.READY                   # not stranded IN_PROGRESS
+    assert inbox.open_items(layout, "owner") == []
+    deliveries_after = {r["attempt_id"] for r in jobs.for_task(layout, "T")
+                        if (r.get("spec") or {}).get("kind", "delivery") == "delivery"}
+    assert deliveries_after == deliveries_before             # no bypassing requeue past the cap
+
+
+def test_a_capped_attempt_s_blocked_status_without_its_manager_dispatch_is_finished_by_reconcile_alone(layout, fake_claude, monkeypatch):
+    """A crash between the BLOCKED write and the manager dispatch used to make the recovery guard
+    (`_repair_capped_escalation`) return at once: it read "left IN_PROGRESS" as proof the escalation had
+    finished, but BLOCKED is this same event's own intermediate state, not only a sign of something else. Three
+    reconciles must dispatch the manager diagnosis (not nothing), and the later stall sweep must not raise an
+    owner item for a task whose diagnosis budget was never touched and whose manager lane was free."""
+    os.environ["FAKE_DIAGNOSIS_ACTION"] = "requeue"
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    rec = continuation_chain(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    real_dispatch = diagnosis.dispatch
+    monkeypatch.setattr(diagnosis, "dispatch", _raise)
+    with pytest.raises(RuntimeError):
+        sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
+    monkeypatch.setattr(diagnosis, "dispatch", real_dispatch)
+    # the issue and the BLOCKED status landed, the dispatch call right after them did not
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1
+    assert diag_records(layout, "T") == []
+    assert jobs.open_records(layout) == []
+    assert tasks.load(layout, "T").status == TaskStatus.BLOCKED
+    fresh = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        fresh.reconcile()
+    assert len(list(layout.issues.glob("I-*.yaml"))) == 1                        # no second issue
+    manager_diags = [r for r in diag_records(layout, "T") if r.get("diag_level") == "manager"]
+    assert len(manager_diags) == 1                                              # the dispatch the crash skipped
+    assert inbox.open_items(layout, "owner") == []
+    # the sweep clock advanced an hour must not raise an owner item: no diagnosis budget was spent and the
+    # manager lane was free, the opposite of what a stalled/stuck task looks like
+    assert fresh.sweep_stalled(now=time.time() + 3700) == []
+    assert inbox.open_items(layout, "owner") == []
