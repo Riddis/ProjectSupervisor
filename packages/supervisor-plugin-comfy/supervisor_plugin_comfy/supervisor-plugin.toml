@@ -1,0 +1,9 @@
+# The plugin's manifest (docs/PLUGIN_STANDARD.md in the framework repo). The framework reads it before importing
+# anything here: keep it in step with what setup() registers (`supervisor plugin check comfy` proves it).
+identity = "comfy"
+version = "0.1.0"
+framework = ">=2.0,<3"
+
+[config]
+section = "plugins.comfy"
+schema = "supervisor_plugin_comfy.config:Settings"

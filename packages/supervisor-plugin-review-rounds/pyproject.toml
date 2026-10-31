@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-plugin-review-rounds"
+version = "0.1.0"
+description = "A Supervisor plugin: review_rounds"
+readme = "README.md"
+requires-python = ">=3.11"
+# The framework is not listed: it is not on an index, and the manifest's `framework` range is what the loader checks.
+dependencies = ["pydantic>=2.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[project.entry-points."supervisor.plugins"]
+review_rounds = "supervisor_plugin_review_rounds"
+
+[tool.setuptools.packages.find]
+include = ["supervisor_plugin_review_rounds*"]
+
+[tool.setuptools.package-data]
+"supervisor_plugin_review_rounds" = ["supervisor-plugin.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# What CI drives on the installed wheel when this package lives under the framework repository's packages/
+# (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
+# review_rounds registers no adapter and no python job (boundary plan 05-phase5.md, "what the code has today":
+# kinds, commands, a CLI, routes and a doctor check only) - nothing for `lane` or `python_job` to name until
+# step 5 moves the grid in and T2-15 decides what its CI drives instead (a task may not be the right proof for a
+# plugin whose surface is commands and routes, not a lane). Left unset deliberately, not forgotten.

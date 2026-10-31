@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-plugin-comfy"
+version = "0.1.0"
+description = "A Supervisor plugin: comfy"
+readme = "README.md"
+requires-python = ">=3.11"
+# The framework is not listed: it is not on an index, and the manifest's `framework` range is what the loader checks.
+dependencies = ["pydantic>=2.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[project.entry-points."supervisor.plugins"]
+comfy = "supervisor_plugin_comfy"
+
+[tool.setuptools.packages.find]
+include = ["supervisor_plugin_comfy*"]
+
+[tool.setuptools.package-data]
+"supervisor_plugin_comfy" = ["supervisor-plugin.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# What CI drives on the installed wheel when this package lives under the framework repository's packages/
+# (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
+# The comfy lane itself (boundary plan phase 5, step 3) has not moved in yet; `lane` names it ahead of that move
+# so CI starts driving it the moment it exists, instead of a second edit then.
+[tool.supervisor.ci]
+lane = "comfy"

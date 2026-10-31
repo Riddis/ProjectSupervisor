@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-plugin-local-llm"
+version = "0.1.0"
+description = "A Supervisor plugin: local_llm"
+readme = "README.md"
+requires-python = ">=3.11"
+# The framework is not listed: it is not on an index, and the manifest's `framework` range is what the loader checks.
+dependencies = ["pydantic>=2.7", "requests>=2.31", "jsonschema>=4.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[project.entry-points."supervisor.plugins"]
+local_llm = "supervisor_plugin_local_llm"
+
+[tool.setuptools.packages.find]
+include = ["supervisor_plugin_local_llm*"]
+
+[tool.setuptools.package-data]
+"supervisor_plugin_local_llm" = ["supervisor-plugin.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# What CI drives on the installed wheel when this package lives under the framework repository's packages/
+# (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
+[tool.supervisor.ci]
+lane = "local_llm"
