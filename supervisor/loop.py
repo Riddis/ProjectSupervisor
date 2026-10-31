@@ -177,6 +177,11 @@ class Supervisor:
                                           f"{rec['attempt_id']}: {reason} after {n} continuations",
                                           event=f"{rec['attempt_id']}:continuations", retry=False)
             return
+        # Tagged with the task's CURRENT grant generation (F2), not whatever a later replay of some other call
+        # finds: grant_continuations() only ever retires a marker whose own tag is older than the generation in
+        # force when it runs, so a fresh continuation this chain just earned can never be mistaken for one an
+        # earlier, unrelated grant left behind.
+        grant = escalation_mod.current_grant(self.layout, task_id)
         kind = (rec.get("spec") or {}).get("kind", "delivery")
         if kind == "review":
             task = review_mod.rebuild(self.layout, rec)
@@ -184,6 +189,7 @@ class Supervisor:
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
             extra = {k: rec[k] for k in ("review_role", "review_digest", "same_vendor", "review_frozen") if k in rec}
+            extra["continuation_grant"] = grant
             self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind="review", extra=extra)
         elif kind == diagnosis_mod.KIND:
             task = diagnosis_mod.rebuild(self.layout, rec)
@@ -191,10 +197,12 @@ class Supervisor:
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
             extra = {k: rec[k] for k in rec if k.startswith("diag_")}
+            extra["continuation_grant"] = grant
             self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind=diagnosis_mod.KIND, extra=extra)
         else:
             task = tasks_mod.load(self.layout, task_id)
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}")
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}",
+                          extra={"continuation_grant": grant})
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
         tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued", actor="loop")
@@ -575,7 +583,8 @@ class Supervisor:
                                                   f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
                                                   event=f"{last['attempt_id']}:continuations", retry=False)
                     continue
-                self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit")
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit",
+                              extra={"continuation_grant": escalation_mod.current_grant(self.layout, task_id)})
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:

@@ -243,13 +243,19 @@ def current_grant(layout: Layout, task_id: str) -> int:
 
 
 def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
-    """A fresh continuation grant (D-010/R4): every continuation marker already recorded for this task stops
-    counting toward Supervisor.MAX_CONTINUATIONS, the same way an owner REQUEUE resume has always retired them
-    (supervisor.inbox). Call only after reset_retries() reports a genuinely new grant (its `key` makes that
-    replay-safe) — this function itself is not idempotent and must not run twice for the same grant."""
+    """A fresh continuation grant (D-010/R4) retires every continuation marker that belongs to an earlier grant
+    generation than this task's current one, the same way an owner REQUEUE resume has always retired them
+    (supervisor.inbox). `current_grant` (`state["resets"]`) is the retirement boundary and it is durable in the
+    same write `reset_retries` already made, so this function reads it fresh every call instead of trusting a
+    caller's "was this a genuinely new grant" flag: calling it unconditionally, every time `reset_retries` runs
+    (fresh grant or replay alike), finishes whatever an earlier crash left only partly retired without ever
+    touching a marker the CURRENT generation already created (F2) — each marker is tagged with its own
+    `continuation_grant` at dispatch (supervisor.loop.Supervisor.requeue/repair_continuations), so "belongs to
+    an earlier generation" never depends on when this function happens to run."""
+    grant = current_grant(layout, task_id)
     for r in jobs_mod.for_task(layout, task_id):
         prior = str(r.get("deferred_reason", ""))
-        if prior.startswith("continuation"):
+        if prior.startswith("continuation") and int(r.get("continuation_grant") or 0) < grant:
             jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], deferred_reason=f"reset ({reason}): {prior}")
 
 

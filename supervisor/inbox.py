@@ -366,7 +366,7 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
             # escalates at once instead of getting the normal revision budget. Keyed by the item, so a re-apply
             # after a crash between this write and `applied` never grants a second reset.
             from . import escalation as escalation_mod
-            granted = escalation_mod.reset_retries(layout, task_id, reason=f"owner REQUEUE ({item['id']})", key=item["id"])
+            escalation_mod.reset_retries(layout, task_id, reason=f"owner REQUEUE ({item['id']})", key=item["id"])
             if resume == "review":
                 digest = task.delivery.digest
                 for r in jobs_mod.for_task(layout, task_id):
@@ -377,7 +377,10 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
                 tasks_mod.set_status(layout, task_id, TaskStatus.WAITING_FOR_REVIEW, actor="owner", force=True,
                                      note=f"{item['id']}: owner re-queued the review (review budget reset)")
             else:
-                if resume == "delivery" and granted:
+                if resume == "delivery":
+                    # Called every time regardless of whether this call's own reset_retries() made a fresh grant
+                    # (F2): grant_continuations() is generation-scoped, so a replay only finishes retiring an
+                    # earlier generation's own markers and never touches one the current chain already created.
                     escalation_mod.grant_continuations(layout, task_id, reason=f"owner REQUEUE ({item['id']})")
                 tasks_mod.set_status(layout, task_id, TaskStatus.READY, actor="owner",
                                      note=f"{item['id']}: owner re-queued the task")

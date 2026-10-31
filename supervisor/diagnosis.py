@@ -351,10 +351,12 @@ def ingest(supervisor, rec: dict, result) -> dict:
         tasks_mod._update(layout, task.id, fn)
         fix = propose_job_fix(layout, task, role, obj.get("job_fix"))
         # Explicit, replay-safe grant (R4): keyed by this diagnosis job's own attempt id, so a crash between this
-        # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends it only once.
-        granted = escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis", key=rec["attempt_id"])
-        if granted:
-            escalation.grant_continuations(layout, task.id, reason=f"requeued by {role} diagnosis")
+        # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends the GRANT only
+        # once. grant_continuations() itself is called every time regardless (F2): it is generation-scoped, not
+        # gated on `granted`, so a crash between the reset and the retirement, or partway through the retirement
+        # loop, is finished on the next replay instead of leaving old markers counted forever against the new grant.
+        escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis", key=rec["attempt_id"])
+        escalation.grant_continuations(layout, task.id, reason=f"requeued by {role} diagnosis")
         if task.status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation",
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")
