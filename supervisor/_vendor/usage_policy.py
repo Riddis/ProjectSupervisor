@@ -91,7 +91,11 @@ def record(engine, windows, source, now=None):
     return value
 
 
+# A label is also the floor's key (window_floor): only "5-hour" and "7-day" take the owner's floors; any other label
+# gates only when its window is exhausted. Claude reports `seven_day_overage_included` beside `seven_day` for
+# accounts with usage beyond the plan; it keeps its own label so the 7-day floor is not applied to it twice.
 WINDOW_LABELS = {("claude", "five_hour"): "5-hour", ("claude", "seven_day"): "7-day",
+                 ("claude", "seven_day_overage_included"): "7-day, overage included",
                  ("codex", "primary"): "5-hour", ("codex", "secondary"): "7-day",
                  ("claude", "cli_limit"): "CLI-reported limit", ("codex", "cli_limit"): "CLI-reported limit"}
 
