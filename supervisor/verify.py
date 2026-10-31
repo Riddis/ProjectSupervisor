@@ -51,6 +51,66 @@ EXCLUDED_DIRS = {".git", ".venv", ".ruff_cache", ".pytest_cache", "__pycache__",
 # what an agent wrote.
 EXCLUDED_FILES = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
 LARGE_FILE_BYTES = 32 * 1024 * 1024
+# The supervisor's own writes into the working tree (the Control Center's Settings edits to config/routing.yaml), one
+# JSON line each under state/runtime/. The owner changes settings while agents run; before 2.1.1 the next
+# verification counted that edit as the running delivery's undeclared write, and the retry reverted it.
+OWN_WRITES = "own_writes.jsonl"
+
+
+def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes, actor: str, why: str = "") -> None:
+    """Record that the supervisor replaces root-relative `rel`, holding `before` (None: absent), with `after`. Called
+    BEFORE the write: a crash between the two leaves a transition nothing took, never a supervisor write that
+    verification blames on an agent."""
+    import hashlib
+    import json
+
+    from .store import now_iso
+    entry = {"ts": now_iso(), "path": rel, "before": hashlib.sha256(before).hexdigest() if before is not None else None,
+             "after": hashlib.sha256(after).hexdigest(), "actor": actor, "why": why}
+    p = layout.runtime / OWN_WRITES
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(entry, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str]]]:
+    """path -> {(sha256 before, sha256 after)} for every write record_own_write() recorded. An unreadable line is
+    skipped: it explains nothing, so the change it would have explained still fails verification."""
+    import json
+    out: dict[str, set[tuple[str | None, str]]] = {}
+    p = layout.runtime / OWN_WRITES
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            e = json.loads(line)
+            out.setdefault(str(e["path"]), set()).add((e.get("before"), str(e["after"])))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def _supervisor_wrote(before: dict | None, after: dict | None, edges: set[tuple[str | None, str]]) -> bool:
+    """True when recorded supervisor writes alone take a path from its snapshot content (`before`; absent counts) to
+    its content now (`after`). An agent's edit anywhere in between breaks the chain, so the change stays its own."""
+    b, a = before or {}, after or {}
+    if not edges or a.get("kind") != "file" or b.get("kind") not in (None, "missing", "file"):
+        return False
+    start = b.get("sha256") if b.get("kind") == "file" else None
+    seen, frontier = {start}, [start]
+    while frontier:
+        cur = frontier.pop()
+        if cur == a.get("sha256"):
+            return True
+        for src, dst in edges:
+            if src == cur and dst not in seen:
+                seen.add(dst)
+                frontier.append(dst)
+    return False
 
 
 def excluded_files(layout: Layout | None = None) -> set[str]:
@@ -234,13 +294,17 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
 
 
 def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list[str], root: Path,
-               ignore: tuple[str, ...], skip: set[str] = frozenset()) -> tuple[list[str], list[str]]:
+               ignore: tuple[str, ...], skip: set[str] = frozenset(),
+               own: dict[str, set] | None = None) -> tuple[list[str], list[str]]:
     """(changes inside owned_paths, changes outside it) that the delivery did not declare. `skip` names rendered
     views (excluded_files) — also filtered here, because a projection first learned after the `before` snapshot
-    was taken is in that snapshot and not in the next one."""
+    was taken is in that snapshot and not in the next one. `own` (own_transitions) explains a change the
+    supervisor's own writes account for."""
     inside, outside = [], []
     for p in changed_paths(before, after):
         if p in declared or p in skip or (ignore and contained(p, list(ignore), root)):
+            continue
+        if own and _supervisor_wrote(before.get(p), after.get(p), own.get(p) or set()):
             continue
         kinds = {(before.get(p) or {}).get("kind"), (after.get(p) or {}).get("kind")}
         if kinds <= {"directory", "missing", None}:
@@ -302,13 +366,14 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
         if after.get("error"):
             return Outcome(False, f"post-delivery snapshot failed: {after['error']}")
         skip = excluded_files(layout)
+        own = own_transitions(layout)
         if scoped:
             inside, _ = _undeclared(before.get("owned") or {}, after.get("owned") or {}, set(files), scoped, layout.root,
-                                    ignore, skip)
+                                    ignore, skip, own)
             if inside:
                 return Outcome(False, "undeclared changes inside owned paths: " + ", ".join(inside))
         inside_repo, outside_repo = _undeclared(before.get("repo") or {}, after.get("repo") or {}, set(files),
-                                                scoped, layout.root, ignore, skip)
+                                                scoped, layout.root, ignore, skip, own)
         undeclared = outside_repo if scoped else inside_repo + outside_repo
         if undeclared:
             what = "undeclared writes outside owned paths: " if scoped else "undeclared writes: "
