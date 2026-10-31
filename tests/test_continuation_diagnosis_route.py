@@ -29,6 +29,14 @@ def continuation_chain(layout, tid, start=1):
     return jobs.read(layout, f"{tid}.a{start + n}")
 
 
+def grants(layout, tid):
+    """The grants the escalation route made for `tid`, read from the task's history rather than its live status.
+    once() ingests a finished diagnosis in reconcile() and plans the same iteration, so the loop can launch the task
+    the grant just queued before a run_until() predicate is ever checked (the race review 1.10.1 F4 names): the
+    status is then IN_PROGRESS again, by `loop`, and only the recorded transition still shows the grant."""
+    return [h for h in tasks.load(layout, tid).history if h["to"] == "READY" and h["by"] == "escalation"]
+
+
 def test_continuations_exhausted_reaches_manager_diagnosis_not_the_inbox(layout, fake_claude):
     os.environ["FAKE_DIAGNOSIS_ACTION"] = "requeue"
     make_task(layout, "T")
@@ -46,7 +54,7 @@ def test_continuations_exhausted_reaches_manager_diagnosis_not_the_inbox(layout,
     recs = diag_records(layout, "T")
     assert len(recs) == 1 and recs[0]["diag_level"] == "manager" and recs[0]["diag_action"] == "requeue"
     assert inbox.open_items(layout, "owner") == []
-    assert tasks.load(layout, "T").status == TaskStatus.READY   # the diagnosis granted a fresh continuation budget
+    assert len(grants(layout, "T")) == 1                        # the diagnosis granted a fresh continuation budget
 
 
 def test_the_continuation_cap_is_still_enforced_once_the_diagnosis_budget_is_spent(layout, fake_claude):
@@ -84,7 +92,7 @@ def test_a_manager_requeue_grants_a_fresh_continuation_chain_once_and_a_replay_g
     sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
     run_until(layout, lambda: any(r.get("diag_action") for r in diag_records(layout, "T")))
     diag = diag_records(layout, "T")[0]
-    assert tasks.load(layout, "T").status == TaskStatus.READY
+    assert len(grants(layout, "T")) == 1
     prior = [r for r in jobs.for_task(layout, "T") if str(r.get("deferred_reason", "")).startswith("continuation")]
     assert prior == []                                   # the grant retired every marker the cap had counted
     state = escalation._load(layout, "T")
@@ -106,7 +114,7 @@ def test_the_next_continuation_after_a_grant_runs_and_the_fresh_chain_still_hits
     rec = continuation_chain(layout, "T")
     sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
     run_until(layout, lambda: any(r.get("diag_action") for r in diag_records(layout, "T")))
-    assert tasks.load(layout, "T").status == TaskStatus.READY
+    assert len(grants(layout, "T")) == 1
     tasks.set_status(layout, "T", "IN_PROGRESS")
     issues_after_grant_1 = len(list(layout.issues.glob("I-*.yaml")))
     n = len(jobs.for_task(layout, "T")) + 1
