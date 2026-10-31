@@ -374,8 +374,11 @@ def ingest(supervisor, rec: dict, result) -> dict:
         return {"action": "defer", "blocked_on": blocked_on}
     if action == "architect":
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: design question → architect. {summary[:200]}", actor="escalation")
+        # Carry this diagnosis's OWN grant generation (F4): `already()`/`dispatch` dedupe an architect request by
+        # (signature, level, grant), and omitting it here defaulted to 0, which let a generation-1 manager's
+        # architect request match the spent generation-0 architect record and wrongly report the lane unavailable.
         nxt = dispatch(supervisor, task, rec.get("diag_source", "diagnosis"), rec.get("diag_detail", "") or summary,
-                       rec.get("diag_signature", ""), level="architect", issue_id=issue_id)
+                       rec.get("diag_signature", ""), level="architect", issue_id=issue_id, grant=rec.get("diag_grant") or 0)
         if nxt is None:                                        # no architect lane right now: the owner hears about it
             return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), "architect lane unavailable")
         return {"action": "architect", "attempt": nxt.get("attempt_id")}
