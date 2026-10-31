@@ -181,16 +181,21 @@ def _task_view(layout: Layout, task: Task, role: str, adapter_name: str, prompt:
 
 def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, level: str = "manager",
              issue_id: str | None = None, grant: int = 0) -> dict | None:
-    """One diagnosis job for (task, signature, level), or None when one exists under the same grant generation
-    (`grant`, R4), the route is disabled, the role's lane is unavailable, or its capacity is out (the escalation
-    then stands as an issue + BLOCKED task, as before)."""
+    """The diagnosis job for (task, signature, level) under this grant generation (`grant`, R4): the EXISTING
+    record when one already matches (a replayed hand-off reuses a transition that is already durable — round-3
+    review F7 — never a fresh dispatch, so a second architect for the same signature and generation is still
+    never created), a freshly dispatched one otherwise, or None when the route is disabled, the role's lane is
+    unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before). None
+    therefore only ever means "no diagnosis is running for this" — a caller that reads it as "unavailable" is
+    never looking at one that is in fact already under way."""
     from . import review
     layout = supervisor.layout
     cfg = settings(layout)
     if not cfg["enabled"] or level not in LEVELS:
         return None
-    if already(layout, task.id, signature, level, grant=grant):
-        return None
+    existing = already(layout, task.id, signature, level, grant=grant)
+    if existing:
+        return existing
     role = cfg["roles"][level]
     try:
         adapter_name, overrides, same_vendor = review.lane_for(layout, role)

@@ -47,12 +47,17 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   record of what it has routed so far, never from the task's current status alone, so a deliberate later hold or
   cancellation is left untouched (round-3 review F6). A manager-to-architect hand-off carries the originating diagnosis's
   own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
-  diagnosis instead of the already-answered record from the generation that granted it, and never tells the
-  owner the architect lane is unavailable when it is not. Together these close the race CI's two `G3 suite` jobs
-  hit against the first candidate head (round-1 review R2, R4) and the four replay/recovery/routing gaps round-2
-  review found in that same mechanism (F2, F3, F4): the recorded `escalation -> READY` transition, a
-  generation-scoped retirement boundary, and a generation-tagged architect hand-off are what now make the grant
-  replay-safe end to end, not only across the one crash point the first attempt covered.
+  diagnosis instead of the already-answered record from the generation that granted it; and when `dispatch()`
+  instead finds an architect job already durable for that SAME (signature, level, grant) — a replay of the hand-off
+  itself, interrupted after the architect record was written but before the manager's own `ingest()` call
+  returned, never a stale generation — it now returns that existing record rather than the same `None` an
+  unavailable lane or a spent capacity floor returns, so the replay reuses the existing transition instead of
+  creating a second architect job or reading its own dedup as the lane being unavailable (round-3 review F7).
+  Together these close the race CI's two `G3 suite` jobs hit against the first candidate head (round-1 review R2,
+  R4) and the five replay/recovery/routing gaps round-2 and round-3 review found in that same mechanism (F2, F3,
+  F4, F7): the recorded `escalation -> READY` transition, a generation-scoped retirement boundary, and a
+  generation- and dispatch-state-aware architect hand-off are what now make the grant replay-safe end to end, not
+  only across the one crash point the first attempt covered.
 - **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
   which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
   executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).

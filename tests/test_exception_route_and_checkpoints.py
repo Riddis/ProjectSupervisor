@@ -87,8 +87,11 @@ def test_exhausted_retries_dispatch_one_manager_diagnosis_not_an_owner_item(layo
         assert (layout.issues / "I-001.yaml").exists()
         # the diagnosis job reads only: review lane confinement, no ownership, no snapshot
         assert gate.owned_for(tasks.load(layout, "T"), "claude_cli", "diagnosis") == []
-        # a replayed escalation (same signature, same level) spends no second diagnosis
-        assert diagnosis.dispatch(sup, tasks.load(layout, "T"), "verification", "x", recs[0]["diag_signature"], "manager", "I-001") is None
+        # a replayed escalation (same signature, same level) spends no second diagnosis: dispatch() reuses the
+        # existing record (round-3 review F7 — the caller must be able to tell "already dispatched" apart from
+        # "lane unavailable"), it never returns None for one that is in fact already running.
+        reused = diagnosis.dispatch(sup, tasks.load(layout, "T"), "verification", "x", recs[0]["diag_signature"], "manager", "I-001")
+        assert reused is not None and reused["attempt_id"] == recs[0]["attempt_id"]
         assert len(diag_records(layout, "T")) == 1
     finally:
         release.write_text("go", encoding="utf-8")
