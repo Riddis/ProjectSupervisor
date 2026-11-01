@@ -60,7 +60,16 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # whatever it is handed, so a `kind: path` value with no spaces and an "&" in it still runs a second program. A
 # later check assumed every OTHER argv[0]/argv[1] pair not on that short list was safe once argv[1] resolved to a
 # file on disk, which is what let PowerShell's flagless default and a native `.bat`/`.cmd` executable at argv[0]
-# both re-parse a value past that same prefix the same way (round-4 review F8).
+# both re-parse a value past that same prefix the same way (round-4 review F8). That suffix test still read the
+# literal argv[0] text a job wrote, not the name Win32 CreateProcess actually resolves — a trailing space or dot
+# is stripped when Windows resolves the target and still routed through cmd.exe, and a launcher (env.exe) whose
+# own argv[1] is the batch file re-opens the same reparse one slot to the right, since the suffix test only ever
+# inspected argv[0]. _resolved_name now reads what Windows actually resolves (trailing spaces/dots stripped, an
+# `::$DATA` alternate-data-stream spelling folded to the plain name) for both argv[0] and argv[1], and
+# _reparses_regardless_of_argv applies the SAME re-parsing-family test (REPARSED_EXECUTABLE_SUFFIXES,
+# POWERSHELL_EXES, and now WSL_EXES — wsl.exe's own default hands its whole tail to a Linux shell, unobservable
+# on a host whose default distribution never starts but not thereby exempt) to whichever slot the reparsing
+# executable occupies (round-5 review F10).
 JOB_FIX_FIELDS = {"process": ("params",)}
 PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
 
@@ -91,6 +100,34 @@ POWERSHELL_EXES = {"powershell.exe", "powershell", "pwsh.exe", "pwsh"}
 # is provably safe for such a command, the same as for any SHELL_REPARSING/POWERSHELL_EXES entry.
 REPARSED_EXECUTABLE_SUFFIXES = (".bat", ".cmd")
 
+# Round-5 review F10: wsl.exe, launched without --exec, hands its entire tail — not only argv[1] — to the
+# default WSL distribution's own login shell as one re-parsed command line, the same invariant the
+# SHELL_REPARSING sh/bash "-c" entries are refused for, reached through a first-party Windows launcher instead
+# of an explicit shell. This host's default distribution fails to attach its disk, so the form could not be
+# observed directly (review lines 72-74); an unobservable form is not an exempt one, so the whole executable is
+# refused regardless of argv[1], the same way POWERSHELL_EXES is refused regardless of its own flag.
+WSL_EXES = {"wsl.exe", "wsl"}
+
+
+def _resolved_name(token) -> str:
+    """The basename Win32 CreateProcess actually resolves for one argv token, not the literal text a job wrote
+    (round-5 review F10). Win32 path resolution strips trailing spaces and dots from a file name before it
+    looks the file up, so a `plain.cmd ` or `plain.cmd.` argv[0] still resolves to, and Windows still
+    re-invokes through cmd.exe as, `plain.cmd` — a suffix test that reads the literal, unstripped text
+    disagrees with the OS it is reasoning about. An explicit `::$DATA` alternate-data-stream spelling names the
+    same (default, unnamed) stream as the plain file, so `plain.cmd::$DATA` resolves the same way too."""
+    name = str(token).replace("\\", "/").rsplit("/", 1)[-1]
+    name = name.split("::", 1)[0]
+    return name.rstrip(" .").lower()
+
+
+def _reparses_regardless_of_argv(name: str) -> bool:
+    """Whether the already-resolved basename `name` is an executable the OS hands off to a secondary command
+    processor, or an executable family with no invocation this interface has established safe, whatever the
+    rest of argv is: a `.bat`/`.cmd` target (REPARSED_EXECUTABLE_SUFFIXES), the whole PowerShell family
+    (POWERSHELL_EXES), or wsl.exe without --exec (WSL_EXES)."""
+    return name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or name in POWERSHELL_EXES or name in WSL_EXES
+
 
 def _command_prefix(layout: Layout, argv: list) -> int | None:
     """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
@@ -98,7 +135,11 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     processor regardless of argv (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target), an executable whose
     every invocation this interface recognises re-parses its own command line (SHELL_REPARSING's exact flag, or
     an executable family with no safe invocation at all — POWERSHELL_EXES, whose own flagless default re-parses
-    just as its explicit -Command form does — no slot is safe, not even one), an argv[1] that the command's own
+    just as its explicit -Command form does, or WSL_EXES, whose own default hands its whole tail to a Linux
+    shell — no slot is safe, not even one), a launcher whose argv[1] is itself one of those same re-parsing
+    forms (round-5 review F10: env.exe execs argv[1] as the real program, re-opening the same reparse one slot
+    to the right — the F8 mechanism moved one slot to the right, read on the executable Windows actually
+    resolves there, not on what argv[0] happens to be), an argv[1] that the command's own
     grammar never treats as a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer —
     "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or an argv[1] that is not an
     actual file (so this cannot even confirm it is looking at a script rather than a subcommand or bare word).
@@ -106,12 +147,15 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     layout this interface does understand (argv[0] executable, argv[1] script) read the same way on every platform
     without a filesystem collision turning an option into a script: an absolute POSIX script path starts with "/"
     too, and is not an option, but a project that happens to contain a file literally named "-c" must not make
-    `-c` one either (round-3 review F5) — the grammar, and what the OS itself does with argv[0], not what happens
-    to exist on disk, decide which token is the script."""
+    `-c` one either (round-3 review F5) — the grammar, and what the OS itself resolves for argv[0] and argv[1],
+    not what happens to exist on disk or the spelling a job happened to write, decide which token is the
+    script (round-5 review F10)."""
     if len(argv) < 2:
         return None
-    exe_name = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if exe_name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or exe_name in POWERSHELL_EXES:
+    exe_name = _resolved_name(argv[0])
+    if _reparses_regardless_of_argv(exe_name):
+        return None
+    if _reparses_regardless_of_argv(_resolved_name(argv[1])):
         return None
     option = str(argv[1]).lower()
     if (exe_name, option) in SHELL_REPARSING:

@@ -66,27 +66,35 @@ or a continuation job record carrying its grant generation (`continuation_grant`
 - **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
   which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
   executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
-  The trusted prefix is read from the command's own grammar, not from what happens to exist on disk: fewer than
-  two tokens; an executable in the `SHELL_REPARSING` family under its exact re-parsing flag (`cmd.exe`/`cmd`
-  with `/c`/`/k`, `powershell`/`pwsh` with `-Command`, `sh`/`bash`/`zsh` with `-c`); PowerShell under ANY
-  invocation at all, flagged or not — its own flagless default re-parses everything past its own name exactly
-  as `-Command` does, so no PowerShell invocation this interface recognises is established safe; an `argv[0]`
-  the OS itself hands to a secondary command processor regardless of argv (a `.bat`/`.cmd` target, which Windows
-  re-invokes through `cmd.exe` even when the caller never asks for a shell); or an `argv[1]` that is itself an
-  interpreter option rather than a script (anything `"-"`-prefixed — `-c`, `-m`, `-e`, ... — for every
-  interpreter, not only the ones just named) — has **no** eligible index at all, for any of these, not a
-  protected prefix with a mutable tail — because the child's own parser, not an index, decides where one
-  argument ends and the next command begins, and a project that happens to contain a same-named file must not
-  turn that option into a script either (round-3 review F5); otherwise the plain two-token layout applies,
-  trusted prefix 2, decided by whether `argv[1]` resolves to an actual file under the project root, and nothing
-  before it is ever eligible regardless of what a job declares. A diagnosis's `job_fix` may only ever supply
-  `{"params": {"<name>": "<value>"}}`; any other field it names, any undeclared parameter name, an index inside
-  the trusted prefix, or a value that fails its declared check, is dropped and logged, never applied — a
-  diagnosis can correct a stale argument (a sha, an in-project path) but can never install a different program,
-  interpreter option, implicit-mode command text, free-form argv or an alternate script through any command
-  form the process adapter actually runs (round-1 review R1; round-2 review F1; round-3 review F5; round-4
-  review F8 — PowerShell's own default mode and a native batch executable at `argv[0]` both re-parsed a
-  parameter past the prefix the same way `cmd.exe /c` once did).
+  The trusted prefix is read from the executable Windows itself resolves, not from the literal text a job
+  wrote or from what happens to exist on disk: fewer than two tokens; an executable in the `SHELL_REPARSING`
+  family under its exact re-parsing flag (`cmd.exe`/`cmd` with `/c`/`/k`, `powershell`/`pwsh` with `-Command`,
+  `sh`/`bash`/`zsh` with `-c`); PowerShell under ANY invocation at all, flagged or not — its own flagless
+  default re-parses everything past its own name exactly as `-Command` does, so no PowerShell invocation this
+  interface recognises is established safe; `wsl.exe` under any invocation too, for the same reason — its
+  own default hands its whole tail to the default distribution's own shell, unobserved on a host whose default
+  distribution never starts but not thereby exempt; an executable the OS itself hands to a secondary command
+  processor regardless of argv (a `.bat`/`.cmd` target, which Windows re-invokes through `cmd.exe` even when the
+  caller never asks for a shell), wherever in argv it sits — a launcher (`env.exe`, ...) whose own argv[1]
+  is such a target re-opens the same reparse one slot to the right, and a trailing space or dot, or an
+  `::$DATA` alternate-data-stream spelling, is stripped the same way Win32 `CreateProcess` itself strips it
+  before this check ever runs, not kept as the job happened to spell it (round-5 review F10); or an `argv[1]`
+  that is itself an interpreter option rather than a script (anything `"-"`-prefixed — `-c`, `-m`, `-e`, ...
+  — for every interpreter, not only the ones just named) — has **no** eligible index at all, for any
+  of these, not a protected prefix with a mutable tail — because the child's own parser, not an index,
+  decides where one argument ends and the next command begins, and a project that happens to contain a
+  same-named file must not turn that option into a script either (round-3 review F5); otherwise the plain
+  two-token layout applies, trusted prefix 2, decided by whether `argv[1]` resolves to an actual file under the
+  project root, and nothing before it is ever eligible regardless of what a job declares. A diagnosis's
+  `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other field it names, any undeclared
+  parameter name, an index inside the trusted prefix, or a value that fails its declared check, is dropped and
+  logged, never applied — a diagnosis can correct a stale argument (a sha, an in-project path) but can
+  never install a different program, interpreter option, implicit-mode command text, free-form argv or an
+  alternate script through any command form this interface's branches recognise (round-1 review R1; round-2
+  review F1; round-3 review F5; round-4 review F8 — PowerShell's own default mode and a native batch
+  executable at `argv[0]` both re-parsed a parameter past the prefix the same way `cmd.exe /c` once did;
+  round-5 review F10 — the suffix test now reads the executable name Windows actually resolves, for
+  `argv[0]` and for a launcher's `argv[1]` alike, not the literal spelling a job wrote).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
