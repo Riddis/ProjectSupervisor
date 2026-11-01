@@ -179,7 +179,7 @@ def _carries_the_executable_bit(path) -> bool:
 
 
 def _command_prefix(layout: Layout, argv: list) -> int | None:
-    """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
+    r"""The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
     is eligible at all: too few tokens to have a script, an argv[0] the OS itself hands to a secondary command
     processor regardless of argv (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target), an executable whose
     every invocation this interface recognises re-parses its own command line (SHELL_REPARSING's exact flag, or
@@ -207,7 +207,13 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     grammar, what the OS itself resolves for argv[0] and argv[1], and now whether argv[1] is this project's own
     script or a program in its own right, not what happens to exist on disk anywhere or the spelling a job
     happened to write, decide which token is the script and whether it is this job's own (round-5 review F10;
-    round-6 review F14)."""
+    round-6 review F14). Round-7 review F15: the FIRST image question above reads argv[1]'s literal text, which
+    cannot see a trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry — Win32 normalises
+    all of those away before it ever stats the file, so a real in-project interpreter spelled that way resolved
+    to "" and was granted a prefix as if it were a script. The question is asked a SECOND time, inside the same
+    try block that already reads the filesystem for containment, of the file that question just resolved
+    (os.path.realpath — the same normalisation CreateProcess itself performs), so the image question and the
+    containment question are always asked of one file, never two spellings of it."""
     if len(argv) < 2:
         return None
     exe_name = _resolved_name(argv[0])
@@ -225,6 +231,15 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     try:
         resolved = layout.root / script
         if not resolved.is_file() or not contained(resolved, [layout.root], root=layout.root):
+            return None
+        # Round-7 review F15: the image question above reads argv[1]'s literal text, and Win32 normalises a
+        # trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry away before it ever stats
+        # the file, so a real in-project interpreter spelled that way resolves name "" and passes as "not an
+        # image" while this same is_file()/contained() pair resolves it to the plain executable and grants it a
+        # prefix. Ask the image question again of the file THIS question just resolved — os.path.realpath, the
+        # same normalisation CreateProcess itself performs — so both questions read one file, not two spellings
+        # of it.
+        if _is_executable_image_name(_resolved_name(os.path.realpath(resolved))):
             return None
         if _carries_the_executable_bit(resolved):
             return None

@@ -103,7 +103,10 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   file **contained in the project** (not merely one that exists somewhere on disk, which a launcher's own
   `argv[1]` — the program it execs, a system `env.exe`, `bash.exe`, `python.exe`, `cmd.exe`, ... — satisfies
   just as readily as a job's real script does) that is **not itself a program the OS would run** (a `.exe`/
-  `.com` image under the name Windows resolves, or the executable bit on POSIX, where an interpreter has no
+  `.com` image under the name Windows resolves — asked once of the literal text a job wrote and a second time
+  of the very file containment just resolved, so a trailing `\.`, `/.`, a bare trailing separator, or a
+  `..\<name>\.` re-entry a job's literal spelling could hide behind cannot read as a program to one question
+  and a script to the other (round-7 review F15), or the executable bit on POSIX, where an interpreter has no
   extension to read) — because containment alone cannot tell a job's script from the interpreter in the
   project's own virtualenv, `<root>/.venv/Scripts/python.exe`. A launcher is not an interpreter and
   `python.exe` is not a script: an executable at `argv[1]` means the real command begins further right than
@@ -123,9 +126,14 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   `argv[0]` and for a launcher's `argv[1]` alike, not the literal spelling a job wrote; round-6 review F14 —
   the script slot itself, `argv[1]`, must now be this project's own script: contained in the project and not an
   executable image, so a launcher's own program is not mistaken for a job's script, at any depth and wherever
-  that program lives — the residual being a Windows executable image with no `.exe`/`.com` extension copied
-  inside the project, which the name Windows resolves cannot distinguish from a script,
-  `docs/releases/2.1.0/F14-command-prefix-rule.md`).
+  that program lives — the residual being any in-project Windows executable image not named `.exe`/`.com`, not
+  only an extensionless one (`CreateProcess` runs a PE by its header, not only by one of those two extensions,
+  so a `.dat`-named copy is covered just as an extensionless one is), which the name Windows resolves cannot
+  distinguish from a script, `docs/releases/2.1.0/F14-command-prefix-rule.md`; round-7 review F15 — the image
+  question above is asked a second time of the file containment itself resolves, not only the literal text a
+  job wrote, so a trailing `\.`, `/.`, separator, or `..\<name>\.` re-entry a real in-project interpreter was
+  spelled with no longer reads as "not a program" to one question while the other grants it a prefix,
+  `docs/releases/2.1.0/F15-resolved-image-name.md`).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
