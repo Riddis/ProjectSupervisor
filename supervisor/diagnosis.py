@@ -17,13 +17,10 @@ checked against the job records, so a replayed escalation cannot spend a second 
 Supervisor.dispatch → launch → supervisor.gate like every other job (decision, capacity floor, agent limit)."""
 from __future__ import annotations
 
-import os
-import re
-
 import yaml
 
-from . import inbox as inbox_mod, jobs as jobs_mod, scheduler, store, tasks as tasks_mod
-from ._vendor.contract import CapacityDeferred, contained
+from . import inbox as inbox_mod, jobs as jobs_mod, store, tasks as tasks_mod
+from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
 from .paths import Layout
@@ -34,288 +31,17 @@ LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
 DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
 
-# A `requeue` on a non-agent (process) job may also carry a corrected command — the one thing a bare requeue cannot
-# repair, because escalation.dispatch_revision rebuilds the job from scheduler.job_spec() unchanged. A diagnosis
-# never supplies `argv` itself: `job_fix` may only ever name `params`, mapping a NAME the job already declared
-# (in its own `fix_params`, written only by task.set_job/commands.apply_job, never by a diagnosis) to a new value.
-# `fix_params[name]` fixes which argv slot that name corrects (`index`) and how its value is checked (`pattern`, a
-# regex the value must fullmatch, or `kind: "path"`, which instead requires the value to resolve inside the
-# project). Every other field of the job (its adapter, every limit, owned_paths, ...) is untouched, whatever a
-# diagnosis proposes — task.set_job (via commands.apply_job) stays the single writer, replacing only `argv`, and
-# every application or refusal is logged (diagnosis_job_fixed).
-#
-# Which indices are even eligible is not PARAM_MIN_INDEX alone: that is only the absolute floor, never 0 or 1 for
-# any command. The real boundary is _command_prefix(layout, argv) — this argv's own layout, read fresh from the
-# CURRENT job every time, never from fix_params — the length of the trusted, immutable executable+script prefix
-# a diagnosis can never move into, or None when no index at all is eligible: a layout this cannot read (argv[1]
-# is not an actual file, so it cannot even confirm that is the script), an executable whose child re-parses its
-# own command line in every invocation this interface recognises (SHELL_REPARSING — cmd.exe /c, powershell
-# -Command, sh/bash -c; POWERSHELL_EXES — PowerShell's own flagless default does the same thing its -Command
-# option does), or an argv[0] the OS itself hands to a secondary command processor regardless of argv
-# (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target, re-invoked through cmd.exe even with shell=False) —
-# where no index past the wrapper is provably safe, because the child's own parser, not an index, decides where
-# one argument ends. The old check assumed argv[1] was the script whenever it did not start with "-", which is
-# what let `cmd.exe /c <script>` move the real script to argv[2] while looking, to that check, exactly like a
-# trusted argv[1] script (round-2 review F1); registering that wrapper's argv[2] as a 3-slot "trusted prefix"
-# with a correctable index past it was a second, narrower version of the same mistake — cmd.exe re-parses
-# whatever it is handed, so a `kind: path` value with no spaces and an "&" in it still runs a second program. A
-# later check assumed every OTHER argv[0]/argv[1] pair not on that short list was safe once argv[1] resolved to a
-# file on disk, which is what let PowerShell's flagless default and a native `.bat`/`.cmd` executable at argv[0]
-# both re-parse a value past that same prefix the same way (round-4 review F8). That suffix test still read the
-# literal argv[0] text a job wrote, not the name Win32 CreateProcess actually resolves — a trailing space or dot
-# is stripped when Windows resolves the target and still routed through cmd.exe, and a launcher (env.exe) whose
-# own argv[1] is the batch file re-opens the same reparse one slot to the right, since the suffix test only ever
-# inspected argv[0]. _resolved_name now reads what Windows actually resolves (trailing spaces/dots stripped, an
-# `::$DATA` alternate-data-stream spelling folded to the plain name) for both argv[0] and argv[1], and
-# _reparses_regardless_of_argv applies the SAME re-parsing-family test (REPARSED_EXECUTABLE_SUFFIXES,
-# POWERSHELL_EXES, and now WSL_EXES — wsl.exe's own default hands its whole tail to a Linux shell, unobservable
-# on a host whose default distribution never starts but not thereby exempt) to whichever slot the reparsing
-# executable occupies (round-5 review F10).
-#
-# All of the above still read a FIXED slot (argv[0] or argv[1]) and, once past the re-parsing checks, granted a
-# prefix on nothing but "does argv[1] resolve to a file somewhere on disk" — which a launcher's own argv[1]
-# (the program it execs, almost always outside the project entirely: a system env.exe, bash.exe, python.exe,
-# cmd.exe, ...) satisfies just as readily as a job's real, in-project script does. A launcher moves the whole
-# command one slot to the right; the family check moved with it (F10), but the file-existence test never asked
-# WHERE the file was, so the reparsed form two levels deep, a `-c`/`-Command` script text one slot right, or the
-# real script's own slot under a launcher, were all still granted a prefix the branches did not understand (a
-# launcher is not an interpreter, and `python.exe` is not a script) (round-6 review F14). A prefix now exists
-# only when `argv[1]` is THIS PROJECT'S OWN SCRIPT: a regular file CONTAINED IN THE PROJECT ROOT
-# (`_vendor.contract.contained`, the same containment `_param_ok`'s own `kind: "path"` check already requires of
-# a proposed value) that is NOT itself a program the OS would run (`_is_executable_image_name`,
-# `_carries_the_executable_bit`) — containment alone is necessary and not sufficient, because a project's own
-# virtualenv puts a real interpreter inside the root. Two questions about the command the job declared, neither
-# needing a depth-specific branch: whatever sits at argv[0], this reads argv[1], and a launcher chain's second
-# token is another launcher, refused by the same two questions as the first. A launcher in front of an
-# otherwise-legitimate interpreter and in-project script (`env python <root>/plain.py`) loses its prefix too,
-# since its own argv[1] is a program rather than a script — accepted as the smaller, uniform cost of a rule
-# stated about the whole command rather than one more spelling on a list
-# (docs/releases/2.1.0/F14-command-prefix-rule.md).
-JOB_FIX_FIELDS = {"process": ("params",)}
-PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
-
-# A wrapper whose child re-parses its own command line (cmd.exe /c|/k, powershell/pwsh -Command, sh/bash/zsh -c)
-# has NO slot that is provably safe to mutate, however far past argv[1] it sits: the child's own parser, not this
-# interface's index arithmetic, decides where one argument ends and the next command begins, and a value that is
-# otherwise a perfectly ordinary in-project path (one with "&", "|", ";", a space, ...) can make the wrapper run
-# a second, different program (round-2 review F1, architecture note: a `kind: path` value containing "&" passes
-# `contained()` — that only resolves and compares roots — and an argument list2cmdline leaves unquoted because it
-# has no spaces is exactly what cmd.exe then splits on). SHELL_REPARSING is therefore not a registry of layouts
-# with a usable prefix at all: matching it means "no eligible index", full stop — the whole command is refused
-# for a job_fix, the same as a layout this interface cannot read.
-SHELL_REPARSING = {("cmd.exe", "/c"), ("cmd.exe", "/k"), ("cmd", "/c"), ("cmd", "/k"),
-                   ("powershell.exe", "-command"), ("powershell", "-command"),
-                   ("pwsh.exe", "-command"), ("pwsh", "-command"),
-                   ("sh", "-c"), ("sh.exe", "-c"), ("bash", "-c"), ("bash.exe", "-c"), ("zsh", "-c")}
-
-# Round-4 review F8: SHELL_REPARSING keys a wrapper's re-parsing by its EXACT flag, which missed the one invocation
-# none of its own entries name — PowerShell's own default, flagless mode. Launched with neither -Command nor -File,
-# PowerShell still binds everything past its own name to the same re-parsed script-text parameter -Command uses;
-# there is no flagless or otherwise-flagged PowerShell invocation this interface has established safe, so the whole
-# executable family is refused regardless of argv[1] — not only the one flag SHELL_REPARSING happens to list.
-POWERSHELL_EXES = {"powershell.exe", "powershell", "pwsh.exe", "pwsh"}
-
-# Round-4 review F8: Windows resolves a `.bat`/`.cmd` target by re-invoking it through its own command processor
-# even when the caller never asks for a shell (`subprocess.Popen(argv, ...)`, no `shell=True`) — the "executable"
-# position at argv[0] is itself a reparsing wrapper selected by file extension, not by name. No index past argv[0]
-# is provably safe for such a command, the same as for any SHELL_REPARSING/POWERSHELL_EXES entry.
-REPARSED_EXECUTABLE_SUFFIXES = (".bat", ".cmd")
-
-# Round-5 review F10: wsl.exe, launched without --exec, hands its entire tail — not only argv[1] — to the
-# default WSL distribution's own login shell as one re-parsed command line, the same invariant the
-# SHELL_REPARSING sh/bash "-c" entries are refused for, reached through a first-party Windows launcher instead
-# of an explicit shell. This host's default distribution fails to attach its disk, so the form could not be
-# observed directly (review lines 72-74); an unobservable form is not an exempt one, so the whole executable is
-# refused regardless of argv[1], the same way POWERSHELL_EXES is refused regardless of its own flag.
-WSL_EXES = {"wsl.exe", "wsl"}
-
-# Round-7 review F16: SHELL_REPARSING's (cmd.exe, "/c")/(cmd.exe, "/k") pairs match only when argv[1] IS that
-# exact flag, but cmd.exe's own parser does not stop at a non-switch token first — "cmd.exe <root>/plain.py /c
-# echo 11" still runs "echo 11", and so does "cmd.exe <root>/plain.py x y /c echo 11" or a single quoted
-# "/c echo 11" token; /k behaves the same way. An in-root, non-image regular file at argv[1] (never itself read
-# by cmd.exe in any of these forms) passed both of F14's own questions, so every one of them was granted a
-# prefix by the plain containment-and-image test alone. There is no cmd.exe invocation this interface has
-# established safe — "cmd.exe <script>" is not one, because cmd.exe does not run a script given at argv[1] at
-# all — so the whole family is refused regardless of argv[1], the same shape POWERSHELL_EXES and WSL_EXES
-# already are; this is the F8 mechanism (a family whose re-parsing does not depend on the flag at argv[1])
-# applied to the one family the exact-pair rule still read one slot of.
-CMD_EXES = {"cmd.exe", "cmd"}
-
-# Round-6 review F14: the one layout this interface understands is "argv[0] is the program, argv[1] is this job's
-# own script", and the question that separates it from a launcher (env.exe, which execs argv[1] as the real
-# program, so the real command begins one slot further right) is not WHERE argv[1] lives but whether the OS would
-# itself run argv[1] as a program. Containment is necessary and not sufficient: a project's own virtualenv puts a
-# real interpreter INSIDE the root (`<root>/.venv/Scripts/python.exe`, the ordinary Python layout), where a
-# containment test cannot tell it from a script. An executable image at argv[1] therefore means argv[0] is a
-# launcher and this interface is not reading the real command at all — no slot is provably safe, the same
-# conclusion _reparses_regardless_of_argv reaches for a re-parsing family, widened from "an executable the OS
-# re-parses" to "an executable at all". On Windows the image is named by its extension (the ones CreateProcess
-# runs directly); on POSIX an interpreter has no suffix to read (`<root>/.venv/bin/python`) and the executable
-# bit is the only thing that distinguishes it from the script beside it.
-EXECUTABLE_IMAGE_SUFFIXES = (".exe", ".com")
-
-
-def _resolved_name(token) -> str:
-    """The basename Win32 CreateProcess actually resolves for one argv token, not the literal text a job wrote
-    (round-5 review F10). Win32 path resolution strips trailing spaces and dots from a file name before it
-    looks the file up, so a `plain.cmd ` or `plain.cmd.` argv[0] still resolves to, and Windows still
-    re-invokes through cmd.exe as, `plain.cmd` — a suffix test that reads the literal, unstripped text
-    disagrees with the OS it is reasoning about. An explicit `::$DATA` alternate-data-stream spelling names the
-    same (default, unnamed) stream as the plain file, so `plain.cmd::$DATA` resolves the same way too."""
-    name = str(token).replace("\\", "/").rsplit("/", 1)[-1]
-    name = name.split("::", 1)[0]
-    return name.rstrip(" .").lower()
-
-
-def _reparses_regardless_of_argv(name: str) -> bool:
-    """Whether the already-resolved basename `name` is an executable the OS hands off to a secondary command
-    processor, or an executable family with no invocation this interface has established safe, whatever the
-    rest of argv is: a `.bat`/`.cmd` target (REPARSED_EXECUTABLE_SUFFIXES), the whole PowerShell family
-    (POWERSHELL_EXES), wsl.exe without --exec (WSL_EXES), or the whole cmd.exe family (CMD_EXES, round-7 review
-    F16: cmd.exe honours `/c`/`/k` wherever they sit once a non-switch token precedes them, so no index past
-    argv[0] is provably safe for it either)."""
-    return (name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or name in POWERSHELL_EXES or name in WSL_EXES
-            or name in CMD_EXES)
-
-
-def _is_executable_image_name(name: str) -> bool:
-    """Whether the already-resolved basename `name` names an executable image the OS itself runs as a program
-    rather than a script an interpreter reads (round-6 review F14) — the extensions Windows runs directly, read
-    off the name the OS resolves so that a trailing space or dot or an `::$DATA` spelling cannot hide one."""
-    return name.endswith(EXECUTABLE_IMAGE_SUFFIXES)
-
-
-def _carries_the_executable_bit(path) -> bool:
-    """Whether `path` is a program POSIX would itself exec: the other half of the same question
-    `_is_executable_image_name` answers on Windows, for a platform where an interpreter carries no extension to
-    read (`<root>/.venv/bin/python`) and the mode is the only thing distinguishing it from the script beside it.
-    Not asked on Windows, where `os.access(X_OK)` answers "is it readable" for every file there is."""
-    return os.name != "nt" and os.access(path, os.X_OK)
-
-
-def _command_prefix(layout: Layout, argv: list) -> int | None:
-    r"""The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
-    is eligible at all: too few tokens to have a script, an argv[0] the OS itself hands to a secondary command
-    processor regardless of argv (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target), an executable whose
-    every invocation this interface recognises re-parses its own command line (SHELL_REPARSING's exact flag, or
-    an executable family with no safe invocation at all — POWERSHELL_EXES, whose own flagless default re-parses
-    just as its explicit -Command form does, WSL_EXES, whose own default hands its whole tail to a Linux shell,
-    or CMD_EXES, round-7 review F16: cmd.exe honours `/c`/`/k` wherever they sit once a non-switch token
-    precedes them, so the exact SHELL_REPARSING pair is not the whole of what it re-parses — no slot is safe,
-    not even one), a launcher whose argv[1] is itself one of those same re-parsing
-    forms (round-5 review F10: env.exe execs argv[1] as the real program, re-opening the same reparse one slot
-    to the right — the F8 mechanism moved one slot to the right, read on the executable Windows actually
-    resolves there, not on what argv[0] happens to be), an argv[1] that the command's own
-    grammar never treats as a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer —
-    "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or — the whole of round-6
-    review F14 — an argv[1] that is not THIS PROJECT'S OWN SCRIPT: a prefix exists only for the single layout
-    this interface understands, argv[0] the program and argv[1] the script that program reads, so argv[1] must
-    be a regular file CONTAINED IN THE PROJECT ROOT (not merely one that exists somewhere on disk: a launcher's
-    own argv[1] is the program it execs and that is a real file too) and must NOT itself be a program the OS
-    would run (_is_executable_image_name on the name Windows resolves, _carries_the_executable_bit on POSIX:
-    containment alone cannot tell a job's script from the interpreter in the project's own virtualenv,
-    `<root>/.venv/Scripts/python.exe`). An executable at argv[1] means argv[0] is a launcher and the real
-    command starts further right, where none of these branches are reading, so no slot is safe — whatever
-    argv[0] is and however many launchers precede it, since a chain's second token is another launcher and is
-    refused by exactly the same two questions. Asking them only AFTER ruling out every re-parsing form is what
-    makes the plain layout read the same way on every platform without a filesystem collision turning an option
-    into a script: an absolute POSIX script path starts with "/" too, and is not an option, but a project that
-    happens to contain a file literally named "-c" must not make `-c` one either (round-3 review F5) — the
-    grammar, what the OS itself resolves for argv[0] and argv[1], and now whether argv[1] is this project's own
-    script or a program in its own right, not what happens to exist on disk anywhere or the spelling a job
-    happened to write, decide which token is the script and whether it is this job's own (round-5 review F10;
-    round-6 review F14). Round-7 review F15: the FIRST image question above reads argv[1]'s literal text, which
-    cannot see a trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry — Win32 normalises
-    all of those away before it ever stats the file, so a real in-project interpreter spelled that way resolved
-    to "" and was granted a prefix as if it were a script. The question is asked a SECOND time, inside the same
-    try block that already reads the filesystem for containment, of the file that question just resolved
-    (os.path.realpath — the same normalisation CreateProcess itself performs), so the image question and the
-    containment question are always asked of one file, never two spellings of it. Round-7 review F16: SHELL_REPARSING's
-    (cmd.exe, "/c")/(cmd.exe, "/k") pairs read argv[1] for an EXACT flag, but cmd.exe's own parser honours
-    "/c"/"/k" wherever they sit once a non-switch token precedes them, so an in-root, non-image regular file at
-    argv[1] (never itself read by cmd.exe) passed both of F14's own questions and was granted a prefix under
-    "/d /c", a flagless invocation whose later value carried the flag, or any other switch the pair rule does not
-    name. CMD_EXES closes this the way POWERSHELL_EXES and WSL_EXES already are closed: the whole family is
-    refused at argv[0], before argv[1] is read at all, so no switch list is needed. Round-8 review F17: the SAME
-    trailing-"\.", "/.", bare-separator or "..\<name>\." trick F15 closed for the image question was still open
-    everywhere else a name question is asked on literal text alone — the re-parsing-family question at argv[0]
-    (above, pure text) and the re-parsing-family question at argv[1] (above, pure text too) both read "" for a
-    shell or a `.bat`/`.cmd` target spelled that way, exactly as the image question used to. Both are asked a
-    SECOND time of the realpath F15's own containment read already resolves: the family question at argv[1]
-    sits beside the second image question, inside the same try, of the same `os.path.realpath(resolved)`; the
-    family question at argv[0] is a second filesystem read of argv[0] itself — argv[0] is not bound by
-    containment the way argv[1] is (an out-of-project interpreter is a correct grant), so it is resolved with no
-    root-relative join, deferred to the END of the try rather than beside the first, pure-text question, so no
-    filesystem read moves in front of the SHELL_REPARSING pair lookup or the leading "-" refusal (F5) — it only
-    ever removes a prefix the pure-text questions and containment had already both allowed through, the same
-    direction F15's own second question argues. A `python.exe\.`-shaped program at argv[0] (a correct grant,
-    since "python.exe" is not a re-parsing family) is unaffected: its realpath is still "python.exe", and the
-    family question still says no."""
-    if len(argv) < 2:
-        return None
-    exe_name = _resolved_name(argv[0])
-    if _reparses_regardless_of_argv(exe_name):
-        return None
-    arg1_name = _resolved_name(argv[1])
-    if _reparses_regardless_of_argv(arg1_name) or _is_executable_image_name(arg1_name):
-        return None
-    option = str(argv[1]).lower()
-    if (exe_name, option) in SHELL_REPARSING:
-        return None
-    script = str(argv[1])
-    if script.startswith("-"):
-        return None
-    try:
-        resolved = layout.root / script
-        if not resolved.is_file() or not contained(resolved, [layout.root], root=layout.root):
-            return None
-        # Round-7 review F15: the image question above reads argv[1]'s literal text, and Win32 normalises a
-        # trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry away before it ever stats
-        # the file, so a real in-project interpreter spelled that way resolves name "" and passes as "not an
-        # image" while this same is_file()/contained() pair resolves it to the plain executable and grants it a
-        # prefix. Ask the image question again of the file THIS question just resolved — os.path.realpath, the
-        # same normalisation CreateProcess itself performs — so both questions read one file, not two spellings
-        # of it. Round-8 review F17: the re-parsing-family question at argv[1] (the one above, before this try)
-        # has exactly the same gap the image question had — "" matches no family either — so a launcher's own
-        # ".cmd"/".bat" target spelled with the same trick passed it too. Ask the FAMILY question a second time
-        # of the same resolved name, not only the image question.
-        resolved_arg1_name = _resolved_name(os.path.realpath(resolved))
-        if _reparses_regardless_of_argv(resolved_arg1_name) or _is_executable_image_name(resolved_arg1_name):
-            return None
-        if _carries_the_executable_bit(resolved):
-            return None
-        # Round-8 review F17: argv[0]'s own re-parsing-family question, asked above, has the same gap — a shell
-        # spelled with a trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry resolves to
-        # "" and passes as "not a family" while CreateProcess itself normalises the trick away and runs the
-        # shell. Ask the family question again of argv[0]'s own realpath, deferred to here (inside the one try
-        # that already reads the filesystem) rather than beside the first, pure-text question: argv[0] is not
-        # necessarily a path at all (a bare name CreateProcess finds on PATH), os.path.realpath on it is a
-        # filesystem read with no project-root containment to bound it, and asking it any earlier would move a
-        # filesystem read in front of the SHELL_REPARSING pair lookup and the leading "-" refusal — exactly the
-        # ordering F5's option-lookalike rule depends on staying clear of. Asked here, it costs nothing earlier:
-        # every row that reaches this point has already passed every pure-text question and argv[1]'s own
-        # containment, so a resolution that raises or returns something unexpected still refuses, never grants,
-        # through the same except this try already has.
-        if _reparses_regardless_of_argv(_resolved_name(os.path.realpath(str(argv[0])))):
-            return None
-    except (OSError, ValueError):
-        return None
-    return PARAM_MIN_INDEX
-
 
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
-    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","job_fix":"(requeue, '
-    'optional, process jobs only) {\\"params\\": {\\"<name>\\": \\"<value>\\"}} — a correction for a parameter the '
-    'job itself already declares (its own fix_params), e.g. a stale --sha; never a new command. Omit unless the job '
-    '(not the agent) is wrong. A name the job did not declare, or a value that fails its declared check, is dropped, '
-    'not applied. Every other field of the job (its adapter, timeout, argv positions it did not declare) is kept '
-    'exactly as it was, whatever this names","blocked_on":"(defer) what must happen first","question":"(owner) the '
-    'one decision or action only the owner can take"}\n```\n'
+    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) '
+    'what must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
     "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
-    "`owner` is for product choices, spending, external commitments, or physical actions on the workstation.\n")
+    "`owner` is for product choices, spending, external commitments, or physical actions on the workstation. A "
+    "diagnosis cannot change a task's job: if a process task's own command is wrong (not the agent's work), use "
+    '`action: "owner"` and name the `task.set_job` change the task needs in `question`.\n')
 
 
 def settings(layout: Layout) -> dict:
@@ -444,76 +170,6 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
         pass
 
 
-def _param_ok(layout: Layout, spec: dict, value) -> bool:
-    """Whether `value` satisfies the job's own declared check for one `fix_params` entry. Never trusts the
-    diagnosis for anything but the value itself: the slot (`index`), the check (`pattern`/`kind`) and (for a
-    path) the root it must resolve inside all come from the job, which only task.set_job ever writes."""
-    if not isinstance(value, str) or not value:
-        return False
-    index = spec.get("index")
-    if not isinstance(index, int) or isinstance(index, bool) or index < PARAM_MIN_INDEX:
-        return False
-    if spec.get("kind") == "path":
-        try:
-            return contained(layout.root / value, [layout.root], root=layout.root)
-        except (OSError, ValueError):
-            return False
-    pattern = spec.get("pattern")
-    return isinstance(pattern, str) and re.fullmatch(pattern, value) is not None
-
-
-def propose_job_fix(layout: Layout, task: Task, role: str, proposed) -> dict | None:
-    """Apply a diagnosis-proposed job correction through the declared interface only: `proposed` may name nothing
-    but `params` (JOB_FIX_FIELDS[adapter]), and every entry in `params` must name a parameter the job itself
-    already declared in its own `fix_params` (never written by a diagnosis) and supply a value that parameter's
-    declared check accepts. None when there is nothing to apply (an agent job, an unlisted adapter, or no usable
-    fields) — the ordinary `requeue` guidance still runs in that case. A name or value that fails is dropped, never
-    applied; only the job's `argv`, and only at the declared, validated slots, is ever rewritten — `new_job` starts
-    from the CURRENT job with a copy of its `argv`, so the adapter, every limit, owned_paths and every other field
-    (including `fix_params` itself) keep their current value whatever `proposed` names."""
-    if not isinstance(proposed, dict) or not proposed:
-        return None
-    from . import commands as commands_mod
-    current = scheduler.job_spec(task)
-    allowed = JOB_FIX_FIELDS.get(current.get("adapter"))
-    if not allowed:
-        return None
-    dropped = sorted(set(proposed) - set(allowed))
-    params_proposed = proposed.get("params") if "params" in allowed else None
-    schema = current.get("fix_params") or {}
-    argv = list(current.get("argv") or [])
-    # Nothing is a mutable parameter unless this argv's own layout can be read (_command_prefix) AND the declared
-    # index lands at or after the trusted prefix that layout establishes — never the executable, never an
-    # interpreter option, never the script, whichever slot it actually occupies for this command (the pinning gap
-    # round-2 review F1 closes: a layout this cannot read, a shell wrapper that re-parses its own command line,
-    # or an index inside its trusted prefix, has no eligible slot at all, so a diagnosis can never widen what
-    # "the script" means by declaring one).
-    prefix_len = _command_prefix(layout, argv)
-    applied_params: dict = {}
-    if isinstance(params_proposed, dict):
-        for name, value in params_proposed.items():
-            spec = schema.get(name)
-            if (prefix_len is not None and isinstance(spec, dict) and isinstance(spec.get("index"), int)
-                    and not isinstance(spec.get("index"), bool) and spec["index"] >= prefix_len
-                    and _param_ok(layout, spec, value) and spec["index"] < len(argv)):
-                argv[spec["index"]] = value
-                applied_params[name] = value
-            else:
-                dropped.append(f"params.{name}")
-    elif "params" in proposed:
-        dropped.append("params")
-    dropped = sorted(dropped)
-    if not applied_params:
-        if dropped:
-            tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied={}, dropped=dropped)
-            return {"applied": {}, "dropped": dropped}
-        return None
-    commands_mod.apply_job(layout, task.id, {**current, "argv": argv}, actor=f"diagnosis:{role}")
-    applied = {"params": applied_params}
-    tasks_mod.log(layout, "diagnosis_job_fixed", "escalation", task=task.id, role=role, applied=applied, dropped=dropped)
-    return {"applied": applied, "dropped": dropped}
-
-
 def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question: str, why: str) -> dict:
     """Hand a stopped task to the owner as a `decision` item (inbox.apply_decision acts on the answer). The question
     and the options lead the text: the inbox card shows the first MAX_SUMMARY_CHARS and keeps the full diagnosis
@@ -578,7 +234,6 @@ def ingest(supervisor, rec: dict, result) -> dict:
         def fn(doc):
             doc.setdefault("guidance", []).append({"at": store.now_iso(), "by": role, "text": guidance})
         tasks_mod._update(layout, task.id, fn)
-        fix = propose_job_fix(layout, task, role, obj.get("job_fix"))
         # Explicit, replay-safe grant (R4): keyed by this diagnosis job's own attempt id, so a crash between this
         # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends the GRANT only
         # once. grant_continuations() itself is called every time regardless (F2): it is generation-scoped, not
@@ -591,10 +246,7 @@ def ingest(supervisor, rec: dict, result) -> dict:
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")
         else:
             tasks_mod.add_note(layout, task.id, f"{role} diagnosis: requeue — {summary[:200]}", actor="escalation")
-        out = {"action": "requeue", "guidance": guidance}
-        if fix:
-            out["job_fix"] = fix
-        return out
+        return {"action": "requeue", "guidance": guidance}
     if action == "defer":
         blocked_on = str(obj.get("blocked_on") or summary)[:1000]
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred — blocked on: {blocked_on[:300]}", actor="escalation")

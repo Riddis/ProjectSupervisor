@@ -152,8 +152,9 @@ def _task_import(layout, payload, actor):
 
 
 def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
-    """The only writer of a task's `job` block: the Control Center's re-route (`task.set_job`) and a bounded
-    diagnosis job_fix (supervisor.diagnosis.propose_job_fix) both call this, never state/ directly."""
+    """The only writer of a task's `job` block: `task.set_job` (the Control Center's re-route), never state/
+    directly. A diagnosis cannot change a task's job (D-018); a wrong process command reaches the owner as a
+    question naming this command instead."""
     def fn(doc):
         doc["job"] = dict(job)
         if cost_category:
