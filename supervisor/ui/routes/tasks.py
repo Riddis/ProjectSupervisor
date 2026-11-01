@@ -144,6 +144,10 @@ def cancel(task_id: str, request: Request, note: str = Form(""), csrf_token: str
 @router.post("/tasks/{task_id}/hold")
 def hold(task_id: str, request: Request, note: str = Form(""), csrf_token: str = Form(...),
         layout: Layout = Depends(require_auth)):
+    """`task.hold`, not the generic `task.set_status`: a Hold on a task the escalation already moved to BLOCKED
+    must still leave a durable record (round-4 F9) - `task.set_status` with the same target status is a silent
+    `_NoChange`, with no history entry and no durable identity the automatic path can tell apart from the cap
+    event's own BLOCKED."""
     require_csrf(request, csrf_token)
-    return act(request, layout, "task.set_status", {"task_id": task_id, "status": "BLOCKED", "note": note or "held by owner"},
+    return act(request, layout, "task.hold", {"task_id": task_id, "note": note or "held by owner"},
               f"/tasks/{task_id}")

@@ -381,6 +381,16 @@ def ingest(supervisor, rec: dict, result) -> dict:
         if count_requeues(layout, task.id) > DIAGNOSIS_BUDGET:
             return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""),
                                    f"diagnosis budget of {DIAGNOSIS_BUDGET} requeues spent")
+        if task.held:
+            # The owner's one explicit stop control, durable on the task itself (round-4 F9): a requeue this
+            # diagnosis proposes is declined, not granted and left to be undone later, so nothing here resets
+            # the retry signatures or grants a fresh continuation budget - the task stays held, with a note,
+            # until the owner's own action (tasks.set_status with an owner actor) releases it.
+            held_note = f" ({task.held['note']})" if task.held.get("note") else ""
+            tasks_mod.add_note(layout, task.id,
+                               f"{role} diagnosis: requeue declined — task is held by the owner{held_note}; "
+                               "release the Hold to resume", actor="escalation")
+            return {"action": "held", "held_by": task.held.get("by")}
         guidance = str(obj.get("guidance") or summary)[:4000]
 
         def fn(doc):

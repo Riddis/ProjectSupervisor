@@ -54,10 +54,12 @@ def _mark_routed(layout: Layout, task_id: str, event: str | None) -> None:
 def event_outcome(layout: Layout, task_id: str, event: str) -> str:
     """Where `event`'s own escalation decision stands, for recovery: `""` when it never reached
     `record_failure`'s durable decision write at all, `"pending"` when the decision is recorded but `_apply`'s
-    routing has not finished, `"routed"` once it has (`_mark_routed`). Never derived from the task's current
-    status: BLOCKED is both this decision's own intermediate state (issue opened, diagnosis still owed) and a
-    status an owner's deliberate Hold can set directly (D-010), and only this durable per-event record tells
-    the two apart."""
+    routing has not finished, `"routed"` once it has (`_mark_routed`). This tells "this event's own routing
+    landed" apart from "it has not" - never derived from the task's current status, since BLOCKED is this
+    decision's own intermediate state (issue opened, diagnosis still owed) as much as it is a status set for
+    any other reason. It says nothing about an owner's deliberate Hold, which a BLOCKED task carries for an
+    unrelated reason of its own: that is a separate, durable record on the task itself (`held`, D-010/round-4
+    F9), read directly by the recovery guard instead of being inferred from this event's outcome."""
     dec = _load(layout, task_id)["events"].get(event)
     if not dec:
         return ""
@@ -217,8 +219,11 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     crash between the issue write and the status write leaves the issue found-not-created on replay, and the
     task must still leave IN_PROGRESS then, not stay stranded behind an issue that already exists. `_mark_routed`
     closes the loop for `_repair_capped_escalation`, whose recovery guard must tell "this event's own routing
-    already landed" apart from "the task's status changed for some other reason" (a deliberate hold or
-    cancellation, R4/D-010) - that distinction cannot be read off the task's current status alone."""
+    already landed" apart from "it has not" - that distinction cannot be read off the task's current status
+    alone (BLOCKED is this event's own intermediate state as much as it is a stop for any other reason). A
+    deliberate later cancellation is told apart because CANCELLED is outside the guard's allowed statuses; a
+    deliberate later Hold is told apart by its own durable record on the task (`held`, R4/D-010, round-4 F9),
+    checked directly rather than inferred from this event's `routed` flag, which carries no such information."""
     layout = supervisor.layout
     sig = decision["signature"]
     if decision["action"] == "retry":

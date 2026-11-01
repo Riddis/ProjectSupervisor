@@ -157,6 +157,11 @@ class Task(BaseModel):
     attempts: list[Attempt] = Field(default_factory=list)      # dispatch attempts only (retry budgets, §2.6)
     history: list[dict[str, Any]] = Field(default_factory=list)  # status changes {at, by, from, to, note, forced?}
     forced: Optional[dict[str, Any]] = None                     # set when the owner forced a status; rendered
+    held: Optional[dict[str, Any]] = None                       # an owner Hold's durable identity ({by, at, note});
+                                                                 # set only by tasks.hold(), cleared only by the
+                                                                 # owner's own later status change (round-4 F9) -
+                                                                 # never inferred from status, history order or an
+                                                                 # escalation event's `routed` flag
     result: Optional[str] = None
     paths: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)

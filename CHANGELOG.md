@@ -44,8 +44,13 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   and routing individually and idempotently too, not only reaching `escalation.record_failure()` once: a crash
   between the issue write and the task's own BLOCKED transition, or between that transition and the manager
   dispatch that follows it, is also completed by the next plain `reconcile()` — read from the event's own durable
-  record of what it has routed so far, never from the task's current status alone, so a deliberate later hold or
-  cancellation is left untouched (round-3 review F6). A manager-to-architect hand-off carries the originating diagnosis's
+  record of what it has routed so far, never from the task's current status alone (round-3 review F6). A
+  deliberate later cancellation is left untouched because CANCELLED is outside the statuses this recovery ever
+  revisits; a deliberate later Hold is told apart by its own durable identity recorded on the task itself
+  (`held`), not inferred from the event's outcome or the task's status, so `ingest()`'s ordinary manager requeue
+  and the recovery guard above both decline to move a held task back to READY, and a Hold on a task the cap
+  already moved to BLOCKED still leaves a durable history entry rather than a silent no-op (round-4 review F9).
+  A manager-to-architect hand-off carries the originating diagnosis's
   own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
   diagnosis instead of the already-answered record from the generation that granted it; and when `dispatch()`
   instead finds an architect job already durable for that SAME (signature, level, grant) — a replay of the hand-off

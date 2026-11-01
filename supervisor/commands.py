@@ -58,6 +58,12 @@ def _set_status(layout, payload, actor):
     return {"status": t.status.value}
 
 
+@handler("task.hold")
+def _hold(layout, payload, actor):
+    t = tasks_mod.hold(layout, payload["task_id"], actor, payload.get("note", ""))
+    return {"status": t.status.value}
+
+
 @handler("task.set_priority")
 def _set_priority(layout, payload, actor):
     tasks_mod.set_priority(layout, payload["task_id"], int(payload["priority"]), actor)

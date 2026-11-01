@@ -607,11 +607,15 @@ class Supervisor:
         between the issue write and the status write leaves the task IN_PROGRESS with the issue already open, and
         a crash between the status write and the routing leaves it BLOCKED with nothing routing it (round-3 F6).
         `escalation.event_outcome` reads the event's own durable record instead of the task's current status, so
-        a BLOCKED task whose routing already landed, or one an owner's deliberate Hold put there for an unrelated
-        reason, is told apart from one still owed its routing: only the latter — pending, and still sitting in
-        the one status (IN_PROGRESS) or two statuses (IN_PROGRESS, BLOCKED) this event itself can leave it in —
-        is replayed here. record_failure() replays its own durable decision instead of repeating it, so calling
-        it again — whether this is the first real attempt or a replay of one a crash interrupted — never opens a
+        a BLOCKED task whose routing already landed is told apart from one still owed its routing: only the
+        latter — pending, and still sitting in the one status (IN_PROGRESS) or two statuses (IN_PROGRESS,
+        BLOCKED) this event itself can leave it in — is replayed here. A deliberate later cancellation is told
+        apart the same way CANCELLED always is: it is outside `allowed` below. A deliberate later Hold is a
+        separate, durable record on the task itself (`held`, round-4 F9) - `event_outcome`'s pending/routed
+        carries no such information, and BLOCKED is this event's own intermediate state as much as it is a stop
+        for any other reason, so `held` is checked directly rather than inferred from the event's outcome or the
+        task's status. record_failure() replays its own durable decision instead of repeating it, so calling it
+        again — whether this is the first real attempt or a replay of one a crash interrupted — never opens a
         second issue or dispatches a second diagnosis."""
         try:
             task = tasks_mod.load(self.layout, task_id)
@@ -621,9 +625,11 @@ class Supervisor:
         outcome = escalation_mod.event_outcome(self.layout, task_id, event)
         if outcome == "routed":
             return                                        # the cap's own routing already landed
+        if task.held:
+            return                                        # an owner Hold is durably on the task - not ours to replay over
         allowed = (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED) if outcome == "pending" else (TaskStatus.IN_PROGRESS,)
         if task.status not in allowed:
-            return                                        # a deliberate hold or cancellation moved it since - not ours
+            return                                        # a cancellation (or anything else) moved it since - not ours
         prior = self._continuations(recs)
         escalation_mod.record_failure(self, task_id, "continuations_exhausted",
                                       f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
