@@ -209,10 +209,13 @@ def _records(layout: Layout, task_id: str) -> list[dict]:
 
 def already(layout: Layout, task_id: str, signature: str, level: str, grant: int = 0) -> dict | None:
     """`grant` (`escalation.current_grant`) excludes a diagnosis dispatched under an earlier grant generation (R4):
-    a repeat failure after a fresh grant must reach its OWN diagnosis, not the one the spent grant already answered."""
+    a repeat failure after a fresh grant must reach its OWN diagnosis, not the one the spent grant already answered.
+    A declined requeue (`diag_action == "held"`, round-5 F12) is excluded the same way: the owner's Hold answered
+    nothing for this (signature, level, grant), so the next identical escalation must reach its own diagnosis too,
+    not the spent decline."""
     for r in _records(layout, task_id):
         if (r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED"
-                and int(r.get("diag_grant") or 0) == grant):
+                and int(r.get("diag_grant") or 0) == grant and r.get("diag_action") != "held"):
             return r
     return None
 
@@ -429,7 +432,10 @@ def ingest(supervisor, rec: dict, result) -> dict:
             # The owner's one explicit stop control, durable on the task itself (round-4 F9): a requeue this
             # diagnosis proposes is declined, not granted and left to be undone later, so nothing here resets
             # the retry signatures or grants a fresh continuation budget - the task stays held, with a note,
-            # until the owner's own action (tasks.set_status with an owner actor) releases it.
+            # until the owner's own action (tasks.set_status with an owner actor) releases it. The record's own
+            # diag_action is corrected to "held" (round-5 F12): a decline is not the "requeue" the manager
+            # proposed, so it must not be counted by count_requeues or matched by already() as one.
+            jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action="held")
             held_note = f" ({task.held['note']})" if task.held.get("note") else ""
             tasks_mod.add_note(layout, task.id,
                                f"{role} diagnosis: requeue declined — task is held by the owner{held_note}; "

@@ -50,6 +50,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   (`held`), not inferred from the event's outcome or the task's status, so `ingest()`'s ordinary manager requeue
   and the recovery guard above both decline to move a held task back to READY, and a Hold on a task the cap
   already moved to BLOCKED still leaves a durable history entry rather than a silent no-op (round-4 review F9).
+  The decline is itself a recorded action, not the manager's proposed `requeue`: the job record's own
+  `diag_action` is corrected to `"held"`, so it costs no `DIAGNOSIS_BUDGET` slot and is never matched by
+  `already()` as the answer to a later identical escalation under the same grant — the owner's own release is
+  followed by a fresh manager diagnosis again, not nothing until `sweep_stalled`'s grace period (round-5
+  review F12).
   That identity is now read by every automatic path that can move a task, not only the manager's requeue and the
   recovery guard: `requeue()`'s own continuation dispatch and `launch()`'s `_ensure_in_progress` call never move
   a held task off BLOCKED, and the one launch gate (`gate.check`) refuses a `delivery` launch outright while the
