@@ -35,6 +35,31 @@ from supervisor.loop import Supervisor
 from tests.test_diagnosis_job_fix import diag_rec, process_task
 
 
+def _find_env_exe() -> str | None:
+    """Locate a real `env.exe` the way the review's probe used one: Git for Windows ships it under
+    `usr/bin`, a directory its own installer does not put on PATH even when `cmd`/`mingw64/bin` (holding
+    `git.exe`) is there. Falling back to `git.exe`'s own location keeps this test independent of whichever
+    directories a given machine's PATH happens to list."""
+    found = shutil.which("env.exe") or shutil.which("env")
+    if found:
+        return found
+    git_exe = shutil.which("git.exe") or shutil.which("git")
+    if git_exe:
+        git_root = os.path.dirname(os.path.dirname(git_exe))  # .../Git/cmd or .../Git/mingw64/bin -> .../Git
+        for candidate in (os.path.join(git_root, "usr", "bin", "env.exe"),
+                          os.path.join(os.path.dirname(git_root), "usr", "bin", "env.exe")):
+            if os.path.isfile(candidate):
+                return candidate
+    for program_files in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                           os.environ.get("ProgramW6432")):
+        if not program_files:
+            continue
+        candidate = os.path.join(program_files, "Git", "usr", "bin", "env.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 # Platform-independent unit tests of `_command_prefix` itself: no subprocess, no filesystem dependency for the
 # refusal (the review's own caveat: `cmd /r`/`cmd /d` are refused today only because their argv[1] happens not to
 # resolve to a file — the same reliance F5 removed for option-lookalike arguments. These new checks are a pure
@@ -56,7 +81,7 @@ def test_command_prefix_refuses_a_launcher_whose_argv1_is_a_reparsed_batch_file(
     script = layout.root / "plain.cmd"
     script.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
     (layout.root / "data.txt").write_text("data", encoding="utf-8")
-    env_exe = shutil.which("env.exe") or shutil.which("env") or "env.exe"
+    env_exe = _find_env_exe() or "env.exe"
     # The launcher itself (argv[0]) is an ordinary, unlisted executable; only argv[1] is the reparsed target.
     assert diagnosis._command_prefix(layout, [env_exe, str(script), "ordinary"]) is None
     assert diagnosis._command_prefix(layout, [env_exe, str(script) + " ", "ordinary"]) is None
@@ -120,8 +145,9 @@ def _refused_before_storage_or_launch(layout, original, value, before_stdout):
 
 @pytest.mark.skipif(os.name != "nt", reason="launches env.exe and a native batch executable")
 def test_env_exe_launcher_whose_argv1_is_the_batch_file_is_refused_before_storage_or_launch(layout):
-    env_exe = shutil.which("env.exe") or shutil.which("env")
-    assert env_exe, "env.exe must be on PATH for this test (e.g. Git for Windows' usr/bin)"
+    env_exe = _find_env_exe()
+    if not env_exe:
+        pytest.skip("no env.exe found (PATH, git.exe's own usr/bin, or a Program Files Git install)")
     script = layout.root / "plain.cmd"
     script.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
     original = [env_exe, str(script), "ordinary"]
