@@ -12,14 +12,14 @@ def test_issue_resolve_closes_the_record_and_shows_resolved_in_the_projection(la
     issue = escalation.open_issue(layout, title="repeated worker_failed failure", severity="high",
                                   owner_role="engineer", detail="d", resolution_task="T", signature="s1")
     out = commands.submit_or_apply(layout, "issue.resolve",
-                                   {"issue_id": issue["id"], "resolution": "fixed by T2-02's job_fix",
+                                   {"issue_id": issue["id"], "resolution": "fixed by T2-02's continuation route",
                                     "resolving_task": "T2-02"}, actor="senior_pm")
     assert out["ok"] and out["result"] == {"id": issue["id"], "status": "resolved"}
     doc = store.read(layout.issues / f"{issue['id']}.yaml")
-    assert doc["status"] == "resolved" and doc["resolution"] == "fixed by T2-02's job_fix"
+    assert doc["status"] == "resolved" and doc["resolution"] == "fixed by T2-02's continuation route"
     assert doc["resolved_by"] == "senior_pm" and doc["resolved_by_task"] == "T2-02" and doc["resolved_at"]
     rendered = render.render_issues(layout).read_text(encoding="utf-8")
-    assert "resolved" in rendered and "fixed by T2-02's job_fix" in rendered and "senior_pm" in rendered
+    assert "resolved" in rendered and "fixed by T2-02's continuation route" in rendered and "senior_pm" in rendered
 
     # resolving an already-resolved issue is a no-op: no second write, no duplicate log event
     out2 = commands.submit_or_apply(layout, "issue.resolve",
@@ -27,7 +27,7 @@ def test_issue_resolve_closes_the_record_and_shows_resolved_in_the_projection(la
                                     actor="someone_else")
     assert out2["ok"] and out2["result"] == {"skipped": "already resolved", "id": issue["id"]}
     doc2 = store.read(layout.issues / f"{issue['id']}.yaml")
-    assert doc2["resolution"] == "fixed by T2-02's job_fix" and doc2["resolved_by"] == "senior_pm"   # unchanged
+    assert doc2["resolution"] == "fixed by T2-02's continuation route" and doc2["resolved_by"] == "senior_pm"   # unchanged
 
 
 def test_issue_resolve_refuses_an_unknown_issue(layout):
