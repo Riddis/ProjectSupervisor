@@ -131,6 +131,30 @@ def _skip_if_missing(*paths):
             pytest.skip("a required executable is not available on this host")
 
 
+def _find_bash_exe() -> str | None:
+    """Git for Windows ships its own `bash.exe` under both `bin` and `usr/bin`; Windows' own
+    `System32\\bash.exe` (the WSL launcher) is also on PATH on most hosts and can resolve first on one where
+    the default WSL distribution cannot start, so this derives Git's bash from `git.exe`'s own location
+    (the same derivation `_find_env_exe` uses for `env.exe`) rather than trusting `shutil.which`'s PATH order."""
+    git_exe = shutil.which("git.exe") or shutil.which("git")
+    if git_exe:
+        git_root = os.path.dirname(os.path.dirname(git_exe))  # .../Git/cmd or .../Git/mingw64/bin -> .../Git
+        for base in (git_root, os.path.dirname(git_root)):
+            for sub in ("bin", os.path.join("usr", "bin")):
+                candidate = os.path.join(base, sub, "bash.exe")
+                if os.path.isfile(candidate):
+                    return candidate
+    for program_files in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                           os.environ.get("ProgramW6432")):
+        if not program_files:
+            continue
+        for sub in ("bin", os.path.join("usr", "bin")):
+            candidate = os.path.join(program_files, "Git", sub, "bash.exe")
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 @pytest.mark.skipif(os.name != "nt", reason="launches env.exe over env.exe over a native batch executable")
 def test_launcher_over_launcher_over_batch_file_is_refused_before_storage_or_launch(layout):
     """r6_commands.txt:9, `nested-env-env-batch`: the F10 mechanism one level deeper — a `.cmd` at argv[2] under
@@ -148,7 +172,7 @@ def test_launcher_over_bash_dash_c_script_text_is_refused_before_storage_or_laun
     """r6_commands.txt:13, `env-bash-dash-c-script-slot`: the F1/F5 leading-"-" rule one slot right — the job's
     own inline `-c` script text is a declared parameter past the old prefix 2."""
     env_exe = _find_env_exe()
-    bash_exe = shutil.which("bash.exe") or shutil.which("bash")
+    bash_exe = _find_bash_exe()
     _skip_if_missing(env_exe, bash_exe)
     original = [env_exe, bash_exe, "-c", "echo 11", "ordinary"]
     _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "echo 22", "11")
