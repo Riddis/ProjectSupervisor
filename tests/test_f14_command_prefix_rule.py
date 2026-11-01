@@ -355,3 +355,71 @@ def test_launcher_over_an_oddly_spelled_in_project_interpreter_is_refused_before
     spelling = build(str(interpreter), interpreter.name)
     original = [env_exe, spelling, "-c", "print(11)", "ordinary"]
     _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "print(22)")
+
+
+# ---- F16 (round-7 review, lines 49, 117-156): `cmd.exe` is listed in `SHELL_REPARSING` only under the exact
+# pair `(cmd.exe, /c)`/`(cmd.exe, /k)`, but `cmd.exe`'s own parser honours `/c`/`/k` wherever they sit once a
+# non-switch token precedes them — an in-root, non-image regular file at argv[1] (e.g. this job's own `plain.py`,
+# never itself read by `cmd.exe`) passes both of F14's questions, so every one of the forms below was granted
+# prefix 2 before this fix and `propose_job_fix` accepted any declared index from 2 up (`r7_commands.txt:24-28`).
+# The rule closing it is the family's, at argv[0], exactly as `POWERSHELL_EXES` is refused — not a fifth/sixth
+# list of flag spellings.
+
+def test_command_prefix_refuses_the_cmd_family_at_argv0_whatever_argv1_is(layout):
+    """`cmd.exe` has no invocation this interface has established safe (`cmd.exe <script>` is not one — `cmd.exe`
+    does not run a script given at argv[1] at all), so the whole family is refused regardless of argv[1], the
+    same shape `test_command_prefix_refuses_powershell_in_its_own_default_mode_whatever_argv1_is` already proves
+    for `POWERSHELL_EXES`: an exact `/c`/`/k` flag, `/d` ahead of `/c`, a flagless invocation with an ordinary
+    in-root file at argv[1] (the review's own bounding row — granted but harmless only because `cmd.exe` without
+    `/c` starts interactively and exits on `stdin=DEVNULL`, not an exempt form), and a switch the review never
+    probed (`/t:0e`, cmd.exe's colour switch) all return `None` — the rule does not read argv[1] at all once
+    argv[0] is this family, so it needs no switch list to enumerate."""
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")       # never read by cmd.exe in any of these forms
+    for exe in ("cmd.exe", "cmd", "CMD.EXE", "Cmd.Exe"):
+        assert diagnosis._command_prefix(layout, [exe, str(script), "/c", "echo 11"]) is None
+        assert diagnosis._command_prefix(layout, [exe, str(script), "/k", "echo 11"]) is None
+        assert diagnosis._command_prefix(layout, [exe, str(script), "/d", "/c", "echo 11"]) is None
+        assert diagnosis._command_prefix(layout, [exe, str(script), "ordinary"]) is None            # flagless bounding row
+        assert diagnosis._command_prefix(layout, [exe, str(script), "/t:0e", "/c", "echo 11"]) is None   # not /c or /k alone
+
+
+def test_command_prefix_refuses_the_cmd_family_even_through_a_launcher(layout):
+    """The same two questions `_reparses_regardless_of_argv` already asks of argv[1] (F10's launcher-moves-the-
+    reparse-one-slot-right mechanism) now also refuse `cmd.exe` as a launcher's own target, exactly as they
+    already refuse `powershell.exe`/`wsl.exe` there."""
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    assert diagnosis._command_prefix(layout, ["env.exe", "cmd.exe", str(script), "/c", "echo 11"]) is None
+
+
+_F16_CMD_FAMILY_FORMS = [
+    ("slash-c", lambda script: ["cmd.exe", script, "/c", "echo 11"], {"index": 3, "pattern": ".*"}, "echo 22"),
+    ("slash-d-slash-c", lambda script: ["cmd.exe", script, "/d", "/c", "echo 11"], {"index": 4, "pattern": ".*"}, "echo 22"),
+    ("flagless-value-carries-a-joined-slash-c",
+     lambda script: ["cmd.exe", script, "ordinary"], {"index": 2, "pattern": ".*"}, "/cecho 22"),
+    ("flagless-value-carries-a-spaced-slash-c",
+     lambda script: ["cmd.exe", script, "ordinary"], {"index": 2, "pattern": ".*"}, "/c echo 22"),
+    ("flagless-bounding-row-granted-but-harmless",
+     lambda script: ["cmd.exe", script, "ordinary"], {"index": 2, "kind": "path"}, "&echo(22"),
+    ("unprobed-switch-slash-t-then-slash-c",
+     lambda script: ["cmd.exe", script, "/t:0e", "/c", "echo 11"], {"index": 4, "pattern": ".*"}, "echo 22"),
+]
+
+
+@pytest.mark.skipif(shutil.which("cmd.exe") is None, reason="no cmd.exe on PATH")
+@pytest.mark.parametrize("label,build,spec,value", _F16_CMD_FAMILY_FORMS)
+def test_cmd_family_form_is_refused_before_storage_or_launch(layout, label, build, spec, value):
+    """Each of the review's four reported forms (`r7_commands.txt:24-27`), its flagless bounding row (`:28`,
+    accepted but harmless at the reviewed head only because `cmd.exe` without `/c` starts interactively and
+    exits on `stdin=DEVNULL`), and one switch the review did not probe, through the real route
+    (`diagnosis.ingest` -> `propose_job_fix` -> `commands.apply_job` -> `ProcessAdapter`): no eligible index,
+    nothing stored, the refusal logged, and the real foreground child never runs with the proposed text — its
+    stdout is whatever the ORIGINAL, unfixed command prints, taken as the baseline rather than hardcoded, since
+    the flagless bounding row's baseline is cmd.exe's own interactive banner, not `11`."""
+    cmd_exe = shutil.which("cmd.exe")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")     # never read by cmd.exe in any of these forms either
+    original = build(str(script))
+    original[0] = cmd_exe       # "cmd.exe" in the builder above is a placeholder; the real path varies by host
+    _refused_before_storage_or_launch(layout, original, {"input": spec}, value)
