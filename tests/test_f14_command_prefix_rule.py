@@ -89,6 +89,35 @@ def test_command_prefix_refuses_an_in_project_interpreter_at_argv1(layout):
     assert diagnosis._command_prefix(layout, ["env.exe", relative + " ", str(script)]) is None   # stripped spelling
 
 
+def test_command_prefix_refuses_an_in_project_interpreter_spelled_with_a_trailing_path_component(layout):
+    """F15 (2.1.0 round-7 review, `docs/reviews/RELEASE_REVIEW_2.1.0_round7.md` lines 48, 51-115):
+    `_resolved_name` is a lexical basename test — it reads the last "/"-separated component of the LITERAL text
+    a job wrote — but Win32 normalises a trailing "\\.", "/.", or a bare trailing separator away before it ever
+    stats the file, so the SAME real interpreter `test_command_prefix_refuses_an_in_project_interpreter_at_argv1`
+    already refuses was granted a prefix under any of these spellings: the resolved name read "" (neither
+    ".exe" nor ".com", so `_is_executable_image_name` said no), while `is_file()`/`contained()` read the file
+    Win32 actually resolves and said yes (review `r7_commands.txt:12-18`, all `prefix: 2`, `injected_ran: true`
+    under `env.exe`). One rule, not five spellings: every trailing-component trick Win32 discards before it
+    runs the program must be refused the same way the plain spelling is — including one the review did not
+    name (`slash-dot-slash`, below), to prove the fix reads what the OS resolves rather than one more spelling
+    added to a list."""
+    interpreter = _in_project_interpreter(layout)
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    inside = str(interpreter)
+    spellings = [
+        ("trailing-backslash-dot", inside + "\\."),                                             # review's :12
+        ("trailing-slash-dot", inside + "/."),                                                   # review's :13
+        ("trailing-backslash", inside + "\\"),                                                   # review's :16
+        ("trailing-slash", inside + "/"),                                                        # review's :17
+        ("dotdot-reenter-then-dot", inside + "\\.." + "\\" + interpreter.name + "\\."),           # review's :15
+        ("slash-dot-slash-not-in-the-review", inside + "/./"),                                   # not reviewed
+    ]
+    for label, spelling in spellings:
+        assert diagnosis._command_prefix(layout, ["env.exe", spelling, "-c", "print(11)", "ordinary"]) is None, label
+        assert diagnosis._command_prefix(layout, ["env.exe", spelling, str(script), "ordinary"]) is None, label
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the executable bit is POSIX's own answer to the same question")
 def test_command_prefix_refuses_an_in_project_executable_bit_at_argv1(layout):
     """The same question on a platform where an interpreter carries no extension to read: `<root>/.venv/bin/
@@ -293,4 +322,36 @@ def test_launcher_over_an_in_project_interpreter_dash_c_text_is_refused_before_s
     _skip_if_missing(env_exe)
     interpreter = _in_project_interpreter(layout, copy_a_real_one=True)
     original = [env_exe, str(interpreter), "-c", "print(11)", "ordinary"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "print(22)")
+
+
+# ---- F15 (round-7 review, lines 48, 51-115): the five spellings of a real copy of this host's interpreter the
+# review measured granted and injected (`r7_commands.txt:12-23`), through the real route — plus one spelling not
+# in the review's five, to prove the fix is a rule about which file the image question reads, not a sixth list.
+
+_F15_ODD_SPELLINGS_OF_AN_IN_PROJECT_INTERPRETER = [
+    ("trailing-backslash-dot", lambda inside, name: inside + "\\."),
+    ("trailing-slash-dot", lambda inside, name: inside + "/."),
+    ("trailing-backslash", lambda inside, name: inside + "\\"),
+    ("trailing-slash", lambda inside, name: inside + "/"),
+    ("dotdot-reenter-then-dot", lambda inside, name: inside + "\\.." + "\\" + name + "\\."),
+    ("slash-dot-slash-not-in-the-review", lambda inside, name: inside + "/./"),
+]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32's normalisation of a trailing \\., /., \\, / is Windows-only")
+@pytest.mark.parametrize("label,build", _F15_ODD_SPELLINGS_OF_AN_IN_PROJECT_INTERPRETER)
+def test_launcher_over_an_oddly_spelled_in_project_interpreter_is_refused_before_storage_or_launch(layout, label, build):
+    """The same real copy of `sys.executable`
+    (`test_launcher_over_an_in_project_interpreter_dash_c_text_is_refused_before_storage_or_launch`'s own
+    `interpreter`), spelled with a trailing path-component trick Win32 discards before it stats: no eligible
+    index, the job's stored argv unchanged, `diagnosis_job_fixed` logs the drop, and the real foreground child
+    never sees the proposed text — it is launched with the ORIGINAL, unfixed command and its stdout stays `11`
+    (review `r7_commands.txt:19-23`: before this fix, all five read `prefix: 2`, `stored_argv_changed: true`,
+    `injected_ran: true`, stdout `11` then `22`)."""
+    env_exe = _find_env_exe()
+    _skip_if_missing(env_exe)
+    interpreter = _in_project_interpreter(layout, copy_a_real_one=True)
+    spelling = build(str(interpreter), interpreter.name)
+    original = [env_exe, spelling, "-c", "print(11)", "ordinary"]
     _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "print(22)")
