@@ -423,3 +423,174 @@ def test_cmd_family_form_is_refused_before_storage_or_launch(layout, label, buil
     original = build(str(script))
     original[0] = cmd_exe       # "cmd.exe" in the builder above is a placeholder; the real path varies by host
     _refused_before_storage_or_launch(layout, original, {"input": spec}, value)
+
+
+# ---- F17 (round-8 review, docs/reviews/RELEASE_REVIEW_2.1.0_round8.md lines 49, 51-130): F15's own second
+# question asks the IMAGE half of the realpath it resolves, never the FAMILY half, and only for argv[1] -- so the
+# SAME trailing "\.", "/.", bare trailing separator, or "..\<name>\." re-entry F15 closed for the image question
+# was still open wherever a FAMILY question reads argv[0] or argv[1] by its literal, unresolved text:
+# `_reparses_regardless_of_argv` at argv[0] (every family: cmd.exe, powershell.exe, wsl.exe, an in-root
+# `.bat`/`.cmd`) and the same question at a launcher's own argv[1] target (an in-root `.bat`/`.cmd`). Win32
+# normalises each spelling away before CreateProcess ever opens the file and runs the shell or re-invokes the
+# batch anyway (review `r8_commands.txt:30-34,36-46,48-52,54-57`).
+
+_F17_REPARSING_FAMILY_SPELLINGS_WITH_A_TRAILING_PATH_COMPONENT = [
+    ("cmd.exe-trailing-backslash-dot", "cmd.exe\\."),
+    ("cmd.exe-trailing-slash-dot", "cmd.exe/."),
+    ("cmd.exe-dotdot-reenter-then-dot", "cmd.exe\\..\\cmd.exe\\."),
+    ("cmd-bare-trailing-backslash-dot", "cmd\\."),              # not in the review's seven or T2-88's/T2-89's regressions
+    ("powershell.exe-trailing-backslash-dot", "powershell.exe\\."),
+    ("wsl.exe-trailing-backslash-dot", "wsl.exe\\."),            # unobservable through a real child on this host (F10's, F16's own records); this unit test needs no subprocess
+]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32's normalisation of a trailing \\., /., \\..\\<name>\\. is Windows-only")
+@pytest.mark.parametrize("label,spelling", _F17_REPARSING_FAMILY_SPELLINGS_WITH_A_TRAILING_PATH_COMPONENT)
+def test_command_prefix_refuses_a_reparsing_family_at_argv0_spelled_with_a_trailing_path_component(layout, label, spelling):
+    """`_resolved_name` at argv[0] is the same lexical basename read F15 already found insufficient at argv[1] —
+    "" for a token ending in "\\.", "/.", or a "..\\<name>\\." re-entry — so the re-parsing-family question said
+    "not a family" while Win32 normalises the trick away before CreateProcess ever opens the file and runs the
+    shell anyway (review `r8_commands.txt:30-32,36-38,42,44`). `cmd\\.` is in neither the review's seven rows nor
+    T2-88's or T2-89's own regressions, proving this is the family's rule, resting on the file Windows resolves,
+    not one more spelling added to a list."""
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    assert diagnosis._resolved_name(spelling) == ""   # the gap: the pure-text question alone reads "not a family"
+    assert diagnosis._command_prefix(layout, [spelling, str(script), "/c", "echo 11"]) is None, label
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32's normalisation of a trailing \\. is Windows-only")
+def test_command_prefix_refuses_an_in_root_batch_file_at_argv0_spelled_with_a_trailing_path_component(layout):
+    """The one re-parsing family whose text test is a suffix, not a name set (REPARSED_EXECUTABLE_SUFFIXES), has
+    the same gap at argv[0]: an in-root `.cmd` spelled with a trailing `\\.` resolves to "" — no suffix left to
+    match — while the batch is still the file cmd.exe would re-invoke (review `r8_commands.txt:48`)."""
+    batch = layout.root / "plain.cmd"
+    batch.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    spelling = str(batch) + "\\."
+    assert diagnosis._resolved_name(spelling) == ""
+    assert diagnosis._command_prefix(layout, [spelling, str(script), "ordinary"]) is None
+
+
+_F17_LAUNCHER_CMD_TARGET_SPELLINGS = [
+    ("trailing-backslash-dot", lambda batch: batch + "\\."),
+    ("trailing-slash-dot", lambda batch: batch + "/."),
+    ("trailing-backslash", lambda batch: batch + "\\"),
+    ("trailing-slash", lambda batch: batch + "/"),
+]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32's normalisation of a trailing \\., /., \\, / is Windows-only")
+@pytest.mark.parametrize("label,build", _F17_LAUNCHER_CMD_TARGET_SPELLINGS)
+def test_command_prefix_refuses_a_launchers_cmd_target_spelled_with_a_trailing_path_component(layout, label, build):
+    """F15's own second question asks the IMAGE half of the realpath it resolves, never the FAMILY half, so a
+    launcher's `.cmd` target survived the same four tricks the image question used to miss (review
+    `r8_commands.txt:54-57`: `_resolved_name` of the literal text is "", the realpath's own name `plain.cmd`,
+    whose family question — never asked before this fix — says true)."""
+    batch = layout.root / "plain.cmd"
+    batch.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
+    spelling = build(str(batch))
+    assert diagnosis._resolved_name(spelling) == ""
+    assert diagnosis._command_prefix(layout, ["env.exe", spelling, "ordinary"]) is None, label
+
+
+def test_command_prefix_refuses_a_launchers_bat_target_spelled_with_a_trailing_path_component(layout):
+    """The same gap for `.bat`, not only `.cmd` — in neither the review's seven rows nor T2-88's or T2-89's own
+    regressions, proving the fix reads `REPARSED_EXECUTABLE_SUFFIXES`' own suffix test, not one more extension
+    added to a list."""
+    batch = layout.root / "plain.bat"
+    batch.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
+    spelling = str(batch) + "\\."
+    assert diagnosis._resolved_name(spelling) == ""
+    assert diagnosis._command_prefix(layout, ["env.exe", spelling, "ordinary"]) is None
+
+
+def test_command_prefix_still_accepts_a_non_reparsing_program_at_argv0_spelled_with_a_trailing_path_component(layout):
+    """The cost the chosen (resolution-based) shape avoids, named in this task's own record: a text refusal of
+    an empty resolved name at argv[0] would also refuse `python.exe\\.` with its own in-root script — a correct
+    grant today (review `r8_commands.txt:68`) — because `python.exe` is not a re-parsing family either way, and
+    its realpath is still `python.exe`."""
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    assert diagnosis._resolved_name(sys.executable + "\\.") == ""
+    assert diagnosis._command_prefix(layout, [sys.executable + "\\.", str(script), "ordinary"]) == 2
+
+
+# ---- The real-route forms the round-8 review measured granted and injected (`r8_commands.txt:60-66`,
+# `r8_extra.txt:3`), through the real route exactly as F15's and F16's own regressions are: no eligible index
+# before anything runs, the stored job's argv unchanged, `diagnosis_job_fixed` logs the drop, and the real
+# foreground child's stdout is byte-identical before and after — not merely free of the digits "22", which
+# round 7's own `injected_ran` flag could misread from a lab-folder timestamp inside cmd.exe's banner.
+
+@pytest.mark.skipif(shutil.which("cmd.exe") is None, reason="no cmd.exe on PATH")
+def test_cmd_exe_at_argv0_spelled_with_a_trailing_backslash_dot_is_refused_before_storage_or_launch(layout):
+    """r8_commands.txt:60: `cmd.exe\\.` at argv[0], an ordinary in-root script at argv[1] (never itself read by
+    cmd.exe)."""
+    cmd_exe = shutil.which("cmd.exe")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    original = [cmd_exe + "\\.", str(script), "/c", "echo 11"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "echo 22")
+
+
+@pytest.mark.skipif(shutil.which("cmd.exe") is None, reason="no cmd.exe on PATH")
+def test_cmd_exe_at_argv0_spelled_with_a_trailing_slash_dot_flagless_is_refused_before_storage_or_launch(layout):
+    """r8_commands.txt:61: `cmd.exe/.` flagless at argv[0], whose later value itself carries `/c`."""
+    cmd_exe = shutil.which("cmd.exe")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    original = [cmd_exe + "/.", str(script), "ordinary"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 2, "pattern": ".*"}}, "/c echo 22")
+
+
+@pytest.mark.skipif(shutil.which("cmd.exe") is None, reason="no cmd.exe on PATH")
+def test_cmd_exe_at_argv0_spelled_with_a_dotdot_reentry_is_refused_before_storage_or_launch(layout):
+    """r8_commands.txt:62: `cmd.exe\\..\\cmd.exe\\.` at argv[0]."""
+    cmd_exe = shutil.which("cmd.exe")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    original = [cmd_exe + "\\..\\cmd.exe\\.", str(script), "/c", "echo 11"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "echo 22")
+
+
+@pytest.mark.skipif(shutil.which("powershell.exe") is None, reason="no powershell.exe on PATH")
+def test_powershell_at_argv0_spelled_with_a_trailing_path_component_is_refused_before_storage_or_launch(layout):
+    """r8_extra.txt:3: `powershell.exe\\.` at argv[0]."""
+    ps = shutil.which("powershell.exe")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    original = [ps + "\\.", str(script), ";", "echo 11"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "echo 22")
+
+
+def test_in_root_batch_at_argv0_spelled_with_a_trailing_path_component_is_refused_before_storage_or_launch(layout):
+    """r8_commands.txt:63: the in-root `.cmd` itself at argv[0], spelled `\\.` — the form whose declared program
+    cannot even start under its own spelling, yet the value the diagnosis supplied still ran before this fix."""
+    batch = layout.root / "plain.cmd"
+    batch.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
+    script = layout.root / "plain.py"
+    script.write_text("print(11)\n", encoding="utf-8")
+    original = [str(batch) + "\\.", str(script), "ordinary"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 2, "kind": "path"}}, "&echo(22")
+
+
+_F17_LAUNCHER_CMD_TARGET_FOREGROUND = [
+    ("trailing-backslash-dot", lambda batch: batch + "\\."),
+    ("trailing-slash-dot", lambda batch: batch + "/."),
+    ("trailing-backslash", lambda batch: batch + "\\"),
+    ("trailing-slash", lambda batch: batch + "/"),
+]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="launches env.exe over an in-root .cmd")
+@pytest.mark.parametrize("label,build", _F17_LAUNCHER_CMD_TARGET_FOREGROUND)
+def test_launcher_over_an_in_root_batch_target_spelled_with_a_trailing_path_component_is_refused_before_storage_or_launch(layout, label, build):
+    """r8_commands.txt:64-66: `env.exe` over an in-root `.cmd` spelled `\\.`, `/.`, or a bare trailing separator
+    at argv[1] — the slot F10's and F14's own containment question already reads."""
+    env_exe = _find_env_exe()
+    _skip_if_missing(env_exe)
+    batch = layout.root / "plain.cmd"
+    batch.write_text("@echo off\r\necho 11\r\n", encoding="utf-8")
+    original = [env_exe, build(str(batch)), "ordinary"]
+    _refused_before_storage_or_launch(layout, original, {"input": {"index": 2, "kind": "path"}}, "&echo(22")
