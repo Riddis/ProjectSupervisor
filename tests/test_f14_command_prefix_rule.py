@@ -564,6 +564,7 @@ def test_powershell_at_argv0_spelled_with_a_trailing_path_component_is_refused_b
     _refused_before_storage_or_launch(layout, original, {"input": {"index": 3, "pattern": ".*"}}, "echo 22")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Win32's normalisation of a trailing \\. is Windows-only")
 def test_in_root_batch_at_argv0_spelled_with_a_trailing_path_component_is_refused_before_storage_or_launch(layout):
     """r8_commands.txt:63: the in-root `.cmd` itself at argv[0], spelled `\\.` — the form whose declared program
     cannot even start under its own spelling, yet the value the diagnosis supplied still ran before this fix."""
