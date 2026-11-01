@@ -50,6 +50,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   (`held`), not inferred from the event's outcome or the task's status, so `ingest()`'s ordinary manager requeue
   and the recovery guard above both decline to move a held task back to READY, and a Hold on a task the cap
   already moved to BLOCKED still leaves a durable history entry rather than a silent no-op (round-4 review F9).
+  That identity is now read by every automatic path that can move a task, not only the manager's requeue and the
+  recovery guard: `requeue()`'s own continuation dispatch and `launch()`'s `_ensure_in_progress` call never move
+  a held task off BLOCKED, and the one launch gate (`gate.check`) refuses a `delivery` launch outright while the
+  task is held, so a continuation already queued before or during a Hold stays `PREPARED` — retried every
+  `reconcile()`, never started — until the owner releases it (round-5 review F11).
   A manager-to-architect hand-off carries the originating diagnosis's
   own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
   diagnosis instead of the already-answered record from the generation that granted it; and when `dispatch()`

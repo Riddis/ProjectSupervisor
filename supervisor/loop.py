@@ -205,7 +205,15 @@ class Supervisor:
                           extra={"continuation_grant": grant})
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
-        tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued", actor="loop")
+        # The continuation is queued either way (crash-safe, same as before F11): a held task's queued record simply
+        # never launches (gate.check's held condition, below) until the owner releases it, so the note says so
+        # instead of leaving the queue silent about why nothing ran.
+        held = tasks_mod.load(self.layout, task_id).held
+        held_note = ""
+        if held:
+            held_detail = f" ({held['note']})" if held.get("note") else ""
+            held_note = f" — held by the owner{held_detail}; it will launch once they release the Hold"
+        tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued{held_note}", actor="loop")
 
     def home_lane(self, rec: dict) -> str | None:
         """The lane a delivery runs on when nothing moved it (scheduler.adapter_name: the task's job.adapter, role or
@@ -238,6 +246,8 @@ class Supervisor:
 
     def _ensure_in_progress(self, task_id: str, note: str) -> None:
         t = tasks_mod.load(self.layout, task_id)
+        if t.held:
+            return     # an owner Hold is durable on the task (F9) - the loop's own launch never reverses it (F11)
         if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY, TaskStatus.FAILED, TaskStatus.BLOCKED):
             tasks_mod.set_status(self.layout, task_id, TaskStatus.IN_PROGRESS, actor="loop", note=note)
 

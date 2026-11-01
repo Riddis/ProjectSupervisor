@@ -125,12 +125,21 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     busy (callers choose: all open records when planning, only SUBMITTED/RUNNING when launching a PREPARED one);
     `extra_*` let the scheduler account for picks made earlier in the same plan. `role` is the agent role the job
     runs as (a review's reviewer role, say); for a delivery it defaults to the task's owner role. A role configured
-    `active: false` is refused here, so a record queued before the owner disabled the role never launches either."""
+    `active: false` is refused here, so a record queued before the owner disabled the role never launches either.
+    A `delivery` whose task is `held` is refused here too (F11), whatever queued it or which lane it is on."""
     decision = decision or runtime.read(layout).get("decision", "RUN")
     if decision != "RUN" and not (decision == "DRAIN" and kind == "verify"):
         # a verify job finishes work already delivered: a drain lets it run so what was delivered is verified
         # before the stop; PAUSE and STOP still hold it
         return f"decision is {decision}"
+    if kind == "delivery" and task is not None and task.held:
+        # F11: a continuation PREPARED before or during a Hold (requeue() queues it either way, crash-safe) is
+        # never launched while `held` is set - the owner's one explicit stop control, durable on the task itself
+        # (F9), not undone by the loop's own launch the way `_ensure_in_progress` used to. A diagnosis still runs
+        # against a held task (it is how the owner hears the requeue it proposes was declined, diagnosis.py's own
+        # `held` read); only the delivery/continuation lane is refused here.
+        note = f" ({task.held['note']})" if task.held.get("note") else ""
+        return f"held by the owner{note}"
     if role is None and task is not None and kind in OWNER_ROLE_KINDS:
         role = task.owner_role
     if role and role_inactive(layout, role):
