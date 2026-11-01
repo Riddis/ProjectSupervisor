@@ -47,14 +47,20 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # any command. The real boundary is _command_prefix(layout, argv) — this argv's own layout, read fresh from the
 # CURRENT job every time, never from fix_params — the length of the trusted, immutable executable+script prefix
 # a diagnosis can never move into, or None when no index at all is eligible: a layout this cannot read (argv[1]
-# is not an actual file, so it cannot even confirm that is the script), or a wrapper whose child re-parses its
-# own command line (SHELL_REPARSING — cmd.exe /c, powershell -Command, sh/bash -c — where no index past the
-# wrapper is provably safe, because the child's own parser, not an index, decides where one argument ends). The
-# old check assumed argv[1] was the script whenever it did not start with "-", which is what let
-# `cmd.exe /c <script>` move the real script to argv[2] while looking, to that check, exactly like a trusted
-# argv[1] script (round-2 review F1); registering that wrapper's argv[2] as a 3-slot "trusted prefix" with a
-# correctable index past it was a second, narrower version of the same mistake — cmd.exe re-parses whatever it
-# is handed, so a `kind: path` value with no spaces and an "&" in it still runs a second program.
+# is not an actual file, so it cannot even confirm that is the script), an executable whose child re-parses its
+# own command line in every invocation this interface recognises (SHELL_REPARSING — cmd.exe /c, powershell
+# -Command, sh/bash -c; POWERSHELL_EXES — PowerShell's own flagless default does the same thing its -Command
+# option does), or an argv[0] the OS itself hands to a secondary command processor regardless of argv
+# (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target, re-invoked through cmd.exe even with shell=False) —
+# where no index past the wrapper is provably safe, because the child's own parser, not an index, decides where
+# one argument ends. The old check assumed argv[1] was the script whenever it did not start with "-", which is
+# what let `cmd.exe /c <script>` move the real script to argv[2] while looking, to that check, exactly like a
+# trusted argv[1] script (round-2 review F1); registering that wrapper's argv[2] as a 3-slot "trusted prefix"
+# with a correctable index past it was a second, narrower version of the same mistake — cmd.exe re-parses
+# whatever it is handed, so a `kind: path` value with no spaces and an "&" in it still runs a second program. A
+# later check assumed every OTHER argv[0]/argv[1] pair not on that short list was safe once argv[1] resolved to a
+# file on disk, which is what let PowerShell's flagless default and a native `.bat`/`.cmd` executable at argv[0]
+# both re-parse a value past that same prefix the same way (round-4 review F8).
 JOB_FIX_FIELDS = {"process": ("params",)}
 PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
 
@@ -72,22 +78,41 @@ SHELL_REPARSING = {("cmd.exe", "/c"), ("cmd.exe", "/k"), ("cmd", "/c"), ("cmd", 
                    ("pwsh.exe", "-command"), ("pwsh", "-command"),
                    ("sh", "-c"), ("sh.exe", "-c"), ("bash", "-c"), ("bash.exe", "-c"), ("zsh", "-c")}
 
+# Round-4 review F8: SHELL_REPARSING keys a wrapper's re-parsing by its EXACT flag, which missed the one invocation
+# none of its own entries name — PowerShell's own default, flagless mode. Launched with neither -Command nor -File,
+# PowerShell still binds everything past its own name to the same re-parsed script-text parameter -Command uses;
+# there is no flagless or otherwise-flagged PowerShell invocation this interface has established safe, so the whole
+# executable family is refused regardless of argv[1] — not only the one flag SHELL_REPARSING happens to list.
+POWERSHELL_EXES = {"powershell.exe", "powershell", "pwsh.exe", "pwsh"}
+
+# Round-4 review F8: Windows resolves a `.bat`/`.cmd` target by re-invoking it through its own command processor
+# even when the caller never asks for a shell (`subprocess.Popen(argv, ...)`, no `shell=True`) — the "executable"
+# position at argv[0] is itself a reparsing wrapper selected by file extension, not by name. No index past argv[0]
+# is provably safe for such a command, the same as for any SHELL_REPARSING/POWERSHELL_EXES entry.
+REPARSED_EXECUTABLE_SUFFIXES = (".bat", ".cmd")
+
 
 def _command_prefix(layout: Layout, argv: list) -> int | None:
     """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
-    is eligible at all: too few tokens to have a script, a wrapper that re-parses its own command line
-    (SHELL_REPARSING — no slot is safe, not even one), an argv[1] that the command's own grammar never treats as
-    a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer — "-c", "-m", "-e", ...,
-    for every interpreter, not only the ones SHELL_REPARSING names), or an argv[1] that is not an actual file (so
-    this cannot even confirm it is looking at a script rather than a subcommand or bare word). Checking "is this
-    an existing file" only AFTER ruling out an option is what makes the one plain layout this interface does
-    understand (argv[0] executable, argv[1] script) read the same way on every platform without a filesystem
-    collision turning an option into a script: an absolute POSIX script path starts with "/" too, and is not an
-    option, but a project that happens to contain a file literally named "-c" must not make `-c` one either
-    (round-3 review F5) — the grammar, not what exists on disk, decides which token is the script."""
+    is eligible at all: too few tokens to have a script, an argv[0] the OS itself hands to a secondary command
+    processor regardless of argv (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target), an executable whose
+    every invocation this interface recognises re-parses its own command line (SHELL_REPARSING's exact flag, or
+    an executable family with no safe invocation at all — POWERSHELL_EXES, whose own flagless default re-parses
+    just as its explicit -Command form does — no slot is safe, not even one), an argv[1] that the command's own
+    grammar never treats as a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer —
+    "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or an argv[1] that is not an
+    actual file (so this cannot even confirm it is looking at a script rather than a subcommand or bare word).
+    Checking "is this an existing file" only AFTER ruling out every re-parsing form is what makes the one plain
+    layout this interface does understand (argv[0] executable, argv[1] script) read the same way on every platform
+    without a filesystem collision turning an option into a script: an absolute POSIX script path starts with "/"
+    too, and is not an option, but a project that happens to contain a file literally named "-c" must not make
+    `-c` one either (round-3 review F5) — the grammar, and what the OS itself does with argv[0], not what happens
+    to exist on disk, decide which token is the script."""
     if len(argv) < 2:
         return None
     exe_name = str(argv[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if exe_name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or exe_name in POWERSHELL_EXES:
+        return None
     option = str(argv[1]).lower()
     if (exe_name, option) in SHELL_REPARSING:
         return None
