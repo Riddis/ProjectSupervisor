@@ -129,6 +129,18 @@ REPARSED_EXECUTABLE_SUFFIXES = (".bat", ".cmd")
 # refused regardless of argv[1], the same way POWERSHELL_EXES is refused regardless of its own flag.
 WSL_EXES = {"wsl.exe", "wsl"}
 
+# Round-7 review F16: SHELL_REPARSING's (cmd.exe, "/c")/(cmd.exe, "/k") pairs match only when argv[1] IS that
+# exact flag, but cmd.exe's own parser does not stop at a non-switch token first — "cmd.exe <root>/plain.py /c
+# echo 11" still runs "echo 11", and so does "cmd.exe <root>/plain.py x y /c echo 11" or a single quoted
+# "/c echo 11" token; /k behaves the same way. An in-root, non-image regular file at argv[1] (never itself read
+# by cmd.exe in any of these forms) passed both of F14's own questions, so every one of them was granted a
+# prefix by the plain containment-and-image test alone. There is no cmd.exe invocation this interface has
+# established safe — "cmd.exe <script>" is not one, because cmd.exe does not run a script given at argv[1] at
+# all — so the whole family is refused regardless of argv[1], the same shape POWERSHELL_EXES and WSL_EXES
+# already are; this is the F8 mechanism (a family whose re-parsing does not depend on the flag at argv[1])
+# applied to the one family the exact-pair rule still read one slot of.
+CMD_EXES = {"cmd.exe", "cmd"}
+
 # Round-6 review F14: the one layout this interface understands is "argv[0] is the program, argv[1] is this job's
 # own script", and the question that separates it from a launcher (env.exe, which execs argv[1] as the real
 # program, so the real command begins one slot further right) is not WHERE argv[1] lives but whether the OS would
@@ -159,8 +171,11 @@ def _reparses_regardless_of_argv(name: str) -> bool:
     """Whether the already-resolved basename `name` is an executable the OS hands off to a secondary command
     processor, or an executable family with no invocation this interface has established safe, whatever the
     rest of argv is: a `.bat`/`.cmd` target (REPARSED_EXECUTABLE_SUFFIXES), the whole PowerShell family
-    (POWERSHELL_EXES), or wsl.exe without --exec (WSL_EXES)."""
-    return name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or name in POWERSHELL_EXES or name in WSL_EXES
+    (POWERSHELL_EXES), wsl.exe without --exec (WSL_EXES), or the whole cmd.exe family (CMD_EXES, round-7 review
+    F16: cmd.exe honours `/c`/`/k` wherever they sit once a non-switch token precedes them, so no index past
+    argv[0] is provably safe for it either)."""
+    return (name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or name in POWERSHELL_EXES or name in WSL_EXES
+            or name in CMD_EXES)
 
 
 def _is_executable_image_name(name: str) -> bool:
@@ -184,8 +199,10 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     processor regardless of argv (REPARSED_EXECUTABLE_SUFFIXES — a `.bat`/`.cmd` target), an executable whose
     every invocation this interface recognises re-parses its own command line (SHELL_REPARSING's exact flag, or
     an executable family with no safe invocation at all — POWERSHELL_EXES, whose own flagless default re-parses
-    just as its explicit -Command form does, or WSL_EXES, whose own default hands its whole tail to a Linux
-    shell — no slot is safe, not even one), a launcher whose argv[1] is itself one of those same re-parsing
+    just as its explicit -Command form does, WSL_EXES, whose own default hands its whole tail to a Linux shell,
+    or CMD_EXES, round-7 review F16: cmd.exe honours `/c`/`/k` wherever they sit once a non-switch token
+    precedes them, so the exact SHELL_REPARSING pair is not the whole of what it re-parses — no slot is safe,
+    not even one), a launcher whose argv[1] is itself one of those same re-parsing
     forms (round-5 review F10: env.exe execs argv[1] as the real program, re-opening the same reparse one slot
     to the right — the F8 mechanism moved one slot to the right, read on the executable Windows actually
     resolves there, not on what argv[0] happens to be), an argv[1] that the command's own
@@ -213,7 +230,13 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     to "" and was granted a prefix as if it were a script. The question is asked a SECOND time, inside the same
     try block that already reads the filesystem for containment, of the file that question just resolved
     (os.path.realpath — the same normalisation CreateProcess itself performs), so the image question and the
-    containment question are always asked of one file, never two spellings of it."""
+    containment question are always asked of one file, never two spellings of it. Round-7 review F16: SHELL_REPARSING's
+    (cmd.exe, "/c")/(cmd.exe, "/k") pairs read argv[1] for an EXACT flag, but cmd.exe's own parser honours
+    "/c"/"/k" wherever they sit once a non-switch token precedes them, so an in-root, non-image regular file at
+    argv[1] (never itself read by cmd.exe) passed both of F14's own questions and was granted a prefix under
+    "/d /c", a flagless invocation whose later value carried the flag, or any other switch the pair rule does not
+    name. CMD_EXES closes this the way POWERSHELL_EXES and WSL_EXES already are closed: the whole family is
+    refused at argv[0], before argv[1] is read at all, so no switch list is needed."""
     if len(argv) < 2:
         return None
     exe_name = _resolved_name(argv[0])

@@ -83,12 +83,17 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
   The trusted prefix is read from the executable Windows itself resolves, not from the literal text a job
   wrote or from what happens to exist on disk: fewer than two tokens; an executable in the `SHELL_REPARSING`
-  family under its exact re-parsing flag (`cmd.exe`/`cmd` with `/c`/`/k`, `powershell`/`pwsh` with `-Command`,
-  `sh`/`bash`/`zsh` with `-c`); PowerShell under ANY invocation at all, flagged or not — its own flagless
-  default re-parses everything past its own name exactly as `-Command` does, so no PowerShell invocation this
-  interface recognises is established safe; `wsl.exe` under any invocation too, for the same reason — its
-  own default hands its whole tail to the default distribution's own shell, unobserved on a host whose default
-  distribution never starts but not thereby exempt; an executable the OS itself hands to a secondary command
+  family under its exact re-parsing flag (`powershell`/`pwsh` with `-Command`, `sh`/`bash`/`zsh` with `-c` — the
+  `SHELL_REPARSING` pairs for `cmd.exe`/`cmd` with `/c`/`/k` are still listed too, now redundant with the family
+  refusal below, kept rather than removed the same way `POWERSHELL_EXES`'s own addition left its `-Command`
+  pairs in place); PowerShell under ANY invocation at all, flagged or not — its own flagless default re-parses
+  everything past its own name exactly as `-Command` does, so no PowerShell invocation this interface recognises
+  is established safe; `wsl.exe` under any invocation too, for the same reason — its own default hands its whole
+  tail to the default distribution's own shell, unobserved on a host whose default distribution never starts but
+  not thereby exempt; `cmd.exe`/`cmd` under any invocation too — its own parser honours `/c`/`/k` wherever they
+  sit once a non-switch token precedes them, so the exact `SHELL_REPARSING` pair was never the whole of what it
+  re-parses, and an in-root file at `argv[1]` (never itself read by `cmd.exe`) passed every other check (round-7
+  review F16); an executable the OS itself hands to a secondary command
   processor regardless of argv (a `.bat`/`.cmd` target, which Windows re-invokes through `cmd.exe` even when the
   caller never asks for a shell), at `argv[0]` or at a launcher's own `argv[1]` — a launcher (`env.exe`, ...)
   whose own argv[1] is such a target re-opens the same reparse one slot to the right, and a trailing space or
@@ -133,7 +138,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   question above is asked a second time of the file containment itself resolves, not only the literal text a
   job wrote, so a trailing `\.`, `/.`, separator, or `..\<name>\.` re-entry a real in-project interpreter was
   spelled with no longer reads as "not a program" to one question while the other grants it a prefix,
-  `docs/releases/2.1.0/F15-resolved-image-name.md`).
+  `docs/releases/2.1.0/F15-resolved-image-name.md`; round-7 review F16 — `cmd.exe`/`cmd` is now refused under any
+  invocation, not only the exact `(argv[0], argv[1])` pair `SHELL_REPARSING` lists, the same shape round-4 review
+  F8 closed for PowerShell: an in-root, non-image file at `argv[1]` (never itself read by `cmd.exe`) was granted
+  this same prefix under `/c`, `/d /c`, a flagless invocation whose declared value carried the flag instead, or
+  any switch the pair rule does not name, `docs/releases/2.1.0/F16-cmd-family-refusal.md`).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
