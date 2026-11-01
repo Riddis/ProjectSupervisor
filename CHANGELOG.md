@@ -5,25 +5,27 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## 2.1.0 — 2026-10-31
 
-Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap and a
-diagnosis's job correction both now go through the manager's diagnosis route instead of around it, and the first
-command that closes an issue record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps
-before the tag — an unconfined diagnosis `argv`, two CI jobs red on the exact reviewed head, `issue.resolve`
-accepting a path outside `state/issues/`, and a continuation grant that recovery could bypass after a manager
-requeue — each closed by its own commit before round 2. Round-2 review
-(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found four more gaps in those same fixes — a Windows command form
-that still let a diagnosis replace the program being run, a continuation grant whose retirement a crash-and-replay
-could leave unfinished or redo, a capped attempt a crash could strand before its own escalation was durable, and a
-manager-to-architect hand-off that lost its grant generation and reused an already-spent architect answer — each
-closed by its own commit too (`docs/releases/2.1.0/F1-command-layout-contract.md` through
-`F4-architect-grant-generation.md`). What follows already describes the corrected shape after both rounds, not
-either round's gap.
+Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap now
+goes through the manager's diagnosis route instead of around it, and the first command that closes an issue
+record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps before the tag — two CI jobs red
+on the exact reviewed head, `issue.resolve` accepting a path outside `state/issues/`, a continuation grant that
+recovery could bypass after a manager requeue, and the diagnosis `job_fix` interface this release no longer
+carries (R1) — each closed by its own commit before round 2. Round-2 review
+(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found three more gaps in those same fixes — a continuation grant
+whose retirement a crash-and-replay could leave unfinished or redo, a capped attempt a crash could strand before
+its own escalation was durable, and a manager-to-architect hand-off that lost its grant generation and reused an
+already-spent architect answer — each closed by its own commit too
+(`docs/releases/2.1.0/F2-continuation-retirement.md` through `F4-architect-grant-generation.md`); a fourth gap in
+that round (F1, a Windows command form that still let a diagnosis replace the program being run) was in the same
+`job_fix` interface rounds 1 through 8 kept finding gaps in, and is moot now that the interface is gone. What
+follows already describes the corrected shape after both rounds, not either round's gap. *Since D-018
+(2026-11-01)* the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
 
 **Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
 to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
-`supervisor doctor`, start. An issue resolved under 2.1.0, a process job whose `fix_params` a diagnosis corrected,
-or a continuation job record carrying its grant generation (`continuation_grant`), are plain state either way;
-2.0.0 reads them as ordinary issue and job fields it already understood.
+`supervisor doctor`, start. An issue resolved under 2.1.0, or a continuation job record carrying its grant
+generation (`continuation_grant`), is plain state either way; 2.0.0 reads it as an ordinary issue and job field
+it already understood.
 
 - **Changed: continuations exhausted routes through the manager's diagnosis, not straight to the owner.**
   `Supervisor.requeue()`'s `MAX_CONTINUATIONS` branch now calls `escalation.record_failure(..., retry=False)`
@@ -78,86 +80,14 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   F4, F7): the recorded `escalation -> READY` transition, a generation-scoped retirement boundary, and a
   generation- and dispatch-state-aware architect hand-off are what now make the grant replay-safe end to end, not
   only across the one crash point the first attempt covered.
-- **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
-  which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
-  executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
-  The trusted prefix is read from the executable Windows itself resolves, not only from the literal text a job
-  wrote or from what happens to exist on disk — every name and family question below is asked once of a job's
-  own literal spelling and, where Win32 can normalise that spelling into a different file before it ever opens
-  it, a second time of what `os.path.realpath` resolves, at `argv[0]` and at `argv[1]` alike (round-7 review F15;
-  round-8 review F17): fewer than two tokens; an executable in the `SHELL_REPARSING`
-  family under its exact re-parsing flag (`powershell`/`pwsh` with `-Command`, `sh`/`bash`/`zsh` with `-c` — the
-  `SHELL_REPARSING` pairs for `cmd.exe`/`cmd` with `/c`/`/k` are still listed too, now redundant with the family
-  refusal below, kept rather than removed the same way `POWERSHELL_EXES`'s own addition left its `-Command`
-  pairs in place); PowerShell under ANY invocation at all, flagged or not — its own flagless default re-parses
-  everything past its own name exactly as `-Command` does, so no PowerShell invocation this interface recognises
-  is established safe; `wsl.exe` under any invocation too, for the same reason — its own default hands its whole
-  tail to the default distribution's own shell, unobserved on a host whose default distribution never starts but
-  not thereby exempt; `cmd.exe`/`cmd` under any invocation too — its own parser honours `/c`/`/k` wherever they
-  sit once a non-switch token precedes them, so the exact `SHELL_REPARSING` pair was never the whole of what it
-  re-parses, and an in-root file at `argv[1]` (never itself read by `cmd.exe`) passed every other check (round-7
-  review F16); an executable the OS itself hands to a secondary command
-  processor regardless of argv (a `.bat`/`.cmd` target, which Windows re-invokes through `cmd.exe` even when the
-  caller never asks for a shell), at `argv[0]` or at a launcher's own `argv[1]` — a launcher (`env.exe`, ...)
-  whose own argv[1] is such a target re-opens the same reparse one slot to the right, and a trailing space or
-  dot, or an `::$DATA` alternate-data-stream spelling, is stripped the same way Win32 `CreateProcess` itself
-  strips it before this check ever runs, not kept as the job happened to spell it (round-5 review F10) — and a
-  deeper trick that stripping alone does not catch (a trailing `\.`, `/.`, a bare trailing separator, or a
-  `..\<name>\.` re-entry) is read a second time, of the file `os.path.realpath` resolves rather than the literal
-  text, so it cannot hide a re-parsing family at `argv[0]` or at a launcher's own `argv[1]` target either
-  (round-8 review F17); or an
-  `argv[1]` that is itself an interpreter option rather than a script (anything `"-"`-prefixed — `-c`, `-m`,
-  `-e`, ... — for every interpreter, not only the ones just named) — has **no** eligible index at all, for any
-  of these, not a protected prefix with a mutable tail — because the child's own parser, not an index,
-  decides where one argument ends and the next command begins, and a project that happens to contain a
-  same-named file must not turn that option into a script either (round-3 review F5); otherwise the plain
-  two-token layout applies, trusted prefix 2, and only if `argv[1]` is **this project's own script**: a regular
-  file **contained in the project** (not merely one that exists somewhere on disk, which a launcher's own
-  `argv[1]` — the program it execs, a system `env.exe`, `bash.exe`, `python.exe`, `cmd.exe`, ... — satisfies
-  just as readily as a job's real script does) that is **not itself a program the OS would run** (a `.exe`/
-  `.com` image under the name Windows resolves — asked once of the literal text a job wrote and a second time
-  of the very file containment just resolved, so a trailing `\.`, `/.`, a bare trailing separator, or a
-  `..\<name>\.` re-entry a job's literal spelling could hide behind cannot read as a program to one question
-  and a script to the other (round-7 review F15), or the executable bit on POSIX, where an interpreter has no
-  extension to read) — because containment alone cannot tell a job's script from the interpreter in the
-  project's own virtualenv, `<root>/.venv/Scripts/python.exe`. A launcher is not an interpreter and
-  `python.exe` is not a script: an executable at `argv[1]` means the real command begins further right than
-  these branches read, so a launcher chained to any depth loses its prefix the same way one does — the second
-  token of a chain is another launcher, refused by the same two questions — including in front of an
-  otherwise-legitimate interpreter and in-project script (round-6 review F14) — and nothing before this prefix is ever eligible
-  regardless of what a job declares. A diagnosis's `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other
-  field it names, any undeclared parameter name, an index inside the trusted prefix, or a value that fails its
-  declared check, is dropped and logged, never applied — a diagnosis can correct a stale argument (a sha, an
-  in-project path) but can never install a different program, interpreter option, implicit-mode command text,
-  free-form argv or an alternate script in any command form this interface grants a prefix to, save the one
-  residual F14's own record names; every other form, launchers included, has no eligible index at all rather
-  than a protected prefix with a mutable tail (round-1
-  review R1; round-2 review F1; round-3 review F5; round-4 review F8 — PowerShell's own default mode and a
-  native batch executable at `argv[0]` both re-parsed a parameter past the prefix the same way `cmd.exe /c`
-  once did; round-5 review F10 — the suffix test now reads the executable name Windows actually resolves, for
-  `argv[0]` and for a launcher's `argv[1]` alike, not the literal spelling a job wrote; round-6 review F14 —
-  the script slot itself, `argv[1]`, must now be this project's own script: contained in the project and not an
-  executable image, so a launcher's own program is not mistaken for a job's script, at any depth and wherever
-  that program lives — the residual being any in-project Windows executable image not named `.exe`/`.com`, not
-  only an extensionless one (`CreateProcess` runs a PE by its header, not only by one of those two extensions,
-  so a `.dat`-named copy is covered just as an extensionless one is), which the name Windows resolves cannot
-  distinguish from a script, `docs/releases/2.1.0/F14-command-prefix-rule.md`; round-7 review F15 — the image
-  question above is asked a second time of the file containment itself resolves, not only the literal text a
-  job wrote, so a trailing `\.`, `/.`, separator, or `..\<name>\.` re-entry a real in-project interpreter was
-  spelled with no longer reads as "not a program" to one question while the other grants it a prefix,
-  `docs/releases/2.1.0/F15-resolved-image-name.md`; round-7 review F16 — `cmd.exe`/`cmd` is now refused under any
-  invocation, not only the exact `(argv[0], argv[1])` pair `SHELL_REPARSING` lists, the same shape round-4 review
-  F8 closed for PowerShell: an in-root, non-image file at `argv[1]` (never itself read by `cmd.exe`) was granted
-  this same prefix under `/c`, `/d /c`, a flagless invocation whose declared value carried the flag instead, or
-  any switch the pair rule does not name, `docs/releases/2.1.0/F16-cmd-family-refusal.md`; round-8 review F17 —
-  the re-parsing-family question, at `argv[0]` and at a launcher's own `argv[1]` target, had the same gap F15
-  closed for the image question: its lexical basename read "" for the same trailing `\.`, `/.`, bare trailing
-  separator, or `..\<name>\.` re-entry, so a shell or an in-root `.bat`/`.cmd` spelled that way at `argv[0]`, or
-  a launcher's own `.bat`/`.cmd` target spelled that way, still read as "not a family" while Win32 ran it anyway.
-  The family question is now asked a second time of the same resolution — `os.path.realpath`, deferred to where
-  the filesystem is already read so no pure-text question moves and no filesystem read runs any earlier than it
-  already did — at both slots, not only at `argv[1]`'s image question,
-  `docs/releases/2.1.0/F17-resolved-name-questions.md`).
+- **Removed (D-018, 2026-11-01): the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
+  job in 2.1.0. Rounds 1 through 8 of review kept finding gaps in the bounded correction this interface once
+  offered a process job's command (R1, F1, F5, F8, F10, F14-F17) — nine of the release's seventeen findings, for
+  a case seen once (T1-08) whose cause phase 2 already removed. A process job whose own command is wrong now
+  reaches the owner as a question naming the `task.set_job` change the task needs; `task.set_job`
+  (`commands.apply_job`) stays the only writer of a job block. `docs/releases/2.1.0/SCOPE-CUT-job-fix.md` has the
+  removed commits, symbols and files, and the regression that proves a `job_fix` on a `requeue` now changes
+  nothing.
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
