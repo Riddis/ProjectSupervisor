@@ -60,6 +60,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   a held task off BLOCKED, and the one launch gate (`gate.check`) refuses a `delivery` launch outright while the
   task is held, so a continuation already queued before or during a Hold stays `PREPARED` — retried every
   `reconcile()`, never started — until the owner releases it (round-5 review F11).
+  Releasing a Hold is now a question of which actors may decide to, not a name-prefix guess at "the owner": any
+  actor but the loop's own automatic writers (`loop`, `escalation`) clears `held` on a move off BLOCKED, so a
+  manual release through the CLI (or any other actor that does not happen to start with "owner") no longer
+  leaves the task READY with `held` still set for a later automatic requeue to decline against a Hold nobody
+  holds (round-5 review F13).
   A manager-to-architect hand-off carries the originating diagnosis's
   own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
   diagnosis instead of the already-answered record from the generation that granted it; and when `dispatch()`
