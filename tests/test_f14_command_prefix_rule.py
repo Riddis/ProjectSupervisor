@@ -54,6 +54,9 @@ def test_command_prefix_still_accepts_an_argv1_contained_in_the_project_root(lay
     script.write_text("print(11)\n", encoding="utf-8")
     assert diagnosis._command_prefix(layout, ["python", str(script), "ordinary"]) == 2
     assert diagnosis._command_prefix(layout, ["python", "plain.py", "ordinary"]) == 2       # relative spelling too
+    # The ordinary virtualenv layout, which the rule reads at argv[0] and must not cost a job: a program at
+    # argv[0] may live anywhere, inside the project included — it is argv[1] that has to be this job's script.
+    assert diagnosis._command_prefix(layout, [str(_in_project_interpreter(layout)), str(script), "ordinary"]) == 2
 
 
 def _in_project_interpreter(layout, copy_a_real_one: bool = False):
