@@ -70,6 +70,23 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # POWERSHELL_EXES, and now WSL_EXES — wsl.exe's own default hands its whole tail to a Linux shell, unobservable
 # on a host whose default distribution never starts but not thereby exempt) to whichever slot the reparsing
 # executable occupies (round-5 review F10).
+#
+# All of the above still read a FIXED slot (argv[0] or argv[1]) and, once past the re-parsing checks, granted a
+# prefix on nothing but "does argv[1] resolve to a file somewhere on disk" — which a launcher's own argv[1]
+# (the program it execs, almost always outside the project entirely: a system env.exe, bash.exe, python.exe,
+# cmd.exe, ...) satisfies just as readily as a job's real, in-project script does. A launcher moves the whole
+# command one slot to the right; the family check moved with it (F10), but the file-existence test never asked
+# WHERE the file was, so the reparsed form two levels deep, a `-c`/`-Command` script text one slot right, or the
+# real script's own slot under a launcher, were all still granted a prefix the branches did not understand (a
+# launcher is not an interpreter, and `python.exe` is not a script) (round-6 review F14). `argv[1]` must now also
+# be CONTAINED IN THE PROJECT ROOT (`_vendor.contract.contained`, the same containment `_param_ok`'s own
+# `kind: "path"` check already requires of a proposed value) — a property of the command the job declared, not
+# a path that happens to exist at proposal time, and one that needs no depth-specific branch: whatever sits at
+# argv[0], this only ever reads argv[1], so a launcher chained to any depth is refused the same way one is,
+# because the second token is still the one examined. A launcher in front of an otherwise-legitimate interpreter
+# and in-project script (`env python <root>/plain.py`) loses its prefix too under this rule, since its own
+# argv[1] (the interpreter) is outside the root — accepted as the smaller, uniform cost of a rule stated about
+# the whole command rather than one more spelling on a list (docs/releases/2.1.0/F14-command-prefix-rule.md).
 JOB_FIX_FIELDS = {"process": ("params",)}
 PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
 
@@ -142,14 +159,18 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     resolves there, not on what argv[0] happens to be), an argv[1] that the command's own
     grammar never treats as a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer —
     "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or an argv[1] that is not an
-    actual file (so this cannot even confirm it is looking at a script rather than a subcommand or bare word).
-    Checking "is this an existing file" only AFTER ruling out every re-parsing form is what makes the one plain
-    layout this interface does understand (argv[0] executable, argv[1] script) read the same way on every platform
-    without a filesystem collision turning an option into a script: an absolute POSIX script path starts with "/"
-    too, and is not an option, but a project that happens to contain a file literally named "-c" must not make
-    `-c` one either (round-3 review F5) — the grammar, and what the OS itself resolves for argv[0] and argv[1],
-    not what happens to exist on disk or the spelling a job happened to write, decide which token is the
-    script (round-5 review F10)."""
+    actual file CONTAINED IN THE PROJECT ROOT — not merely a file that exists somewhere on disk (round-6 review
+    F14): a launcher's own argv[1] is the program it execs, almost always outside the project, and "is there a
+    file there" alone cannot tell that apart from a job's real, in-project script, whatever argv[0] is or how
+    many launchers precede it — the second token is the one this reads, at any depth. Checking "is this a
+    contained file" only AFTER ruling out every re-parsing form is what makes the one plain layout this
+    interface does understand (argv[0] executable, argv[1] in-project script) read the same way on every
+    platform without a filesystem collision turning an option into a script: an absolute POSIX script path
+    starts with "/" too, and is not an option, but a project that happens to contain a file literally named
+    "-c" must not make `-c` one either (round-3 review F5) — the grammar, what the OS itself resolves for
+    argv[0] and argv[1], and now where argv[1] actually lives, not what happens to exist on disk anywhere or
+    the spelling a job happened to write, decide which token is the script and whether it is this job's own
+    (round-5 review F10; round-6 review F14)."""
     if len(argv) < 2:
         return None
     exe_name = _resolved_name(argv[0])
@@ -164,9 +185,10 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     if script.startswith("-"):
         return None
     try:
-        if not (layout.root / script).is_file():
+        resolved = layout.root / script
+        if not resolved.is_file() or not contained(resolved, [layout.root], root=layout.root):
             return None
-    except OSError:
+    except (OSError, ValueError):
         return None
     return PARAM_MIN_INDEX
 
