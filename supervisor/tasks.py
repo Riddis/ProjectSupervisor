@@ -454,6 +454,13 @@ class _NoChange(Exception):
     pass
 
 
+# The loop's own automatic writers (F11 already keeps both out of a held task's move off BLOCKED in practice -
+# the gate and `_ensure_in_progress` refuse the launch, `diagnosis.ingest` declines before this runs); named here
+# so release stays a question of *which actors may decide to release a Hold*, not a prefix guess at "the owner"
+# (F13) - anyone else moving the task off BLOCKED is a deliberate, non-automatic decision and releases it.
+AUTOMATIC_ACTORS = frozenset({"loop", "escalation"})
+
+
 def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: str = "system", note: str = "",
                force: bool = False) -> Task:
     """Manual/loop transition following ALLOWED. COMPLETE is refused here (use advance()) unless the OWNER forces it
@@ -473,8 +480,8 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
         if status not in ALLOWED[current] and not force:
             raise TaskError(f"{task_id}: illegal transition {current.value} → {status.value}")
         _record_history(doc, status, actor, note, forced=force)
-        if doc.get("held") and actor.startswith("owner"):
-            doc["held"] = None    # the owner's own status change off BLOCKED releases a Hold they set (F9)
+        if doc.get("held") and actor not in AUTOMATIC_ACTORS:
+            doc["held"] = None    # any actor but the loop's own (F9/F13) releases a Hold on a move off BLOCKED
         if force:
             doc["forced"] = {"by": actor, "at": store.now_iso(), "to": status.value, "note": note}
     try:
