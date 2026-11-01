@@ -236,7 +236,21 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     argv[1] (never itself read by cmd.exe) passed both of F14's own questions and was granted a prefix under
     "/d /c", a flagless invocation whose later value carried the flag, or any other switch the pair rule does not
     name. CMD_EXES closes this the way POWERSHELL_EXES and WSL_EXES already are closed: the whole family is
-    refused at argv[0], before argv[1] is read at all, so no switch list is needed."""
+    refused at argv[0], before argv[1] is read at all, so no switch list is needed. Round-8 review F17: the SAME
+    trailing-"\.", "/.", bare-separator or "..\<name>\." trick F15 closed for the image question was still open
+    everywhere else a name question is asked on literal text alone — the re-parsing-family question at argv[0]
+    (above, pure text) and the re-parsing-family question at argv[1] (above, pure text too) both read "" for a
+    shell or a `.bat`/`.cmd` target spelled that way, exactly as the image question used to. Both are asked a
+    SECOND time of the realpath F15's own containment read already resolves: the family question at argv[1]
+    sits beside the second image question, inside the same try, of the same `os.path.realpath(resolved)`; the
+    family question at argv[0] is a second filesystem read of argv[0] itself — argv[0] is not bound by
+    containment the way argv[1] is (an out-of-project interpreter is a correct grant), so it is resolved with no
+    root-relative join, deferred to the END of the try rather than beside the first, pure-text question, so no
+    filesystem read moves in front of the SHELL_REPARSING pair lookup or the leading "-" refusal (F5) — it only
+    ever removes a prefix the pure-text questions and containment had already both allowed through, the same
+    direction F15's own second question argues. A `python.exe\.`-shaped program at argv[0] (a correct grant,
+    since "python.exe" is not a re-parsing family) is unaffected: its realpath is still "python.exe", and the
+    family question still says no."""
     if len(argv) < 2:
         return None
     exe_name = _resolved_name(argv[0])
@@ -261,10 +275,28 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
         # image" while this same is_file()/contained() pair resolves it to the plain executable and grants it a
         # prefix. Ask the image question again of the file THIS question just resolved — os.path.realpath, the
         # same normalisation CreateProcess itself performs — so both questions read one file, not two spellings
-        # of it.
-        if _is_executable_image_name(_resolved_name(os.path.realpath(resolved))):
+        # of it. Round-8 review F17: the re-parsing-family question at argv[1] (the one above, before this try)
+        # has exactly the same gap the image question had — "" matches no family either — so a launcher's own
+        # ".cmd"/".bat" target spelled with the same trick passed it too. Ask the FAMILY question a second time
+        # of the same resolved name, not only the image question.
+        resolved_arg1_name = _resolved_name(os.path.realpath(resolved))
+        if _reparses_regardless_of_argv(resolved_arg1_name) or _is_executable_image_name(resolved_arg1_name):
             return None
         if _carries_the_executable_bit(resolved):
+            return None
+        # Round-8 review F17: argv[0]'s own re-parsing-family question, asked above, has the same gap — a shell
+        # spelled with a trailing "\.", "/.", a bare trailing separator, or a "..\<name>\." re-entry resolves to
+        # "" and passes as "not a family" while CreateProcess itself normalises the trick away and runs the
+        # shell. Ask the family question again of argv[0]'s own realpath, deferred to here (inside the one try
+        # that already reads the filesystem) rather than beside the first, pure-text question: argv[0] is not
+        # necessarily a path at all (a bare name CreateProcess finds on PATH), os.path.realpath on it is a
+        # filesystem read with no project-root containment to bound it, and asking it any earlier would move a
+        # filesystem read in front of the SHELL_REPARSING pair lookup and the leading "-" refusal — exactly the
+        # ordering F5's option-lookalike rule depends on staying clear of. Asked here, it costs nothing earlier:
+        # every row that reaches this point has already passed every pure-text question and argv[1]'s own
+        # containment, so a resolution that raises or returns something unexpected still refuses, never grants,
+        # through the same except this try already has.
+        if _reparses_regardless_of_argv(_resolved_name(os.path.realpath(str(argv[0])))):
             return None
     except (OSError, ValueError):
         return None

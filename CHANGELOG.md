@@ -81,8 +81,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
 - **Added: a manager diagnosis may propose a bounded correction to a process job's command.** A job declares
   which `argv` slots are correctable and how (`fix_params`: an index at or past the command's own trusted
   executable+script prefix, with a regex `pattern` or a `kind: "path"` check resolved inside the project root).
-  The trusted prefix is read from the executable Windows itself resolves, not from the literal text a job
-  wrote or from what happens to exist on disk: fewer than two tokens; an executable in the `SHELL_REPARSING`
+  The trusted prefix is read from the executable Windows itself resolves, not only from the literal text a job
+  wrote or from what happens to exist on disk — every name and family question below is asked once of a job's
+  own literal spelling and, where Win32 can normalise that spelling into a different file before it ever opens
+  it, a second time of what `os.path.realpath` resolves, at `argv[0]` and at `argv[1]` alike (round-7 review F15;
+  round-8 review F17): fewer than two tokens; an executable in the `SHELL_REPARSING`
   family under its exact re-parsing flag (`powershell`/`pwsh` with `-Command`, `sh`/`bash`/`zsh` with `-c` — the
   `SHELL_REPARSING` pairs for `cmd.exe`/`cmd` with `/c`/`/k` are still listed too, now redundant with the family
   refusal below, kept rather than removed the same way `POWERSHELL_EXES`'s own addition left its `-Command`
@@ -98,7 +101,11 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   caller never asks for a shell), at `argv[0]` or at a launcher's own `argv[1]` — a launcher (`env.exe`, ...)
   whose own argv[1] is such a target re-opens the same reparse one slot to the right, and a trailing space or
   dot, or an `::$DATA` alternate-data-stream spelling, is stripped the same way Win32 `CreateProcess` itself
-  strips it before this check ever runs, not kept as the job happened to spell it (round-5 review F10); or an
+  strips it before this check ever runs, not kept as the job happened to spell it (round-5 review F10) — and a
+  deeper trick that stripping alone does not catch (a trailing `\.`, `/.`, a bare trailing separator, or a
+  `..\<name>\.` re-entry) is read a second time, of the file `os.path.realpath` resolves rather than the literal
+  text, so it cannot hide a re-parsing family at `argv[0]` or at a launcher's own `argv[1]` target either
+  (round-8 review F17); or an
   `argv[1]` that is itself an interpreter option rather than a script (anything `"-"`-prefixed — `-c`, `-m`,
   `-e`, ... — for every interpreter, not only the ones just named) — has **no** eligible index at all, for any
   of these, not a protected prefix with a mutable tail — because the child's own parser, not an index,
@@ -142,7 +149,15 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   invocation, not only the exact `(argv[0], argv[1])` pair `SHELL_REPARSING` lists, the same shape round-4 review
   F8 closed for PowerShell: an in-root, non-image file at `argv[1]` (never itself read by `cmd.exe`) was granted
   this same prefix under `/c`, `/d /c`, a flagless invocation whose declared value carried the flag instead, or
-  any switch the pair rule does not name, `docs/releases/2.1.0/F16-cmd-family-refusal.md`).
+  any switch the pair rule does not name, `docs/releases/2.1.0/F16-cmd-family-refusal.md`; round-8 review F17 —
+  the re-parsing-family question, at `argv[0]` and at a launcher's own `argv[1]` target, had the same gap F15
+  closed for the image question: its lexical basename read "" for the same trailing `\.`, `/.`, bare trailing
+  separator, or `..\<name>\.` re-entry, so a shell or an in-root `.bat`/`.cmd` spelled that way at `argv[0]`, or
+  a launcher's own `.bat`/`.cmd` target spelled that way, still read as "not a family" while Win32 ran it anyway.
+  The family question is now asked a second time of the same resolution — `os.path.realpath`, deferred to where
+  the filesystem is already read so no pure-text question moves and no filesystem read runs any earlier than it
+  already did — at both slots, not only at `argv[1]`'s image question,
+  `docs/releases/2.1.0/F17-resolved-name-questions.md`).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
