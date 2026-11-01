@@ -17,6 +17,7 @@ checked against the job records, so a replayed escalation cannot spend a second 
 Supervisor.dispatch → launch → supervisor.gate like every other job (decision, capacity floor, agent limit)."""
 from __future__ import annotations
 
+import os
 import re
 
 import yaml
@@ -78,15 +79,18 @@ DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after 
 # command one slot to the right; the family check moved with it (F10), but the file-existence test never asked
 # WHERE the file was, so the reparsed form two levels deep, a `-c`/`-Command` script text one slot right, or the
 # real script's own slot under a launcher, were all still granted a prefix the branches did not understand (a
-# launcher is not an interpreter, and `python.exe` is not a script) (round-6 review F14). `argv[1]` must now also
-# be CONTAINED IN THE PROJECT ROOT (`_vendor.contract.contained`, the same containment `_param_ok`'s own
-# `kind: "path"` check already requires of a proposed value) — a property of the command the job declared, not
-# a path that happens to exist at proposal time, and one that needs no depth-specific branch: whatever sits at
-# argv[0], this only ever reads argv[1], so a launcher chained to any depth is refused the same way one is,
-# because the second token is still the one examined. A launcher in front of an otherwise-legitimate interpreter
-# and in-project script (`env python <root>/plain.py`) loses its prefix too under this rule, since its own
-# argv[1] (the interpreter) is outside the root — accepted as the smaller, uniform cost of a rule stated about
-# the whole command rather than one more spelling on a list (docs/releases/2.1.0/F14-command-prefix-rule.md).
+# launcher is not an interpreter, and `python.exe` is not a script) (round-6 review F14). A prefix now exists
+# only when `argv[1]` is THIS PROJECT'S OWN SCRIPT: a regular file CONTAINED IN THE PROJECT ROOT
+# (`_vendor.contract.contained`, the same containment `_param_ok`'s own `kind: "path"` check already requires of
+# a proposed value) that is NOT itself a program the OS would run (`_is_executable_image_name`,
+# `_carries_the_executable_bit`) — containment alone is necessary and not sufficient, because a project's own
+# virtualenv puts a real interpreter inside the root. Two questions about the command the job declared, neither
+# needing a depth-specific branch: whatever sits at argv[0], this reads argv[1], and a launcher chain's second
+# token is another launcher, refused by the same two questions as the first. A launcher in front of an
+# otherwise-legitimate interpreter and in-project script (`env python <root>/plain.py`) loses its prefix too,
+# since its own argv[1] is a program rather than a script — accepted as the smaller, uniform cost of a rule
+# stated about the whole command rather than one more spelling on a list
+# (docs/releases/2.1.0/F14-command-prefix-rule.md).
 JOB_FIX_FIELDS = {"process": ("params",)}
 PARAM_MIN_INDEX = 2             # absolute floor for every layout: argv[0]/argv[1] are never a declared parameter
 
@@ -125,6 +129,19 @@ REPARSED_EXECUTABLE_SUFFIXES = (".bat", ".cmd")
 # refused regardless of argv[1], the same way POWERSHELL_EXES is refused regardless of its own flag.
 WSL_EXES = {"wsl.exe", "wsl"}
 
+# Round-6 review F14: the one layout this interface understands is "argv[0] is the program, argv[1] is this job's
+# own script", and the question that separates it from a launcher (env.exe, which execs argv[1] as the real
+# program, so the real command begins one slot further right) is not WHERE argv[1] lives but whether the OS would
+# itself run argv[1] as a program. Containment is necessary and not sufficient: a project's own virtualenv puts a
+# real interpreter INSIDE the root (`<root>/.venv/Scripts/python.exe`, the ordinary Python layout), where a
+# containment test cannot tell it from a script. An executable image at argv[1] therefore means argv[0] is a
+# launcher and this interface is not reading the real command at all — no slot is provably safe, the same
+# conclusion _reparses_regardless_of_argv reaches for a re-parsing family, widened from "an executable the OS
+# re-parses" to "an executable at all". On Windows the image is named by its extension (the ones CreateProcess
+# runs directly); on POSIX an interpreter has no suffix to read (`<root>/.venv/bin/python`) and the executable
+# bit is the only thing that distinguishes it from the script beside it.
+EXECUTABLE_IMAGE_SUFFIXES = (".exe", ".com")
+
 
 def _resolved_name(token) -> str:
     """The basename Win32 CreateProcess actually resolves for one argv token, not the literal text a job wrote
@@ -146,6 +163,21 @@ def _reparses_regardless_of_argv(name: str) -> bool:
     return name.endswith(REPARSED_EXECUTABLE_SUFFIXES) or name in POWERSHELL_EXES or name in WSL_EXES
 
 
+def _is_executable_image_name(name: str) -> bool:
+    """Whether the already-resolved basename `name` names an executable image the OS itself runs as a program
+    rather than a script an interpreter reads (round-6 review F14) — the extensions Windows runs directly, read
+    off the name the OS resolves so that a trailing space or dot or an `::$DATA` spelling cannot hide one."""
+    return name.endswith(EXECUTABLE_IMAGE_SUFFIXES)
+
+
+def _carries_the_executable_bit(path) -> bool:
+    """Whether `path` is a program POSIX would itself exec: the other half of the same question
+    `_is_executable_image_name` answers on Windows, for a platform where an interpreter carries no extension to
+    read (`<root>/.venv/bin/python`) and the mode is the only thing distinguishing it from the script beside it.
+    Not asked on Windows, where `os.access(X_OK)` answers "is it readable" for every file there is."""
+    return os.name != "nt" and os.access(path, os.X_OK)
+
+
 def _command_prefix(layout: Layout, argv: list) -> int | None:
     """The length of the trusted, immutable executable+script prefix for argv's own layout, or None when no index
     is eligible at all: too few tokens to have a script, an argv[0] the OS itself hands to a secondary command
@@ -158,25 +190,31 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     to the right — the F8 mechanism moved one slot to the right, read on the executable Windows actually
     resolves there, not on what argv[0] happens to be), an argv[1] that the command's own
     grammar never treats as a script at all (anything "-"-prefixed is an option/flag/inline-snippet introducer —
-    "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or an argv[1] that is not an
-    actual file CONTAINED IN THE PROJECT ROOT — not merely a file that exists somewhere on disk (round-6 review
-    F14): a launcher's own argv[1] is the program it execs, almost always outside the project, and "is there a
-    file there" alone cannot tell that apart from a job's real, in-project script, whatever argv[0] is or how
-    many launchers precede it — the second token is the one this reads, at any depth. Checking "is this a
-    contained file" only AFTER ruling out every re-parsing form is what makes the one plain layout this
-    interface does understand (argv[0] executable, argv[1] in-project script) read the same way on every
-    platform without a filesystem collision turning an option into a script: an absolute POSIX script path
-    starts with "/" too, and is not an option, but a project that happens to contain a file literally named
-    "-c" must not make `-c` one either (round-3 review F5) — the grammar, what the OS itself resolves for
-    argv[0] and argv[1], and now where argv[1] actually lives, not what happens to exist on disk anywhere or
-    the spelling a job happened to write, decide which token is the script and whether it is this job's own
-    (round-5 review F10; round-6 review F14)."""
+    "-c", "-m", "-e", ..., for every interpreter, not only the ones named above), or — the whole of round-6
+    review F14 — an argv[1] that is not THIS PROJECT'S OWN SCRIPT: a prefix exists only for the single layout
+    this interface understands, argv[0] the program and argv[1] the script that program reads, so argv[1] must
+    be a regular file CONTAINED IN THE PROJECT ROOT (not merely one that exists somewhere on disk: a launcher's
+    own argv[1] is the program it execs and that is a real file too) and must NOT itself be a program the OS
+    would run (_is_executable_image_name on the name Windows resolves, _carries_the_executable_bit on POSIX:
+    containment alone cannot tell a job's script from the interpreter in the project's own virtualenv,
+    `<root>/.venv/Scripts/python.exe`). An executable at argv[1] means argv[0] is a launcher and the real
+    command starts further right, where none of these branches are reading, so no slot is safe — whatever
+    argv[0] is and however many launchers precede it, since a chain's second token is another launcher and is
+    refused by exactly the same two questions. Asking them only AFTER ruling out every re-parsing form is what
+    makes the plain layout read the same way on every platform without a filesystem collision turning an option
+    into a script: an absolute POSIX script path starts with "/" too, and is not an option, but a project that
+    happens to contain a file literally named "-c" must not make `-c` one either (round-3 review F5) — the
+    grammar, what the OS itself resolves for argv[0] and argv[1], and now whether argv[1] is this project's own
+    script or a program in its own right, not what happens to exist on disk anywhere or the spelling a job
+    happened to write, decide which token is the script and whether it is this job's own (round-5 review F10;
+    round-6 review F14)."""
     if len(argv) < 2:
         return None
     exe_name = _resolved_name(argv[0])
     if _reparses_regardless_of_argv(exe_name):
         return None
-    if _reparses_regardless_of_argv(_resolved_name(argv[1])):
+    arg1_name = _resolved_name(argv[1])
+    if _reparses_regardless_of_argv(arg1_name) or _is_executable_image_name(arg1_name):
         return None
     option = str(argv[1]).lower()
     if (exe_name, option) in SHELL_REPARSING:
@@ -187,6 +225,8 @@ def _command_prefix(layout: Layout, argv: list) -> int | None:
     try:
         resolved = layout.root / script
         if not resolved.is_file() or not contained(resolved, [layout.root], root=layout.root):
+            return None
+        if _carries_the_executable_bit(resolved):
             return None
     except (OSError, ValueError):
         return None

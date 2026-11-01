@@ -99,24 +99,33 @@ or a continuation job record carrying its grant generation (`continuation_grant`
   of these, not a protected prefix with a mutable tail — because the child's own parser, not an index,
   decides where one argument ends and the next command begins, and a project that happens to contain a
   same-named file must not turn that option into a script either (round-3 review F5); otherwise the plain
-  two-token layout applies, trusted prefix 2, decided by whether `argv[1]` is a regular file **contained in the
-  project** — not merely one that exists somewhere on disk, which a launcher's own `argv[1]` (the program it
-  execs — a system `env.exe`, `bash.exe`, `python.exe`, `cmd.exe`, ...) satisfies just as readily as a job's
-  real, in-project script does, and which this check cannot tell apart from one without also asking where the
-  file lives: a launcher is not an interpreter, and `python.exe` is not a script, so a launcher chained to any
-  depth loses its prefix the same way one does, including in front of an otherwise-legitimate interpreter and
-  in-project script (round-6 review F14) — and nothing before this prefix is ever eligible regardless of what a
-  job declares. A diagnosis's `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other
+  two-token layout applies, trusted prefix 2, and only if `argv[1]` is **this project's own script**: a regular
+  file **contained in the project** (not merely one that exists somewhere on disk, which a launcher's own
+  `argv[1]` — the program it execs, a system `env.exe`, `bash.exe`, `python.exe`, `cmd.exe`, ... — satisfies
+  just as readily as a job's real script does) that is **not itself a program the OS would run** (a `.exe`/
+  `.com` image under the name Windows resolves, or the executable bit on POSIX, where an interpreter has no
+  extension to read) — because containment alone cannot tell a job's script from the interpreter in the
+  project's own virtualenv, `<root>/.venv/Scripts/python.exe`. A launcher is not an interpreter and
+  `python.exe` is not a script: an executable at `argv[1]` means the real command begins further right than
+  these branches read, so a launcher chained to any depth loses its prefix the same way one does — the second
+  token of a chain is another launcher, refused by the same two questions — including in front of an
+  otherwise-legitimate interpreter and in-project script (round-6 review F14) — and nothing before this prefix is ever eligible
+  regardless of what a job declares. A diagnosis's `job_fix` may only ever supply `{"params": {"<name>": "<value>"}}`; any other
   field it names, any undeclared parameter name, an index inside the trusted prefix, or a value that fails its
   declared check, is dropped and logged, never applied — a diagnosis can correct a stale argument (a sha, an
   in-project path) but can never install a different program, interpreter option, implicit-mode command text,
-  free-form argv or an alternate script through any command form this interface's branches recognise (round-1
+  free-form argv or an alternate script in any command form this interface grants a prefix to, save the one
+  residual F14's own record names; every other form, launchers included, has no eligible index at all rather
+  than a protected prefix with a mutable tail (round-1
   review R1; round-2 review F1; round-3 review F5; round-4 review F8 — PowerShell's own default mode and a
   native batch executable at `argv[0]` both re-parsed a parameter past the prefix the same way `cmd.exe /c`
   once did; round-5 review F10 — the suffix test now reads the executable name Windows actually resolves, for
   `argv[0]` and for a launcher's `argv[1]` alike, not the literal spelling a job wrote; round-6 review F14 —
-  the script slot itself, `argv[1]`, must now be contained in the project, not merely exist anywhere on disk,
-  so a launcher's own program is never mistaken for a job's script, at any depth).
+  the script slot itself, `argv[1]`, must now be this project's own script: contained in the project and not an
+  executable image, so a launcher's own program is not mistaken for a job's script, at any depth and wherever
+  that program lives — the residual being a Windows executable image with no `.exe`/`.com` extension copied
+  inside the project, which the name Windows resolves cannot distinguish from a script,
+  `docs/releases/2.1.0/F14-command-prefix-rule.md`).
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
   issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
