@@ -145,10 +145,12 @@ class Supervisor:
     def dispatch_delivery(self, task: Task, name: str) -> dict:
         """A scheduled delivery job on `name` - scheduler.plan() already resolved the owner role's own fallback
         when its primary lane was unavailable (D-012 F-B Change 1), the same rule a fallback review already
-        applies. Re-derive the fallback's model/effort overrides and its same-vendor flag the same way plan()
-        picked `name`, so a role's own task runs with the fallback's own keys and is flagged exactly like a
-        fallback review - and an ordinary pick (same_vendor False, e.g. the unattended claude_api switch, which
-        is a different kind of lane change) dispatches with no job override at all.
+        applies. Re-derive the fallback's model/effort overrides the same way plan() picked `name`, so a role's
+        own task runs with the fallback's own keys whatever `flag: same_vendor` says on the block - the flag
+        decides only the attempt note and the `same_vendor` extra on the record (review.dispatch() and
+        _lane_login_failed()'s reroute already work this way; release review 2.2.0 F2). An ordinary pick with no
+        overrides at all (e.g. the unattended claude_api switch, which is a different kind of lane change)
+        dispatches with no job override.
 
         `home` (scheduler.adapter_name(task), ignoring the unattended switch) can disagree with `name` (what
         plan() actually picked, e.g. claude_api, whose own lane_for() call saw no `engine` and so no capacity
@@ -160,12 +162,13 @@ class Supervisor:
             lane, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
         except CapacityDeferred:
             lane, overrides, same_vendor = home, {}, False
-        if not same_vendor or lane != name:
+        if not overrides or lane != name:
             return self.dispatch(task, name)
         doc = task.model_dump(mode="json")
         doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}
         view = Task.model_validate(doc)
-        return self.dispatch(view, name, note=f"dispatch:{role} (same-vendor fallback)", extra={"same_vendor": True})
+        note = f"dispatch:{role}" + (" (same-vendor fallback)" if same_vendor else "")
+        return self.dispatch(view, name, note=note, extra={"same_vendor": same_vendor})
 
     MAX_CONTINUATIONS = 3
 
