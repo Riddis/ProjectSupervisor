@@ -437,8 +437,13 @@ class Supervisor:
         fingerprinting on it would stack one item per failure. Every branch of _lane_login_failed calls this
         alike (review / fallback reroute / no-fallback wait), so a role with a fallback configured no longer
         spends the Claude subscription silently once Codex's free month lapses. A full owner inbox must never
-        turn this token-free notification into anything that touches the attempt budget."""
-        if any(i.get("login_engine") == engine for i in inbox_mod.open_items(layout, "owner")):
+        turn this token-free notification into anything that touches the attempt budget.
+
+        The dedupe only ever matches an item that named this `engine` by itself: with `engine` None (an
+        adapter with no `engine` of its own), `.get("login_engine")` returns None for any ordinary item that
+        never carried the key at all, and `None == None` would silently swallow this notice behind whatever
+        unrelated question the owner already had open."""
+        if engine is not None and any(i.get("login_engine") == engine for i in inbox_mod.open_items(layout, "owner")):
             return
         summary, detail = inbox_mod.fit(
             f"{engine or 'a lane'} reports it is not logged in; dispatch to it waits (or hands over to the "
@@ -463,7 +468,13 @@ class Supervisor:
         none). A delivery with a configured fallback reroutes to it with the fallback's own model/effort and the
         same-vendor flag; a diagnosis with one reroutes keeping its own kind, prompt and diag_* extras
         (reroute()'s `kind` parameter); with none, either waits on the same lane through the ordinary
-        continuation path - the same one an ordinary capacity deferral already uses."""
+        continuation path - the same one an ordinary capacity deferral already uses.
+
+        An adapter with no `engine` (REGISTRY is a plugin surface; the two shipped CLI adapters both have one)
+        is treated the same as 'no fallback configured' rather than asked about through `lane_for(primary=...)`:
+        that call's own capacity check is skipped whenever `engine` is falsy (review.py), so it would simply
+        hand the adapter_name straight back - rerouting the job right back to the lane that just refused it,
+        with nothing marked unavailable and no deferral."""
         layout = self.layout
         task_id = rec["task_id"]
         engine = getattr(REGISTRY.get(rec["adapter"]), "engine", None)
@@ -477,6 +488,9 @@ class Supervisor:
             jobs_mod.set_phase(layout, rec["attempt_id"], "DONE", result="DEFERRED", finished=now_iso(),
                                error=result.error, login_required=True)
             return
+        if not engine:
+            return self.requeue(rec, Result(status="DEFERRED", error=result.error, reset_epoch=until,
+                                            raw={"measured_window": True}), "login required")
         try:
             lane, overrides, same_vendor = review_mod.lane_for(layout, role, primary=rec["adapter"])
         except CapacityDeferred as exc:

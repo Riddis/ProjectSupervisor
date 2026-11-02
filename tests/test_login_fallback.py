@@ -145,3 +145,38 @@ def test_a_diagnosis_job_whose_lane_reports_login_required_reroutes_with_its_own
     assert new.get("diag_signature") == "sig1" and new.get("diag_source") == "worker_failed"
     assert new.get("diag_detail") == "it broke" and new.get("diag_grant") == 0
     assert all((r.get("spec") or {}).get("kind", "delivery") != "delivery" for r in recs)
+
+
+def test_a_login_failure_on_an_engine_less_lane_waits_instead_of_rerouting_to_itself(layout):
+    """review.lane_for() performs no capacity check at all when the adapter has no `engine` - it returns the
+    same adapter straight back. Passing it `primary=rec['adapter']` here would then reroute a login failure
+    right back to the lane that just refused it, with nothing marked unavailable and no deferral: a fresh
+    attempt record every cycle. A missing engine is treated as 'no fallback' instead, the same token-free wait
+    an ordinary role without a configured fallback already gets."""
+    write_routing(layout, {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"})
+    own_task(layout, "G")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = jobs.write(layout, {"attempt_id": "G.a1", "task_id": "G", "adapter": "python", "phase": "RUNNING",
+                             "spec": {"kind": "delivery"}, "handle": {}})
+    sup._lane_login_failed(rec, Result(status="FAILED", error="login_required: run `python login`"), "delivery")
+    recs = jobs.for_task(layout, "G")
+    assert recs[0]["result"] == "DEFERRED"                      # not REROUTED back to "python"
+    assert recs[1]["phase"] == "PREPARED" and recs[1]["adapter"] == "python"
+    assert not list(layout.issues.glob("I-*.yaml"))
+
+
+def test_a_login_failure_on_an_engine_less_lane_still_notifies_the_owner_with_another_item_open(layout):
+    """_notify_login_required's dedupe keys off `extra['login_engine'] == engine`; with `engine` None that
+    matched ANY open owner item whose extra never carried the key at all, silently swallowing the
+    notification whenever the owner already had an unrelated question open. The dedupe is skipped (never a
+    second notice for the same engine) only once an engine has actually been named."""
+    write_routing(layout, None)
+    own_task(layout, "H")
+    sup = Supervisor(layout, sleep_s=0)
+    inbox.create(layout, for_role="owner", subject="unrelated", summary="an unrelated question", kind="question", from_="loop")
+    rec = jobs.write(layout, {"attempt_id": "H.a1", "task_id": "H", "adapter": "python", "phase": "RUNNING",
+                             "spec": {"kind": "delivery"}, "handle": {}})
+    sup._lane_login_failed(rec, Result(status="FAILED", error="login_required: run `python login`"), "delivery")
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 2                       # the unrelated item AND the new login notice, not swallowed
+    assert any(i.get("login_engine") is None and "lane" in (i["subject"] + " " + i["summary"]).lower() for i in items)
