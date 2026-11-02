@@ -7,6 +7,7 @@ import pytest
 import requests
 
 import supervisor_plugin_local_llm as llm
+from supervisor_plugin_local_llm.config import Settings
 
 
 class _AlwaysThere:
@@ -26,7 +27,7 @@ def serve_tags(monkeypatch, names):
     monkeypatch.setattr(llm.requests, "get", lambda url, timeout=None: Resp())
 
 
-def fake_store(layout, monkeypatch, *, model="qwen3-vl:4b", layout_v1=True, layout_v2=False,
+def fake_store(layout, monkeypatch, *, model="pixnote:4b", layout_v1=True, layout_v2=False,
                source=("process environment", True)):
     """A real manifest tree under `layout.root` and `llm._resolve_models_dir` wired to report it, so the
     location/manifest checks run for real instead of touching the actual Windows registry or `OLLAMA_MODELS`."""
@@ -44,56 +45,68 @@ def fake_store(layout, monkeypatch, *, model="qwen3-vl:4b", layout_v1=True, layo
     return store
 
 
+def test_settings_default_to_no_model_and_no_drive():
+    settings = Settings()
+    assert settings.model is None
+    assert settings.models_store_drive is None
+
+
+def test_local_llm_config_resolves_to_no_model_and_no_drive_on_a_real_project(layout):
+    cfg = llm.local_llm_config(layout)
+    assert cfg["model"] is None
+    assert cfg.get("models_store_drive") is None
+
+
 def test_ollama_requires_the_configured_tag(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\x"})
-    fake_store(layout, monkeypatch, model="qwen3-vl:4b")
-    serve_tags(monkeypatch, ["qwen3-vl:8b"])                 # same family, wrong tag: the adapter would get a 404
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\x"})
+    fake_store(layout, monkeypatch, model="pixnote:4b")
+    serve_tags(monkeypatch, ["pixnote:8b"])                  # same family, wrong tag: the adapter would get a 404
     check = llm.check_ollama(layout)
-    assert not check.ok and "qwen3-vl:4b not pulled" in check.detail
-    serve_tags(monkeypatch, ["qwen3-vl:8b", "qwen3-vl:4b"])
+    assert not check.ok and "pixnote:4b not pulled" in check.detail
+    serve_tags(monkeypatch, ["pixnote:8b", "pixnote:4b"])
     assert llm.check_ollama(layout).ok
 
 
 def test_ollama_accepts_only_the_latest_normalisation(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "llava", "models_dir": "D:\\x"})
-    fake_store(layout, monkeypatch, model="llava:latest")
-    serve_tags(monkeypatch, ["llava:latest"])                # Ollama's implicit tag for an untagged pull
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "glance", "models_dir": "E:\\x"})
+    fake_store(layout, monkeypatch, model="glance:latest")
+    serve_tags(monkeypatch, ["glance:latest"])                # Ollama's implicit tag for an untagged pull
     assert llm.check_ollama(layout).ok
-    serve_tags(monkeypatch, ["llava:13b"])
+    serve_tags(monkeypatch, ["glance:13b"])
     assert not llm.check_ollama(layout).ok
 
 
 def test_ollama_fails_cleanly_when_unreachable(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\x"})
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\x"})
     monkeypatch.setattr(llm.requests, "get", lambda url, timeout=None: (_ for _ in ()).throw(requests.ConnectionError("down")))
     check = llm.check_ollama(layout)
     assert not check.ok and "unreachable" in check.detail
 
 
 def test_ollama_fails_when_models_dir_is_unset_everywhere(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\expected"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\expected"})
+    serve_tags(monkeypatch, ["pixnote:4b"])
     monkeypatch.setattr(llm, "_resolve_models_dir", lambda lay: (None, "unset"))
     check = llm.check_ollama(layout)
-    assert not check.ok and "not set" in check.detail and "D:\\expected" in check.detail
+    assert not check.ok and "not set" in check.detail and "E:\\expected" in check.detail
 
 
 def test_ollama_fails_when_the_store_is_off_the_configured_drive(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b",
-                                                               "models_dir": "D:\\expected", "models_store_drive": "D:"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b",
+                                                               "models_dir": "E:\\expected", "models_store_drive": "Q:"})
+    serve_tags(monkeypatch, ["pixnote:4b"])
     monkeypatch.setattr(llm, "_resolve_models_dir",
                         lambda lay: (r"C:\Users\someone\.ollama\models", "User registry"))
     check = llm.check_ollama(layout)
-    assert not check.ok and "not on D:" in check.detail
+    assert not check.ok and "not on Q:" in check.detail
 
 
 def test_ollama_skips_the_drive_check_when_models_store_drive_is_unset(layout, monkeypatch):
     """No project sets `models_store_drive` by default - the rule is a project's own choice, not this package's,
     so a store reported on a drive nobody configured as expected never fails doctor on that account."""
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b",
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b",
                                                                "models_dir": "C:\\expected"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
+    serve_tags(monkeypatch, ["pixnote:4b"])
     monkeypatch.setattr(llm, "_resolve_models_dir", lambda lay: (r"Z:\off-drive\ollama", "User registry"))
     monkeypatch.setattr(llm, "_manifest_paths", lambda store, alias: [_AlwaysThere()])
     check = llm.check_ollama(layout)
@@ -101,34 +114,34 @@ def test_ollama_skips_the_drive_check_when_models_store_drive_is_unset(layout, m
 
 
 def test_ollama_fails_when_no_model_is_configured(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": None, "models_dir": "D:\\x"})
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": None, "models_dir": "E:\\x"})
     check = llm.check_ollama(layout)
     assert not check.ok and "no model configured" in check.detail
 
 
 def test_ollama_fails_when_the_manifest_is_missing_from_the_configured_store(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\x"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
-    fake_store(layout, monkeypatch, model="qwen3-vl:4b", layout_v1=False, layout_v2=False)   # dir reported, nothing under it
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\x"})
+    serve_tags(monkeypatch, ["pixnote:4b"])
+    fake_store(layout, monkeypatch, model="pixnote:4b", layout_v1=False, layout_v2=False)   # dir reported, nothing under it
     check = llm.check_ollama(layout)
     assert not check.ok and "manifest" in check.detail and "not found" in check.detail
 
 
 def test_ollama_accepts_either_manifest_layout(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\x"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
-    fake_store(layout, monkeypatch, model="qwen3-vl:4b", layout_v1=False, layout_v2=True)   # only the newer layout present
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\x"})
+    serve_tags(monkeypatch, ["pixnote:4b"])
+    fake_store(layout, monkeypatch, model="pixnote:4b", layout_v1=False, layout_v2=True)   # only the newer layout present
     assert llm.check_ollama(layout).ok
 
 
 def test_ollama_resolves_models_dir_from_registry_when_process_env_is_unset(layout, monkeypatch):
     """The serving process may predate OLLAMA_MODELS existing at all: doctor falls back to the persisted
     User/Machine registry value rather than trusting only its own process environment."""
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\x"})
-    serve_tags(monkeypatch, ["qwen3-vl:4b"])
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "pixnote:4b", "models_dir": "E:\\x"})
+    serve_tags(monkeypatch, ["pixnote:4b"])
     store = layout.root / "models" / "ollama"
-    (store / "manifests" / "registry.ollama.ai" / "library" / "qwen3-vl").mkdir(parents=True, exist_ok=True)
-    (store / "manifests" / "registry.ollama.ai" / "library" / "qwen3-vl" / "4b").write_text("{}", encoding="utf-8")
+    (store / "manifests" / "registry.ollama.ai" / "library" / "pixnote").mkdir(parents=True, exist_ok=True)
+    (store / "manifests" / "registry.ollama.ai" / "library" / "pixnote" / "4b").write_text("{}", encoding="utf-8")
     monkeypatch.delenv("OLLAMA_MODELS", raising=False)
     monkeypatch.setattr(llm, "_registry_env", lambda name: (str(store), "User"))
     check = llm.check_ollama(layout)
@@ -136,15 +149,15 @@ def test_ollama_resolves_models_dir_from_registry_when_process_env_is_unset(layo
 
 
 def test_resolve_models_dir_prefers_process_env_over_registry(monkeypatch, layout):
-    monkeypatch.setenv("OLLAMA_MODELS", r"D:\from-env")
-    monkeypatch.setattr(llm, "_registry_env", lambda name: (r"D:\from-registry", "User"))
-    assert llm._resolve_models_dir(layout) == (r"D:\from-env", "process environment")
+    monkeypatch.setenv("OLLAMA_MODELS", r"E:\from-env")
+    monkeypatch.setattr(llm, "_registry_env", lambda name: (r"F:\from-registry", "User"))
+    assert llm._resolve_models_dir(layout) == (r"E:\from-env", "process environment")
 
 
 def test_resolve_models_dir_falls_back_to_registry(monkeypatch, layout):
     monkeypatch.delenv("OLLAMA_MODELS", raising=False)
-    monkeypatch.setattr(llm, "_registry_env", lambda name: (r"D:\from-registry", "Machine"))
-    assert llm._resolve_models_dir(layout) == (r"D:\from-registry", "Machine registry")
+    monkeypatch.setattr(llm, "_registry_env", lambda name: (r"F:\from-registry", "Machine"))
+    assert llm._resolve_models_dir(layout) == (r"F:\from-registry", "Machine registry")
 
 
 def test_resolve_models_dir_unset_when_neither_source_has_it(monkeypatch, layout):
@@ -153,8 +166,8 @@ def test_resolve_models_dir_unset_when_neither_source_has_it(monkeypatch, layout
     assert llm._resolve_models_dir(layout) == (None, "unset")
 
 
-@pytest.mark.parametrize("model,names,ok", [("qwen3-vl:4b", ["qwen3-vl:4b"], True),
-                                            ("qwen3-vl:4b", [], False),
-                                            ("qwen3-vl:4b", ["qwen3-vl:4b-instruct"], False)])
+@pytest.mark.parametrize("model,names,ok", [("pixnote:4b", ["pixnote:4b"], True),
+                                            ("pixnote:4b", [], False),
+                                            ("pixnote:4b", ["pixnote:4b-instruct"], False)])
 def test_model_alias_matching(model, names, ok):
     assert bool(llm._model_aliases(model) & set(names)) is ok

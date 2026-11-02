@@ -49,7 +49,7 @@ def fake_server():
 
 def lltask(layout, base_url, tid="LL", mode="ok", vram_mb=0):
     FakeOllama.mode = mode
-    testing.make_task(layout, tid, job={"adapter": "local_llm", "base_url": base_url, "model": "qwen3-vl:4b",
+    testing.make_task(layout, tid, job={"adapter": "local_llm", "base_url": base_url, "model": "pixnote:4b",
                                         "prompt": "describe", "schema": SCHEMA, "vram_mb": vram_mb, "timeout_s": 30},
                       cost_category="local", artifacts=[])
 

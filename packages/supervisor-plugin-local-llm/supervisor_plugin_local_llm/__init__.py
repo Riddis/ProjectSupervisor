@@ -6,9 +6,9 @@ loop - same pid/create_time handle and result.json contract as every other `proc
 (`gpu = True`): only one GPU-bound lane runs at a time (`resources.gpu.single_job`).
 
 Ported from a project-local extension of the same shape (boundary plan phase 5, step 4: the model store's drive
-is an optional `models_store_drive` key, never assumed D:, and there is no default model - a task's job or the
-`plugins.local_llm` section must name one). Import only `supervisor.plugin` and `supervisor.testing` (in tests);
-register only inside setup()."""
+is an optional `models_store_drive` key, never assumed to be a particular drive, and there is no default model -
+a task's job or the `plugins.local_llm` section must name one). Import only `supervisor.plugin` and
+`supervisor.testing` (in tests); register only inside setup()."""
 from __future__ import annotations
 
 import json
@@ -76,7 +76,7 @@ ADAPTER = LocalLlmAdapter()       # one instance; setup() registers it (importin
 
 def _model_aliases(model: str) -> set[str]:
     """The /api/tags names that are the configured model. The tag is part of the model: the adapter asks Ollama for
-    `qwen3-vl:4b` and gets a 404 when only `qwen3-vl:8b` is pulled, so accepting any tag in the family reported a
+    `pixnote:4b` and gets a 404 when only `pixnote:8b` is pulled, so accepting any tag in the family reported a
     model that is not there. The only equivalence is Ollama's implicit `:latest` on an untagged pull."""
     base = model.strip()
     names = {base}
