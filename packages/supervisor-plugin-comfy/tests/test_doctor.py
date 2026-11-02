@@ -97,8 +97,16 @@ def test_comfy_install_fails_when_a_node_is_off_its_pin(layout, monkeypatch):
     assert not check.ok and PINNED_NODES[1] in check.detail
 
 
-def test_comfy_install_fails_when_root_is_missing(layout):
-    assert not comfy.check_comfy_install(layout).ok
+def test_comfy_install_fails_when_root_is_missing(layout, monkeypatch):
+    """No `plugins.comfy.root` configured: the failure must name the key to set, and it must say so
+    without touching the filesystem at all - not even constructing a `Path` from the unset value."""
+    class _NoFilesystemAccess:
+        def __init__(self, *_a, **_k):
+            raise AssertionError("check_comfy_install touched the filesystem with no root configured")
+    monkeypatch.setattr(comfy, "Path", _NoFilesystemAccess)
+    check = comfy.check_comfy_install(layout)
+    assert not check.ok
+    assert "plugins.comfy.root" in check.detail
 
 
 # ---------------------------------------------------------------- comfy_api
