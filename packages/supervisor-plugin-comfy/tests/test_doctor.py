@@ -19,6 +19,13 @@ PINNED_NODES = ["node-a", "node-b"]
 NODE_SHAS = {n: f"{i}" * 40 for i, n in enumerate(PINNED_NODES, start=1)}
 
 
+def test_comfy_config_defaults_when_the_section_is_absent(layout):
+    """`comfy_config` itself, called directly, on a project with no `plugins.comfy` section at all."""
+    cfg = comfy.comfy_config(layout)
+    assert cfg["base_url"] == "http://127.0.0.1:8188"
+    assert cfg["vram_floor_mb"] == 0
+
+
 def fake_comfy(layout, monkeypatch, pins, heads, nodes=PINNED_NODES):
     """A ComfyUI tree that looks installed, a pin manifest with `pins`, and `heads` as the git HEAD of each dir."""
     root = layout.root / "ComfyUI"

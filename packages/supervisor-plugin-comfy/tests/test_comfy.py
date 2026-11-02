@@ -4,9 +4,9 @@ functions directly.
 
 Three tests from the original suite are not ported at all: `test_overview_panels_show_both_cards_by_configured_role`,
 `test_overview_secondary_panel_without_a_second_card` and `test_gpu_roles_read_from_configured_device_index` proved
-a project's own multi-device GPU topology (compute/secondary roles, `engine.generation.gpu_topology`) - a project
-internal this package cannot import. This package's own `check_gpu`/`gpu_panel` read the single-value probe
-`supervisor.plugin.gpu` instead; `test_doctor.py` here covers them."""
+a project's own multi-device GPU topology, a project internal this package cannot import. This package's own
+`check_gpu`/`gpu_panel` read the single-value probe `supervisor.plugin.gpu` instead; `test_doctor.py` here covers
+them."""
 from __future__ import annotations
 
 import json
