@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supervisor-plugin-review-rounds"
-version = "0.1.0"
+version = "1.0.0"
 description = "A Supervisor plugin: review_rounds"
 readme = "README.md"
 requires-python = ">=3.11"
