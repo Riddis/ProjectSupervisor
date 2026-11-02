@@ -574,7 +574,11 @@ def _at_pin(head: str | None, pin: str) -> bool:
 
 def check_comfy_install(layout: plugin.Layout) -> plugin.Check:
     cfg = comfy_config(layout)
-    root = Path(cfg.get("root") or "")
+    root_value = cfg.get("root")
+    if not root_value:
+        return plugin.Check("comfy_install", False,
+                             "plugins.comfy.root is not set; point it at the ComfyUI install")
+    root = Path(root_value)
     if not root.exists() or not (root / "main.py").exists():
         return plugin.Check("comfy_install", False, f"{root} missing or has no main.py; install ComfyUI there")
     try:
