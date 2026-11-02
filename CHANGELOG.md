@@ -3,7 +3,7 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased (2.1.1)
+## 2.1.1 — 2026-11-02
 
 **Migration:** none. The new record `state/runtime/own_writes.jsonl` is created on the first Settings edit;
 an older framework ignores it.
