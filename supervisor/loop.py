@@ -237,9 +237,10 @@ class Supervisor:
                 task = Task.model_validate(doc)
             extra = {"continuation_grant": grant}
             note = f"continuation after {reason}"
-            if rec.get("same_vendor"):
-                extra["same_vendor"] = True
-                note += " (same-vendor fallback)"
+            if "same_vendor" in rec:
+                extra["same_vendor"] = rec["same_vendor"]
+                if rec["same_vendor"]:
+                    note += " (same-vendor fallback)"
             self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
@@ -525,7 +526,12 @@ class Supervisor:
         except CapacityDeferred as exc:
             return self.requeue(rec, Result(status="DEFERRED", error=result.error, reset_epoch=exc.reset_epoch,
                                             raw={"measured_window": True}), "login required")
-        extra = {"same_vendor": True} if same_vendor else None
+        # Reached only via lane_for()'s own fallback branch: mark_login_failed() just made `require()` raise for
+        # this engine, so a normal return here (not the `except CapacityDeferred` above) can only be the fallback
+        # tuple - `same_vendor` (True or False, the flag's actual value) is therefore always this reroute's own,
+        # matching dispatch_delivery()/review.dispatch() (never absent on a fallback dispatch; release review
+        # 2.2.0 F2).
+        extra = {"same_vendor": same_vendor}
         self.reroute(rec, lane, f"login required ({result.error})", job_overrides=overrides, extra=extra, kind=kind)
 
     def ingest(self, rec: dict, result: Result) -> None:
@@ -768,9 +774,10 @@ class Supervisor:
                     task = Task.model_validate(doc)
                 extra = {"continuation_grant": escalation_mod.current_grant(self.layout, task_id)}
                 note = "continuation after capacity limit"
-                if last.get("same_vendor"):
-                    extra["same_vendor"] = True
-                    note += " (same-vendor fallback)"
+                if "same_vendor" in last:
+                    extra["same_vendor"] = last["same_vendor"]
+                    if last["same_vendor"]:
+                        note += " (same-vendor fallback)"
                 self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra)
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
