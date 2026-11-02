@@ -148,14 +148,19 @@ class Supervisor:
         applies. Re-derive the fallback's model/effort overrides and its same-vendor flag the same way plan()
         picked `name`, so a role's own task runs with the fallback's own keys and is flagged exactly like a
         fallback review - and an ordinary pick (same_vendor False, e.g. the unattended claude_api switch, which
-        is a different kind of lane change) dispatches with no job override at all."""
+        is a different kind of lane change) dispatches with no job override at all.
+
+        `home` (scheduler.adapter_name(task), ignoring the unattended switch) can disagree with `name` (what
+        plan() actually picked, e.g. claude_api, whose own lane_for() call saw no `engine` and so no capacity
+        check at all): the overrides and the same-vendor flag are only ever this job's own if the lane they
+        were resolved for is the lane it is actually dispatching on."""
         role = scheduler.job_spec(task).get("role") or task.owner_role
         home = scheduler.adapter_name(task, self.layout)
         try:
-            _, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
+            lane, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
         except CapacityDeferred:
-            overrides, same_vendor = {}, False
-        if not same_vendor:
+            lane, overrides, same_vendor = home, {}, False
+        if not same_vendor or lane != name:
             return self.dispatch(task, name)
         doc = task.model_dump(mode="json")
         doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}

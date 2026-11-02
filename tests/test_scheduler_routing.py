@@ -137,6 +137,34 @@ def test_dispatch_delivery_flags_a_same_vendor_fallback_with_its_own_model_and_e
     assert "same-vendor fallback" in note
 
 
+def test_dispatch_delivery_does_not_misapply_the_fallback_when_the_unattended_switch_moved_the_job(layout, monkeypatch):
+    """dispatch_delivery()'s own lane_for() call is keyed on `home` (scheduler.adapter_name(task), which ignores
+    the unattended switch) - plan()'s own lane_for() call already left the job on `claude_api` (no `engine`
+    attribute there, so no capacity check at all) while claude_cli's engine is separately out of window: the two
+    answers disagree, and the fallback resolved for `home` must not be applied to a job that is not actually
+    dispatching on that lane."""
+    from supervisor._vendor.contract import CapacityDeferred
+    from supervisor.loop import Supervisor
+    from tests.test_claude_api import plain_claude_task, write_key
+    write_key(layout)
+    write_routing(layout, {"capacity": {"unattended_prefers_api_credits": True},
+                           "roles": {"engineer": {"adapter": "claude_cli", "fallback": {
+                               "adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"}}}})
+    plain_claude_task(layout, "U7")
+
+    def deny(layout_, engine):
+        if engine == "claude":
+            raise CapacityDeferred(0.0, "claude out")
+    monkeypatch.setattr("supervisor.capacity.require", deny)
+    monkeypatch.setattr(Supervisor, "launch", lambda self, rec: rec)
+    [(task, name)] = scheduler.plan(layout, unattended=True)
+    assert name == "claude_api"                        # the unattended switch moved it before the fallback question
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch_delivery(task, name)
+    assert rec["adapter"] == "claude_api" and not rec.get("same_vendor")
+    assert "model" not in rec["spec"] and "effort" not in rec["spec"]
+
+
 def test_role_without_active_key_is_dispatched(layout):
     write_routing(layout, {"roles": {"engineer": {"adapter": "claude_cli"}}})
     make_task(layout, "R6")
