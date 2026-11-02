@@ -166,7 +166,7 @@ def rebuild(layout, rec: dict) -> Task | None:
     adapter_name = (rec.get("spec") or {}).get("adapter", "codex_cli")
     artifacts = task.paths or task.artifacts
     brief = packets_mod.review_brief(layout, task, digest, artifacts, role)
-    return _review_task_view(layout, task, role, adapter_name, brief, {})
+    return _review_task_view(layout, task, role, adapter_name, brief, fallback_overrides(rec))
 
 
 def ingest(supervisor, rec: dict, result) -> None:

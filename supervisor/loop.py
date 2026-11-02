@@ -215,7 +215,8 @@ class Supervisor:
                 return
             extra = {k: rec[k] for k in ("review_role", "review_digest", "same_vendor", "review_frozen") if k in rec}
             extra["continuation_grant"] = grant
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind="review", extra=extra)
+            note = f"continuation after {reason}" + (" (same-vendor fallback)" if rec.get("same_vendor") else "")
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, kind="review", extra=extra)
         elif kind == diagnosis_mod.KIND:
             task = diagnosis_mod.rebuild(self.layout, rec)
             if task is None:
