@@ -26,6 +26,7 @@ include = ["supervisor_plugin_comfy*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]   # the package importable straight from source, no editable install needed to run its own suite
 
 # What CI drives on the installed wheel when this package lives under the framework repository's packages/
 # (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
