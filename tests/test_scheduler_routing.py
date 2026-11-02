@@ -81,6 +81,62 @@ def test_inactive_role_with_explicit_job_adapter_is_still_parked(layout):
     assert "R5" not in picks(layout)
 
 
+# ------------------------------------------------------------------ D-012 F-B Change 1: a role's own tasks fall back
+
+def test_a_role_owned_delivery_falls_back_when_its_primary_lane_is_out_of_capacity(layout, monkeypatch):
+    """Astra's own release-review tasks are `code_review` delivery tasks, not reviews of someone else's - D-012's
+    fallback used to cover only the latter (review.lane_for via review.dispatch); the scheduler must ask the same
+    question for the role's own work."""
+    from supervisor._vendor.contract import CapacityDeferred
+    write_routing(layout, {"roles": {"code_review": {
+        "adapter": "codex_cli", "fallback": {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"}}}})
+    make_task(layout, "A1", owner_role="code_review")
+
+    def deny(layout_, engine):
+        if engine == "codex":
+            raise CapacityDeferred(0.0, "codex out")
+    monkeypatch.setattr("supervisor.capacity.require", deny)
+    assert picks(layout)["A1"] == "claude_cli"
+
+
+def test_a_role_owned_delivery_waits_token_free_with_no_fallback_configured(layout, monkeypatch):
+    """Unchanged from today: a role with no configured fallback is simply parked while its lane is out, exactly
+    like gate.check's own capacity hold - no fallback is invented for it."""
+    from supervisor._vendor.contract import CapacityDeferred
+    write_routing(layout, {"roles": {"code_review": {"adapter": "codex_cli"}}})
+    make_task(layout, "A2", owner_role="code_review")
+
+    def deny(layout_, engine):
+        if engine == "codex":
+            raise CapacityDeferred(0.0, "codex out")
+    monkeypatch.setattr("supervisor.capacity.require", deny)
+    assert "A2" not in picks(layout)
+    assert tasks.load(layout, "A2").status == "NOT_STARTED"   # parked, not failed or consumed - no attempt spent
+
+
+def test_dispatch_delivery_flags_a_same_vendor_fallback_with_its_own_model_and_effort(layout, monkeypatch):
+    """The resolved lane from plan() alone carries no model/effort/flag - dispatch_delivery() must rebuild them
+    the same way a fallback review is flagged, so they reach the job record and the task's own attempt note."""
+    from supervisor._vendor.contract import CapacityDeferred
+    from supervisor.loop import Supervisor
+    write_routing(layout, {"roles": {"code_review": {
+        "adapter": "codex_cli", "fallback": {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"}}}})
+    make_task(layout, "A3", owner_role="code_review")
+
+    def deny(layout_, engine):
+        if engine == "codex":
+            raise CapacityDeferred(0.0, "codex out")
+    monkeypatch.setattr("supervisor.capacity.require", deny)
+    monkeypatch.setattr(Supervisor, "launch", lambda self, rec: rec)   # spec only: never spawn a real model client
+    sup = Supervisor(layout, sleep_s=0)
+    [(task, name)] = scheduler.plan(layout)
+    rec = sup.dispatch_delivery(task, name)
+    assert rec["adapter"] == "claude_cli" and rec.get("same_vendor") is True
+    assert rec["spec"]["model"] == "fable" and rec["spec"]["effort"] == "high"
+    note = tasks.load(layout, "A3").attempts[-1].note
+    assert "same-vendor fallback" in note
+
+
 def test_role_without_active_key_is_dispatched(layout):
     write_routing(layout, {"roles": {"engineer": {"adapter": "claude_cli"}}})
     make_task(layout, "R6")

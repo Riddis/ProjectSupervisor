@@ -142,6 +142,26 @@ class Supervisor:
             return jobs_mod.set_phase(self.layout, attempt_id, "PREPARED", deferred_until=deferred_until, deferred_reason=note)
         return self.launch(rec)
 
+    def dispatch_delivery(self, task: Task, name: str) -> dict:
+        """A scheduled delivery job on `name` - scheduler.plan() already resolved the owner role's own fallback
+        when its primary lane was unavailable (D-012 F-B Change 1), the same rule a fallback review already
+        applies. Re-derive the fallback's model/effort overrides and its same-vendor flag the same way plan()
+        picked `name`, so a role's own task runs with the fallback's own keys and is flagged exactly like a
+        fallback review - and an ordinary pick (same_vendor False, e.g. the unattended claude_api switch, which
+        is a different kind of lane change) dispatches with no job override at all."""
+        role = scheduler.job_spec(task).get("role") or task.owner_role
+        home = scheduler.adapter_name(task, self.layout)
+        try:
+            _, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
+        except CapacityDeferred:
+            overrides, same_vendor = {}, False
+        if not same_vendor:
+            return self.dispatch(task, name)
+        doc = task.model_dump(mode="json")
+        doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}
+        view = Task.model_validate(doc)
+        return self.dispatch(view, name, note=f"dispatch:{role} (same-vendor fallback)", extra={"same_vendor": True})
+
     MAX_CONTINUATIONS = 3
 
     @staticmethod
@@ -938,7 +958,7 @@ class Supervisor:
             self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
         else:
             for task, name in scheduler.plan(self.layout, unattended=self.unattended):
-                self.dispatch(task, name)
+                self.dispatch_delivery(task, name)
             self.dispatch_reviews()
             self.dispatch_conversations()
             self.settle()                                             # synchronous adapters finish at once
