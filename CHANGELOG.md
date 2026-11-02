@@ -26,9 +26,14 @@ instead of a failed attempt.
   on), so every existing fallback caller treats a lapsed login exactly like exhausted capacity.
   `Supervisor._lane_login_failed()` hands the result off before it reaches the ordinary failure path: a review
   just closes and is redispatched by `pending()` next tick; a delivery (or diagnosis) with a fallback reroutes
-  to it (`reroute()`, now taking optional job overrides); one with none waits on the same lane through the
-  ordinary continuation path, so the owner still eventually hears about a credential that needs renewing,
-  through the existing continuations-exhausted route, if it is never renewed.
+  to it (`reroute()`, now taking optional job overrides and a `kind`, shared with `_repair_reroutes()` so a
+  torn-write recovery can never lose a diagnosis's own kind and extras either); one with none waits on the same
+  lane through the ordinary continuation path. Every branch alike raises one owner inbox question per engine
+  per login window (`Supervisor._notify_login_required()`, deduped so a lapsed login that is never renewed
+  does not stack a second item on every later failure) - the owner hears about the credential within one tick,
+  not only once continuations run out. An adapter with no `engine` of its own (a plugin lane) is treated as "no
+  fallback configured" rather than asked about through `lane_for()`, which would otherwise reroute it straight
+  back to the lane that just refused it.
 - `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
   plugin package's tests, read against the other two) found the gap list already empty; this release confirms
   it again and ships the two fixes above instead.
