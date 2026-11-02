@@ -58,6 +58,12 @@ def _set_status(layout, payload, actor):
     return {"status": t.status.value}
 
 
+@handler("task.hold")
+def _hold(layout, payload, actor):
+    t = tasks_mod.hold(layout, payload["task_id"], actor, payload.get("note", ""))
+    return {"status": t.status.value}
+
+
 @handler("task.set_priority")
 def _set_priority(layout, payload, actor):
     tasks_mod.set_priority(layout, payload["task_id"], int(payload["priority"]), actor)
@@ -145,16 +151,33 @@ def _task_import(layout, payload, actor):
     return {k: r[k] for k in ("created", "updated", "warnings") if k in r}
 
 
+def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
+    """The only writer of a task's `job` block: `task.set_job` (the Control Center's re-route), never state/
+    directly. A diagnosis cannot change a task's job (D-018); a wrong process command reaches the owner as a
+    question naming this command instead."""
+    def fn(doc):
+        doc["job"] = dict(job)
+        if cost_category:
+            doc["cost_category"] = cost_category
+    t = tasks_mod._update(layout, task_id, fn)
+    tasks_mod.log(layout, "task_job_set", actor, task=task_id, job=job)
+    return t
+
+
 @handler("task.set_job")
 def _set_job(layout, payload, actor):
     """Replace a task's `job` block (adapter/fn/params/model/...): how the Control Center re-routes a task."""
-    def fn(doc):
-        doc["job"] = dict(payload["job"])
-        if payload.get("cost_category"):
-            doc["cost_category"] = payload["cost_category"]
-    t = tasks_mod._update(layout, payload["task_id"], fn)
-    tasks_mod.log(layout, "task_job_set", actor, task=payload["task_id"], job=payload["job"])
+    t = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
     return {"status": t.status.value}
+
+
+@handler("issue.resolve")
+def _issue_resolve(layout, payload, actor):
+    """The only writer that closes an issue record: nothing else touches state/issues/ (escalation.open_issue and
+    diagnosis's own annotation only ever open or annotate one, never resolve it)."""
+    from . import escalation
+    return escalation.resolve_issue(layout, payload["issue_id"], payload["resolution"],
+                                    payload.get("resolving_task"), actor)
 
 
 @handler("task.advance")

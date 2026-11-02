@@ -31,14 +31,17 @@ LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
 DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
 
+
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
-    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) what '
-    'must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
+    'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) '
+    'what must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
     "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
-    "`owner` is for product choices, spending, external commitments, or physical actions on the workstation.\n")
+    "`owner` is for product choices, spending, external commitments, or physical actions on the workstation. A "
+    "diagnosis cannot change a task's job: if a process task's own command is wrong (not the agent's work), use "
+    '`action: "owner"` and name the `task.set_job` change the task needs in `question`.\n')
 
 
 def settings(layout: Layout) -> dict:
@@ -62,9 +65,15 @@ def _records(layout: Layout, task_id: str) -> list[dict]:
     return [r for r in jobs_mod.for_task(layout, task_id) if (r.get("spec") or {}).get("kind") == KIND]
 
 
-def already(layout: Layout, task_id: str, signature: str, level: str) -> dict | None:
+def already(layout: Layout, task_id: str, signature: str, level: str, grant: int = 0) -> dict | None:
+    """`grant` (`escalation.current_grant`) excludes a diagnosis dispatched under an earlier grant generation (R4):
+    a repeat failure after a fresh grant must reach its OWN diagnosis, not the one the spent grant already answered.
+    A declined requeue (`diag_action == "held"`, round-5 F12) is excluded the same way: the owner's Hold answered
+    nothing for this (signature, level, grant), so the next identical escalation must reach its own diagnosis too,
+    not the spent decline."""
     for r in _records(layout, task_id):
-        if r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED":
+        if (r.get("diag_signature") == signature and r.get("diag_level") == level and r.get("phase") != "FAILED"
+                and int(r.get("diag_grant") or 0) == grant and r.get("diag_action") != "held"):
             return r
     return None
 
@@ -101,16 +110,22 @@ def _task_view(layout: Layout, task: Task, role: str, adapter_name: str, prompt:
 
 
 def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, level: str = "manager",
-             issue_id: str | None = None) -> dict | None:
-    """One diagnosis job for (task, signature, level), or None when one exists, the route is disabled, the role's lane
-    is unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before)."""
+             issue_id: str | None = None, grant: int = 0) -> dict | None:
+    """The diagnosis job for (task, signature, level) under this grant generation (`grant`, R4): the EXISTING
+    record when one already matches (a replayed hand-off reuses a transition that is already durable — round-3
+    review F7 — never a fresh dispatch, so a second architect for the same signature and generation is still
+    never created), a freshly dispatched one otherwise, or None when the route is disabled, the role's lane is
+    unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before). None
+    therefore only ever means "no diagnosis is running for this" — a caller that reads it as "unavailable" is
+    never looking at one that is in fact already under way."""
     from . import review
     layout = supervisor.layout
     cfg = settings(layout)
     if not cfg["enabled"] or level not in LEVELS:
         return None
-    if already(layout, task.id, signature, level):
-        return None
+    existing = already(layout, task.id, signature, level, grant=grant)
+    if existing:
+        return existing
     role = cfg["roles"][level]
     try:
         adapter_name, overrides, same_vendor = review.lane_for(layout, role)
@@ -122,7 +137,8 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
     view = _task_view(layout, task, role, adapter_name, brief(layout, task, role, level, source, detail, issue_id), overrides)
     rec = supervisor.dispatch(view, adapter_name, note=f"diagnosis:{role}", kind=KIND,
                               extra={"diag_signature": signature, "diag_level": level, "diag_issue": issue_id,
-                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role})
+                                     "diag_source": source, "diag_detail": detail[:4000], "diag_role": role,
+                                     "diag_grant": grant})
     tasks_mod.log(layout, "diagnosis_dispatched", "escalation", task=task.id, role=role, level=level, issue=issue_id,
                   attempt=(rec or {}).get("attempt_id"))
     return rec
@@ -200,12 +216,31 @@ def ingest(supervisor, rec: dict, result) -> dict:
         if count_requeues(layout, task.id) > DIAGNOSIS_BUDGET:
             return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""),
                                    f"diagnosis budget of {DIAGNOSIS_BUDGET} requeues spent")
+        if task.held:
+            # The owner's one explicit stop control, durable on the task itself (round-4 F9): a requeue this
+            # diagnosis proposes is declined, not granted and left to be undone later, so nothing here resets
+            # the retry signatures or grants a fresh continuation budget - the task stays held, with a note,
+            # until the owner's own action (tasks.set_status with an owner actor) releases it. The record's own
+            # diag_action is corrected to "held" (round-5 F12): a decline is not the "requeue" the manager
+            # proposed, so it must not be counted by count_requeues or matched by already() as one.
+            jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action="held")
+            held_note = f" ({task.held['note']})" if task.held.get("note") else ""
+            tasks_mod.add_note(layout, task.id,
+                               f"{role} diagnosis: requeue declined — task is held by the owner{held_note}; "
+                               "release the Hold to resume", actor="escalation")
+            return {"action": "held", "held_by": task.held.get("by")}
         guidance = str(obj.get("guidance") or summary)[:4000]
 
         def fn(doc):
             doc.setdefault("guidance", []).append({"at": store.now_iso(), "by": role, "text": guidance})
         tasks_mod._update(layout, task.id, fn)
-        escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis")
+        # Explicit, replay-safe grant (R4): keyed by this diagnosis job's own attempt id, so a crash between this
+        # write and the record's own DONE write (ingest() is re-run on the same rec/result) spends the GRANT only
+        # once. grant_continuations() itself is called every time regardless (F2): it is generation-scoped, not
+        # gated on `granted`, so a crash between the reset and the retirement, or partway through the retirement
+        # loop, is finished on the next replay instead of leaving old markers counted forever against the new grant.
+        escalation.reset_retries(layout, task.id, reason=f"requeued by {role} diagnosis", key=rec["attempt_id"])
+        escalation.grant_continuations(layout, task.id, reason=f"requeued by {role} diagnosis")
         if task.status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation",
                                  note=f"{role} diagnosis: requeue — {summary[:200]}")
@@ -220,8 +255,11 @@ def ingest(supervisor, rec: dict, result) -> dict:
         return {"action": "defer", "blocked_on": blocked_on}
     if action == "architect":
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: design question → architect. {summary[:200]}", actor="escalation")
+        # Carry this diagnosis's OWN grant generation (F4): `already()`/`dispatch` dedupe an architect request by
+        # (signature, level, grant), and omitting it here defaulted to 0, which let a generation-1 manager's
+        # architect request match the spent generation-0 architect record and wrongly report the lane unavailable.
         nxt = dispatch(supervisor, task, rec.get("diag_source", "diagnosis"), rec.get("diag_detail", "") or summary,
-                       rec.get("diag_signature", ""), level="architect", issue_id=issue_id)
+                       rec.get("diag_signature", ""), level="architect", issue_id=issue_id, grant=rec.get("diag_grant") or 0)
         if nxt is None:                                        # no architect lane right now: the owner hears about it
             return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), "architect lane unavailable")
         return {"action": "architect", "attempt": nxt.get("attempt_id")}
