@@ -30,7 +30,8 @@ def local_llm_config(layout: plugin.Layout) -> dict:
     cfg = plugin.config(layout, "local_llm")
     cfg.setdefault("base_url", "http://127.0.0.1:11434")
     cfg.setdefault("timeout_s", 300)
-    cfg.setdefault("models_dir", str(layout.root / "models" / "ollama"))   # expected OLLAMA_MODELS; check_ollama (below)
+    if cfg.get("models_dir") is None:        # Settings declares it unset; resolve it here, where layout.root is known
+        cfg["models_dir"] = str(layout.root / "models" / "ollama")   # expected OLLAMA_MODELS; check_ollama (below)
     gpu_cfg = plugin.resources(layout)["gpu"]
     cfg.setdefault("vram_floor_mb", gpu_cfg.get("usable_vram_floor_mb", 0))
     return cfg

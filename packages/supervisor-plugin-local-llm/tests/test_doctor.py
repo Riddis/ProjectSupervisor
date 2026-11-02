@@ -51,6 +51,16 @@ def test_settings_default_to_no_model_and_no_drive():
     assert settings.models_store_drive is None
 
 
+def test_models_dir_is_declared_in_settings_with_the_root_relative_default(layout):
+    """F6 (RELEASE_REVIEW_packages_1.0.0.md): __init__.py filled models_dir in with cfg.setdefault() alone, so
+    Settings - the one place a reader checks for every key this package fills in - did not list it. Declaring the
+    field changes nothing a project sees: unset, local_llm_config() still resolves it to the same root-relative
+    path under the project root."""
+    assert "models_dir" in Settings.model_fields
+    cfg = llm.local_llm_config(layout)
+    assert cfg["models_dir"] == str(layout.root / "models" / "ollama")
+
+
 def test_local_llm_config_resolves_to_no_model_and_no_drive_on_a_real_project(layout):
     cfg = llm.local_llm_config(layout)
     assert cfg["model"] is None
