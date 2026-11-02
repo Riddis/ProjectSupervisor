@@ -76,6 +76,20 @@ def lane_for(layout, role: str, primary: str | None = None) -> tuple[str, dict, 
     return adapter_name, {}, False
 
 
+def fallback_overrides(rec: dict) -> dict:
+    """What a continuation of `rec` (the attempt being requeued, repaired or rebuilt) must carry forward: the
+    fallback's own `model`/`effort`, already resolved into the record's own `spec` by the adapter's `prepare()`
+    (D-012 F-B) - not re-derived, since the role's fallback block could change under routing.yaml before the
+    continuation dispatches and a continuation must replay what THIS attempt actually ran on, not whatever the
+    config says now. `same_vendor` is the flag `dispatch_delivery()`/`review.dispatch()` already persist as a
+    plain record field (it reaches the record through `extra`, same as `review_role`/`review_digest`); empty
+    when it is not set, so an ordinary attempt's continuation is unchanged."""
+    if not rec.get("same_vendor"):
+        return {}
+    spec = rec.get("spec") or {}
+    return {k: spec[k] for k in ("model", "effort") if k in spec}
+
+
 def _review_task_view(layout, task: Task, role: str, adapter_name: str, brief: str, overrides: dict) -> Task:
     doc = task.model_dump(mode="json")
     doc["owner_role"] = role

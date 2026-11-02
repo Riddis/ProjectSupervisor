@@ -226,8 +226,17 @@ class Supervisor:
             self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind=diagnosis_mod.KIND, extra=extra)
         else:
             task = tasks_mod.load(self.layout, task_id)
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}",
-                          extra={"continuation_grant": grant})
+            overrides = review_mod.fallback_overrides(rec)
+            if overrides:
+                doc = task.model_dump(mode="json")
+                doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": rec["adapter"]}
+                task = Task.model_validate(doc)
+            extra = {"continuation_grant": grant}
+            note = f"continuation after {reason}"
+            if rec.get("same_vendor"):
+                extra["same_vendor"] = True
+                note += " (same-vendor fallback)"
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
         # The continuation is queued either way (crash-safe, same as before F11): a held task's queued record simply
