@@ -36,6 +36,20 @@ instead of a failed attempt.
   not only once continuations run out. An adapter with no `engine` of its own (a plugin lane) is treated as "no
   fallback configured" rather than asked about through `lane_for()`, which would otherwise reroute it straight
   back to the lane that just refused it.
+- **Fixed: a continuation of a fallen-back attempt (a usage limit, a time limit, a `PARTIAL` handoff, and the
+  torn-write repair of each, plus a fallback review's own rebuild) reloaded the task fresh and lost the
+  fallback's model, effort and `same_vendor` flag, landing on the fallback lane with the role profile's own
+  model it cannot run.** `review.fallback_overrides(rec)` reads the fallback's resolved `model`/`effort` and
+  `same_vendor` back off the record `dispatch_delivery()`/`review.dispatch()` already wrote - what the attempt
+  actually ran with, not the current config - and `requeue()`'s delivery branch, `repair_continuations()`'s
+  torn-write recovery of it, and `review.rebuild()` all merge it into the rebuilt task and the continuation's
+  note, the same way `_reroute_rebuild()` already carries a reroute's own payload.
+- **Fixed: a `fallback:` block without `flag: same_vendor` kept its model and effort on a review and a login
+  reroute, but dropped them on a role-owned delivery - and on every continuation of either.**
+  `dispatch_delivery()` now applies a non-empty override whenever the lane matches, flag or no flag, the same
+  rule the other two callers already followed; `fallback_overrides()`'s predicate is "this record carries
+  `same_vendor` at all" (present, `True` or `False`), not the flag's own truth value, so a flag-less fallback's
+  continuation is told apart from an ordinary, non-fallback attempt - the one case the first fix left open.
 - `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
   plugin package's tests, read against the other two) found the gap list already empty; this release confirms
   it again and ships the two fixes above instead.
