@@ -22,8 +22,6 @@ import pytest
 import tomllib
 
 import supervisor_plugin_review_rounds as rr
-from supervisor import store
-from supervisor import inbox as inbox_mod
 from supervisor import testing
 
 MANIFEST = Path(rr.__file__).resolve().parent / "supervisor-plugin.toml"
@@ -38,18 +36,10 @@ def test_manifest_carries_no_migrations_key():
 
 
 def _legacy_round(layout, kind="labelling"):
-    rows = [{"id": "im0"}, {"id": "im1"}, {"id": "im2"}, {"id": "im0r", "retest_of": "im0"}]
-    item = testing.make_inbox_item(layout, kind=kind, subject="s", summary="s", allowed_responses=["SUBMIT"],
+    rows = [{"id": "im0", "verdict": "MORE_LIKE"}, {"id": "im1", "verdict": "ACCEPT"}, {"id": "im2"},
+            {"id": "im0r", "retest_of": "im0", "verdict": "REGENERATE"}]
+    return testing.make_inbox_item(layout, kind=kind, subject="s", summary="s", allowed_responses=["SUBMIT"],
                                    items=rows)
-
-    def fn(doc):
-        rows_by_id = {r["id"]: r for r in doc["items"]}
-        rows_by_id["im0"]["verdict"] = "MORE_LIKE"
-        rows_by_id["im0r"]["verdict"] = "REGENERATE"
-        rows_by_id["im1"]["verdict"] = "ACCEPT"
-        return doc
-    store.update(inbox_mod.path_for(layout, item["id"]), fn, lock_path=layout.state / ".inbox.lock")
-    return testing.inbox_item(layout, item["id"])
 
 
 def test_legacy_verdicts_read_as_todays_word_before_any_migration(layout):

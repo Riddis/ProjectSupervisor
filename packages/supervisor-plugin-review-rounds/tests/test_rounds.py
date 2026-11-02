@@ -16,7 +16,7 @@ import supervisor_plugin_review_rounds as rr
 from supervisor import plugin, testing
 
 
-def make_round(layout, kind="round", n=3, reason_tags=None, references=False, retest_pairs=()):
+def make_round(layout, kind="round", n=3, reason_tags=None, references=False, retest_pairs=(), **extra):
     rows = []
     for i in range(n):
         p = layout.root / f"img{i}.png"
@@ -25,7 +25,7 @@ def make_round(layout, kind="round", n=3, reason_tags=None, references=False, re
                     "identity_mean": round(0.5 + i * 0.05, 2), "decision": "KEEP"})
     for retest_id, source_id in retest_pairs:
         rows.append({"id": retest_id, "path": rows[0]["path"], "retest_of": source_id})
-    fields = {"items": rows}
+    fields = {"items": rows, **extra}
     if reason_tags:
         fields["reason_tags"] = reason_tags
     if references:
@@ -189,13 +189,7 @@ def test_labels_path_rejects_a_template_field_the_round_does_not_have(layout, tm
 def test_labels_path_neutralises_a_traversal_field_and_stays_under_the_project_root(layout, tmp_path):
     layout2 = testing.project(tmp_path / "p2", plugins=["review_rounds"],
                               routing={"plugins": {"review_rounds": {"labels_path_template": "state/qa/{batch_id}/{item_id}.yaml"}}})
-    item = make_round(layout2, kind="labelling", n=1)
-    item = testing.inbox_item(layout2, item["id"])
-    from supervisor import store
-    from supervisor import inbox as inbox_mod
-    store.update(inbox_mod.path_for(layout2, item["id"]), lambda doc: {**doc, "batch_id": "../../outside-review-root"},
-                lock_path=layout2.state / ".inbox.lock")
-    item = testing.inbox_item(layout2, item["id"])
+    item = make_round(layout2, kind="labelling", n=1, batch_id="../../outside-review-root")
     dest = rr.labels_path(layout2, item, item["id"])
     assert layout2.root in dest.parents
     assert (layout2.state / "qa") in dest.parents
@@ -204,12 +198,7 @@ def test_labels_path_neutralises_a_traversal_field_and_stays_under_the_project_r
 def test_labels_path_rejects_a_field_that_sanitises_to_empty(layout, tmp_path):
     layout2 = testing.project(tmp_path / "p2", plugins=["review_rounds"],
                               routing={"plugins": {"review_rounds": {"labels_path_template": "state/qa/{batch_id}/{item_id}.yaml"}}})
-    item = make_round(layout2, kind="labelling", n=1)
-    from supervisor import store
-    from supervisor import inbox as inbox_mod
-    store.update(inbox_mod.path_for(layout2, item["id"]), lambda doc: {**doc, "batch_id": "../../"},
-                lock_path=layout2.state / ".inbox.lock")
-    item = testing.inbox_item(layout2, item["id"])
+    item = make_round(layout2, kind="labelling", n=1, batch_id="../../")
     with pytest.raises(rr.RoundError):
         rr.labels_path(layout2, item, item["id"])
 

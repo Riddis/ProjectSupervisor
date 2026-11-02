@@ -18,7 +18,6 @@ import yaml
 
 import supervisor_plugin_review_rounds as rr
 from supervisor import testing
-from supervisor.locks import FileLock
 
 from test_rounds import make_round
 
@@ -269,7 +268,7 @@ def test_review_js_posts_reason_tags_from_the_tile_checkboxes():
 
 def test_a_queued_verdict_is_not_written_to_disk_until_applied(layout, client):
     item = make_round(layout, n=1)
-    with FileLock(layout.lock, owner="fake supervisor"):
+    with testing.loop_lock(layout):
         r = post(client, f"/review/{item['id']}/verdict", image_id="im0", verdict="ACCEPT")
         assert r.status_code == 200
         assert r.json()["queued"] is True
