@@ -3,6 +3,57 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.2.0 — 2026-11-02
+
+Phase 2's F-B (`docs/plan/PHASE2.md` §2, D-012 "Limits of the framework today"): the fallback now covers a
+role's own tasks, not only a review of another role's delivery, and a failed login counts as unavailable
+instead of a failed attempt.
+
+**Migration:** none.
+
+- **Fixed: astra's own release-review tasks waited for Codex however long it took, with no fallback.**
+  `review.lane_for()` always re-derived the adapter from the role's own `roles.<role>.adapter`, so it could only
+  ever answer "is this role's configured lane available" - not "is the lane this job actually resolved to
+  (`job.adapter`, a `cost_lanes` override) available". It now takes an optional `primary` adapter to ask about
+  instead. `scheduler.plan()` asks it for every delivery pick: a capacity deferral with a configured fallback
+  runs the task on it, flagged `same_vendor` exactly as a fallback review already is, with the fallback's own
+  model and effort (`Supervisor.dispatch_delivery()`); a role with none still just waits, token-free, as before.
+- **Fixed: a lapsed login failed the task and spent a retry instead of handing off to the fallback.**
+  `adapters/claude_cli.py` and `adapters/codex_cli.py` already told a real authentication failure apart from an
+  answer that merely mentions a login (`AUTH_FAILURE_RE` matched only against diagnostics); that `FAILED
+  login_required: ...` result still reached the ordinary retry/escalation path. `capacity.mark_login_failed()`
+  now records it the way a CLI-reported usage limit already is (a synthetic window `capacity.require()` raises
+  on), so every existing fallback caller treats a lapsed login exactly like exhausted capacity.
+  `Supervisor._lane_login_failed()` hands the result off before it reaches the ordinary failure path: a review
+  just closes and is redispatched by `pending()` next tick; a delivery (or diagnosis) with a fallback reroutes
+  to it (`reroute()`, now taking optional job overrides and a `kind`; the lane, those overrides and the
+  same-vendor flag are all written in the one record update that closes the refused attempt, and
+  `_repair_reroutes()` replays them from it, so a crash before the successor lands can never launch the
+  fallback lane with the role profile's own model, without the flag, or as a plain delivery attempt of a
+  diagnosis); one with none waits on the same lane through the ordinary continuation path. Every branch alike raises one owner inbox question per engine
+  per login window (`Supervisor._notify_login_required()`, deduped so a lapsed login that is never renewed
+  does not stack a second item on every later failure) - the owner hears about the credential within one tick,
+  not only once continuations run out. An adapter with no `engine` of its own (a plugin lane) is treated as "no
+  fallback configured" rather than asked about through `lane_for()`, which would otherwise reroute it straight
+  back to the lane that just refused it.
+- **Fixed: a continuation of a fallen-back attempt (a usage limit, a time limit, a `PARTIAL` handoff, and the
+  torn-write repair of each, plus a fallback review's own rebuild) reloaded the task fresh and lost the
+  fallback's model, effort and `same_vendor` flag, landing on the fallback lane with the role profile's own
+  model it cannot run.** `review.fallback_overrides(rec)` reads the fallback's resolved `model`/`effort` and
+  `same_vendor` back off the record `dispatch_delivery()`/`review.dispatch()` already wrote - what the attempt
+  actually ran with, not the current config - and `requeue()`'s delivery branch, `repair_continuations()`'s
+  torn-write recovery of it, and `review.rebuild()` all merge it into the rebuilt task and the continuation's
+  note, the same way `_reroute_rebuild()` already carries a reroute's own payload.
+- **Fixed: a `fallback:` block without `flag: same_vendor` kept its model and effort on a review and a login
+  reroute, but dropped them on a role-owned delivery - and on every continuation of either.**
+  `dispatch_delivery()` now applies a non-empty override whenever the lane matches, flag or no flag, the same
+  rule the other two callers already followed; `fallback_overrides()`'s predicate is "this record carries
+  `same_vendor` at all" (present, `True` or `False`), not the flag's own truth value, so a flag-less fallback's
+  continuation is told apart from an ordinary, non-fallback attempt - the one case the first fix left open.
+- `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
+  plugin package's tests, read against the other two) found the gap list already empty; this release confirms
+  it again and ships the two fixes above instead.
+
 ## 2.1.1 — 2026-11-02
 
 **Migration:** none. The new record `state/runtime/own_writes.jsonl` is created on the first Settings edit;

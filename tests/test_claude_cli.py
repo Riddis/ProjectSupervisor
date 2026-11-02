@@ -125,11 +125,19 @@ def test_missing_json_triggers_one_followup(layout):
     assert tasks.load(layout, "C").status == TaskStatus.COMPLETE
 
 
-def test_auth_failure_is_reported(layout):
+def test_auth_failure_is_unavailable_not_failed(layout):
+    """A lapsed login is unavailable, not a failed attempt (D-012 F-B Change 2): no fallback is configured for
+    engineer here, so it waits token-free on the same lane exactly like a reported usage limit - never FAILED,
+    never spending a revision."""
     ctask(layout, mode="auth")
     run_until_done(layout, "C")
     t = tasks.load(layout, "C")
-    assert t.status == TaskStatus.FAILED and "login_required" in t.delivery.verification.detail
+    assert t.status == TaskStatus.IN_PROGRESS and t.delivery.digest is None    # unavailable is not a failed delivery
+    recs = jobs.for_task(layout, "C")
+    assert [r["phase"] for r in recs] == ["DONE", "PREPARED"] and recs[0]["result"] == "DEFERRED"
+    assert float(recs[1].get("deferred_until") or 0) > time.time() + 60        # continuation waits for the recheck
+    with pytest.raises(CapacityDeferred):
+        capacity.require(layout, "claude")
 
 
 def test_limit_requeues_instead_of_failing(layout):

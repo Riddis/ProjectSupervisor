@@ -142,6 +142,34 @@ class Supervisor:
             return jobs_mod.set_phase(self.layout, attempt_id, "PREPARED", deferred_until=deferred_until, deferred_reason=note)
         return self.launch(rec)
 
+    def dispatch_delivery(self, task: Task, name: str) -> dict:
+        """A scheduled delivery job on `name` - scheduler.plan() already resolved the owner role's own fallback
+        when its primary lane was unavailable (D-012 F-B Change 1), the same rule a fallback review already
+        applies. Re-derive the fallback's model/effort overrides the same way plan() picked `name`, so a role's
+        own task runs with the fallback's own keys whatever `flag: same_vendor` says on the block - the flag
+        decides only the attempt note and the `same_vendor` extra on the record (review.dispatch() and
+        _lane_login_failed()'s reroute already work this way; release review 2.2.0 F2). An ordinary pick with no
+        overrides at all (e.g. the unattended claude_api switch, which is a different kind of lane change)
+        dispatches with no job override.
+
+        `home` (scheduler.adapter_name(task), ignoring the unattended switch) can disagree with `name` (what
+        plan() actually picked, e.g. claude_api, whose own lane_for() call saw no `engine` and so no capacity
+        check at all): the overrides and the same-vendor flag are only ever this job's own if the lane they
+        were resolved for is the lane it is actually dispatching on."""
+        role = scheduler.job_spec(task).get("role") or task.owner_role
+        home = scheduler.adapter_name(task, self.layout)
+        try:
+            lane, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
+        except CapacityDeferred:
+            lane, overrides, same_vendor = home, {}, False
+        if not overrides or lane != name:
+            return self.dispatch(task, name)
+        doc = task.model_dump(mode="json")
+        doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}
+        view = Task.model_validate(doc)
+        note = f"dispatch:{role}" + (" (same-vendor fallback)" if same_vendor else "")
+        return self.dispatch(view, name, note=note, extra={"same_vendor": same_vendor})
+
     MAX_CONTINUATIONS = 3
 
     @staticmethod
@@ -190,7 +218,8 @@ class Supervisor:
                 return
             extra = {k: rec[k] for k in ("review_role", "review_digest", "same_vendor", "review_frozen") if k in rec}
             extra["continuation_grant"] = grant
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind="review", extra=extra)
+            note = f"continuation after {reason}" + (" (same-vendor fallback)" if rec.get("same_vendor") else "")
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, kind="review", extra=extra)
         elif kind == diagnosis_mod.KIND:
             task = diagnosis_mod.rebuild(self.layout, rec)
             if task is None:
@@ -201,8 +230,18 @@ class Supervisor:
             self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}", kind=diagnosis_mod.KIND, extra=extra)
         else:
             task = tasks_mod.load(self.layout, task_id)
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=f"continuation after {reason}",
-                          extra={"continuation_grant": grant})
+            overrides = review_mod.fallback_overrides(rec)
+            if overrides:
+                doc = task.model_dump(mode="json")
+                doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": rec["adapter"]}
+                task = Task.model_validate(doc)
+            extra = {"continuation_grant": grant}
+            note = f"continuation after {reason}"
+            if "same_vendor" in rec:
+                extra["same_vendor"] = rec["same_vendor"]
+                if rec["same_vendor"]:
+                    note += " (same-vendor fallback)"
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
         # The continuation is queued either way (crash-safe, same as before F11): a held task's queued record simply
@@ -227,22 +266,70 @@ class Supervisor:
             return None
         return lane if lane != rec["adapter"] and lane in REGISTRY else None
 
-    def reroute(self, rec: dict, lane: str, reason: str) -> dict:
+    def reroute(self, rec: dict, lane: str, reason: str, job_overrides: dict | None = None,
+               extra: dict | None = None, kind: str = "delivery") -> dict:
         """The lane refused every job for now (LaneUnavailable: no model ran, nothing was spent) and the task has a lane
         of its own: close the refused record FIRST, naming where the work goes, then queue it there. No attempt failed,
         so nothing escalates. The new attempt names the refused one (`rerouted_from`), so repair_continuations()
         can tell a reroute whose successor exists from one a crash interrupted before it, and queues only the
-        latter; the refused record is never launched on its old lane again."""
+        latter; the refused record is never launched on its old lane again. `job_overrides` (a role's fallback's
+        own model/effort, D-012 F-B Change 2) are merged into the dispatched job; `extra` (`same_vendor`) reaches
+        the new job record the same way a fallback review's does. Both are written into the SAME set_phase that
+        names the lane (`rerouted_job`, `rerouted_extra`), so a crash before the successor lands leaves them as
+        durable as `rerouted_to` itself: `_repair_reroutes()` replays them instead of launching the fallback lane
+        with the role profile's own model and no flag — an attempt that fails and spends a revision slot, in the
+        one path that exists to recover a reroute.
+
+        `kind`, when `diagnosis_mod.KIND`, rebuilds the record's own diagnosis the way `requeue()`'s diagnosis
+        branch does (`diagnosis_mod.rebuild`, carrying every `diag_*` extra) instead of re-dispatching the task
+        as a fresh plain delivery attempt — a diagnosis has its own prompt and decision to make, not the task's
+        original brief. `job_overrides` is not applied there, matching `requeue()`'s own diagnosis branch (a
+        continuation already loses it the same way). If the task has moved on and nothing rebuilds, the refused
+        record simply closes with no successor, exactly as `requeue()`'s diagnosis branch does. The per-kind
+        rebuild itself (`_reroute_rebuild`) is shared with `_repair_reroutes()`, so a crash between this
+        record's own close and its successor's write recovers exactly the same way."""
         rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result="REROUTED", finished=now_iso(),
-                                 error=reason, rerouted_to=lane)
+                                 error=reason, rerouted_to=lane, rerouted_job=job_overrides or None,
+                                 rerouted_extra=extra or None)
         tasks_mod.log(self.layout, "lane_rerouted", "loop", task=rec["task_id"], attempt=rec["attempt_id"],
                       adapter=rec["adapter"], to=lane, reason=reason)
         tasks_mod.add_note(self.layout, rec["task_id"], f"{rec['attempt_id']}: {rec['adapter']} unavailable ({reason}); "
                            f"rerouted to {lane}", actor="loop")
-        self.dispatch(tasks_mod.load(self.layout, rec["task_id"]), lane, note=f"rerouted from {rec['adapter']}",
-                      extra={"rerouted_from": rec["attempt_id"]})
+        task, kind_extra = self._reroute_rebuild(rec, kind)
+        if task is None:
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
+            return jobs_mod.read(self.layout, rec["attempt_id"])
+        self.dispatch(task, lane, note=f"rerouted from {rec['adapter']}", kind=kind,
+                      extra={"rerouted_from": rec["attempt_id"], **kind_extra})
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
         return jobs_mod.read(self.layout, rec["attempt_id"])
+
+    def _reroute_rebuild(self, rec: dict, kind: str) -> tuple[Task | None, dict]:
+        """The task and extras a reroute's successor dispatches with, by `kind` - diagnosis rebuilds via
+        `diagnosis_mod.rebuild` (it tolerates a BLOCKED task on purpose, the common status for one, and returns
+        None only once the task has moved past it: COMPLETE or CANCELLED) and carries its `diag_*` extras;
+        every other kind just reloads the task, with the fallback's own model/effort (`rerouted_job`) merged
+        into its job block. Both shapes carry the dispatch extras the reroute resolved (`rerouted_extra`:
+        D-012 F-B's same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
+        it in the one set_phase that named the lane, so `reroute()` (the live path) and `_repair_reroutes()`
+        (torn-write recovery) can never drift about what a reroute's successor carries - not its kind, not its
+        extras and not its job. A review never reaches either (reroute() is never called for one).
+
+        `rerouted_job` is not applied to a diagnosis, matching `requeue()`'s own diagnosis branch (its prompt
+        and lane keys come from the diagnosis itself, not the task's job block)."""
+        extra = dict(rec.get("rerouted_extra") or {})
+        if kind == diagnosis_mod.KIND:
+            task = diagnosis_mod.rebuild(self.layout, rec)
+            if task is None:
+                return None, {}
+            return task, {**{k: rec[k] for k in rec if k.startswith("diag_")}, **extra}
+        task = tasks_mod.load(self.layout, rec["task_id"])
+        overrides = rec.get("rerouted_job") or {}
+        if overrides:
+            doc = task.model_dump(mode="json")
+            doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": rec["rerouted_to"]}
+            task = Task.model_validate(doc)
+        return task, extra
 
     def _ensure_in_progress(self, task_id: str, note: str) -> None:
         t = tasks_mod.load(self.layout, task_id)
@@ -374,6 +461,79 @@ class Supervisor:
             out += gate.owned_for(task, other.get("adapter", ""), "delivery")
         return tuple(sorted(set(out)))
 
+    def _notify_login_required(self, layout: Layout, engine: str | None, until: float, error: str) -> None:
+        """D-010's first category: a credential only the owner can renew. One deduped item per engine per login
+        window - not one per failed attempt, since mark_login_failed() moves `until` forward on every call and
+        fingerprinting on it would stack one item per failure. Every branch of _lane_login_failed calls this
+        alike (review / fallback reroute / no-fallback wait), so a role with a fallback configured no longer
+        spends the Claude subscription silently once Codex's free month lapses. A full owner inbox must never
+        turn this token-free notification into anything that touches the attempt budget.
+
+        The dedupe only ever matches an item that named this `engine` by itself: with `engine` None (an
+        adapter with no `engine` of its own), `.get("login_engine")` returns None for any ordinary item that
+        never carried the key at all, and `None == None` would silently swallow this notice behind whatever
+        unrelated question the owner already had open."""
+        if engine is not None and any(i.get("login_engine") == engine for i in inbox_mod.open_items(layout, "owner")):
+            return
+        summary, detail = inbox_mod.fit(
+            f"{engine or 'a lane'} reports it is not logged in; dispatch to it waits (or hands over to the "
+            f"configured fallback) until the credential is renewed. Run the login the error names, on the "
+            f"workstation, to clear this. {error}")
+        try:
+            inbox_mod.create(layout, for_role="owner", subject=f"Login needed: {engine or 'lane'}",
+                             summary=summary, detail=detail, kind="question", from_="loop",
+                             extra={"login_engine": engine, "login_until": until})
+        except inbox_mod.InboxFull:
+            tasks_mod.log(layout, "inbox_full", "loop", reason="login_required", engine=engine)
+
+    def _lane_login_failed(self, rec: dict, result: Result, kind: str) -> None:
+        """D-012 F-B Change 2: the lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
+        diagnostics - stderr, system/error events - never a model's ordinary answer, so a real failure or an
+        answer that merely mentions a login never reaches here). Unavailable, not failed: mark the engine so
+        every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) treats it exactly like a
+        measured usage window, then hand off with no attempt spent, and tell the owner a credential needs
+        renewing (D-010's first category) - once per engine per login window, whichever branch below is taken.
+        A review just closes: pending()/dispatch_reviews() redispatch it next tick and lane_for() resolves the
+        fallback itself (or returns None, token-free, exactly as a capacity-deferred review already does with
+        none). A delivery with a configured fallback reroutes to it with the fallback's own model/effort and the
+        same-vendor flag; a diagnosis with one reroutes keeping its own kind, prompt and diag_* extras
+        (reroute()'s `kind` parameter); with none, either waits on the same lane through the ordinary
+        continuation path - the same one an ordinary capacity deferral already uses.
+
+        An adapter with no `engine` (REGISTRY is a plugin surface; the two shipped CLI adapters both have one)
+        is treated the same as 'no fallback configured' rather than asked about through `lane_for(primary=...)`:
+        that call's own capacity check is skipped whenever `engine` is falsy (review.py), so it would simply
+        hand the adapter_name straight back - rerouting the job right back to the lane that just refused it,
+        with nothing marked unavailable and no deferral."""
+        layout = self.layout
+        task_id = rec["task_id"]
+        engine = getattr(REGISTRY.get(rec["adapter"]), "engine", None)
+        until = capacity.mark_login_failed(layout, engine, result.error) if engine else time.time() + 900
+        spec = rec.get("spec") or {}
+        role = rec.get("review_role") or rec.get("diag_role") or spec.get("role") or tasks_mod.load(layout, task_id).owner_role
+        tasks_mod.log(layout, "lane_login_required", "loop", task=task_id, attempt=rec["attempt_id"],
+                      adapter=rec["adapter"], role=role, error=result.error, until=until)
+        self._notify_login_required(layout, engine, until, str(result.error))
+        if kind == "review":
+            jobs_mod.set_phase(layout, rec["attempt_id"], "DONE", result="DEFERRED", finished=now_iso(),
+                               error=result.error, login_required=True)
+            return
+        if not engine:
+            return self.requeue(rec, Result(status="DEFERRED", error=result.error, reset_epoch=until,
+                                            raw={"measured_window": True}), "login required")
+        try:
+            lane, overrides, same_vendor = review_mod.lane_for(layout, role, primary=rec["adapter"])
+        except CapacityDeferred as exc:
+            return self.requeue(rec, Result(status="DEFERRED", error=result.error, reset_epoch=exc.reset_epoch,
+                                            raw={"measured_window": True}), "login required")
+        # Reached only via lane_for()'s own fallback branch: mark_login_failed() just made `require()` raise for
+        # this engine, so a normal return here (not the `except CapacityDeferred` above) can only be the fallback
+        # tuple - `same_vendor` (True or False, the flag's actual value) is therefore always this reroute's own,
+        # matching dispatch_delivery()/review.dispatch() (never absent on a fallback dispatch; release review
+        # 2.2.0 F2).
+        extra = {"same_vendor": same_vendor}
+        self.reroute(rec, lane, f"login required ({result.error})", job_overrides=overrides, extra=extra, kind=kind)
+
     def ingest(self, rec: dict, result: Result) -> None:
         """Turn an adapter Result into task records, then advance(). A delivery job gets a delivery (digest over
         artifacts) and a verification record (supervisor.verify); a review job gets a review record (supervisor.review).
@@ -389,6 +549,8 @@ class Supervisor:
             return
         if kind != diagnosis_mod.KIND:
             self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}")
+        if result.status == "FAILED" and str(result.error or "").startswith("login_required:"):
+            return self._lane_login_failed(rec, result, kind)
         run_dir = (rec.get("spec") or {}).get("run_dir")
         if result.status == "DEFERRED":
             return self.requeue(rec, result, "capacity limit")
@@ -605,8 +767,18 @@ class Supervisor:
                                                   f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
                                                   event=f"{last['attempt_id']}:continuations", retry=False)
                     continue
-                self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit",
-                              extra={"continuation_grant": escalation_mod.current_grant(self.layout, task_id)})
+                overrides = review_mod.fallback_overrides(last)
+                if overrides:
+                    doc = task.model_dump(mode="json")
+                    doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": last["adapter"]}
+                    task = Task.model_validate(doc)
+                extra = {"continuation_grant": escalation_mod.current_grant(self.layout, task_id)}
+                note = "continuation after capacity limit"
+                if "same_vendor" in last:
+                    extra["same_vendor"] = last["same_vendor"]
+                    if last["same_vendor"]:
+                        note += " (same-vendor fallback)"
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra)
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
@@ -646,7 +818,22 @@ class Supervisor:
                                       event=event, retry=False)
 
     def _repair_reroutes(self, task_id: str, recs: list[dict]) -> bool:
-        """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here)."""
+        """repair_continuations() for REROUTED records; True when the task's newest record was one (handled here).
+
+        A diagnosis reroute's successor is rebuilt the same way `reroute()`'s own live path does
+        (`_reroute_rebuild`, sharing one mechanism between the two callers): it is never gated on IN_PROGRESS
+        (diagnosis.rebuild tolerates a BLOCKED task on purpose, the common status for one) and it is always
+        marked `continued` once rebuilt — the diagnosis-shaped bug this guards against had two faces: a task
+        that WAS IN_PROGRESS got redispatched through the plain delivery branch below (losing the diagnosis's
+        own kind and every `diag_*` extra), and a task that was BLOCKED, as a diagnosis more commonly leaves it,
+        hit the delivery branch's `continue` before ever reaching the `continued` write and was revisited,
+        unrepaired, on every later tick. A delivery reroute keeps its own, narrower rule unchanged: it is only
+        ever redispatched while the task is still IN_PROGRESS.
+
+        Either shape dispatches the payload the refused record itself carries - the fallback's own model and
+        effort (`rerouted_job`) and the same-vendor flag (`rerouted_extra`) - not a plain attempt on the
+        fallback lane with the role profile's model: that one fails and spends a revision slot, exactly the
+        "no attempt spent" guarantee this path exists to preserve."""
         last = recs[-1]
         for r in recs:
             if r["phase"] != "DONE" or r.get("result") != "REROUTED" or r.get("continued"):
@@ -656,13 +843,18 @@ class Supervisor:
             if not succeeded:
                 if lane not in REGISTRY:
                     continue
-                try:
-                    task = tasks_mod.load(self.layout, task_id)
-                except Exception:
-                    continue
-                if task.status != TaskStatus.IN_PROGRESS:
-                    continue
-                self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", extra={"rerouted_from": r["attempt_id"]})
+                kind = (r.get("spec") or {}).get("kind", "delivery")
+                if kind != diagnosis_mod.KIND:
+                    try:
+                        status = tasks_mod.load(self.layout, task_id).status
+                    except Exception:
+                        continue
+                    if status != TaskStatus.IN_PROGRESS:
+                        continue
+                task, kind_extra = self._reroute_rebuild(r, kind)
+                if task is not None:
+                    self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", kind=kind,
+                                  extra={"rerouted_from": r["attempt_id"], **kind_extra})
             jobs_mod.set_phase(self.layout, r["attempt_id"], "DONE", continued=True)
         return last.get("result") == "REROUTED"
 
@@ -938,7 +1130,7 @@ class Supervisor:
             self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
         else:
             for task, name in scheduler.plan(self.layout, unattended=self.unattended):
-                self.dispatch(task, name)
+                self.dispatch_delivery(task, name)
             self.dispatch_reviews()
             self.dispatch_conversations()
             self.settle()                                             # synchronous adapters finish at once

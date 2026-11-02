@@ -97,7 +97,8 @@ def record(engine, windows, source, now=None):
 WINDOW_LABELS = {("claude", "five_hour"): "5-hour", ("claude", "seven_day"): "7-day",
                  ("claude", "seven_day_overage_included"): "Fable",
                  ("codex", "primary"): "5-hour", ("codex", "secondary"): "7-day",
-                 ("claude", "cli_limit"): "CLI-reported limit", ("codex", "cli_limit"): "CLI-reported limit"}
+                 ("claude", "cli_limit"): "CLI-reported limit", ("codex", "cli_limit"): "CLI-reported limit",
+                 ("claude", "login_required"): "login required", ("codex", "login_required"): "login required"}
 
 
 def window_label(engine, name):
