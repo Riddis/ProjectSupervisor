@@ -9,11 +9,16 @@ commands = ["review.set_verdict", "review.submit"]
 inbox_kinds = ["round", "labelling"]
 cli = ["review"]
 doctor_checks = ["review_rounds"]
+routes = ["/review"]
+static = ["review"]
+hooks = ["template_dir"]
 
 [legacy_ids]
 commands = ["review.set_verdict", "review.submit"]
 inbox_kinds = ["round", "labelling"]
 cli = ["review"]
+routes = ["/review"]
+static = ["review"]
 
 [config]
 section = "plugins.review_rounds"

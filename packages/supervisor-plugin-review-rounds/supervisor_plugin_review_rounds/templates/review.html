@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Review {{ item_id }} — Control Center{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/review/review.css">
+<section class="panel review-toolbar">
+  <h2>{{ item.subject }} <span class="badge">{{ item.kind }}</span></h2>
+  <p class="muted">
+    <span id="review-progress">{{ answered }} of {{ total }}</span> answered
+    {% if is_labelling %}&middot; blind to scores{% if not blind %} (revealed){% endif %}
+      {% if blind %}&middot; <a href="/review/{{ item_id }}?reveal=1">reveal scores</a>{% endif %}
+      &middot; session <span id="review-timer">00:00</span>
+    {% endif %}
+  </p>
+
+  {% if references %}
+  <div class="evidence review-references">
+    {% for key in references %}<img class="thumb" src="/thumb/{{ key }}" alt="canonical reference">{% endfor %}
+  </div>
+  {% endif %}
+
+  {% if is_labelling and stats and stats.scored %}
+  <p class="muted">test–retest agreement so far: {{ stats.agreed }}/{{ stats.scored }}
+    ({{ "%.0f" | format((stats.agreement_rate or 0) * 100) }}%)</p>
+  {% endif %}
+
+  <div class="review-filters">
+    {% for f in filters %}
+    <label>{{ f.label }}
+      {% if f.kind == "select" %}
+      <select class="review-filter" data-field="{{ f.field }}" data-kind="select"><option value="">any</option>
+        {% for o in f.options %}<option value="{{ o }}">{{ o }}</option>{% endfor %}</select>
+      {% elif f.kind == "number_min" %}
+      <input class="review-filter" data-field="{{ f.field }}" data-kind="number_min" type="number" step="0.01">
+      {% else %}
+      <input class="review-filter" data-field="{{ f.field }}" data-kind="text_contains" type="text">
+      {% endif %}
+    </label>
+    {% endfor %}
+    <label>Verdict <select class="review-filter" data-field="verdict" data-kind="verdict"><option value="">any</option>
+      <option value="_NONE">unanswered</option>
+      {% for v in verdicts %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+    </select></label>
+    <button type="button" id="filter-clear">Clear filters</button>
+  </div>
+
+  <div class="review-bulk">
+    <button type="button" id="select-all">Select all visible</button>
+    <button type="button" id="select-none">Clear selection</button>
+    <span class="muted">Apply to selection:</span>
+    {% for key, label in [("ACCEPT", "A · Accept"), ("REJECT", "R · Reject"), ("MODIFY", "X · Modify"), ("REDO", "G · Redo")] %}
+    <button type="button" class="bulk-verdict" data-verdict="{{ key }}">{{ label }}</button>
+    {% endfor %}
+  </div>
+
+  {% if reason_tag_options %}
+  <p class="muted">reason tags (per image, below each tile): {{ reason_tag_options | join(", ") }}</p>
+  {% endif %}
+
+  <form method="post" action="/review/{{ item_id }}/submit" id="submit-round-form" class="inline-form">
+    {% include "partials/csrf.html" %}
+    <input type="hidden" name="session_seconds" id="session-seconds-field" value="">
+    <label><input type="checkbox" name="partial" value="1" id="submit-partial"> submit as partial (unanswered images stay unanswered)</label>
+    <button type="submit" class="primary" id="submit-round">Submit round</button>
+  </form>
+</section>
+
+<section class="panel review-grid" id="review-grid" data-live-off data-item-id="{{ item_id }}" data-csrf="{{ csrf_token }}"
+         data-has-tags="{{ '1' if reason_tag_options else '' }}">
+  {% for tile in tiles %}
+  <div class="review-tile{% if tile.verdict %} has-verdict{% endif %}" data-id="{{ tile.id }}"
+       data-verdict="{{ tile.verdict or '' }}"
+       {% for field, value in tile.filter_values.items() %}data-filter-{{ field }}="{{ value if value is not none else '' }}" {% endfor %}
+       tabindex="0">
+    <input type="checkbox" class="tile-select" aria-label="select {{ tile.label }}">
+    {% if tile.thumb_key %}
+    <img class="thumb review-thumb" src="/thumb/{{ tile.thumb_key }}" alt="{{ tile.label }}"
+         data-zoom="{{ tile.zoom_key or tile.thumb_key }}">
+    {% else %}<div class="thumb-missing">image missing</div>{% endif %}
+
+    {% if tile.scores %}
+    <div class="tile-score-block">
+      {% for k, v in tile.scores.items() %}<span class="score-kv">{{ k }}: {{ v }}</span>{% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="tile-verdict-badge" data-role="verdict-badge">{{ tile.verdict or "—" }}{% if tile.verdict_legacy %} <small class="muted">(recorded as {{ tile.verdict_legacy }})</small>{% endif %}</div>
+    {% if tile.reference_keys %}
+    <button type="button" class="tile-compare" data-refs="{{ tile.reference_keys | join(',') }}">Compare</button>
+    {% endif %}
+    {% if reason_tag_options %}
+    <div class="tile-tags" data-role="tags">
+      {% for tag in reason_tag_options %}
+      <label class="tile-tag"><input type="checkbox" class="tile-tag-input" value="{{ tag }}"
+        {% if tag in tile.reason_tags %} checked{% endif %}> {{ tag }}</label>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="tile-note muted" data-role="note">{{ tile.note }}</div>
+  </div>
+  {% endfor %}
+</section>
+
+<div id="zoom-overlay" class="review-overlay" hidden><img id="zoom-image" src="" alt="zoomed"></div>
+<div id="compare-overlay" class="review-overlay" hidden><div id="compare-images"></div></div>
+<div id="modify-prompt" class="review-overlay" hidden>
+  <div class="review-modify-box">
+    <label>Note for MODIFY<br><input type="text" id="modify-note-input"></label>
+    <button type="button" id="modify-note-confirm">Apply</button>
+    <button type="button" id="modify-note-cancel">Cancel</button>
+  </div>
+</div>
+
+<p class="muted">Keyboard: <strong>A</strong> accept &middot; <strong>R</strong> reject &middot;
+  <strong>X</strong> modify (with note) &middot; <strong>G</strong> redo &middot;
+  arrow keys move focus &middot; <strong>Z</strong> zoom &middot; <strong>C</strong> compare.</p>
+
+<script src="/static/review/review.js"></script>
+{% endblock %}

@@ -362,12 +362,12 @@ def check_legacy_verdicts(layout: plugin.Layout) -> plugin.Check:
 
 def setup(registry) -> None:
     """Rounds and labelling sessions over inbox items of kind `round` / `labelling` (owned kinds: only
-    `submit()` closes them; a labelling card shows a count, never scores), the two owner commands, the CLI and
-    the doctor check. The `/review` pages (the grid, its template and script) are the next commit - this one
-    does not yet register `routes`, `static` or the `template_dir` hook, and the manifest agrees.
+    `submit()` closes them; a labelling card shows a count, never scores), the `/review` pages (the grid, its
+    template and script), the two owner commands, the CLI and the doctor check.
 
     `external_edit` (its page is an upload form, not a grid) and a label destination tied to a project's own
     identity-folder layout stay with a project's own plugin (boundary D6, D7) - not registered here."""
+    from . import pages
     cfg = review_rounds_config(registry.layout)
     registry.inbox_kind("round", "Rounds", page="/review/{id}", answerable=False, show_evidence=True,
                         score_keys=cfg["score_keys"])
@@ -377,3 +377,6 @@ def setup(registry) -> None:
     registry.command("review.submit", _review_submit)
     registry.cli(_cli(), "review")
     registry.doctor_check(check_legacy_verdicts)
+    registry.template_dir(HERE / "templates")
+    registry.static_dir(HERE / "static", "review")
+    registry.ui_router(pages.router, "Review", "/review")
