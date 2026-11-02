@@ -3,6 +3,36 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.2.0 — 2026-11-02
+
+Phase 2's F-B (`docs/plan/PHASE2.md` §2, D-012 "Limits of the framework today"): the fallback now covers a
+role's own tasks, not only a review of another role's delivery, and a failed login counts as unavailable
+instead of a failed attempt.
+
+**Migration:** none.
+
+- **Fixed: astra's own release-review tasks waited for Codex however long it took, with no fallback.**
+  `review.lane_for()` always re-derived the adapter from the role's own `roles.<role>.adapter`, so it could only
+  ever answer "is this role's configured lane available" - not "is the lane this job actually resolved to
+  (`job.adapter`, a `cost_lanes` override) available". It now takes an optional `primary` adapter to ask about
+  instead. `scheduler.plan()` asks it for every delivery pick: a capacity deferral with a configured fallback
+  runs the task on it, flagged `same_vendor` exactly as a fallback review already is, with the fallback's own
+  model and effort (`Supervisor.dispatch_delivery()`); a role with none still just waits, token-free, as before.
+- **Fixed: a lapsed login failed the task and spent a retry instead of handing off to the fallback.**
+  `adapters/claude_cli.py` and `adapters/codex_cli.py` already told a real authentication failure apart from an
+  answer that merely mentions a login (`AUTH_FAILURE_RE` matched only against diagnostics); that `FAILED
+  login_required: ...` result still reached the ordinary retry/escalation path. `capacity.mark_login_failed()`
+  now records it the way a CLI-reported usage limit already is (a synthetic window `capacity.require()` raises
+  on), so every existing fallback caller treats a lapsed login exactly like exhausted capacity.
+  `Supervisor._lane_login_failed()` hands the result off before it reaches the ordinary failure path: a review
+  just closes and is redispatched by `pending()` next tick; a delivery (or diagnosis) with a fallback reroutes
+  to it (`reroute()`, now taking optional job overrides); one with none waits on the same lane through the
+  ordinary continuation path, so the owner still eventually hears about a credential that needs renewing,
+  through the existing continuations-exhausted route, if it is never renewed.
+- `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
+  plugin package's tests, read against the other two) found the gap list already empty; this release confirms
+  it again and ships the two fixes above instead.
+
 ## 2.1.1 — 2026-11-02
 
 **Migration:** none. The new record `state/runtime/own_writes.jsonl` is created on the first Settings edit;
