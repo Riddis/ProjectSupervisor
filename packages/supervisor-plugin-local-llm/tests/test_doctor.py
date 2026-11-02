@@ -1,12 +1,19 @@
-"""The Ollama doctor check (the tag is part of the model, the store must be on D:). Ported from a project-local
-extension's tests, onto supervisor.plugin and supervisor.testing only - no framework internal: every test here
-calls this package's own functions directly."""
+"""The Ollama doctor check (the tag is part of the model, the store's drive is a project's own optional rule).
+Ported from a project-local extension's tests, onto supervisor.plugin and supervisor.testing only - no framework
+internal: every test here calls this package's own functions directly."""
 from __future__ import annotations
 
 import pytest
 import requests
 
 import supervisor_plugin_local_llm as llm
+
+
+class _AlwaysThere:
+    """Stands in for a manifest path that must be found, without claiming any real drive exists on disk."""
+
+    def exists(self):
+        return True
 
 
 def serve_tags(monkeypatch, names):
@@ -71,13 +78,32 @@ def test_ollama_fails_when_models_dir_is_unset_everywhere(layout, monkeypatch):
     assert not check.ok and "not set" in check.detail and "D:\\expected" in check.detail
 
 
-def test_ollama_fails_when_the_store_is_off_d(layout, monkeypatch):
-    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b", "models_dir": "D:\\expected"})
+def test_ollama_fails_when_the_store_is_off_the_configured_drive(layout, monkeypatch):
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b",
+                                                               "models_dir": "D:\\expected", "models_store_drive": "D:"})
     serve_tags(monkeypatch, ["qwen3-vl:4b"])
     monkeypatch.setattr(llm, "_resolve_models_dir",
                         lambda lay: (r"C:\Users\someone\.ollama\models", "User registry"))
     check = llm.check_ollama(layout)
     assert not check.ok and "not on D:" in check.detail
+
+
+def test_ollama_skips_the_drive_check_when_models_store_drive_is_unset(layout, monkeypatch):
+    """No project sets `models_store_drive` by default - the rule is a project's own choice, not this package's,
+    so a store reported on a drive nobody configured as expected never fails doctor on that account."""
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": "qwen3-vl:4b",
+                                                               "models_dir": "C:\\expected"})
+    serve_tags(monkeypatch, ["qwen3-vl:4b"])
+    monkeypatch.setattr(llm, "_resolve_models_dir", lambda lay: (r"Z:\off-drive\ollama", "User registry"))
+    monkeypatch.setattr(llm, "_manifest_paths", lambda store, alias: [_AlwaysThere()])
+    check = llm.check_ollama(layout)
+    assert check.ok and "store at" in check.detail
+
+
+def test_ollama_fails_when_no_model_is_configured(layout, monkeypatch):
+    monkeypatch.setattr(llm, "local_llm_config", lambda lay: {"base_url": "http://x", "model": None, "models_dir": "D:\\x"})
+    check = llm.check_ollama(layout)
+    assert not check.ok and "no model configured" in check.detail
 
 
 def test_ollama_fails_when_the_manifest_is_missing_from_the_configured_store(layout, monkeypatch):

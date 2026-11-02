@@ -7,8 +7,12 @@ from pydantic import BaseModel, ConfigDict
 
 class Settings(BaseModel):
     """Declares the values with a default, the same ones local_llm_config() fills in; other keys
-    (`models_dir`, a `vram_floor_mb` override) pass through as written."""
+    (`models_dir`, a `vram_floor_mb` override) pass through as written. `model` has no default: this package
+    drives more than one model family, so a task's job or this section must name one, and `check_ollama` says so
+    clearly when neither does. `models_store_drive` is unset by default: the drive rule is a project's own
+    choice, not this package's."""
     model_config = ConfigDict(extra="allow")
     base_url: str = "http://127.0.0.1:11434"
-    model: str = "qwen3-vl:4b"
+    model: str | None = None
     timeout_s: int = 300
+    models_store_drive: str | None = None
