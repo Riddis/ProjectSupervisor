@@ -91,6 +91,38 @@ def test_migrate_verdicts_on_a_disposable_project_dry_run_then_apply_then_idempo
     assert "review_verdicts_migrated" in layout.log.read_text(encoding="utf-8")
 
 
+def test_migrate_verdicts_survives_a_crash_between_entries(layout, monkeypatch):
+    """A literal interruption, not just an idempotence argument: force the migration to die after rewriting the
+    first item's rows but before the second's (`plugin.log_event` is the last call the loop makes per item, so
+    raising there leaves that item's own write already on disk but the loop dead before it reaches the next
+    item) - a disposable project's own crash-and-retry, on real files, not a mock standing in for one."""
+    first = _legacy_round(layout)
+    second = _legacy_round(layout)
+    real_log_event = rr.plugin.log_event
+    calls = []
+
+    def flaky_log_event(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError("simulated crash between entries")
+        return real_log_event(*args, **kwargs)
+    monkeypatch.setattr(rr.plugin, "log_event", flaky_log_event)
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        rr.migrate_legacy_verdicts(layout)
+    # The first item's own write landed (store.update() committed before log_event ever ran); the crash happened
+    # on the way to the second, which is therefore untouched.
+    migrated = [testing.inbox_item(layout, i["id"])["items"][0]["verdict"] == "REDO" for i in (first, second)]
+    assert migrated.count(True) == 1 and migrated.count(False) == 1
+
+    monkeypatch.setattr(rr.plugin, "log_event", real_log_event)   # the retry: no crash, finishes the rest
+    out = rr.migrate_legacy_verdicts(layout)
+    assert out["items"] == {second["id"]: 2} or out["items"] == {first["id"]: 2}   # whichever was left
+    assert testing.inbox_item(layout, first["id"])["items"][0]["verdict"] == "REDO"
+    assert testing.inbox_item(layout, second["id"])["items"][0]["verdict"] == "REDO"
+    assert rr.migrate_legacy_verdicts(layout)["items"] == {}        # a third run: nothing left to do
+
+
 def test_a_new_owner_verdict_supersedes_the_migrated_word(layout):
     item = _legacy_round(layout)
     rr.migrate_legacy_verdicts(layout)
