@@ -9,10 +9,10 @@ description = "A Supervisor plugin: review_rounds"
 readme = "README.md"
 requires-python = ">=3.11"
 # The framework is not listed: it is not on an index, and the manifest's `framework` range is what the loader checks.
-dependencies = ["pydantic>=2.7"]
+dependencies = ["pydantic>=2.7", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2"]
+dev = ["pytest>=8.2", "pillow>=10.3"]   # tests build real small images for the thumbnail/zoom-key assertions
 
 [project.entry-points."supervisor.plugins"]
 review_rounds = "supervisor_plugin_review_rounds"
@@ -21,14 +21,20 @@ review_rounds = "supervisor_plugin_review_rounds"
 include = ["supervisor_plugin_review_rounds*"]
 
 [tool.setuptools.package-data]
-"supervisor_plugin_review_rounds" = ["supervisor-plugin.toml"]
+# `pages.py` uses FastAPI (supervisor.plugin.ui, supervisor.testing.ui_client), same as the templates/static files
+# it serves - not redeclared as a dependency, same as the framework itself: a plugin's page only ever runs inside
+# a process that already has the framework's own `ui`/`dev` extras installed (examples/reference_plugin/pyproject.toml
+# does the same for its own pages.py).
+"supervisor_plugin_review_rounds" = ["supervisor-plugin.toml", "templates/*", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 # What CI drives on the installed wheel when this package lives under the framework repository's packages/
 # (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
-# review_rounds registers no adapter and no python job (boundary plan 05-phase5.md, "what the code has today":
-# kinds, commands, a CLI, routes and a doctor check only) - nothing for `lane` or `python_job` to name until
-# step 5 moves the grid in and T2-15 decides what its CI drives instead (a task may not be the right proof for a
-# plugin whose surface is commands and routes, not a lane). Left unset deliberately, not forgotten.
+# review_rounds registers no adapter and no python job (its surface is inbox kinds, commands, a CLI, routes and
+# a doctor check), so neither `lane` nor `python_job` has anything to name - CI drives steps 1-3 (found as
+# installed, loaded, G5) plus this package's own suite, the same shape a sibling package's pyproject.toml
+# documents for its own CI-unneeded settings. `config` is also left unset: every `plugins.review_rounds` field
+# has a neutral default (config.py), so the plugin check's `config` step already passes against an empty section
+# with no fixture needed. Left unset deliberately, not forgotten.

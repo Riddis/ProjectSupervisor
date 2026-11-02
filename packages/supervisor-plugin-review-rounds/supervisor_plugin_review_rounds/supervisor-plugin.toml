@@ -4,6 +4,17 @@ identity = "review_rounds"
 version = "0.1.0"
 framework = ">=2.0,<3"
 
+[provides]
+commands = ["review.set_verdict", "review.submit"]
+inbox_kinds = ["round", "labelling"]
+cli = ["review"]
+doctor_checks = ["review_rounds"]
+
+[legacy_ids]
+commands = ["review.set_verdict", "review.submit"]
+inbox_kinds = ["round", "labelling"]
+cli = ["review"]
+
 [config]
 section = "plugins.review_rounds"
 schema = "supervisor_plugin_review_rounds.config:Settings"
