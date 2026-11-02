@@ -26,9 +26,11 @@ instead of a failed attempt.
   on), so every existing fallback caller treats a lapsed login exactly like exhausted capacity.
   `Supervisor._lane_login_failed()` hands the result off before it reaches the ordinary failure path: a review
   just closes and is redispatched by `pending()` next tick; a delivery (or diagnosis) with a fallback reroutes
-  to it (`reroute()`, now taking optional job overrides and a `kind`, shared with `_repair_reroutes()` so a
-  torn-write recovery can never lose a diagnosis's own kind and extras either); one with none waits on the same
-  lane through the ordinary continuation path. Every branch alike raises one owner inbox question per engine
+  to it (`reroute()`, now taking optional job overrides and a `kind`; the lane, those overrides and the
+  same-vendor flag are all written in the one record update that closes the refused attempt, and
+  `_repair_reroutes()` replays them from it, so a crash before the successor lands can never launch the
+  fallback lane with the role profile's own model, without the flag, or as a plain delivery attempt of a
+  diagnosis); one with none waits on the same lane through the ordinary continuation path. Every branch alike raises one owner inbox question per engine
   per login window (`Supervisor._notify_login_required()`, deduped so a lapsed login that is never renewed
   does not stack a second item on every later failure) - the owner hears about the credential within one tick,
   not only once continuations run out. An adapter with no `engine` of its own (a plugin lane) is treated as "no
