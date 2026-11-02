@@ -3,6 +3,25 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.1.1 — 2026-11-02
+
+**Migration:** none. The new record `state/runtime/own_writes.jsonl` is created on the first Settings edit;
+an older framework ignores it.
+
+- **Fixed: an owner's Settings edit during a delivery failed that delivery, and the retry reverted the edit.**
+  Verification diffs the whole working tree from the attempt's dispatch to its delivery, so a Control Center
+  Settings change to `config/routing.yaml` made while an agent ran was reported as the agent's "undeclared write
+  outside owned paths". The retry was told so and put the old values back, which failed the same way. The
+  supervisor now records each of its own writes to the tree (path, sha256 before and after) before making it
+  (`verify.record_own_write`; `settings.update` is the writer today), and verification skips a change those
+  recorded writes alone explain: a chain of them from the snapshot's content to the content now. An agent's own
+  edit of the same file, before or after the owner's, or an agent putting the owner's values back, breaks the
+  chain and still fails.
+- **Fixed: the Capacity page showed Claude's `seven_day_overage_included` window by its raw key.** It is the
+  window Claude reports once Fable runs, now labelled "Fable". Its gating is unchanged: a label other than
+  "5-hour" or "7-day" takes no owner floor, so it holds dispatch only when exhausted, and the 7-day floor is not
+  applied to it a second time.
+
 ## 2.1.0 — 2026-10-31
 
 Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap now

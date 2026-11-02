@@ -143,3 +143,11 @@ def test_the_overview_names_what_holds_dispatch(lay):
     assert seven["gating"] and seven["floor"] == 20 and seven["floor_setting"] == "capacity.claude.weekly_gate_percent"
     html = testing.ui_client(lay).get("/overview").text
     assert "at or below the 20% floor" in html and "capacity.claude.weekly_gate_percent" in html
+
+
+def test_the_overage_window_is_labelled_and_takes_no_owner_floor():
+    """Claude reports `seven_day_overage_included` beside `seven_day` once Fable runs; the Capacity page showed the
+    raw key. It is labelled Fable, not "7-day", so the owner's 7-day floor does not gate on it a second time."""
+    assert up.window_label("claude", "seven_day_overage_included") == "Fable"
+    assert up.window_floor("claude", {"name": "seven_day_overage_included"}) == (0, None)
+    assert up.window_floor("claude", {"name": "seven_day"})[1] == "weekly_gate_percent"

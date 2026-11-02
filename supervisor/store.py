@@ -34,9 +34,13 @@ def rewrite_text(path: Path, text: str) -> bool:
     text = text.replace("\r\n", "\n")
     if path.exists() and raw.decode("utf-8").replace("\r\n", "\n") == text:
         return False
-    newline = "\r\n" if b"\r\n" in raw else "\n"
-    atomic_write_text(path, text.replace("\n", newline), newline="", keep=True)
+    atomic_write_text(path, as_written(raw, text), newline="", keep=True)
     return True
+
+
+def as_written(raw: bytes, text: str) -> str:
+    """`text` as rewrite_text() stores it over a file whose bytes are `raw`: in that file's line-ending style."""
+    return text.replace("\r\n", "\n").replace("\n", "\r\n" if b"\r\n" in raw else "\n")
 
 
 def newline_of(path: Path) -> str:
