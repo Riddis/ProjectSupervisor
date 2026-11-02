@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from supervisor import diagnosis, escalation, inbox, jobs, tasks
+from supervisor import diagnosis, escalation, inbox, jobs, scheduler, tasks
 from supervisor.adapters.base import Result
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
@@ -628,6 +628,82 @@ def test_a_torn_diagnosis_reroute_is_repaired_with_its_own_kind_and_extras_not_a
     assert new.get("diag_role") == "code_review" and new.get("diag_level") == "manager"
     assert new.get("diag_signature") == "sigF" and new.get("rerouted_from") == rec["attempt_id"]
     assert jobs.read(layout, rec["attempt_id"]).get("continued") is True
+
+
+def torn_reroute(sup, layout, rec, lane, **kw):
+    """reroute() interrupted between the refused record's own REROUTED write and its successor's — the exact
+    crash point _repair_reroutes() exists to recover. Whatever the live call held only in memory is gone; only
+    what that one set_phase() made durable can reach the repaired attempt."""
+    with patch.object(sup, "dispatch", side_effect=_raise):
+        with pytest.raises(RuntimeError):
+            sup.reroute(rec, lane, "login required (login_required: run the login)", **kw)
+    return jobs.read(layout, rec["attempt_id"])
+
+
+def dispatch_recording_calls(layout, tid, calls):
+    """fake_dispatch_recording that also keeps the Task it was given: a job override lives in `task.job`, which
+    the adapter reads in prepare(), not in the extras the job record carries."""
+    record = fake_dispatch_recording(layout, tid, [])
+
+    def fn(task, adapter_name, **kwargs):
+        new = record(task, adapter_name, **kwargs)
+        calls.append((task, adapter_name, new))
+        return new
+    return fn
+
+
+def test_a_torn_delivery_reroute_is_repaired_with_the_fallback_s_own_job_and_flag(layout):
+    """D-012 F-B's headline case: the owner role's lane reports a lapsed login and reroute() hands the task to
+    the role's fallback with the fallback's own model/effort and the same-vendor flag — then the process stops
+    before the successor lands. Those overrides and that flag only ever existed in a task view reroute() never
+    persisted and in extras it passed straight to dispatch(), so the repaired attempt launched on the fallback
+    lane with the ROLE profile's model and no flag: it fails, runs the ordinary worker_failed path and spends a
+    revision slot — the "no attempt spent" guarantee of this release, lost in the one path that exists to
+    recover a reroute."""
+    make_task(layout, "F", owner_role="code_review")
+    tasks.set_status(layout, "F", "IN_PROGRESS")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = jobs.write(layout, {"attempt_id": "F.a1", "task_id": "F", "adapter": "codex_cli", "phase": "RUNNING",
+                              "spec": {"kind": "delivery"}, "handle": {}})
+    refused = torn_reroute(sup, layout, rec, "claude_cli", job_overrides={"model": "opus", "effort": "high"},
+                           extra={"same_vendor": True})
+    assert refused["result"] == "REROUTED" and not refused.get("continued")
+    calls = []
+    fresh = Supervisor(layout, sleep_s=0)                  # a new process: nothing of the reroute is in memory
+    with patch.object(fresh, "dispatch", side_effect=dispatch_recording_calls(layout, "F", calls)):
+        fresh.repair_continuations()
+    assert len(calls) == 1
+    task, lane, new = calls[0]
+    assert lane == "claude_cli"
+    job = scheduler.job_spec(task)                     # what the adapter reads in prepare()
+    assert job["model"] == "opus" and job["effort"] == "high"   # the fallback's keys, not the role profile's
+    assert job["adapter"] == "claude_cli"
+    assert new.get("same_vendor") is True                                 # flagged exactly like a fallback review
+    assert new.get("rerouted_from") == "F.a1"
+    assert jobs.read(layout, "F.a1").get("continued") is True
+
+
+def test_a_torn_diagnosis_reroute_is_repaired_with_the_same_vendor_flag_too(layout):
+    """The same loss, one shape over: a diagnosis reroute's successor kept its kind and diag_* extras after
+    `fe7a3ae` but still lost the same-vendor flag the live path passed to dispatch()."""
+    make_task(layout, "F", owner_role="code_review")
+    tasks.set_status(layout, "F", "IN_PROGRESS")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = jobs.write(layout, {"attempt_id": "F.a1", "task_id": "F", "adapter": "codex_cli", "phase": "RUNNING",
+                              "spec": {"kind": "diagnosis"}, "handle": {}, "diag_role": "code_review",
+                              "diag_level": "manager", "diag_signature": "sigF", "diag_source": "worker_failed",
+                              "diag_detail": "it broke", "diag_issue": None, "diag_grant": 0})
+    torn_reroute(sup, layout, rec, "claude_cli", extra={"same_vendor": True}, kind="diagnosis")
+    calls = []
+    fresh = Supervisor(layout, sleep_s=0)
+    with patch.object(fresh, "dispatch", side_effect=dispatch_recording_calls(layout, "F", calls)):
+        fresh.repair_continuations()
+    assert len(calls) == 1
+    _task, lane, new = calls[0]
+    assert lane == "claude_cli" and (new.get("spec") or {}).get("kind") == "diagnosis"
+    assert new.get("same_vendor") is True
+    assert new.get("diag_role") == "code_review" and new.get("diag_signature") == "sigF"
+    assert new.get("rerouted_from") == "F.a1"
 
 
 def test_a_torn_diagnosis_reroute_on_a_blocked_task_is_still_marked_continued(layout):

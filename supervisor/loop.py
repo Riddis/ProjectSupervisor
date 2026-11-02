@@ -260,7 +260,11 @@ class Supervisor:
         can tell a reroute whose successor exists from one a crash interrupted before it, and queues only the
         latter; the refused record is never launched on its old lane again. `job_overrides` (a role's fallback's
         own model/effort, D-012 F-B Change 2) are merged into the dispatched job; `extra` (`same_vendor`) reaches
-        the new job record the same way a fallback review's does.
+        the new job record the same way a fallback review's does. Both are written into the SAME set_phase that
+        names the lane (`rerouted_job`, `rerouted_extra`), so a crash before the successor lands leaves them as
+        durable as `rerouted_to` itself: `_repair_reroutes()` replays them instead of launching the fallback lane
+        with the role profile's own model and no flag — an attempt that fails and spends a revision slot, in the
+        one path that exists to recover a reroute.
 
         `kind`, when `diagnosis_mod.KIND`, rebuilds the record's own diagnosis the way `requeue()`'s diagnosis
         branch does (`diagnosis_mod.rebuild`, carrying every `diag_*` extra) instead of re-dispatching the task
@@ -271,7 +275,8 @@ class Supervisor:
         rebuild itself (`_reroute_rebuild`) is shared with `_repair_reroutes()`, so a crash between this
         record's own close and its successor's write recovers exactly the same way."""
         rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result="REROUTED", finished=now_iso(),
-                                 error=reason, rerouted_to=lane)
+                                 error=reason, rerouted_to=lane, rerouted_job=job_overrides or None,
+                                 rerouted_extra=extra or None)
         tasks_mod.log(self.layout, "lane_rerouted", "loop", task=rec["task_id"], attempt=rec["attempt_id"],
                       adapter=rec["adapter"], to=lane, reason=reason)
         tasks_mod.add_note(self.layout, rec["task_id"], f"{rec['attempt_id']}: {rec['adapter']} unavailable ({reason}); "
@@ -280,12 +285,8 @@ class Supervisor:
         if task is None:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
             return jobs_mod.read(self.layout, rec["attempt_id"])
-        if job_overrides and kind != diagnosis_mod.KIND:
-            doc = task.model_dump(mode="json")
-            doc["job"] = {**scheduler.job_spec(task), **job_overrides, "adapter": lane}
-            task = Task.model_validate(doc)
         self.dispatch(task, lane, note=f"rerouted from {rec['adapter']}", kind=kind,
-                      extra={"rerouted_from": rec["attempt_id"], **kind_extra, **(extra or {})})
+                      extra={"rerouted_from": rec["attempt_id"], **kind_extra})
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
         return jobs_mod.read(self.layout, rec["attempt_id"])
 
@@ -293,13 +294,28 @@ class Supervisor:
         """The task and extras a reroute's successor dispatches with, by `kind` - diagnosis rebuilds via
         `diagnosis_mod.rebuild` (it tolerates a BLOCKED task on purpose, the common status for one, and returns
         None only once the task has moved past it: COMPLETE or CANCELLED) and carries its `diag_*` extras;
-        every other kind just reloads the task, with no extras of its own. Shared by `reroute()` (the live
-        path) and `_repair_reroutes()` (torn-write recovery) so the two can never drift about what a diagnosis
-        reroute's successor carries - a review never reaches either (reroute() is never called for one)."""
+        every other kind just reloads the task, with the fallback's own model/effort (`rerouted_job`) merged
+        into its job block. Both shapes carry the dispatch extras the reroute resolved (`rerouted_extra`:
+        D-012 F-B's same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
+        it in the one set_phase that named the lane, so `reroute()` (the live path) and `_repair_reroutes()`
+        (torn-write recovery) can never drift about what a reroute's successor carries - not its kind, not its
+        extras and not its job. A review never reaches either (reroute() is never called for one).
+
+        `rerouted_job` is not applied to a diagnosis, matching `requeue()`'s own diagnosis branch (its prompt
+        and lane keys come from the diagnosis itself, not the task's job block)."""
+        extra = dict(rec.get("rerouted_extra") or {})
         if kind == diagnosis_mod.KIND:
             task = diagnosis_mod.rebuild(self.layout, rec)
-            return task, ({k: rec[k] for k in rec if k.startswith("diag_")} if task is not None else {})
-        return tasks_mod.load(self.layout, rec["task_id"]), {}
+            if task is None:
+                return None, {}
+            return task, {**{k: rec[k] for k in rec if k.startswith("diag_")}, **extra}
+        task = tasks_mod.load(self.layout, rec["task_id"])
+        overrides = rec.get("rerouted_job") or {}
+        if overrides:
+            doc = task.model_dump(mode="json")
+            doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": rec["rerouted_to"]}
+            task = Task.model_validate(doc)
+        return task, extra
 
     def _ensure_in_progress(self, task_id: str, note: str) -> None:
         t = tasks_mod.load(self.layout, task_id)
@@ -783,7 +799,12 @@ class Supervisor:
         own kind and every `diag_*` extra), and a task that was BLOCKED, as a diagnosis more commonly leaves it,
         hit the delivery branch's `continue` before ever reaching the `continued` write and was revisited,
         unrepaired, on every later tick. A delivery reroute keeps its own, narrower rule unchanged: it is only
-        ever redispatched while the task is still IN_PROGRESS."""
+        ever redispatched while the task is still IN_PROGRESS.
+
+        Either shape dispatches the payload the refused record itself carries - the fallback's own model and
+        effort (`rerouted_job`) and the same-vendor flag (`rerouted_extra`) - not a plain attempt on the
+        fallback lane with the role profile's model: that one fails and spends a revision slot, exactly the
+        "no attempt spent" guarantee this path exists to preserve."""
         last = recs[-1]
         for r in recs:
             if r["phase"] != "DONE" or r.get("result") != "REROUTED" or r.get("continued"):
@@ -794,19 +815,17 @@ class Supervisor:
                 if lane not in REGISTRY:
                     continue
                 kind = (r.get("spec") or {}).get("kind", "delivery")
-                if kind == diagnosis_mod.KIND:
-                    task, kind_extra = self._reroute_rebuild(r, kind)
-                    if task is not None:
-                        self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", kind=kind,
-                                      extra={"rerouted_from": r["attempt_id"], **kind_extra})
-                else:
+                if kind != diagnosis_mod.KIND:
                     try:
-                        task = tasks_mod.load(self.layout, task_id)
+                        status = tasks_mod.load(self.layout, task_id).status
                     except Exception:
                         continue
-                    if task.status != TaskStatus.IN_PROGRESS:
+                    if status != TaskStatus.IN_PROGRESS:
                         continue
-                    self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", extra={"rerouted_from": r["attempt_id"]})
+                task, kind_extra = self._reroute_rebuild(r, kind)
+                if task is not None:
+                    self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", kind=kind,
+                                  extra={"rerouted_from": r["attempt_id"], **kind_extra})
             jobs_mod.set_phase(self.layout, r["attempt_id"], "DONE", continued=True)
         return last.get("result") == "REROUTED"
 
