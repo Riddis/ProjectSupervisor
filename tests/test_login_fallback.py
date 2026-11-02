@@ -120,3 +120,28 @@ def test_two_consecutive_login_failures_on_the_same_engine_raise_exactly_one_ded
     text = (items[0]["subject"] + " " + items[0]["summary"]).lower()
     assert "codex" in text and ("login" in text or "credential" in text)
     assert not list(layout.issues.glob("I-*.yaml"))            # still no attempt spent
+
+
+def test_a_diagnosis_job_whose_lane_reports_login_required_reroutes_with_its_own_kind_and_extras_intact(layout):
+    """reroute() used to lose a diagnosis's kind, prompt and diag_* extras: home_lane() kept this path
+    unreachable for anything but a delivery until _lane_login_failed newly reached it for a diagnosis job too.
+    Rerouting it through the plain (delivery-shaped) branch turned a login failure on a diagnosis lane into an
+    extra plain delivery attempt of the task, and the diagnosis decision never happened."""
+    write_routing(layout, {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"})
+    own_task(layout, "E")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = jobs.write(layout, {"attempt_id": "E.a1", "task_id": "E", "adapter": "codex_cli", "phase": "RUNNING",
+                             "spec": {"kind": "diagnosis"}, "handle": {}, "diag_role": "code_review",
+                             "diag_level": "manager", "diag_signature": "sig1", "diag_source": "worker_failed",
+                             "diag_detail": "it broke", "diag_issue": None, "diag_grant": 0})
+    sup._lane_login_failed(rec, Result(status="FAILED", error="login_required: run `codex login` on the workstation"),
+                           "diagnosis")
+    recs = jobs.for_task(layout, "E")
+    assert recs[0]["result"] == "REROUTED" and recs[0]["adapter"] == "codex_cli"
+    new = recs[1]
+    assert new["adapter"] == "claude_cli" and new.get("rerouted_from") == "E.a1"
+    assert (new.get("spec") or {}).get("kind") == "diagnosis"          # not a fresh "delivery" attempt of the task
+    assert new.get("diag_role") == "code_review" and new.get("diag_level") == "manager"
+    assert new.get("diag_signature") == "sig1" and new.get("diag_source") == "worker_failed"
+    assert new.get("diag_detail") == "it broke" and new.get("diag_grant") == 0
+    assert all((r.get("spec") or {}).get("kind", "delivery") != "delivery" for r in recs)
