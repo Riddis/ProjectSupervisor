@@ -583,3 +583,65 @@ def test_a_capped_attempt_s_blocked_status_without_its_manager_dispatch_is_finis
     # manager lane was free, the opposite of what a stalled/stuck task looks like
     assert fresh.sweep_stalled(now=time.time() + 3700) == []
     assert inbox.open_items(layout, "owner") == []
+
+
+# ------------------------------------------------------------------ reroute repair: a REROUTED diagnosis record
+# recovered by repair_continuations() must keep its own kind and diag_* extras, not be redispatched as a bare
+# delivery attempt of the task (reroute()'s own fix for this, 6a03d6a, never reached this second caller), and
+# must not be dropped forever when the task is BLOCKED - diagnosis.rebuild() tolerates that on purpose, it is
+# the common status for one.
+
+
+def reroute_diagnosis_record(layout, tid, attempt_id="F.a1", rerouted_to="claude_cli"):
+    return jobs.write(layout, {"attempt_id": attempt_id, "task_id": tid, "adapter": "codex_cli", "phase": "DONE",
+                              "spec": {"kind": "diagnosis"}, "handle": {}, "result": "REROUTED",
+                              "rerouted_to": rerouted_to, "diag_role": "code_review", "diag_level": "manager",
+                              "diag_signature": "sigF", "diag_source": "worker_failed", "diag_detail": "it broke",
+                              "diag_issue": None, "diag_grant": 0})
+
+
+def fake_dispatch_recording(layout, tid, created):
+    def fn(task, adapter_name, **kwargs):
+        n = len(jobs.for_task(layout, tid)) + 1
+        new = jobs.write(layout, dict(attempt_id=f"{tid}.a{n}", task_id=tid, adapter=adapter_name, phase="RUNNING",
+                                      spec={"kind": kwargs.get("kind", "delivery")}, handle={}, **kwargs.get("extra", {})))
+        created.append(new)
+        return new
+    return fn
+
+
+def test_a_torn_diagnosis_reroute_is_repaired_with_its_own_kind_and_extras_not_a_bare_delivery(layout):
+    """A crash right after reroute() closed the refused record REROUTED but before its successor landed: the
+    task is still IN_PROGRESS (the ordinary case), and repair_continuations() used to redispatch it through
+    `self.dispatch(task, lane, ...)` with no kind - dispatch()'s own default "delivery" - losing the diagnosis
+    prompt and every diag_* extra."""
+    make_task(layout, "F")
+    tasks.set_status(layout, "F", "IN_PROGRESS")
+    rec = reroute_diagnosis_record(layout, "F")
+    sup = Supervisor(layout, sleep_s=0)
+    created = []
+    with patch.object(sup, "dispatch", side_effect=fake_dispatch_recording(layout, "F", created)):
+        sup.repair_continuations()
+    assert len(created) == 1
+    new = created[0]
+    assert (new.get("spec") or {}).get("kind") == "diagnosis"           # not a fresh "delivery" attempt
+    assert new.get("diag_role") == "code_review" and new.get("diag_level") == "manager"
+    assert new.get("diag_signature") == "sigF" and new.get("rerouted_from") == rec["attempt_id"]
+    assert jobs.read(layout, rec["attempt_id"]).get("continued") is True
+
+
+def test_a_torn_diagnosis_reroute_on_a_blocked_task_is_still_marked_continued(layout):
+    """A diagnosis usually runs on a BLOCKED task. repair_continuations()'s status guard used to `continue`
+    past the record's own `continued` write for anything but IN_PROGRESS, so a BLOCKED diagnosis reroute was
+    never marked repaired and repair_continuations() revisited it every tick forever, with the diagnosis
+    decision simply dropped."""
+    make_task(layout, "F")
+    tasks.set_status(layout, "F", "IN_PROGRESS")
+    tasks.set_status(layout, "F", "BLOCKED", note="owner decision needed")
+    rec = reroute_diagnosis_record(layout, "F")
+    sup = Supervisor(layout, sleep_s=0)
+    created = []
+    with patch.object(sup, "dispatch", side_effect=fake_dispatch_recording(layout, "F", created)):
+        sup.repair_continuations()
+    assert jobs.read(layout, rec["attempt_id"]).get("continued") is True   # never stuck REROUTED forever
+    assert len(created) == 1 and (created[0].get("spec") or {}).get("kind") == "diagnosis"
