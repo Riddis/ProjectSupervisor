@@ -1,0 +1,25 @@
+# The plugin's manifest (docs/PLUGIN_STANDARD.md in the framework repo). The framework reads it before importing
+# anything here: keep it in step with what setup() registers (`supervisor plugin check review_rounds` proves it).
+identity = "review_rounds"
+version = "1.0.0"
+framework = ">=2.0,<3"
+
+[provides]
+commands = ["review.set_verdict", "review.submit"]
+inbox_kinds = ["round", "labelling"]
+cli = ["review"]
+doctor_checks = ["review_rounds"]
+routes = ["/review"]
+static = ["review"]
+hooks = ["template_dir"]
+
+[legacy_ids]
+commands = ["review.set_verdict", "review.submit"]
+inbox_kinds = ["round", "labelling"]
+cli = ["review"]
+routes = ["/review"]
+static = ["review"]
+
+[config]
+section = "plugins.review_rounds"
+schema = "supervisor_plugin_review_rounds.config:Settings"

@@ -1,0 +1,27 @@
+.review-toolbar .review-filters,.review-toolbar .review-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin: 0.6rem 0; }
+.review-toolbar label { font-size: 0.8rem; color: #9aa4b2; }
+.review-references img { max-width: 120px; max-height: 120px; }
+.review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 0.8rem; }
+.review-tile { position: relative; border: 1px solid #2a2f37; border-radius: 6px; padding: 0.4rem; background: #14161a; }
+.review-tile:focus { outline: 2px solid #c3abff; }
+.review-tile.has-verdict { border-color: #63d38c; }
+.review-tile.verdict-pending { border-color: #e3c98f; }
+.review-tile.verdict-pending .tile-verdict-badge { color: #e3c98f; }
+.review-tile[data-error] { border-color: #e35d5d; box-shadow: 0 0 0 1px #e35d5d; }
+.review-tile[data-error]::after { content: attr(data-error); display: block; color: #e35d5d; font-size: 0.72rem; font-weight: 600; margin-top: 0.2rem; }
+.review-tile .tile-select { position: absolute; top: 6px; left: 6px; z-index: 1; }
+.review-tile .review-thumb { width: 100%; max-width: 100%; height: auto; max-height: 220px; object-fit: contain; cursor: zoom-in; }
+.review-tile .thumb-missing { padding: 2rem 0; text-align: center; color: #e38f8f; font-size: 0.8rem; }
+.tile-score-block { font-size: 0.72rem; color: #9aa4b2; display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
+.tile-score-block .score-kv { background: #1c1f26; border-radius: 3px; padding: 0 0.25rem; }
+.tile-verdict-badge { font-weight: 600; font-size: 0.78rem; margin-top: 0.3rem; color: #e6e6e6; }
+.tile-compare { margin-top: 0.3rem; font-size: 0.72rem; padding: 2px 6px; }
+.tile-tags { font-size: 0.68rem; color: #9aa4b2; display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.3rem; }
+.tile-tags .tile-tag { display: inline-flex; align-items: center; gap: 2px; }
+.tile-note { font-size: 0.72rem; margin-top: 0.2rem; min-height: 1em; }
+.review-overlay { position: fixed; inset: 0; background: rgba(5, 6, 9, 0.9); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.review-overlay[hidden] { display: none; }
+.review-overlay img { max-width: 90vw; max-height: 90vh; }
+#compare-images { display: flex; gap: 1rem; }
+#compare-images img { max-width: 44vw; max-height: 85vh; }
+.review-modify-box { background: #14161a; border: 1px solid #2a2f37; border-radius: 6px; padding: 1rem; }

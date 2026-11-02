@@ -1,0 +1,20 @@
+# The plugin's manifest (docs/PLUGIN_STANDARD.md in the framework repo). The framework reads it before importing
+# anything here: keep it in step with what setup() registers (`supervisor plugin check local_llm` proves it).
+identity = "local_llm"
+version = "1.0.0"
+framework = ">=2.0,<3"
+
+[provides]
+adapters = ["local_llm"]
+doctor_checks = ["ollama"]
+
+[legacy_ids]
+doctor_checks = ["ollama"]
+
+[config]
+section = "plugins.local_llm"
+schema = "supervisor_plugin_local_llm.config:Settings"
+
+[requires]
+resources = ["gpu"]
+services = ["http://127.0.0.1:11434"]

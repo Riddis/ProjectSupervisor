@@ -1,0 +1,21 @@
+# The plugin's manifest (docs/PLUGIN_STANDARD.md in the framework repo). The framework reads it before importing
+# anything here: keep it in step with what setup() registers (`supervisor plugin check comfy` proves it).
+identity = "comfy"
+version = "1.0.0"
+framework = ">=2.0,<3"
+
+[provides]
+adapters = ["comfy"]
+doctor_checks = ["comfy_install", "comfy_api", "ffmpeg", "gpu"]
+hooks = ["overview_panel"]
+
+[legacy_ids]
+doctor_checks = ["ffmpeg", "gpu"]
+
+[config]
+section = "plugins.comfy"
+schema = "supervisor_plugin_comfy.config:Settings"
+
+[requires]
+resources = ["gpu"]
+services = ["http://127.0.0.1:8188"]

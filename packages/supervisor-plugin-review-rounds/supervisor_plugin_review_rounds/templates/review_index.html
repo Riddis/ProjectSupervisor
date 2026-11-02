@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Review — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Review rounds <span class="badge">{{ open_count }} open</span></h2>
+  {% if not rows %}<p class="muted">No rounds or labelling sessions yet.</p>{% else %}
+  <table class="tasks-table"><thead><tr><th>Item</th><th>Kind</th><th>Subject</th><th>Status</th><th>Progress</th></tr></thead><tbody>
+  {% for r in rows %}<tr><td><a href="/review/{{ r.id }}">{{ r.id }}</a></td><td>{{ r.kind }}</td><td>{{ r.subject }}</td><td>{{ r.status }}</td>
+    <td>{% if r.progress %}{{ r.progress[0] }} / {{ r.progress[1] }}{% else %}&mdash;{% endif %}</td></tr>{% endfor %}
+  </tbody></table>{% endif %}
+</section>
+{% endblock %}
