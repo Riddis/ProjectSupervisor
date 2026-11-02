@@ -1,10 +1,12 @@
 import pytest
 
-from supervisor import inbox, jobs, tasks
+from supervisor import escalation, inbox, jobs, tasks
 from supervisor.adapters import REGISTRY
+from supervisor.adapters.base import Result
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
+from tests.test_continuation_diagnosis_route import continuation_chain, old_markers
 
 
 def human_task(layout, tid, deps=(), subject="decide X", summary="pick one", allowed=None, for_role="owner"):
@@ -153,6 +155,93 @@ def test_a_human_job_offering_approve_completes_on_it_after_migrate(layout, answ
     sup.once()
     assert tasks.load(layout, "H").status == status
     assert jobs.read(layout, "H.a1")["result"] == status.value
+
+
+# --------------------------------------------------------------------------- F2 regressions: resumable retirement
+# (supervisor/inbox.py's owner delivery-REQUEUE, the same ordering diagnosis.ingest has — docs/releases/2.1.0/
+# F2-resumable-grant-retirement.md)
+
+
+def blocked_delivery_item(layout, tid="T"):
+    """An answered REQUEUE item for a task BLOCKED with its continuation budget exhausted (the diagnosis budget
+    already spent, so the owner's own REQUEUE is what grants a fresh continuation chain — resume == "delivery"):
+    the exact shape apply_decision() acts on and a replay re-applies (answer.py's `answer()` writes `status:
+    answered` durably, then calls apply_decision() as a second, separate step — a crash between the two, or a
+    retried apply_decision() call, passes this same dict again)."""
+    make_task(layout, tid)
+    tasks.set_status(layout, tid, "IN_PROGRESS")
+    rec = continuation_chain(layout, tid)
+    tasks.set_status(layout, tid, "BLOCKED",
+                     note=f"{rec['attempt_id']}: capacity limit after 3 continuations — owner decision needed")
+    Supervisor(layout, sleep_s=0).request_owner_decisions()
+    item = next(i for i in inbox.all_items(layout) if i.get("task_id") == tid)
+    assert item["resume"] == "delivery"
+    return {**item, "status": "answered", "answer": {"response": "REQUEUE"}}
+
+
+def test_a_crash_before_retirement_starts_in_the_owner_requeue_path_is_finished_on_replay(layout, monkeypatch):
+    """supervisor/inbox.py:369/380-381 has the same ordering diagnosis.py:301-303 did (F2): a crash between
+    `reset_retries` and `grant_continuations` must not leave the old markers counted forever against the grant a
+    replayed REQUEUE already spent."""
+    answered = blocked_delivery_item(layout, "T")
+    real_grant = escalation.grant_continuations
+    monkeypatch.setattr(escalation, "grant_continuations", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("crash before retirement")))
+    with pytest.raises(RuntimeError):
+        inbox.apply_decision(layout, answered)
+    assert escalation._load(layout, "T").get("resets") == 1        # the reset is already durable
+    assert len(old_markers(layout, "T")) == 3                       # nothing retired yet
+    assert tasks.load(layout, "T").status == TaskStatus.BLOCKED     # never reached READY with retirement unfinished
+    monkeypatch.setattr(escalation, "grant_continuations", real_grant)
+    out = inbox.apply_decision(layout, answered)                    # replay: the same item re-applied
+    assert out["resumed"] == "delivery"
+    assert escalation._load(layout, "T").get("resets") == 1         # still one grant, never a second
+    assert old_markers(layout, "T") == []                            # the replay finished retiring every old marker
+    assert tasks.load(layout, "T").status == TaskStatus.READY
+
+
+def test_a_crash_partway_through_the_retirement_loop_in_the_owner_requeue_path_is_finished_on_replay(layout, monkeypatch):
+    """escalation.py:250-253's per-record loop interrupted after retiring some but not all markers (F2), reached
+    through the owner REQUEUE path this time: a replay must finish retiring exactly the rest."""
+    answered = blocked_delivery_item(layout, "T")
+    real_set_phase = jobs.set_phase
+    calls = {"n": 0}
+
+    def flaky_set_phase(layout_, attempt_id, phase, **fields):
+        if str(fields.get("deferred_reason", "")).startswith("reset ("):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("crash partway through retirement")
+        return real_set_phase(layout_, attempt_id, phase, **fields)
+    monkeypatch.setattr(jobs, "set_phase", flaky_set_phase)
+    with pytest.raises(RuntimeError):
+        inbox.apply_decision(layout, answered)
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert len(old_markers(layout, "T")) == 2                       # exactly one of the three was retired
+    assert tasks.load(layout, "T").status == TaskStatus.BLOCKED
+    monkeypatch.setattr(jobs, "set_phase", real_set_phase)
+    out = inbox.apply_decision(layout, answered)
+    assert out["resumed"] == "delivery"
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert old_markers(layout, "T") == []
+
+
+def test_owner_requeue_replay_after_new_continuations_already_exist_retires_only_the_old_grant(layout):
+    """F2's third gap in the owner REQUEUE path: once the fresh chain has earned its own continuation, a
+    late-arriving replay of the grant decision must retire none of it."""
+    answered = blocked_delivery_item(layout, "T")
+    out = inbox.apply_decision(layout, answered)
+    assert out["resumed"] == "delivery"
+    assert escalation._load(layout, "T").get("resets") == 1
+    assert old_markers(layout, "T") == []                            # the grant fully retired the old chain
+    sup = Supervisor(layout, sleep_s=0)
+    n = len(jobs.for_task(layout, "T")) + 1
+    rec2 = jobs.write(layout, {"attempt_id": f"T.a{n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
+                              "spec": {"kind": "delivery"}, "handle": {}})
+    sup.requeue(rec2, Result(status="DEFERRED", error="still waiting"), "capacity limit")
+    fresh = old_markers(layout, "T")
+    assert len(fresh) == 1                                           # the fresh chain's own continuation
+    escalation.grant_continuations(layout, "T", reason="late-arriving replay")
+    assert old_markers(layout, "T") == fresh                         # the fresh marker is untouched
 
 
 def test_crash_before_submit_redispatches_same_attempt(layout):

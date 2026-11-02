@@ -378,11 +378,10 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
                                      note=f"{item['id']}: owner re-queued the review (review budget reset)")
             else:
                 if resume == "delivery":
-                    for r in jobs_mod.for_task(layout, task_id):
-                        reason = str(r.get("deferred_reason", ""))
-                        if reason.startswith("continuation"):
-                            jobs_mod.set_phase(layout, r["attempt_id"], r["phase"],
-                                               deferred_reason=f"reset by owner ({item['id']}): {reason}")
+                    # Called every time regardless of whether this call's own reset_retries() made a fresh grant
+                    # (F2): grant_continuations() is generation-scoped, so a replay only finishes retiring an
+                    # earlier generation's own markers and never touches one the current chain already created.
+                    escalation_mod.grant_continuations(layout, task_id, reason=f"owner REQUEUE ({item['id']})")
                 tasks_mod.set_status(layout, task_id, TaskStatus.READY, actor="owner",
                                      note=f"{item['id']}: owner re-queued the task")
             out["resumed"] = resume

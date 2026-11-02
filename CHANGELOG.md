@@ -15,6 +15,168 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   `*.dist-info/METADATA` member matched: it now prefers the member whose directory stem normalises to the file
   name's distribution, and returns `None` only when none does.
 
+## 2.2.0 — 2026-11-02
+
+Phase 2's F-B (`docs/plan/PHASE2.md` §2, D-012 "Limits of the framework today"): the fallback now covers a
+role's own tasks, not only a review of another role's delivery, and a failed login counts as unavailable
+instead of a failed attempt.
+
+**Migration:** none.
+
+- **Fixed: astra's own release-review tasks waited for Codex however long it took, with no fallback.**
+  `review.lane_for()` always re-derived the adapter from the role's own `roles.<role>.adapter`, so it could only
+  ever answer "is this role's configured lane available" - not "is the lane this job actually resolved to
+  (`job.adapter`, a `cost_lanes` override) available". It now takes an optional `primary` adapter to ask about
+  instead. `scheduler.plan()` asks it for every delivery pick: a capacity deferral with a configured fallback
+  runs the task on it, flagged `same_vendor` exactly as a fallback review already is, with the fallback's own
+  model and effort (`Supervisor.dispatch_delivery()`); a role with none still just waits, token-free, as before.
+- **Fixed: a lapsed login failed the task and spent a retry instead of handing off to the fallback.**
+  `adapters/claude_cli.py` and `adapters/codex_cli.py` already told a real authentication failure apart from an
+  answer that merely mentions a login (`AUTH_FAILURE_RE` matched only against diagnostics); that `FAILED
+  login_required: ...` result still reached the ordinary retry/escalation path. `capacity.mark_login_failed()`
+  now records it the way a CLI-reported usage limit already is (a synthetic window `capacity.require()` raises
+  on), so every existing fallback caller treats a lapsed login exactly like exhausted capacity.
+  `Supervisor._lane_login_failed()` hands the result off before it reaches the ordinary failure path: a review
+  just closes and is redispatched by `pending()` next tick; a delivery (or diagnosis) with a fallback reroutes
+  to it (`reroute()`, now taking optional job overrides and a `kind`; the lane, those overrides and the
+  same-vendor flag are all written in the one record update that closes the refused attempt, and
+  `_repair_reroutes()` replays them from it, so a crash before the successor lands can never launch the
+  fallback lane with the role profile's own model, without the flag, or as a plain delivery attempt of a
+  diagnosis); one with none waits on the same lane through the ordinary continuation path. Every branch alike raises one owner inbox question per engine
+  per login window (`Supervisor._notify_login_required()`, deduped so a lapsed login that is never renewed
+  does not stack a second item on every later failure) - the owner hears about the credential within one tick,
+  not only once continuations run out. An adapter with no `engine` of its own (a plugin lane) is treated as "no
+  fallback configured" rather than asked about through `lane_for()`, which would otherwise reroute it straight
+  back to the lane that just refused it.
+- **Fixed: a continuation of a fallen-back attempt (a usage limit, a time limit, a `PARTIAL` handoff, and the
+  torn-write repair of each, plus a fallback review's own rebuild) reloaded the task fresh and lost the
+  fallback's model, effort and `same_vendor` flag, landing on the fallback lane with the role profile's own
+  model it cannot run.** `review.fallback_overrides(rec)` reads the fallback's resolved `model`/`effort` and
+  `same_vendor` back off the record `dispatch_delivery()`/`review.dispatch()` already wrote - what the attempt
+  actually ran with, not the current config - and `requeue()`'s delivery branch, `repair_continuations()`'s
+  torn-write recovery of it, and `review.rebuild()` all merge it into the rebuilt task and the continuation's
+  note, the same way `_reroute_rebuild()` already carries a reroute's own payload.
+- **Fixed: a `fallback:` block without `flag: same_vendor` kept its model and effort on a review and a login
+  reroute, but dropped them on a role-owned delivery - and on every continuation of either.**
+  `dispatch_delivery()` now applies a non-empty override whenever the lane matches, flag or no flag, the same
+  rule the other two callers already followed; `fallback_overrides()`'s predicate is "this record carries
+  `same_vendor` at all" (present, `True` or `False`), not the flag's own truth value, so a flag-less fallback's
+  continuation is told apart from an ordinary, non-fallback attempt - the one case the first fix left open.
+- `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
+  plugin package's tests, read against the other two) found the gap list already empty; this release confirms
+  it again and ships the two fixes above instead.
+
+## 2.1.1 — 2026-11-02
+
+**Migration:** none. The new record `state/runtime/own_writes.jsonl` is created on the first Settings edit;
+an older framework ignores it.
+
+- **Fixed: an owner's Settings edit during a delivery failed that delivery, and the retry reverted the edit.**
+  Verification diffs the whole working tree from the attempt's dispatch to its delivery, so a Control Center
+  Settings change to `config/routing.yaml` made while an agent ran was reported as the agent's "undeclared write
+  outside owned paths". The retry was told so and put the old values back, which failed the same way. The
+  supervisor now records each of its own writes to the tree (path, sha256 before and after) before making it
+  (`verify.record_own_write`; `settings.update` is the writer today), and verification skips a change those
+  recorded writes alone explain: a chain of them from the snapshot's content to the content now. An agent's own
+  edit of the same file, before or after the owner's, or an agent putting the owner's values back, breaks the
+  chain and still fails.
+- **Fixed: the Capacity page showed Claude's `seven_day_overage_included` window by its raw key.** It is the
+  window Claude reports once Fable runs, now labelled "Fable". Its gating is unchanged: a label other than
+  "5-hour" or "7-day" takes no owner floor, so it holds dispatch only when exhausted, and the 7-day floor is not
+  applied to it a second time.
+
+## 2.1.0 — 2026-10-31
+
+Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap now
+goes through the manager's diagnosis route instead of around it, and the first command that closes an issue
+record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps before the tag — two CI jobs red
+on the exact reviewed head, `issue.resolve` accepting a path outside `state/issues/`, a continuation grant that
+recovery could bypass after a manager requeue, and the diagnosis `job_fix` interface this release no longer
+carries (R1) — each closed by its own commit before round 2. Round-2 review
+(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found three more gaps in those same fixes — a continuation grant
+whose retirement a crash-and-replay could leave unfinished or redo, a capped attempt a crash could strand before
+its own escalation was durable, and a manager-to-architect hand-off that lost its grant generation and reused an
+already-spent architect answer — each closed by its own commit too
+(`docs/releases/2.1.0/F2-continuation-retirement.md` through `F4-architect-grant-generation.md`); a fourth gap in
+that round (F1, a Windows command form that still let a diagnosis replace the program being run) was in the same
+`job_fix` interface rounds 1 through 8 kept finding gaps in, and is moot now that the interface is gone. What
+follows already describes the corrected shape after both rounds, not either round's gap. *Since D-018
+(2026-11-01)* the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
+
+**Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
+to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
+`supervisor doctor`, start. An issue resolved under 2.1.0, or a continuation job record carrying its grant
+generation (`continuation_grant`), is plain state either way; 2.0.0 reads it as an ordinary issue and job field
+it already understood.
+
+- **Changed: continuations exhausted routes through the manager's diagnosis, not straight to the owner.**
+  `Supervisor.requeue()`'s `MAX_CONTINUATIONS` branch now calls `escalation.record_failure(..., retry=False)`
+  instead of setting the task `BLOCKED` with an owner-decision note itself, so the diagnosis route's own budget
+  (two requeues, then the owner) governs it like every other stopped retry chain.
+- **Changed: a manager-granted continuation chain is explicit, its retirement is resumable, and a capped attempt
+  stays recoverable until its escalation is durable.** A manager `requeue` tags every continuation attempt it
+  dispatches with the grant generation it belongs to (`continuation_grant`) and retires every marker from an
+  older generation, read fresh on each call rather than gated on whether that call happened to be the one that
+  made the grant — so a crash between the grant's own durable write and its retirement loop, or partway through
+  that loop, is finished by whichever later replay (a fresh `settle()`, a re-applied owner delivery-REQUEUE
+  decision) reaches it next, never under-retiring an old marker or over-retiring a fresh one. `Supervisor.
+  repair_continuations` enforces the same `MAX_CONTINUATIONS` cap `requeue()` does, so a torn write landing
+  exactly at the cap boundary is repaired as a capped stop, not redispatched past it; both of `loop.py`'s cap
+  branches (the ordinary cap and the recovery-cap) now leave a crash between marking the attempt handled and
+  recording its escalation in a shape plain `reconcile()` finds and finishes on its own, instead of a terminal
+  job record no recovery path ever revisits. That recovery finishes the cap event's own issue, status transition
+  and routing individually and idempotently too, not only reaching `escalation.record_failure()` once: a crash
+  between the issue write and the task's own BLOCKED transition, or between that transition and the manager
+  dispatch that follows it, is also completed by the next plain `reconcile()` — read from the event's own durable
+  record of what it has routed so far, never from the task's current status alone (round-3 review F6). A
+  deliberate later cancellation is left untouched because CANCELLED is outside the statuses this recovery ever
+  revisits; a deliberate later Hold is told apart by its own durable identity recorded on the task itself
+  (`held`), not inferred from the event's outcome or the task's status, so `ingest()`'s ordinary manager requeue
+  and the recovery guard above both decline to move a held task back to READY, and a Hold on a task the cap
+  already moved to BLOCKED still leaves a durable history entry rather than a silent no-op (round-4 review F9).
+  The decline is itself a recorded action, not the manager's proposed `requeue`: the job record's own
+  `diag_action` is corrected to `"held"`, so it costs no `DIAGNOSIS_BUDGET` slot and is never matched by
+  `already()` as the answer to a later identical escalation under the same grant — the owner's own release is
+  followed by a fresh manager diagnosis again, not nothing until `sweep_stalled`'s grace period (round-5
+  review F12).
+  That identity is now read by every automatic path that can move a task, not only the manager's requeue and the
+  recovery guard: `requeue()`'s own continuation dispatch and `launch()`'s `_ensure_in_progress` call never move
+  a held task off BLOCKED, and the one launch gate (`gate.check`) refuses a `delivery` launch outright while the
+  task is held, so a continuation already queued before or during a Hold stays `PREPARED` — retried every
+  `reconcile()`, never started — until the owner releases it (round-5 review F11).
+  Releasing a Hold is now a question of which actors may decide to, not a name-prefix guess at "the owner": any
+  actor but the loop's own automatic writers (`loop`, `escalation`) clears `held` on a move off BLOCKED, so a
+  manual release through the CLI (or any other actor that does not happen to start with "owner") no longer
+  leaves the task READY with `held` still set for a later automatic requeue to decline against a Hold nobody
+  holds (round-5 review F13).
+  A manager-to-architect hand-off carries the originating diagnosis's
+  own grant generation through `dispatch()`, so a fresh escalation after a spent grant reaches its own architect
+  diagnosis instead of the already-answered record from the generation that granted it; and when `dispatch()`
+  instead finds an architect job already durable for that SAME (signature, level, grant) — a replay of the hand-off
+  itself, interrupted after the architect record was written but before the manager's own `ingest()` call
+  returned, never a stale generation — it now returns that existing record rather than the same `None` an
+  unavailable lane or a spent capacity floor returns, so the replay reuses the existing transition instead of
+  creating a second architect job or reading its own dedup as the lane being unavailable (round-3 review F7).
+  Together these close the race CI's two `G3 suite` jobs hit against the first candidate head (round-1 review R2,
+  R4) and the five replay/recovery/routing gaps round-2 and round-3 review found in that same mechanism (F2, F3,
+  F4, F7): the recorded `escalation -> READY` transition, a generation-scoped retirement boundary, and a
+  generation- and dispatch-state-aware architect hand-off are what now make the grant replay-safe end to end, not
+  only across the one crash point the first attempt covered.
+- **Removed (D-018, 2026-11-01): the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
+  job in 2.1.0. Rounds 1 through 8 of review kept finding gaps in the bounded correction this interface once
+  offered a process job's command (R1, F1, F5, F8, F10, F14-F17) — nine of the release's seventeen findings, for
+  a case seen once (T1-08) whose cause phase 2 already removed. A process job whose own command is wrong now
+  reaches the owner as a question naming the `task.set_job` change the task needs; `task.set_job`
+  (`commands.apply_job`) stays the only writer of a job block. `docs/releases/2.1.0/SCOPE-CUT-job-fix.md` has the
+  removed commits, symbols and files, and the regression that proves a `job_fix` on a `requeue` now changes
+  nothing.
+- **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
+  whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
+  issue (a `severity` field, an `open`/`resolved` status) before any write — a malformed, traversal (`../tasks/T`)
+  or absolute id, or a contained file that is not shaped like an issue, is refused with nothing written (round-1
+  review R3). `ISSUES.md` gained **Resolved by** and **Resolving task** columns and shows the recorded
+  `resolution` text once one is closed.
+
 ## 2.0.0 — 2026-10-29
 
 Phase 5 of the boundary plan (docs/BOUNDARY.md), the framework part, and a rename. "Extension" is now "plugin"

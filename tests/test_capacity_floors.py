@@ -143,3 +143,33 @@ def test_the_overview_names_what_holds_dispatch(lay):
     assert seven["gating"] and seven["floor"] == 20 and seven["floor_setting"] == "capacity.claude.weekly_gate_percent"
     html = testing.ui_client(lay).get("/overview").text
     assert "at or below the 20% floor" in html and "capacity.claude.weekly_gate_percent" in html
+
+
+def test_the_overage_window_is_labelled_and_takes_no_owner_floor():
+    """Claude reports `seven_day_overage_included` beside `seven_day` once Fable runs; the Capacity page showed the
+    raw key. It is labelled Fable, not "7-day", so the owner's 7-day floor does not gate on it a second time."""
+    assert up.window_label("claude", "seven_day_overage_included") == "Fable"
+    assert up.window_floor("claude", {"name": "seven_day_overage_included"}) == (0, None)
+
+
+def test_mark_login_failed_makes_the_engine_unavailable_for_a_recheck_window(lay):
+    """D-012 F-B Change 2: a lane whose login fails counts as unavailable the same way a measured usage window
+    does - every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) sees the same
+    CapacityDeferred with no code of its own, gating only until the recheck (never a hard wait: a real login
+    fixed sooner is seen the next time the CLI actually runs)."""
+    until = capacity.mark_login_failed(lay, ENGINE, "login_required: run `claude /login` on the workstation")
+    assert until > time.time() + 60
+    with pytest.raises(CapacityDeferred) as caught:
+        capacity.require(lay, ENGINE)
+    assert "login required" in str(caught.value).lower()
+    assert caught.value.reset_epoch == pytest.approx(until + 60, abs=5)
+
+
+def test_mark_login_failed_does_not_erase_an_unrelated_measured_window(lay):
+    """record() already merges with whatever the provider last reported (limit_result's own pattern) - a login
+    failure on top of a real usage observation must not make the 7-day window look recovered."""
+    observe(lay, seven_day_used=82.0, five_hour_used=10.0)
+    capacity.mark_login_failed(lay, ENGINE, "login_required: run `claude /login`")
+    windows = {w["name"] for w in capacity.windows(lay)[ENGINE]["windows"]}
+    assert {"seven_day", "login_required"} <= windows
+    assert up.window_floor("claude", {"name": "seven_day"})[1] == "weekly_gate_percent"

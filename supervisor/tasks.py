@@ -454,6 +454,13 @@ class _NoChange(Exception):
     pass
 
 
+# The loop's own automatic writers (F11 already keeps both out of a held task's move off BLOCKED in practice -
+# the gate and `_ensure_in_progress` refuse the launch, `diagnosis.ingest` declines before this runs); named here
+# so release stays a question of *which actors may decide to release a Hold*, not a prefix guess at "the owner"
+# (F13) - anyone else moving the task off BLOCKED is a deliberate, non-automatic decision and releases it.
+AUTOMATIC_ACTORS = frozenset({"loop", "escalation"})
+
+
 def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: str = "system", note: str = "",
                force: bool = False) -> Task:
     """Manual/loop transition following ALLOWED. COMPLETE is refused here (use advance()) unless the OWNER forces it
@@ -473,6 +480,8 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
         if status not in ALLOWED[current] and not force:
             raise TaskError(f"{task_id}: illegal transition {current.value} → {status.value}")
         _record_history(doc, status, actor, note, forced=force)
+        if doc.get("held") and actor not in AUTOMATIC_ACTORS:
+            doc["held"] = None    # any actor but the loop's own (F9/F13) releases a Hold on a move off BLOCKED
         if force:
             doc["forced"] = {"by": actor, "at": store.now_iso(), "to": status.value, "note": note}
     try:
@@ -480,6 +489,28 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
     except _NoChange:
         return load(layout, task_id)
     log(layout, "task_status", actor, task=task_id, **{"from": before.get("status"), "to": status.value}, note=note, forced=force)
+    return t
+
+
+def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
+    """The owner's one explicit stop control (`ui/routes/tasks.py` `/hold`). Durable identity recorded on the
+    task itself (`held`) rather than inferred from status, history order or an escalation event's `routed`
+    flag - none of which can tell an owner's BLOCKED apart from the cap event's own BLOCKED (round-4 F9) - so
+    the automatic path (`diagnosis.ingest`'s requeue, `loop._repair_capped_escalation`'s replay) can read it
+    and refuse to undo it, even when the task is already BLOCKED, where `set_status()`'s same-status write
+    would otherwise be a silent `_NoChange` with no history entry at all."""
+    def fn(doc):
+        current = TaskStatus(doc.get("status") or TaskStatus.NOT_STARTED.value)
+        doc["held"] = {"by": actor, "at": store.now_iso(), "note": note}
+        if current == TaskStatus.BLOCKED:
+            doc.setdefault("history", []).append({"at": store.now_iso(), "by": actor, "from": current.value,
+                                                   "to": current.value, "note": note or "held by owner"})
+        else:
+            if TaskStatus.BLOCKED not in ALLOWED[current]:
+                raise TaskError(f"{task_id}: illegal transition {current.value} → {TaskStatus.BLOCKED.value}")
+            _record_history(doc, TaskStatus.BLOCKED, actor, note or "held by owner")
+    t = _update(layout, task_id, fn)
+    log(layout, "task_held", actor, task=task_id, note=note)
     return t
 
 

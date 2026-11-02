@@ -3,6 +3,8 @@ decision, capacity, one resource-lock holder, N CLI-agent jobs, no overlapping o
 from __future__ import annotations
 
 from . import gate, jobs as jobs_mod, tasks as tasks_mod
+from . import review as review_mod
+from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
 from .models.task import TERMINAL, CostCategory, Task
 from .paths import Layout
@@ -138,6 +140,15 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             # an engineering task moved here could neither read its inputs nor write its artifacts.
             if claude_api.credits_remaining(layout) and claude_api.unattended_eligible(layout, t, job_spec(t)):
                 name = "claude_api"
+        # D-012 F-B Change 1: a role's OWN delivery task falls back the same way a review of someone else's
+        # delivery already does (review.lane_for) - whoever owns this job's lane, not only astra reviewing
+        # another role's work. A role with no configured fallback still just waits here, token-free, exactly as
+        # before: lane_for() re-raises CapacityDeferred and the task is skipped like any other capacity hold.
+        role = job_spec(t).get("role") or t.owner_role
+        try:
+            name, _, _ = review_mod.lane_for(layout, role, primary=name)
+        except CapacityDeferred:
+            continue
         if name not in REGISTRY:
             continue                                   # adapter not built yet, or not registered in this process
         reason = gate.check(layout, t, name, "delivery", running, extra_paths=chosen_paths,

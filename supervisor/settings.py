@@ -84,7 +84,8 @@ def update(layout: Layout, field: str, value: str, actor: str = "owner-ui") -> d
     if not (lo <= typed <= hi):
         raise SettingsError(f"{field} must be between {lo} and {hi}")
     with FileLock(layout.state / ".routing.lock", owner="settings", timeout=5.0):
-        text = path(layout).read_bytes().decode("utf-8")
+        raw = path(layout).read_bytes()
+        text = raw.decode("utf-8")
         doc = yaml.safe_load(text) or {}
         if not isinstance(doc, dict):
             raise SettingsError("config/routing.yaml is not a mapping")
@@ -102,6 +103,13 @@ def update(layout: Layout, field: str, value: str, actor: str = "owner-ui") -> d
             rewritten = yaml_edit.edit(text, new)
         except yaml_edit.EditRefused as exc:
             raise SettingsError(f"config/routing.yaml: {field} was not saved: {exc}") from exc
+        # The owner edits settings while agents run: recorded first, so verification never counts this write as the
+        # running delivery's (supervisor.verify.record_own_write).
+        written = store.as_written(raw, rewritten).encode("utf-8")
+        if written != raw:
+            from . import verify
+            verify.record_own_write(layout, path(layout).relative_to(layout.root).as_posix(), raw, written, actor,
+                                    why=f"settings {field}")
         store.rewrite_text(path(layout), rewritten)
     if keys[0] == "capacity":
         from . import capacity

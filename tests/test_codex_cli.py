@@ -108,12 +108,28 @@ def test_revise_verdict_is_not_complete(layout):
     assert jobs.for_task(layout, "R")[0]["result"] == "PARTIAL" and tasks.load(layout, "R").status != TaskStatus.COMPLETE
 
 
-@pytest.mark.parametrize("mode,needle", [("auth", "login_required"), ("fail", "turn failed"), ("nojson", "no structured")])
+@pytest.mark.parametrize("mode,needle", [("fail", "turn failed"), ("nojson", "no structured")])
 def test_failure_modes(layout, mode, needle):
     rtask(layout, mode)
     run(layout)
     t = tasks.load(layout, "R")
     assert t.status == TaskStatus.FAILED and needle in t.delivery.verification.detail
+
+
+def test_auth_failure_is_unavailable_not_failed(layout):
+    """D-012 F-B Change 2: a lapsed Codex login is unavailable, not a failed attempt - no fallback is configured
+    for code_review in this isolated test project, so it waits token-free on the same lane exactly like a
+    reported usage limit."""
+    rtask(layout, "auth")
+    run(layout)
+    from supervisor import capacity
+    from supervisor._vendor.contract import CapacityDeferred
+    t = tasks.load(layout, "R")
+    assert t.status == TaskStatus.IN_PROGRESS and t.delivery.digest is None
+    recs = jobs.for_task(layout, "R")
+    assert recs[0]["result"] == "DEFERRED" and recs[1]["phase"] == "PREPARED"
+    with pytest.raises(CapacityDeferred):
+        capacity.require(layout, "codex")
 
 
 def test_poll_failure_backs_off(layout, monkeypatch):

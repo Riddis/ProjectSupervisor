@@ -54,12 +54,16 @@ def frozen(layout, paths) -> dict:
         return {"_unhashable": {"error": str(exc)[:200]}}
 
 
-def lane_for(layout, role: str) -> tuple[str, dict, bool]:
-    """(adapter_name, {model/effort overrides}, same_vendor_flag) for a role's review lane. Falls back to the
-    role's configured same-vendor lane on a capacity deferral; propagates CapacityDeferred if there is none."""
+def lane_for(layout, role: str, primary: str | None = None) -> tuple[str, dict, bool]:
+    """(adapter_name, {model/effort overrides}, same_vendor_flag) for this role's lane. `primary`, when given,
+    is the lane already resolved for this job (scheduler.adapter_name: job.adapter, a cost_lanes override, or the
+    role's own roles.<role>.adapter) and is asked about instead of re-deriving the role's configured adapter - the
+    same rule covers a role's OWN tasks, not only a review of another role's delivery (D-012 F-B). Falls back to
+    the role's configured same-vendor lane on a capacity deferral (which a failed login now also raises,
+    capacity.mark_login_failed); propagates CapacityDeferred if there is none."""
     from . import capacity
     prof = _role_profile(layout, role)
-    adapter_name = prof.get("adapter", "claude_cli")
+    adapter_name = prof.get("adapter", "claude_cli") if primary is None else primary
     engine = getattr(REGISTRY.get(adapter_name), "engine", None) if adapter_name in REGISTRY else None
     if engine:
         try:
@@ -70,6 +74,24 @@ def lane_for(layout, role: str) -> tuple[str, dict, bool]:
                 raise
             return fb["adapter"], {k: v for k, v in fb.items() if k in ("model", "effort")}, fb.get("flag") == "same_vendor"
     return adapter_name, {}, False
+
+
+def fallback_overrides(rec: dict) -> dict:
+    """What a continuation of `rec` (the attempt being requeued, repaired or rebuilt) must carry forward: the
+    fallback's own `model`/`effort`, already resolved into the record's own `spec` by the adapter's `prepare()`
+    (D-012 F-B) - not re-derived, since the role's fallback block could change under routing.yaml before the
+    continuation dispatches and a continuation must replay what THIS attempt actually ran on, not whatever the
+    config says now. The predicate is 'this attempt ran on a fallback lane', not the `same_vendor` flag's own
+    truth value: `dispatch_delivery()`/`review.dispatch()`/`_lane_login_failed()`'s reroute write `same_vendor`
+    (True or False, the flag's actual value) into the record only when they actually dispatched on a fallback -
+    never on an ordinary attempt - so its mere PRESENCE on `rec`, not its truthiness, is what tells a flag-less
+    fallback continuation (`same_vendor: False`, still a fallback) apart from an ordinary one (`same_vendor`
+    absent, no fallback at all) (release review 2.2.0 F2). Empty when the key is absent, so an ordinary
+    attempt's continuation is unchanged."""
+    if "same_vendor" not in rec:
+        return {}
+    spec = rec.get("spec") or {}
+    return {k: spec[k] for k in ("model", "effort") if k in spec}
 
 
 def _review_task_view(layout, task: Task, role: str, adapter_name: str, brief: str, overrides: dict) -> Task:
@@ -119,21 +141,29 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     wait, exactly like a primary dispatch deferral — nothing is consumed)."""
     layout = supervisor.layout
     from . import packets as packets_mod
+    prof = _role_profile(layout, role)
     try:
         adapter_name, overrides, same_vendor = lane_for(layout, role)
     except CapacityDeferred:
         return None
+    # A fallback actually ran only when the resolved lane differs from the role's own primary, or it carried
+    # overrides of its own (the "unattended switch" case, no `engine` at all, can only ever match the primary
+    # and so never reaches here with overrides set) - the ordinary, non-fallback dispatch must never carry a
+    # `same_vendor` key at all, or `fallback_overrides()` could no longer tell an ordinary continuation apart
+    # from a flag-less fallback one by the key's presence (release review 2.2.0 F2).
+    fell_back = bool(overrides) or adapter_name != prof.get("adapter", "claude_cli")
     digest = task.delivery.digest
     artifacts = task.paths or task.artifacts
     brief = packets_mod.review_brief(layout, task, digest, artifacts, role)
     review_task = _review_task_view(layout, task, role, adapter_name, brief, overrides)
-    note = f"review:{role}" + (" (same-vendor fallback)" if same_vendor else "")
+    note = f"review:{role}" + (" (same-vendor fallback)" if fell_back and same_vendor else "")
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the
     # content hashes an artifact edited under the reviewer would still collect an ACCEPT for bytes that are gone
     #. loop.dispatch writes it next to the run as frozen_inputs.json for the audit.
-    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review",
-                              extra={"review_role": role, "review_digest": digest, "same_vendor": same_vendor,
-                                     "review_frozen": frozen(layout, artifacts)})
+    extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts)}
+    if fell_back:
+        extra["same_vendor"] = same_vendor
+    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review", extra=extra)
 
 
 def rebuild(layout, rec: dict) -> Task | None:
@@ -148,7 +178,7 @@ def rebuild(layout, rec: dict) -> Task | None:
     adapter_name = (rec.get("spec") or {}).get("adapter", "codex_cli")
     artifacts = task.paths or task.artifacts
     brief = packets_mod.review_brief(layout, task, digest, artifacts, role)
-    return _review_task_view(layout, task, role, adapter_name, brief, {})
+    return _review_task_view(layout, task, role, adapter_name, brief, fallback_overrides(rec))
 
 
 def ingest(supervisor, rec: dict, result) -> None:

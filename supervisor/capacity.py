@@ -1,6 +1,7 @@
 """Capacity facade over the vendored usage_policy: windows per provider under state/runtime, reserve from routing.yaml."""
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 
 import yaml
@@ -96,3 +97,20 @@ def windows(layout: Layout) -> dict:
 def owner_reset(layout: Layout, engine: str, message: str = "") -> list:
     ensure(layout)
     return up.owner_reset(engine, message)
+
+
+LOGIN_RECHECK_S = 900   # back off this long before the primary lane is tried again (D-012 F-B Change 2)
+
+
+def mark_login_failed(layout: Layout, engine: str, message: str) -> float:
+    """Record that `engine`'s CLI reported it is not logged in (adapters' AUTH_FAILURE_RE, diagnostics only):
+    capacity.require() then raises CapacityDeferred for it exactly as a measured usage window would, until the
+    recheck below. A lapsed login reaches every existing lane_for()/gate.check() caller as "unavailable" with no
+    code path of its own - the fallback takes over (or the role waits token-free) the same way it already does
+    for a measured window, and a login fixed sooner than the recheck is seen the next time the lane actually
+    runs (this is a backoff, not a hard wait). `up.record()` merges with whatever else is already known about
+    the engine (limit_result's own pattern), so an unrelated 5-hour/7-day observation is kept, not erased."""
+    ensure(layout)
+    until = time.time() + LOGIN_RECHECK_S
+    up.record(engine, [{"name": "login_required", "used_percent": 100, "reset_epoch": until}], message[:200])
+    return until
