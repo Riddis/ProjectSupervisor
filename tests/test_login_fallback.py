@@ -147,6 +147,24 @@ def test_a_diagnosis_job_whose_lane_reports_login_required_reroutes_with_its_own
     assert all((r.get("spec") or {}).get("kind", "delivery") != "delivery" for r in recs)
 
 
+def test_a_flagless_login_reroute_keeps_the_fallback_s_keys_and_records_same_vendor_false(layout):
+    """T2-108 (release review 2.2.0 finding F2, chief_architect revision): `_lane_login_failed()`'s reroute wrote
+    `extra = {"same_vendor": True} if same_vendor else None`, so a flag-less fallback block's reroute recorded no
+    `same_vendor` key at all - absent, not False - unlike dispatch_delivery()/review.dispatch() (release review
+    2.2.0 F2's own finding 1). An absent key is indistinguishable from an ordinary, non-fallback dispatch, which
+    is exactly the leg of finding 1 the reroute feeds: fallback_overrides()'s "ran on a fallback lane" predicate
+    (`"same_vendor" in rec`) needs the key present and False here, same as the other two callers."""
+    write_routing(layout, {"adapter": "claude_cli", "model": "fable", "effort": "high"})      # no `flag` key
+    own_task(layout, "F")
+    run_until(layout, "F", lambda: tasks.load(layout, "F").status == TaskStatus.COMPLETE)
+    recs = jobs.for_task(layout, "F")
+    assert recs[0]["result"] == "REROUTED" and recs[0]["adapter"] == "codex_cli"
+    assert recs[1]["adapter"] == "claude_cli"
+    assert recs[1].get("same_vendor") is False, f"same_vendor is {recs[1].get('same_vendor')!r}, expected False (not absent)"
+    assert recs[1]["spec"]["model"] == "fable" and recs[1]["spec"]["effort"] == "high"
+    assert tasks.load(layout, "F").status == TaskStatus.COMPLETE
+
+
 def test_a_login_failure_on_an_engine_less_lane_waits_instead_of_rerouting_to_itself(layout):
     """review.lane_for() performs no capacity check at all when the adapter has no `engine` - it returns the
     same adapter straight back. Passing it `primary=rec['adapter']` here would then reroute a login failure
