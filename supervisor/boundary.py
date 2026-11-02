@@ -407,6 +407,24 @@ def _repository_prefix(folder: Path) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
+def _dist_info_distribution(member: str) -> str:
+    """The distribution a `<stem>.dist-info/METADATA` member names, from its directory's `<dist>-<version>` stem."""
+    stem = member.split("/", 1)[0][: -len(".dist-info")]
+    dist_part, _, _version = stem.rpartition("-")
+    return _distribution(dist_part or stem)
+
+
+def _declared_name(text: str) -> str | None:
+    """The first `Name:` header's value in archive metadata, reading CRLF- or LF-terminated lines alike (metadata a
+    Windows setuptools build writes is CRLF; the header match must not anchor on a bare `$`, which only matches
+    before `\\n`)."""
+    for line in text.splitlines():
+        declared = re.fullmatch(r"Name:[ \t]*(\S+)[ \t]*", line.rstrip("\r"))
+        if declared:
+            return declared.group(1)
+    return None
+
+
 def _archive_distribution(archive: Path) -> str | None:
     """The distribution an archive is, or None: a wheel (`<dist>-<version>[-<build>]-<py>-<abi>-<platform>.whl`) or
     an sdist (`<dist>-<version>.tar.gz`) whose file name and own metadata (the wheel's `*.dist-info/METADATA`, the
@@ -418,7 +436,10 @@ def _archive_distribution(archive: Path) -> str | None:
         dist = name[:-4].split("-")[0]
         with zipfile.ZipFile(archive) as z:
             meta = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/METADATA", n)]
-            text = z.read(meta[0]).decode("utf-8", "replace") if len(meta) == 1 else ""
+            match = next((n for n in meta if _dist_info_distribution(n) == _distribution(dist)), None)
+            if match is None and len(meta) == 1:
+                match = meta[0]
+            text = z.read(match).decode("utf-8", "replace") if match is not None else ""
     elif name.endswith(".tar.gz") and "-" in name and tarfile.is_tarfile(archive):
         dist, version = name[:-7].rsplit("-", 1)
         if not _SDIST_VERSION.fullmatch(version):
@@ -429,8 +450,8 @@ def _archive_distribution(archive: Path) -> str | None:
             text = f.read().decode("utf-8", "replace") if f else ""
     else:
         return None
-    declared = re.search(r"^Name:[ \t]*(\S+)[ \t]*$", text, re.MULTILINE)
-    if declared is None or _distribution(declared.group(1)) != _distribution(dist):
+    declared = _declared_name(text)
+    if declared is None or _distribution(declared) != _distribution(dist):
         return None
     return _distribution(dist)
 

@@ -3,6 +3,18 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **Fixed: a package's archive allowance did not read CRLF metadata.** `_archive_distribution` matched the wheel's
+  `METADATA` and the sdist's `PKG-INFO` with `^Name:[ \t]*(\S+)[ \t]*$` under `re.MULTILINE`, which cannot match a
+  CRLF-terminated line (`\r` is not `\S`, and `$` matches only before `\n`); a setuptools-backend wheel built on
+  Windows writes that metadata through a text-mode handle, so the allowance read `None` for it and every word in
+  the archive was a hit, though the same package's folder scanned clean. The declared `Name:` header is now read
+  line by line (`splitlines()`, each line's trailing `\r` stripped), so a `\n`- or `\r\n`-terminated header parses
+  alike. The same function also stopped discarding a wheel's metadata the moment more than one top-level
+  `*.dist-info/METADATA` member matched: it now prefers the member whose directory stem normalises to the file
+  name's distribution, and returns `None` only when none does.
+
 ## 2.0.0 — 2026-10-29
 
 Phase 5 of the boundary plan (docs/BOUNDARY.md), the framework part, and a rename. "Extension" is now "plugin"

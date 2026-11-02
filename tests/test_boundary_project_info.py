@@ -323,6 +323,53 @@ def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monk
     assert hits(boundary.scan_words(sdist, terms, allowed=allowed)) == []
 
 
+# ----------------------------------------------------------- F-WORDS-CRLF: a setuptools build on Windows writes the
+# wheel's dist-info METADATA and the sdist's PKG-INFO through a text-mode handle, so the lines end '\r\n'. The header
+# match anchored on a bare '$', which re.MULTILINE never matches before '\r': the allowance read None and every word
+# in the archive was a hit, though the same package's own folder scanned clean.
+
+def test_the_allowance_holds_for_crlf_wheel_and_sdist_metadata(tmp_path, monkeypatch):
+    import io
+    import tarfile
+    import zipfile
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
+    wheel = tmp_path / "supervisor_plugin_quuxify-1.0.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as z:
+        z.writestr("supervisor_plugin_quuxify/__init__.py", "NAME = 'quuxify'\r\n")
+        z.writestr("supervisor_plugin_quuxify-1.0.0.dist-info/METADATA",
+                    "Metadata-Version: 2.1\r\nName: supervisor-plugin-quuxify\r\nVersion: 1.0.0\r\n")
+    assert hits(boundary.scan_words(wheel, terms, allowed=allowed)) == []
+    sdist = tmp_path / "supervisor-plugin-quuxify-1.0.0.tar.gz"
+    with tarfile.open(sdist, "w:gz") as t:
+        data = b"Metadata-Version: 2.1\r\nName: supervisor-plugin-quuxify\r\nSummary: the quuxify lane\r\n"
+        info = tarfile.TarInfo("supervisor-plugin-quuxify-1.0.0/PKG-INFO")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    assert hits(boundary.scan_words(sdist, terms, allowed=allowed)) == []
+
+
+def test_the_allowance_holds_for_a_wheel_the_real_backend_built(tmp_path, monkeypatch):
+    """A '\\n'-only fixture cannot catch the CRLF defect: build an actual wheel with the setuptools backend
+    (`pip wheel`, no deps) for a fixture package, and let the allowance read whatever bytes that backend wrote."""
+    import subprocess
+    import sys
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
+    src = tmp_path / "src"
+    (src / "supervisor_plugin_quuxify").mkdir(parents=True)
+    (src / "supervisor_plugin_quuxify" / "__init__.py").write_text("NAME = 'quuxify'\n", encoding="utf-8")
+    (src / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["setuptools>=68"]\nbuild-backend = "setuptools.build_meta"\n'
+        '[project]\nname = "supervisor-plugin-quuxify"\nversion = "1.0.0"\n', encoding="utf-8")
+    out = tmp_path / "dist"
+    out.mkdir()
+    subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(out), str(src)],
+                   check=True, timeout=600)
+    wheel = next(out.glob("*.whl"))
+    assert hits(boundary.scan_words(wheel, terms, allowed=allowed)) == []
+
+
 def test_the_words_cli_reads_the_allowance_from_the_local_file(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, ALLOWING)
     root = package(tmp_path, {"packages/supervisor-plugin-quuxify/README.md": "the quuxify lane\n"})
