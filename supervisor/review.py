@@ -54,12 +54,16 @@ def frozen(layout, paths) -> dict:
         return {"_unhashable": {"error": str(exc)[:200]}}
 
 
-def lane_for(layout, role: str) -> tuple[str, dict, bool]:
-    """(adapter_name, {model/effort overrides}, same_vendor_flag) for a role's review lane. Falls back to the
-    role's configured same-vendor lane on a capacity deferral; propagates CapacityDeferred if there is none."""
+def lane_for(layout, role: str, primary: str | None = None) -> tuple[str, dict, bool]:
+    """(adapter_name, {model/effort overrides}, same_vendor_flag) for this role's lane. `primary`, when given,
+    is the lane already resolved for this job (scheduler.adapter_name: job.adapter, a cost_lanes override, or the
+    role's own roles.<role>.adapter) and is asked about instead of re-deriving the role's configured adapter - the
+    same rule covers a role's OWN tasks, not only a review of another role's delivery (D-012 F-B). Falls back to
+    the role's configured same-vendor lane on a capacity deferral (which a failed login now also raises,
+    capacity.mark_login_failed); propagates CapacityDeferred if there is none."""
     from . import capacity
     prof = _role_profile(layout, role)
-    adapter_name = prof.get("adapter", "claude_cli")
+    adapter_name = prof.get("adapter", "claude_cli") if primary is None else primary
     engine = getattr(REGISTRY.get(adapter_name), "engine", None) if adapter_name in REGISTRY else None
     if engine:
         try:

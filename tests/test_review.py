@@ -82,6 +82,27 @@ def test_lane_for_falls_back_same_vendor_on_capacity_deferral(layout, monkeypatc
     assert adapter_name == "claude_cli" and overrides.get("model") == "opus" and same_vendor is True
 
 
+def test_lane_for_takes_an_explicit_primary_over_the_role_profiles_own_adapter(layout, monkeypatch):
+    """A role's OWN delivery task may be routed onto its primary lane by job.adapter or a cost_lanes override,
+    not only roles.<role>.adapter - scheduler.plan() must be able to ask lane_for() about THAT lane, not the one
+    role_profile() would guess on its own (D-012 F-B Change 1)."""
+    import yaml
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text(yaml.safe_dump({"roles": {"code_review": {
+        "adapter": "claude_cli", "fallback": {"adapter": "claude_cli", "model": "opus", "flag": "same_vendor"}}}}))
+
+    def deny(layout_, engine):
+        if engine == "codex":
+            raise CapacityDeferred(0.0, "out")
+    monkeypatch.setattr("supervisor.capacity.require", deny)
+    # role_profile's own adapter (claude_cli) has capacity; the EXPLICIT primary (codex_cli) does not
+    adapter_name, overrides, same_vendor = review.lane_for(layout, "code_review", primary="codex_cli")
+    assert adapter_name == "claude_cli" and overrides.get("model") == "opus" and same_vendor is True
+    # and with no deferral on the explicit primary, it is returned unchanged
+    adapter_name, overrides, same_vendor = review.lane_for(layout, "code_review", primary="claude_cli")
+    assert adapter_name == "claude_cli" and overrides == {} and same_vendor is False
+
+
 def test_full_cycle_implement_verify_review_complete(layout):
     review_task(layout, "T")
     os.environ["FAKE_REVIEW_VERDICT"] = "ACCEPT"
