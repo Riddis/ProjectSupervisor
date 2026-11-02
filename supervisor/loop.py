@@ -757,8 +757,17 @@ class Supervisor:
                                                   f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
                                                   event=f"{last['attempt_id']}:continuations", retry=False)
                     continue
-                self.dispatch(task, last["adapter"], deferred_until=time.time(), note="continuation after capacity limit",
-                              extra={"continuation_grant": escalation_mod.current_grant(self.layout, task_id)})
+                overrides = review_mod.fallback_overrides(last)
+                if overrides:
+                    doc = task.model_dump(mode="json")
+                    doc["job"] = {**scheduler.job_spec(task), **overrides, "adapter": last["adapter"]}
+                    task = Task.model_validate(doc)
+                extra = {"continuation_grant": escalation_mod.current_grant(self.layout, task_id)}
+                note = "continuation after capacity limit"
+                if last.get("same_vendor"):
+                    extra["same_vendor"] = True
+                    note += " (same-vendor fallback)"
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra)
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
