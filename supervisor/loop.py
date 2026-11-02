@@ -402,18 +402,38 @@ class Supervisor:
             out += gate.owned_for(task, other.get("adapter", ""), "delivery")
         return tuple(sorted(set(out)))
 
+    def _notify_login_required(self, layout: Layout, engine: str | None, until: float, error: str) -> None:
+        """D-010's first category: a credential only the owner can renew. One deduped item per engine per login
+        window - not one per failed attempt, since mark_login_failed() moves `until` forward on every call and
+        fingerprinting on it would stack one item per failure. Every branch of _lane_login_failed calls this
+        alike (review / fallback reroute / no-fallback wait), so a role with a fallback configured no longer
+        spends the Claude subscription silently once Codex's free month lapses. A full owner inbox must never
+        turn this token-free notification into anything that touches the attempt budget."""
+        if any(i.get("login_engine") == engine for i in inbox_mod.open_items(layout, "owner")):
+            return
+        summary, detail = inbox_mod.fit(
+            f"{engine or 'a lane'} reports it is not logged in; dispatch to it waits (or hands over to the "
+            f"configured fallback) until the credential is renewed. Run the login the error names, on the "
+            f"workstation, to clear this. {error}")
+        try:
+            inbox_mod.create(layout, for_role="owner", subject=f"Login needed: {engine or 'lane'}",
+                             summary=summary, detail=detail, kind="question", from_="loop",
+                             extra={"login_engine": engine, "login_until": until})
+        except inbox_mod.InboxFull:
+            tasks_mod.log(layout, "inbox_full", "loop", reason="login_required", engine=engine)
+
     def _lane_login_failed(self, rec: dict, result: Result, kind: str) -> None:
         """D-012 F-B Change 2: the lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
         diagnostics - stderr, system/error events - never a model's ordinary answer, so a real failure or an
         answer that merely mentions a login never reaches here). Unavailable, not failed: mark the engine so
         every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) treats it exactly like a
-        measured usage window, then hand off with no attempt spent. A review just closes: pending()/
-        dispatch_reviews() redispatch it next tick and lane_for() resolves the fallback itself (or returns None,
-        token-free, exactly as a capacity-deferred review already does with none). A delivery (or a diagnosis)
-        with a configured fallback reroutes to it with the fallback's own model/effort and the same-vendor flag;
-        with none, it waits on the same lane through the ordinary continuation path - the same one an ordinary
-        capacity deferral already uses, so the owner is eventually told (continuations-exhausted -> diagnosis)
-        if a credential is never renewed."""
+        measured usage window, then hand off with no attempt spent, and tell the owner a credential needs
+        renewing (D-010's first category) - once per engine per login window, whichever branch below is taken.
+        A review just closes: pending()/dispatch_reviews() redispatch it next tick and lane_for() resolves the
+        fallback itself (or returns None, token-free, exactly as a capacity-deferred review already does with
+        none). A delivery (or a diagnosis) with a configured fallback reroutes to it with the fallback's own
+        model/effort and the same-vendor flag; with none, it waits on the same lane through the ordinary
+        continuation path - the same one an ordinary capacity deferral already uses."""
         layout = self.layout
         task_id = rec["task_id"]
         engine = getattr(REGISTRY.get(rec["adapter"]), "engine", None)
@@ -422,6 +442,7 @@ class Supervisor:
         role = rec.get("review_role") or rec.get("diag_role") or spec.get("role") or tasks_mod.load(layout, task_id).owner_role
         tasks_mod.log(layout, "lane_login_required", "loop", task=task_id, attempt=rec["attempt_id"],
                       adapter=rec["adapter"], role=role, error=result.error, until=until)
+        self._notify_login_required(layout, engine, until, str(result.error))
         if kind == "review":
             jobs_mod.set_phase(layout, rec["attempt_id"], "DONE", result="DEFERRED", finished=now_iso(),
                                error=result.error, login_required=True)
