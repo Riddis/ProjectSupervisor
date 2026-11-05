@@ -237,6 +237,22 @@ def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]
     return sorted(out, key=lambda t: (-t.priority, t.phase, t.id))
 
 
+def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:
+    """(the stored document, errors, warnings) for a task `create()` would add: the contract (pydantic), the graph
+    with it in place, its ownership and its artifacts; `contract_warnings` stay warnings. `combined` (default: the
+    store) is the graph to check it against, so a caller that changes another task in the same step
+    (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract."""
+    doc = dict(doc)
+    doc.setdefault("status", "NOT_STARTED")
+    doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+    task = Task.model_validate(doc)                       # fail before touching the graph or the disk
+    combined = dict(load_all(layout) if combined is None else combined)
+    combined[task.id] = task
+    art_errors, warnings = artifact_problems([task], root=layout.root)
+    warnings += contract_warnings([task], layout)
+    return doc, validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
+
+
 def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     """Add a task that is not in the seed (probes, owner-added work, Control Center conversions). Validated like
     the seed; an existing id is a no-op, so a retried command (or a second click) is never a duplicate."""
@@ -244,14 +260,7 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     path = path_for(layout, doc["id"])
     if path.exists():
         return {"skipped": "exists", "id": doc["id"]}
-    doc.setdefault("status", "NOT_STARTED")
-    doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
-    Task.model_validate(doc)                              # fail before touching the graph or the disk
-    combined = load_all(layout)
-    combined[doc["id"]] = Task.model_validate(doc)
-    art_errors, warnings = artifact_problems([combined[doc["id"]]], root=layout.root)
-    warnings += contract_warnings([combined[doc["id"]]], layout)
-    errors = validate_graph(combined) + ownership_errors([combined[doc["id"]]], layout) + art_errors
+    doc, errors, warnings = check_new(layout, doc)
     if errors:
         raise TaskError("; ".join(errors))
     store.write_new(path, doc)

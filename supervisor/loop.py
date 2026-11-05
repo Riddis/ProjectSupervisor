@@ -924,8 +924,10 @@ class Supervisor:
         Deliberate holds are left alone: a stop the owner made themselves (Hold / set-status), an open or snoozed owner
         item for the task, an owner answer (DEFER / note) given after the stop, a failure of the task's `human`
         attempt (the owner's REJECT/MORE_LIKE — linked through the attempt, not by comparing timestamps, because the
-        loop collects the answer after it was given), or a diagnosis that deferred it after the stop. Returns the task
-        ids acted on."""
+        loop collects the answer after it was given). A diagnosis `defer` is not a hold: it either releases the task
+        to READY behind the dependencies it named or goes to the owner (supervisor.diagnosis), so a task still
+        stopped after one — a defer recorded before that rule, parked on prose that nothing acts on — is a stall
+        like any other. Returns the task ids acted on."""
         now = time.time() if now is None else now
         grace = self._stall_grace()
         busy = {r["task_id"] for r in jobs_mod.open_records(self.layout)}
@@ -949,10 +951,6 @@ class Supervisor:
             deliveries = [r for r in records if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
             if deliveries and max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])).get("adapter") == "human":
                 continue                                          # the owner's own answer (REJECT/MORE_LIKE) failed it
-            diags = [r for r in records
-                     if (r.get("spec") or {}).get("kind") == diagnosis_mod.KIND and r.get("diag_action")]
-            if any(r.get("diag_action") == "defer" and str(r.get("finished") or r.get("updated") or "") >= at for r in diags):
-                continue                                          # a diagnosis parked it on purpose
             key = f"stall:{at}"
             state = escalation_mod._load(self.layout, task.id)
             last_note = str((stop or {}).get("note") or "")

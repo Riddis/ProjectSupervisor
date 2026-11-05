@@ -141,7 +141,8 @@ verification:                       # supervisor/verify.py re-runs declared test
   # add the project's own test runner (`npm test`, `go test ./...`, `cargo test`) once the setup skill knows it
 
 escalation:                         # supervisor/diagnosis.py: when automatic retries stop, one bounded diagnosis job
-  diagnosis: true                   # decides requeue (with guidance) / defer / architect / owner - only `owner` reaches the inbox
+  diagnosis: true                   # decides requeue (with guidance) / defer (behind a task it names or creates) /
+                                    # architect / owner - only `owner`, or a defer naming no task, reaches the inbox
   manager_role: senior_pm
   architect_role: chief_architect
   stall_grace_s: 600                # a FAILED/BLOCKED task nothing is routing is escalated after this long (also the

@@ -7,7 +7,11 @@ structured decision:
 
     requeue   — the task goes back to READY with written guidance that the next delivery brief carries; the retry
                 budget is reset once (DIAGNOSIS_BUDGET diagnoses per task, then straight to the owner);
-    defer     — the task stays BLOCKED with what must happen first written on it and on the issue;
+    defer     — the task waits for other work, named structurally: a `new_task` contract the supervisor creates
+                (validated like `supervisor task create`) and/or `wait_for` ids of existing unfinished tasks. They
+                join the task's `depends_on` and the task goes back to READY, so it runs once they complete. A defer
+                that names nothing, or a proposal that is refused, goes to the owner instead: a task parked on prose
+                alone is never released by anything (the stall this replaced);
     architect — the question is design, not execution: one more diagnosis by the architect role (never a third level);
     owner     — a product choice or an action only the owner can perform: one inbox item, the only way this route
                 reaches the owner's attention.
@@ -18,6 +22,7 @@ Supervisor.dispatch → launch → supervisor.gate like every other job (decisio
 from __future__ import annotations
 
 import yaml
+from pydantic import ValidationError
 
 from . import inbox as inbox_mod, jobs as jobs_mod, store, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred
@@ -29,19 +34,31 @@ KIND = "diagnosis"
 ACTIONS = ("requeue", "defer", "architect", "owner")
 LEVELS = ("manager", "architect")
 DEFAULT_ROLES = {"manager": "senior_pm", "architect": "chief_architect"}
-DIAGNOSIS_BUDGET = 2            # requeues granted by diagnosis per task; after that the owner decides
+DIAGNOSIS_BUDGET = 2            # requeues, and separately defers, granted by diagnosis per task; then the owner decides
 
 
 RESULT_CONTRACT = (
     "## Result contract\nEnd your answer with exactly one fenced JSON block:\n"
     '```json\n{"kind":"diagnosis","schema_version":1,"action":"requeue|defer|architect|owner","summary":"one paragraph: '
     'what actually went wrong","guidance":"(requeue) concrete instructions for the next attempt","blocked_on":"(defer) '
-    'what must happen first","question":"(owner) the one decision or action only the owner can take"}\n```\n'
+    'what must happen first","new_task":{"id":"(defer) an id no task uses yet","title":"...","objective":"...",'
+    '"owner_role":"...","owned_paths":["..."],"artifacts":["..."],"checks":["..."],"reviewer":["..."]},"wait_for":'
+    '["(defer) ids of existing unfinished tasks"],"question":"(owner) the one decision or action only the owner can '
+    'take"}\n```\n'
     "`requeue` means you are confident a fresh attempt with your guidance will pass the SAME verification and reviews; "
-    "do not requeue to try the same thing again. `architect` is for a design question, not an execution problem. "
+    "do not requeue to try the same thing again. `defer` must name what releases this task: `new_task` is the "
+    "contract of work that does not exist yet (the fields of `supervisor task create`: id, title, objective, "
+    "owner_role, owned_paths, artifacts, actions, tests, checks, reviewer, acceptance, depends_on; phase and priority "
+    "default to this task's) - the supervisor creates it, makes this task depend on it, and runs this task again "
+    "once it completes; `wait_for` lists existing unfinished task ids this task must wait for. Give either or both. "
+    "A `defer` with neither, or with one the supervisor cannot accept, goes to the owner, because nothing else would "
+    "ever release the task. `architect` is for a design question, not an execution problem. "
     "`owner` is for product choices, spending, external commitments, or physical actions on the workstation. A "
     "diagnosis cannot change a task's job: if a process task's own command is wrong (not the agent's work), use "
-    '`action: "owner"` and name the `task.set_job` change the task needs in `question`.\n')
+    '`action: "owner"` and name the `task.set_job` change the task needs in `question`; a `new_task` carries no '
+    "`job` either.\n")
+# what a diagnosis may put in `new_task`: a seed entry's contract, never runtime fields or a `job` (D-018)
+NEW_TASK_FIELDS = frozenset(["id", "priority", *tasks_mod.CONTRACT_FIELDS])
 
 
 def settings(layout: Layout) -> dict:
@@ -80,6 +97,100 @@ def already(layout: Layout, task_id: str, signature: str, level: str, grant: int
 
 def count_requeues(layout: Layout, task_id: str) -> int:
     return sum(1 for r in _records(layout, task_id) if r.get("diag_action") == "requeue")
+
+
+def release_plan(layout: Layout, task: Task, rec: dict, obj: dict) -> tuple[dict | None, str]:
+    """(plan, "") for a defer that names what releases the task, or (None, why) for one the supervisor cannot act
+    on. The plan is what ingest() records on the job before it writes anything, so a replay repeats it instead of
+    re-validating against a store it already changed: `new_task` (the stored document `tasks.create` writes, or
+    None), `depends_on` (the ids added to the task) and `warnings`.
+
+    A `new_task` passes the checks `supervisor task create` applies, against the graph as it will be (the deferred
+    task already depending on it), and two more: it may carry only contract fields (no `job`, no runtime fields), and
+    its contract warnings (a role routing does not configure, a check verification would refuse, an unregistered
+    lane) are refusals, since a machine-proposed task that would wait forever only moves the stall. Reads only."""
+    if sum(1 for r in _records(layout, task.id) if r.get("diag_release") and r["attempt_id"] != rec["attempt_id"]) >= DIAGNOSIS_BUDGET:
+        return None, f"diagnosis budget of {DIAGNOSIS_BUDGET} defers spent"
+    proposal, wait_for = obj.get("new_task"), obj.get("wait_for") or []
+    if not proposal and not wait_for:
+        return None, "the defer names no task to wait for (no new_task, no wait_for)"
+    if not isinstance(wait_for, list) or not all(isinstance(w, str) and w.strip() for w in wait_for):
+        return None, "wait_for must be a list of task ids"
+    combined = tasks_mod.load_all(layout)
+    for w in wait_for:
+        if w == task.id or w not in combined or combined[w].status == TaskStatus.CANCELLED:
+            return None, f"wait_for names {w!r}, which is {'this task' if w == task.id else 'no live task'}"
+    deps, doc, warnings = list(wait_for), None, []
+    if proposal:
+        if not isinstance(proposal, dict):
+            return None, "new_task must be an object (a task contract)"
+        extra = sorted(set(proposal) - NEW_TASK_FIELDS)
+        if extra:
+            return None, f"new_task may carry only contract fields, not {', '.join(extra)}"
+        new_id = str(proposal.get("id") or "").strip()
+        if not new_id or new_id in combined:
+            return None, (f"new_task id {new_id!r} is already a task (name it in wait_for)" if new_id
+                          else "new_task has no id")
+        deps.append(new_id)
+        doc = {"phase": task.phase, "priority": task.priority, **proposal, "id": new_id}
+    elif all(combined[w].status == TaskStatus.COMPLETE for w in wait_for):
+        return None, "every task in wait_for is already complete, so nothing would hold this task back"
+    combined[task.id] = combined[task.id].model_copy(
+        update={"depends_on": list(dict.fromkeys(list(combined[task.id].depends_on) + deps))})
+    if doc is None:
+        errors = tasks_mod.validate_graph(combined)
+    else:
+        try:
+            doc, errors, warnings = tasks_mod.check_new(layout, doc, combined)
+        except ValidationError as exc:
+            return None, f"new_task is not a valid task contract: {str(exc)[:400]}"
+        refusals = tasks_mod.contract_warnings([Task.model_validate(doc)], layout)
+        errors += refusals
+        warnings = [w for w in warnings if w not in refusals]
+    if errors:
+        return None, "; ".join(errors)[:1000]
+    return {"new_task": doc, "depends_on": deps, "warnings": warnings}, ""
+
+
+def _release(supervisor, task: Task, rec: dict, role: str, summary: str, blocked_on: str, plan: dict) -> dict:
+    """Carry out a release_plan(): create the new task (an existing id is a no-op, so a replay creates nothing
+    twice), add the dependencies, grant a fresh retry budget (keyed by this job, so once) and put the task back
+    to READY. The scheduler holds it until every dependency is COMPLETE."""
+    from . import escalation
+    layout, deps, doc = supervisor.layout, list(plan["depends_on"]), plan.get("new_task")
+    if doc:
+        try:
+            tasks_mod.create(layout, doc, actor="escalation")
+        except (tasks_mod.TaskError, ValidationError) as exc:      # the store moved since the plan was made
+            jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action="owner")
+            return route_to_owner(layout, task, rec, summary, _defer_question(task, role, blocked_on),
+                                  f"the proposed task {doc['id']} could not be created: {str(exc)[:300]}")
+        tasks_mod.add_note(layout, doc["id"], f"created by the {role} diagnosis of {task.id}: {blocked_on[:300]}",
+                           actor="escalation", command_id=f"{rec['attempt_id']}:created")
+
+    def fn(d):
+        d["depends_on"] = list(dict.fromkeys(list(d.get("depends_on") or []) + deps))
+    tasks_mod._update(layout, task.id, fn)
+    tasks_mod.log(layout, "diagnosis_release", "escalation", task=task.id, role=role, depends_on=deps,
+                  created=(doc or {}).get("id"), **({"warnings": plan["warnings"]} if plan.get("warnings") else {}))
+    escalation.reset_retries(layout, task.id, reason=f"deferred by {role} diagnosis", key=rec["attempt_id"])
+    escalation.grant_continuations(layout, task.id, reason=f"deferred by {role} diagnosis")
+    note = f"{role} diagnosis: deferred until {', '.join(deps)} complete — {blocked_on[:200]}"
+    status = tasks_mod.load(layout, task.id).status
+    if status == TaskStatus.IN_PROGRESS:
+        tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=note)
+        status = TaskStatus.BLOCKED
+    if status in (TaskStatus.BLOCKED, TaskStatus.FAILED):
+        tasks_mod.set_status(layout, task.id, TaskStatus.READY, actor="escalation", note=note)
+    else:
+        tasks_mod.add_note(layout, task.id, note, actor="escalation", command_id=f"{rec['attempt_id']}:deferred")
+    return {"action": "defer", "blocked_on": blocked_on, "depends_on": deps, "created": (doc or {}).get("id")}
+
+
+def _defer_question(task: Task, role: str, blocked_on: str) -> str:
+    return (f"The {role} deferred {task.id} until: {blocked_on[:300]} — but named no task the supervisor could "
+            f"accept to wait for (see Why), so nothing would ever release it. Create the work it needs (`supervisor "
+            f"task create`) and add it to {task.id}'s depends_on, or decide here.")
 
 
 def brief(layout: Layout, task: Task, role: str, level: str, source: str, detail: str, issue_id: str | None) -> str:
@@ -208,7 +319,19 @@ def ingest(supervisor, rec: dict, result) -> dict:
     if task.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
         tasks_mod.log(layout, "diagnosis_ignored", "loop", task=task.id, reason=f"task is {task.status.value}")
         return {"action": "ignored"}
-    jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action=action)
+    blocked_on = str(obj.get("blocked_on") or summary)[:1000]
+    plan, refused = None, ""
+    if action == "defer" and not task.held:
+        # A replay keeps the plan already recorded: its new task may exist by now, which a fresh check would refuse.
+        plan = rec.get("diag_release") or None
+        if plan is None:
+            plan, refused = release_plan(layout, task, rec, obj)
+        if plan is None:
+            tasks_mod.log(layout, "diagnosis_defer_refused", "loop", task=task.id, role=role, level=level,
+                          reason=refused[:300])
+            action = "owner"
+    jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action=action,
+                       **({"diag_release": plan} if plan else {}))
     _annotate_issue(layout, issue_id, role=role, level=level, action=action, summary=summary)
     tasks_mod.log(layout, "diagnosis", "loop", task=task.id, role=role, level=level, action=action, summary=summary[:300])
 
@@ -248,11 +371,14 @@ def ingest(supervisor, rec: dict, result) -> dict:
             tasks_mod.add_note(layout, task.id, f"{role} diagnosis: requeue — {summary[:200]}", actor="escalation")
         return {"action": "requeue", "guidance": guidance}
     if action == "defer":
-        blocked_on = str(obj.get("blocked_on") or summary)[:1000]
-        tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred — blocked on: {blocked_on[:300]}", actor="escalation")
-        if task.status == TaskStatus.IN_PROGRESS:
-            tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"deferred: {blocked_on[:200]}")
-        return {"action": "defer", "blocked_on": blocked_on}
+        if task.held:
+            # The owner's Hold stands, as for a requeue: the proposal is declined and written on the task, nothing
+            # is created or released, and the record says "held" so it is not counted as a defer.
+            jobs_mod.set_phase(layout, rec["attempt_id"], rec["phase"], diag_action="held")
+            tasks_mod.add_note(layout, task.id, f"{role} diagnosis: defer declined — task is held by the owner; it "
+                               f"proposed waiting for: {blocked_on[:300]}; release the Hold to resume", actor="escalation")
+            return {"action": "held", "held_by": task.held.get("by")}
+        return _release(supervisor, task, rec, role, summary, blocked_on, plan)
     if action == "architect":
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: design question → architect. {summary[:200]}", actor="escalation")
         # Carry this diagnosis's OWN grant generation (F4): `already()`/`dispatch` dedupe an architect request by
@@ -263,5 +389,9 @@ def ingest(supervisor, rec: dict, result) -> dict:
         if nxt is None:                                        # no architect lane right now: the owner hears about it
             return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), "architect lane unavailable")
         return {"action": "architect", "attempt": nxt.get("attempt_id")}
+    if refused:
+        tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred, but {refused[:300]} — owner decision",
+                           actor="escalation")
+        return route_to_owner(layout, task, rec, summary, _defer_question(task, role, blocked_on), refused[:300])
     tasks_mod.add_note(layout, task.id, f"{role} diagnosis: owner decision — {summary[:200]}", actor="escalation")
     return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), "needs the owner")
