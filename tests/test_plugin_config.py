@@ -157,4 +157,71 @@ def test_the_framework_sections_are_the_template_config_plus_the_shared_namespac
     template = Path(__file__).resolve().parents[1] / "supervisor" / "template" / "config" / "routing.yaml"
     keys = set(yaml.safe_load(template.read_text(encoding="utf-8")))
     assert _config.framework_sections() == keys | {"gpu", "resources", "plugins"}
+
+
+# ---------------------------------------------------------------------------- gpu_device: the role -> index resolver
+
+GPU_POLICY = {
+    "usable_vram_floor_mb": 4000,
+    "devices": {
+        "alpha": {"index": 3, "usable_vram_floor_mb": 5000},
+        "beta": {"index": 5},
+    },
+}
+
+
+def test_an_unset_device_returns_none_without_inspecting_the_policy():
+    assert _config.gpu_device({"this is": "not a valid policy shape"}, None) is None
+    assert _config.gpu_device(None, None) is None
+
+
+def test_a_named_device_resolves_to_its_own_entry_with_its_own_floor():
+    assert _config.gpu_device(GPU_POLICY, "alpha") == {"name": "alpha", "index": 3, "vram_floor_mb": 5000}
+
+
+def test_a_named_device_with_no_declared_floor_resolves_with_none():
+    assert _config.gpu_device(GPU_POLICY, "beta") == {"name": "beta", "index": 5, "vram_floor_mb": None}
+
+
+def test_a_bare_integer_is_the_index_itself_not_reverse_looked_up():
+    assert _config.gpu_device(GPU_POLICY, 5) == {"name": None, "index": 5, "vram_floor_mb": None}
+
+
+def test_a_device_naming_no_entry_raises():
+    with pytest.raises(plugins.PluginError, match="gamma"):
+        _config.gpu_device(GPU_POLICY, "gamma")
+
+
+def test_an_entry_without_an_integer_index_raises():
+    policy = {"devices": {"alpha": {"usable_vram_floor_mb": 5000}}}
+    with pytest.raises(plugins.PluginError, match="alpha"):
+        _config.gpu_device(policy, "alpha")
+
+
+def test_an_entry_that_is_not_a_mapping_raises():
+    policy = {"devices": {"alpha": 3}}
+    with pytest.raises(plugins.PluginError, match="alpha"):
+        _config.gpu_device(policy, "alpha")
+
+
+def test_an_entry_with_a_non_integer_floor_raises():
+    policy = {"devices": {"alpha": {"index": 3, "usable_vram_floor_mb": "a lot"}}}
+    with pytest.raises(plugins.PluginError, match="alpha"):
+        _config.gpu_device(policy, "alpha")
+
+
+def test_a_bool_is_refused_although_it_is_an_int_in_python():
+    with pytest.raises(plugins.PluginError, match="device"):
+        _config.gpu_device(GPU_POLICY, True)
+
+
+def test_a_negative_index_is_refused():
+    with pytest.raises(plugins.PluginError, match="device"):
+        _config.gpu_device(GPU_POLICY, -1)
+
+
+def test_a_negative_entry_index_is_refused():
+    policy = {"devices": {"alpha": {"index": -1}}}
+    with pytest.raises(plugins.PluginError, match="alpha"):
+        _config.gpu_device(policy, "alpha")
     assert {"limits", "roles", "capacity", "timeouts", "verification"} <= keys
