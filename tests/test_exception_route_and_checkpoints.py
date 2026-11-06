@@ -137,12 +137,15 @@ def test_manager_hands_a_design_question_to_the_architect_once(layout, fake_clau
     os.environ["FAKE_DIAGNOSIS_ACTION_CHIEF_ARCHITECT"] = "defer"
     failing_task(layout, "T")
     run_until(layout, lambda: any(r.get("diag_level") == "architect" and r.get("diag_action") for r in diag_records(layout, "T")))
+    # the architect's defer names only prose (the fake's blocked_on), which nothing would act on: it reaches the
+    # owner as one decision item instead of parking the task
     levels = [(r["diag_level"], r.get("diag_action")) for r in diag_records(layout, "T")]
-    assert levels == [("manager", "architect"), ("architect", "defer")]
+    assert levels == [("manager", "architect"), ("architect", "owner")]
     t = tasks.load(layout, "T")
     assert t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED)
-    assert any("deferred" in n["note"] and "missing runtime" in n["note"] for n in (t.model_extra or {}).get("notes", []))
-    assert inbox.open_items(layout, "owner") == []
+    assert any("deferred" in n["note"] and "names no task" in n["note"] for n in (t.model_extra or {}).get("notes", []))
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1 and items[0]["kind"] == inbox.DECISION_KIND and "missing runtime" in items[0]["summary"]
 
 
 def test_a_garbage_diagnosis_falls_through_to_the_owner_without_looping(layout, fake_claude):

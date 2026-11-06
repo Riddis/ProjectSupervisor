@@ -58,7 +58,17 @@ persisted and rendered as *(forced)*.
 
 Retry budget: two automatic revisions per failure source (verification, review), the second on the role's
 `senior_model`; then one bounded diagnosis by the manager role (`routing.yaml escalation`) which can requeue with
-guidance, defer, hand to the architect, or open an owner inbox item. Capacity limits never spend an attempt: the job
+guidance, defer, hand to the architect, or open an owner inbox item.
+
+A **defer** names what releases the task, structurally: `new_task`, the contract of work that does not exist yet
+(the fields `supervisor task create` takes; `phase` and `priority` default to the deferred task's; never a `job` or a
+runtime field), and/or `wait_for`, ids of existing unfinished tasks. The supervisor creates the new task through the
+same checks as `task create` (contract, graph with the new dependency in place, ownership, artifacts; a contract
+warning such as an unconfigured role is a refusal here), adds both to the deferred task's `depends_on`, grants it a
+fresh retry budget and sets it READY, so it runs once they are COMPLETE. At most two defers per task are released
+this way. A defer that names nothing, or one the supervisor refuses, opens one owner decision item that says why
+instead of parking the task: prose in `blocked_on` alone is never acted on. A task created this way is not in the
+seed; a later `task import --update-contracts` of the deferred task replaces its `depends_on` with the seed's. Capacity limits never spend an attempt: the job
 is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
 
 Nothing stops silently. A worker that ends **BLOCKED** goes straight to that diagnosis (no blind retry of the same
@@ -71,7 +81,9 @@ The stall sweep (every loop iteration): a FAILED or BLOCKED task with nothing in
 `routing.yaml escalation.stall_grace_s` (default 600), is escalated once for that stop (FAILED → retry within budget,
 BLOCKED → diagnosis); if it is still unrouted a grace period later, one owner decision item is opened. Deliberate holds
 are left alone: a stop the owner made (Hold / set-status), an open or snoozed owner item, an owner answer after
-the stop, a failed `human` attempt (the owner's own REJECT/MORE_LIKE), or a diagnosis `defer`. When the whole pipeline is idle (nothing
+the stop, or a failed `human` attempt (the owner's own REJECT/MORE_LIKE). A diagnosis `defer` is not a hold (it
+releases the task behind its dependencies or goes to the owner), so a task left BLOCKED by an older prose-only defer
+is swept like any other stall. When the whole pipeline is idle (nothing
 running, nothing eligible, nothing waiting on the owner, work remaining) for twice the grace period, one
 **Pipeline idle — nothing can run** item lists the stuck tasks and what each waits for (once per stuck set).
 

@@ -5,6 +5,22 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
+- **Fixed: a diagnosis `defer` parked its task on prose that nothing acted on.** The manager (or architect) could
+  describe, under `blocked_on`, a fix task that did not exist yet; `diagnosis.ingest` only wrote that on the task
+  and left it BLOCKED, the stall sweep skipped it as "parked on purpose", and the loop went idle until the owner
+  wrote the task into the seed, imported it, added the dependency and set the task READY by hand. The result
+  contract now has two structured ways to say what releases a deferred task: `new_task`, a task contract (the
+  fields of `supervisor task create`, no `job`; phase and priority default to the deferred task's), and
+  `wait_for`, ids of existing unfinished tasks. The supervisor creates the new task through the `task create`
+  checks (`tasks.check_new`, now shared with `tasks.create`) against the graph with the new dependency in place,
+  refuses one whose contract warnings say it would wait forever (an unconfigured or inactive role, a check
+  verification refuses, an unregistered lane), adds both to the task's `depends_on`, grants a fresh retry budget
+  (once per diagnosis job, replay-safe) and sets the task READY; the scheduler runs it once they complete. Two such
+  releases per task, then the owner decides. A defer that names nothing, or a refused proposal, now opens one
+  owner decision item saying why, instead of parking silently. An owner Hold still declines it, as it declines a
+  requeue. The stall sweep no longer exempts a task a diagnosis deferred, so a task parked by an older prose-only
+  defer is escalated after the grace period like any other stall.
+
 - **Fixed: a package's archive allowance did not read CRLF metadata.** `_archive_distribution` matched the wheel's
   `METADATA` and the sdist's `PKG-INFO` with `^Name:[ \t]*(\S+)[ \t]*$` under `re.MULTILINE`, which cannot match a
   CRLF-terminated line (`\r` is not `\S`, and `$` matches only before `\n`); a setuptools-backend wheel built on
