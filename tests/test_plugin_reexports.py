@@ -119,6 +119,75 @@ def test_the_gpu_probe_never_raises(monkeypatch, behaviour):
     assert plugin.gpu.available() is False
 
 
+def test_the_gpu_probes_argv_is_byte_identical_to_todays_with_no_index(monkeypatch):
+    captured = []
+
+    def run(argv, **_k):
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="100\n", stderr="")
+    monkeypatch.setattr(plugin.gpu.subprocess, "run", run)
+    plugin.gpu.free_mb()
+    plugin.gpu.used_mb()
+    plugin.gpu.total_mb()
+    plugin.gpu.available()
+    assert captured == [
+        ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+    ]
+
+
+def test_the_gpu_probe_inserts_the_index_right_after_the_executable(monkeypatch):
+    captured = []
+
+    def run(argv, **_k):
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="100\n", stderr="")
+    monkeypatch.setattr(plugin.gpu.subprocess, "run", run)
+    plugin.gpu.free_mb(3)
+    plugin.gpu.used_mb(3)
+    plugin.gpu.total_mb(3)
+    plugin.gpu.available(3)
+    assert captured == [
+        ["nvidia-smi", "-i", "3", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "-i", "3", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "-i", "3", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        ["nvidia-smi", "-i", "3", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+    ]
+
+
+def test_the_gpu_probe_with_an_index_parses_that_cards_own_row(monkeypatch):
+    values = {"0": "100", "1": "200"}
+
+    def run(argv, **_k):
+        idx = argv[argv.index("-i") + 1]
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{values[idx]}\n", stderr="")
+    monkeypatch.setattr(plugin.gpu.subprocess, "run", run)
+    assert plugin.gpu.free_mb(0) == 100
+    assert plugin.gpu.free_mb(1) == 200
+
+
+@pytest.mark.parametrize("behaviour", ["error_exit", "garbage"])
+def test_an_index_naming_no_card_reads_as_unknown_not_a_crash_or_another_card(monkeypatch, behaviour):
+    def run(argv, **_k):
+        return subprocess.CompletedProcess(argv, 1 if behaviour == "error_exit" else 0,
+                                           stdout="N/A\n" if behaviour == "garbage" else "", stderr="")
+    monkeypatch.setattr(plugin.gpu.subprocess, "run", run)
+    assert (plugin.gpu.free_mb(9), plugin.gpu.used_mb(9), plugin.gpu.total_mb(9)) == (None, None, None)
+    assert plugin.gpu.available(9) is False
+
+
+def test_available_with_an_index_is_true_only_when_that_card_answers(monkeypatch):
+    def run(argv, **_k):
+        if "-i" in argv and argv[argv.index("-i") + 1] == "1":
+            return subprocess.CompletedProcess(argv, 0, stdout="500\n", stderr="")
+        return subprocess.CompletedProcess(argv, 6, stdout="", stderr="No devices were found\n")
+    monkeypatch.setattr(plugin.gpu.subprocess, "run", run)
+    assert plugin.gpu.available(1) is True
+    assert plugin.gpu.available(2) is False
+
+
 def test_now_iso_is_utc_to_the_second():
     stamp = dt.datetime.fromisoformat(plugin.now_iso())
     assert stamp.utcoffset() == dt.timedelta(0) and stamp.microsecond == 0
