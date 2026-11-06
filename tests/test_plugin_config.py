@@ -157,6 +157,7 @@ def test_the_framework_sections_are_the_template_config_plus_the_shared_namespac
     template = Path(__file__).resolve().parents[1] / "supervisor" / "template" / "config" / "routing.yaml"
     keys = set(yaml.safe_load(template.read_text(encoding="utf-8")))
     assert _config.framework_sections() == keys | {"gpu", "resources", "plugins"}
+    assert {"limits", "roles", "capacity", "timeouts", "verification"} <= keys
 
 
 # ---------------------------------------------------------------------------- gpu_device: the role -> index resolver
@@ -224,4 +225,3 @@ def test_a_negative_entry_index_is_refused():
     policy = {"devices": {"alpha": {"index": -1}}}
     with pytest.raises(plugins.PluginError, match="alpha"):
         _config.gpu_device(policy, "alpha")
-    assert {"limits", "roles", "capacity", "timeouts", "verification"} <= keys
