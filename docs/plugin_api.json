@@ -272,13 +272,6 @@
         }
       }
     },
-    "PluginError": {
-      "bases": [
-        "RuntimeError"
-      ],
-      "kind": "class",
-      "members": {}
-    },
     "InboxError": {
       "bases": [
         "ValueError"
@@ -337,10 +330,6 @@
             }
           ]
         },
-        "plugins": {
-          "annotation": "Path",
-          "kind": "field"
-        },
         "gates": {
           "annotation": "Path",
           "kind": "field"
@@ -366,6 +355,10 @@
           "kind": "field"
         },
         "owner_tasks": {
+          "annotation": "Path",
+          "kind": "field"
+        },
+        "plugins": {
           "annotation": "Path",
           "kind": "field"
         },
@@ -410,6 +403,13 @@
           "kind": "field"
         }
       }
+    },
+    "PluginError": {
+      "bases": [
+        "RuntimeError"
+      ],
+      "kind": "class",
+      "members": {}
     },
     "ProcessAdapter": {
       "bases": [
@@ -1158,25 +1158,69 @@
       "members": {
         "available": {
           "kind": "function",
-          "params": [],
+          "params": [
+            {
+              "annotation": "int | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "index"
+            }
+          ],
           "returns": "bool"
         },
         "free_mb": {
           "kind": "function",
-          "params": [],
+          "params": [
+            {
+              "annotation": "int | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "index"
+            }
+          ],
           "returns": "int | None"
         },
         "total_mb": {
           "kind": "function",
-          "params": [],
+          "params": [
+            {
+              "annotation": "int | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "index"
+            }
+          ],
           "returns": "int | None"
         },
         "used_mb": {
           "kind": "function",
-          "params": [],
+          "params": [
+            {
+              "annotation": "int | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "index"
+            }
+          ],
           "returns": "int | None"
         }
       }
+    },
+    "gpu_device": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "dict",
+          "kind": "positional_or_keyword",
+          "name": "policy"
+        },
+        {
+          "annotation": "str | int | None",
+          "kind": "positional_or_keyword",
+          "name": "device"
+        }
+      ],
+      "returns": "dict | None"
     },
     "job_spec": {
       "kind": "function",

@@ -395,10 +395,29 @@ A dataclass `Check(name: str, ok: bool, detail: str, warn: bool = False)`: what 
 
 ### `gpu`
 
-The framework's NVIDIA memory probe (a module). `gpu.free_mb()`, `gpu.used_mb()`, `gpu.total_mb() -> int | None`
-ask `nvidia-smi` for the first GPU's memory in MiB; `gpu.available() -> bool` is whether it answers at all. They never
-raise: a missing driver, a timeout (10 s), an error exit or unreadable output is `None` (`False`). Nothing here
-decides policy.
+The framework's NVIDIA memory probe (a module). `gpu.free_mb(index=None)`, `gpu.used_mb(index=None)`,
+`gpu.total_mb(index=None) -> int | None` ask `nvidia-smi` for a GPU's memory in MiB; `gpu.available(index=None)
+-> bool` is whether it answers at all. With no index, each asks for the first GPU, exactly as before. With an
+integer index, each asks for that card by itself (`nvidia-smi -i <index> ...`) and reads its row. They never
+raise: a missing driver, a timeout (10 s), an error exit, unreadable output, or an index that names no card is
+`None` (`False`) — an unknown read, not another card and not a crash. Nothing here decides policy or validates a
+device name; see `gpu_device` below for that.
+
+### `gpu_device`
+
+`gpu_device(policy, device) -> dict | None`: the card a plugin's own `device` setting names, resolved against
+the shared GPU resource policy (`resources(layout)["gpu"]`) rather than probed. This is configuration, read
+through `resources()`, not a probe.
+
+`device` is `None` (every project that sets nothing: returns `None`, with no inspection of `policy` at all), a
+bare non-negative integer (the index itself, returned as `{"name": None, "index": <int>, "vram_floor_mb":
+None}` — never reverse-looked-up against `devices`), or a key of `policy["devices"]` (returned as
+`{"name": <key>, "index": <its index>, "vram_floor_mb": <its own floor, or None when it declares none>}`).
+
+Raises `PluginError` when `device` names an entry `policy["devices"]` does not hold, when that entry is not a
+mapping, when its `index` is missing, not an integer or negative, when its declared `usable_vram_floor_mb` is
+not an integer, or when `device` itself is a bool or a negative integer: a misconfigured device is a named
+refusal, never a silent fall back to the first card.
 
 ## Time
 
