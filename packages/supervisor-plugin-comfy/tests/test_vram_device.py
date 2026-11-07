@@ -149,3 +149,19 @@ def test_gpu_panel_reads_the_configured_card(tmp_path, monkeypatch):
     panel = comfy.gpu_panel(layout)
     assert "alpha" in panel["title"]
     assert panel["progress"] == (6144, 8192)
+
+
+def test_vram_device_true_is_refused_not_silently_coerced_to_index_1(tmp_path):
+    layout = devices_layout(tmp_path, vram_device=True)
+    with pytest.raises(plugin.PluginError) as excinfo:
+        comfy.comfy_config(layout)
+    assert "plugins.comfy.vram_device" in str(excinfo.value)
+    assert "True" in str(excinfo.value)
+
+
+def test_vram_device_negative_index_is_refused_from_the_config_helper(tmp_path):
+    layout = devices_layout(tmp_path, vram_device=-1)
+    with pytest.raises(plugin.PluginError) as excinfo:
+        comfy.comfy_config(layout)
+    assert "plugins.comfy.vram_device" in str(excinfo.value)
+    assert "-1" in str(excinfo.value)
