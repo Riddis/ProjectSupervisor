@@ -17,11 +17,14 @@ class Settings(BaseModel):
     integer index, resolved through `supervisor.plugin.gpu_device`. Declared here rather than left to
     `extra="allow"` - an undeclared key is accepted and silently ignored, which would defeat the whole point of
     naming a device. Unset (the default) resolves to no device at all, which is every project that configures
-    nothing and the behaviour every prior release has."""
+    nothing and the behaviour every prior release has.
+    `bool` comes first in the union so pydantic's smart-union matches a `True`/`False` input against it exactly,
+    rather than lax-coercing it into `int`: `gpu_device()` already refuses a bool explicitly, and that refusal
+    only fires if the bool survives validation unchanged."""
     model_config = ConfigDict(extra="allow")
     base_url: str = "http://127.0.0.1:11434"
     model: str | None = None
     timeout_s: int = 300
     models_store_drive: str | None = None
     models_dir: str | None = None
-    vram_device: str | int | None = None
+    vram_device: bool | str | int | None = None
