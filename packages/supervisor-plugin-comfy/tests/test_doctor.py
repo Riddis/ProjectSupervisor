@@ -150,27 +150,27 @@ def test_ffmpeg_ok_when_the_binary_runs(layout, monkeypatch, tmp_path):
 # ---------------------------------------------------------------- gpu
 
 def test_gpu_check_fails_when_nvidia_smi_is_unavailable(layout, monkeypatch):
-    monkeypatch.setattr(plugin.gpu, "available", lambda: False)
+    monkeypatch.setattr(plugin.gpu, "available", lambda index=None: False)
     check = comfy.check_gpu(layout)
     assert not check.ok and "unavailable" in check.detail
 
 
 def test_gpu_check_ok_when_nvidia_smi_answers(layout, monkeypatch):
-    monkeypatch.setattr(plugin.gpu, "available", lambda: True)
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 4096)
-    monkeypatch.setattr(plugin.gpu, "total_mb", lambda: 8192)
+    monkeypatch.setattr(plugin.gpu, "available", lambda index=None: True)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 4096)
+    monkeypatch.setattr(plugin.gpu, "total_mb", lambda index=None: 8192)
     check = comfy.check_gpu(layout)
     assert check.ok and "4096MiB free" in check.detail and "8192MiB total" in check.detail
 
 
 def test_gpu_panel_reports_used_and_free(layout, monkeypatch):
-    monkeypatch.setattr(plugin.gpu, "available", lambda: True)
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 2048)
-    monkeypatch.setattr(plugin.gpu, "total_mb", lambda: 8192)
+    monkeypatch.setattr(plugin.gpu, "available", lambda index=None: True)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 2048)
+    monkeypatch.setattr(plugin.gpu, "total_mb", lambda index=None: 8192)
     panel = comfy.gpu_panel(layout)
     assert panel["title"] == "GPU" and panel["progress"] == (6144, 8192)
 
 
 def test_gpu_panel_without_nvidia_smi(layout, monkeypatch):
-    monkeypatch.setattr(plugin.gpu, "available", lambda: False)
+    monkeypatch.setattr(plugin.gpu, "available", lambda index=None: False)
     assert comfy.gpu_panel(layout)["rows"] == [("VRAM", "nvidia-smi unavailable")]

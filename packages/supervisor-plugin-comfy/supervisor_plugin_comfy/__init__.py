@@ -51,7 +51,16 @@ def comfy_config(layout: plugin.Layout) -> dict:
     cfg.setdefault("pinned_nodes", [])
     cfg.setdefault("pins_file", "comfy_pins.json")
     gpu_cfg = plugin.resources(layout)["gpu"]
-    cfg.setdefault("vram_floor_mb", gpu_cfg.get("usable_vram_floor_mb", 0))
+    try:
+        device = plugin.gpu_device(gpu_cfg, cfg.get("vram_device"))
+    except plugin.PluginError as exc:
+        raise plugin.PluginError(f"plugins.comfy.vram_device: {exc}") from exc
+    if device is not None:
+        cfg["vram_device_index"] = device["index"]
+        cfg["vram_device_name"] = device["name"]
+    default_floor = device["vram_floor_mb"] if device and device["vram_floor_mb"] is not None \
+        else gpu_cfg.get("usable_vram_floor_mb", 0)
+    cfg.setdefault("vram_floor_mb", default_floor)
     return cfg
 
 
@@ -183,7 +192,7 @@ class ComfyAdapter(plugin.Adapter):
         # No "deadline" here: prepare() can run long before submit() actually succeeds (VRAM/server waits defer it
         # without re-preparing), so the execution budget is computed in submit() instead - otherwise a job stuck
         # waiting for capacity loses runtime it never got to spend.
-        return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
+        spec = {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "root": str(layout.root), "comfy_root": cfg.get("root"), "base_url": job.get("base_url", cfg["base_url"]),
                 "timeout_s": int(job.get("timeout_s", cfg["timeout_s"])),
                 "vram_floor_mb": int(job.get("vram_mb", cfg["vram_floor_mb"])),
@@ -191,6 +200,11 @@ class ComfyAdapter(plugin.Adapter):
                 "output_patterns": job.get("outputs", ["*"]),
                 "defer_seconds": float(cfg["defer_seconds"]), "ws_poll_budget_s": float(cfg["ws_poll_budget_s"]),
                 "download_attempts": int(cfg["download_attempts"]), "download_retry_s": float(cfg["download_retry_s"])}
+        if "vram_device_index" in cfg:                 # only when a device is configured (1.0.0 drop-in otherwise)
+            spec["vram_device_index"] = cfg["vram_device_index"]
+            if cfg.get("vram_device_name") is not None:
+                spec["vram_device_name"] = cfg["vram_device_name"]
+        return spec
 
     def submit(self, spec: dict) -> dict:
         run_dir = Path(spec["run_dir"])
@@ -201,9 +215,12 @@ class ComfyAdapter(plugin.Adapter):
             raise RuntimeError("empty ComfyUI workflow: the task's job block names no workflow/workflow_file "
                                "(a local task without one belongs to its owner role's agent lane)")
         if floor:
-            free = plugin.gpu.free_mb()
+            index = spec.get("vram_device_index")
+            free = plugin.gpu.free_mb(index)
             if free is not None and free < floor:
-                raise plugin.CapacityDeferred(time.time() + defer_s, f"GPU free VRAM {free}MiB below floor {floor}MiB")
+                label = spec.get("vram_device_name") or (f"#{index}" if index is not None else None)
+                prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
+                raise plugin.CapacityDeferred(time.time() + defer_s, f"{prefix} {free}MiB below floor {floor}MiB")
         try:
             health = self._get(base_url, "/system_stats", timeout=5.0)
             health.raise_for_status()
@@ -341,10 +358,11 @@ class ComfyAdapter(plugin.Adapter):
     def alive(self, handle: dict) -> bool:
         return False   # authoritative liveness comes from /history in collect()
 
-    def _record_peak_vram(self, run_dir: Path) -> None:
-        used = plugin.gpu.used_mb()
+    def _record_peak_vram(self, spec: dict) -> None:
+        used = plugin.gpu.used_mb(spec.get("vram_device_index"))
         if used is None:
             return
+        run_dir = Path(spec["run_dir"])
         peak_path = run_dir / "vram_peak.json"
         prior = plugin.read_json(peak_path).get("peak_mb", 0) if peak_path.exists() else 0
         if used > prior:
@@ -477,7 +495,7 @@ class ComfyAdapter(plugin.Adapter):
         run_dir = Path(spec["run_dir"])
         base_url = spec["base_url"]
         prompt_id = handle["prompt_id"]
-        self._record_peak_vram(run_dir)
+        self._record_peak_vram(spec)
         self._poll_progress(spec)
         expired = time.time() > self._deadline(spec, handle, run_dir)
         try:
@@ -638,28 +656,41 @@ def check_ffmpeg(layout: plugin.Layout) -> plugin.Check:
 
 
 def check_gpu(layout: plugin.Layout) -> plugin.Check:
-    """A single-card probe (`supervisor.plugin.gpu`, nvidia-smi): free/total VRAM against the configured floor. A
-    project with more than one card (several roles to resolve, an index to pick) keeps its own role-aware check
-    beside this one - this package has no notion of which physical card is which role."""
-    if not plugin.gpu.available():
+    """A single-card probe (`supervisor.plugin.gpu`, nvidia-smi): free/total VRAM against the configured floor,
+    or - when `plugins.comfy.vram_device` names one - the configured card and its own resolved floor. A project
+    with more than one card and no device configured keeps its own role-aware check beside this one."""
+    try:
+        cfg = comfy_config(layout)
+    except plugin.PluginError as exc:
+        return plugin.Check("gpu", False, str(exc))
+    index = cfg.get("vram_device_index")
+    if not plugin.gpu.available(index):
         return plugin.Check("gpu", False, "nvidia-smi unavailable (no NVIDIA driver on PATH)")
-    free, total = plugin.gpu.free_mb(), plugin.gpu.total_mb()
+    free, total = plugin.gpu.free_mb(index), plugin.gpu.total_mb(index)
     if free is None or total is None:
         return plugin.Check("gpu", False, "nvidia-smi did not report free/total memory")
+    if index is not None:
+        label = cfg.get("vram_device_name") or f"#{index}"
+        floor = int(cfg["vram_floor_mb"])
+        return plugin.Check("gpu", True, f"GPU {label}: {free}MiB free / {total}MiB total (floor {floor}MiB)")
     gpu_cfg = plugin.resources(layout)["gpu"]
     floor = int(gpu_cfg.get("usable_vram_floor_mb", 0))
     return plugin.Check("gpu", True, f"{free}MiB free / {total}MiB total (floor {floor}MiB)")
 
 
 def gpu_panel(layout: plugin.Layout) -> dict:
-    """Overview resource block (registry.overview_panel): the single card `supervisor.plugin.gpu` reads."""
-    if not plugin.gpu.available():
+    """Overview resource block (registry.overview_panel): the single card `supervisor.plugin.gpu` reads, or the
+    configured device when `plugins.comfy.vram_device` names one."""
+    cfg = comfy_config(layout)
+    index = cfg.get("vram_device_index")
+    if not plugin.gpu.available(index):
         return {"title": "GPU", "rows": [("VRAM", "nvidia-smi unavailable")], "progress": None}
-    free, total = plugin.gpu.free_mb(), plugin.gpu.total_mb()
+    free, total = plugin.gpu.free_mb(index), plugin.gpu.total_mb(index)
     if free is None or total is None:
         return {"title": "GPU", "rows": [("VRAM", "unknown")], "progress": None}
     used = total - free
-    return {"title": "GPU", "rows": [("VRAM used", f"{used / 1024:.1f} / {total / 1024:.1f} GB"), ("free", f"{free} MiB")],
+    title = f"GPU {cfg.get('vram_device_name') or f'#{index}'}" if index is not None else "GPU"
+    return {"title": title, "rows": [("VRAM used", f"{used / 1024:.1f} / {total / 1024:.1f} GB"), ("free", f"{free} MiB")],
             "progress": (used, total)}
 
 

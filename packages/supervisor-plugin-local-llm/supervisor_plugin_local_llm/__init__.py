@@ -33,7 +33,16 @@ def local_llm_config(layout: plugin.Layout) -> dict:
     if cfg.get("models_dir") is None:        # Settings declares it unset; resolve it here, where layout.root is known
         cfg["models_dir"] = str(layout.root / "models" / "ollama")   # expected OLLAMA_MODELS; check_ollama (below)
     gpu_cfg = plugin.resources(layout)["gpu"]
-    cfg.setdefault("vram_floor_mb", gpu_cfg.get("usable_vram_floor_mb", 0))
+    try:
+        device = plugin.gpu_device(gpu_cfg, cfg.get("vram_device"))
+    except plugin.PluginError as exc:
+        raise plugin.PluginError(f"plugins.local_llm.vram_device: {exc}") from exc
+    if device is not None:
+        cfg["vram_device_index"] = device["index"]
+        cfg["vram_device_name"] = device["name"]
+    default_floor = device["vram_floor_mb"] if device and device["vram_floor_mb"] is not None \
+        else gpu_cfg.get("usable_vram_floor_mb", 0)
+    cfg.setdefault("vram_floor_mb", default_floor)
     return cfg
 
 
@@ -55,17 +64,25 @@ class LocalLlmAdapter(plugin.ProcessAdapter):
                    "options": job.get("options"), "timeout_s": int(job.get("timeout_s", cfg["timeout_s"]))}
         plugin.atomic_json(run_dir / "request.json", request)
         worker = str(Path(__file__).with_name("_worker.py"))
-        return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
+        spec = {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "root": str(layout.root), "timeout_s": int(job.get("timeout_s", cfg["timeout_s"])) + 30,
                 "argv": [job.get("python", sys.executable), worker, str(run_dir / "request.json"), str(run_dir / "result.json")],
                 "vram_floor_mb": int(job.get("vram_mb", cfg["vram_floor_mb"]))}
+        if "vram_device_index" in cfg:                 # only when a device is configured (1.0.0 drop-in otherwise)
+            spec["vram_device_index"] = cfg["vram_device_index"]
+            if cfg.get("vram_device_name") is not None:
+                spec["vram_device_name"] = cfg["vram_device_name"]
+        return spec
 
     def submit(self, spec: dict) -> dict:
         floor = spec.get("vram_floor_mb")
         if floor:
-            free = plugin.gpu.free_mb()
+            index = spec.get("vram_device_index")
+            free = plugin.gpu.free_mb(index)
             if free is not None and free < floor:
-                raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, f"GPU free VRAM {free}MiB below floor {floor}MiB")
+                label = spec.get("vram_device_name") or (f"#{index}" if index is not None else None)
+                prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
+                raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, f"{prefix} {free}MiB below floor {floor}MiB")
         return super().submit(spec)
 
 
@@ -142,7 +159,10 @@ def _manifest_paths(store: Path, alias: str) -> list[Path]:
 def check_ollama(layout: plugin.Layout) -> plugin.Check:
     import requests
 
-    cfg = local_llm_config(layout)
+    try:
+        cfg = local_llm_config(layout)
+    except plugin.PluginError as exc:
+        return plugin.Check("ollama", False, str(exc))
     wanted = cfg.get("model")
     if not wanted:
         return plugin.Check("ollama", False, "no model configured: set plugins.local_llm.model, or name one in "
