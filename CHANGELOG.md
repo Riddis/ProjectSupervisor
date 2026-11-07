@@ -3,7 +3,18 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.3.0 — 2026-11-07
+
+- **Plugin API: the shared GPU probe takes an optional device, and a new resolver reads a project's own device
+  policy.** `` `gpu` `` (`` `gpu.free_mb` ``, `` `gpu.used_mb` ``, `` `gpu.total_mb` ``, `` `gpu.available` ``)
+  each gain one optional parameter, `index: int | None = None`: unset, the argv and the parse are byte-identical
+  to before; given, `-i <index>` is inserted and that card's own row is read. The probe's contract is unchanged —
+  it never raises, and an index that names no card reads as unknown (`None`), not another card and not a crash.
+  A new name, `` `gpu_device` ``, is exported on `supervisor.plugin`: a pure function of the shared GPU resource
+  policy (`resources(layout)["gpu"]`) and a plugin's own `device` setting, returning the resolved card's name,
+  index and own floor, `None` when the setting is unset, and raising `PluginError` when the setting names
+  nothing the policy's `devices` mapping holds. Every 2.0..2.2 caller of all five names is unaffected: an unset
+  device is `None` throughout, and every probe call with no index behaves exactly as before.
 
 - **Fixed: a diagnosis `defer` parked its task on prose that nothing acted on.** The manager (or architect) could
   describe, under `blocked_on`, a fix task that did not exist yet; `diagnosis.ingest` only wrote that on the task
