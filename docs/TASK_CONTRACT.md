@@ -35,11 +35,16 @@ Since 1.13.0 `task import` (and its `--dry-run`), `task create` and `supervisor 
 contract the project cannot serve: an `owner_role` or `reviewer` routing does not configure or has made inactive, a
 check outside `verification.allowed_test_commands`, and a `job` whose adapter or python `fn` neither the framework
 nor a plugin's manifest (`provides`) declares. No plugin is set up for this, so `task import --dry-run` and
-`supervisor check` write nothing. `supervisor check` warns only about open tasks.
+`supervisor check` write nothing. `supervisor check` warns only about open tasks. It also warns about every open task
+whose stored contract (or `job`) differs from its entry in the seed (`--seed`, default `state/tasks_seed.yaml`), naming
+the fields and any diagnosis revision behind them: the framework never edits the seed, so an architect `revise` or a
+re-routed job lives only in the store until the seed is brought in line, and `task import --update-contracts` of that
+task would put the seed's contract fields back (that import warns when it replaces a revision).
 
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
 changes), `delivery` (`digest`, `verification`, `reviews[]`, `approvals[]`, all bound to the digest of the current
-artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `forced`, `rev`, `created`, `updated`.
+artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `revisions`
+(each architect `revise`: who, when, `changes` with old and new values, `reason`, the failure signature), `forced`, `rev`, `created`, `updated`.
 
 ### Lifecycle
 
@@ -48,7 +53,7 @@ NOT_STARTED/READY ─dispatch─▶ IN_PROGRESS ─delivery+verify ok─▶ WAIT
                                    │                                   │ REVISE/REJECT                 │ MODIFY/REJECT
                                    │ verify fails                      ▼                               ▼
                                    ▼                            IN_PROGRESS (revision)          IN_PROGRESS (revision)
-                                FAILED ─retry budget─▶ BLOCKED (diagnosis → requeue / defer / architect / owner)
+                                FAILED ─retry budget─▶ BLOCKED (diagnosis → requeue / defer / architect [→ revise] / owner)
 ```
 
 Only `tasks.advance()` reaches COMPLETE: verification ok ∧ every required review ACCEPT on the current digest ∧
@@ -58,7 +63,31 @@ persisted and rendered as *(forced)*.
 
 Retry budget: two automatic revisions per failure source (verification, review), the second on the role's
 `senior_model`; then one bounded diagnosis by the manager role (`routing.yaml escalation`) which can requeue with
-guidance, defer, hand to the architect, or open an owner inbox item.
+guidance, defer, hand to the architect, or open an owner inbox item. Guidance only reaches an agent's next brief; it
+changes nothing about a deterministic job, which runs its stored command again.
+
+A wrong **contract** is fixed by the architect. When the fix is a change to the task's own contract (a wrong argument
+in a process job's `argv`, a check, an artifact, `owned_paths`, `depends_on`) rather than to the agent's work, the
+manager picks `architect` and says in `guidance` what is wrong and why; the architect's brief carries that hand-off
+and the stored contract as JSON. The architect (only the architect) may answer `revise` with `changes`, a structured
+patch of `{path, value}` pairs (`job.argv.3`, `checks.1`: dict keys and list indexes joined by dots; an index one
+past the end appends), and a `reason`. The supervisor applies the patch to a copy of the stored task and checks the
+result like `task create` (contract, graph, ownership, artifacts; a contract warning the revision introduces is a
+refusal), then writes it through the same paths an owner's fix takes (`task.set_job` for the job, the contract
+refresh for the rest), notes old value, new value and reason on the task (`by: architect`), records it under
+`revisions`, grants a fresh retry budget once and sets the task READY. It goes to the owner instead, as one decision
+item naming the proposed change, when:
+
+- the patch is invalid or refused by those checks;
+- it touches a field outside `job`, `actions`, `owned_paths`, `artifacts`, `tests`, `checks`, `acceptance` and
+  `depends_on` — who does or reviews the work, whether the owner approves it, its phase, its cost category, its title
+  or objective are the owner's — or the job's `adapter`, `model` or `role` (which lane runs it and what it costs);
+- it drops or alters an existing entry of `artifacts`, `tests`, `checks` or `depends_on`, or rewrites `acceptance`
+  instead of extending it: verification may only grow;
+- the task was already revised for the same failure signature (the revision did not fix it), or twice in all;
+- a manager (not the architect) answered `revise`, or `routing.yaml escalation.revise` is `false`.
+
+An owner Hold declines a revise as it declines a requeue or a defer.
 
 A **defer** names what releases the task, structurally: `new_task`, the contract of work that does not exist yet
 (the fields `supervisor task create` takes; `phase` and `priority` default to the deferred task's; never a `job` or a

@@ -67,7 +67,9 @@ project folder.
 4. Required **reviews** run on frozen inputs in an independent lane; a REVISE sends the failure verbatim to a revision
    attempt (second revision on the senior model); after the retry budget a bounded **diagnosis** decides requeue /
    defer / architect / owner. A defer names the task it waits for (a new one the supervisor creates, or an existing
-   one) and the stopped task runs again once that completes; a defer that names none goes to the owner.
+   one) and the stopped task runs again once that completes; a defer that names none goes to the owner. A wrong
+   contract (say, a process job's argv) goes to the architect, whose `revise` patches it through the task checks
+   and reruns the task; a patch that loosens verification or touches the owner's fields goes to the owner.
 5. Tasks that need the **owner** park in `WAITING_FOR_HUMAN` with an inbox item; the Control Center shows it. A task
    reaches `COMPLETE` only through verification ∧ reviews ∧ (approval if required) — then the supervisor **checkpoints**
    exactly the accepted files to git.

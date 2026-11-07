@@ -143,6 +143,8 @@ verification:                       # supervisor/verify.py re-runs declared test
 escalation:                         # supervisor/diagnosis.py: when automatic retries stop, one bounded diagnosis job
   diagnosis: true                   # decides requeue (with guidance) / defer (behind a task it names or creates) /
                                     # architect / owner - only `owner`, or a defer naming no task, reaches the inbox
+  revise: true                      # the architect may fix the task's own contract (job, checks, ...) and rerun it;
+                                    # false: a wrong contract is the owner's (a decision item naming the change)
   manager_role: senior_pm
   architect_role: chief_architect
   stall_grace_s: 600                # a FAILED/BLOCKED task nothing is routing is escalated after this long (also the
