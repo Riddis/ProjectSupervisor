@@ -3,7 +3,7 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.3.0 — 2026-11-07
 
 - **Plugin API: the shared GPU probe takes an optional device, and a new resolver reads a project's own device
   policy.** `` `gpu` `` (`` `gpu.free_mb` ``, `` `gpu.used_mb` ``, `` `gpu.total_mb` ``, `` `gpu.available` ``)
