@@ -45,15 +45,17 @@ def devices_layout(tmp_path, *, vram_device, devices=None):
                                     "plugins": {"local_llm": {"vram_device": vram_device}}})
 
 
-def lltask(layout, base_url, tid="LL", vram_mb=0):
-    testing.make_task(layout, tid, job={"adapter": "local_llm", "base_url": base_url, "model": "pixnote:4b",
-                                        "prompt": "describe", "schema": {"type": "object"}, "vram_mb": vram_mb,
-                                        "timeout_s": 30}, cost_category="local", artifacts=[])
+def lltask(layout, base_url, tid="LL", vram_mb=None):
+    job = {"adapter": "local_llm", "base_url": base_url, "model": "pixnote:4b", "prompt": "describe",
+           "schema": {"type": "object"}, "timeout_s": 30}
+    if vram_mb is not None:
+        job["vram_mb"] = vram_mb
+    testing.make_task(layout, tid, job=job, cost_category="local", artifacts=[])
 
 
 def test_configured_device_below_floor_while_the_other_card_is_free_defers_naming_the_device(tmp_path, fake_server, monkeypatch):
     layout = devices_layout(tmp_path, vram_device="alpha")
-    lltask(layout, fake_server, vram_mb=0)
+    lltask(layout, fake_server)
     spec = local_llm.ADAPTER.prepare(layout, testing.task(layout, "LL"), "LL.a1")
     assert spec["vram_device_index"] == 3 and spec["vram_device_name"] == "alpha"
     assert spec["vram_floor_mb"] == 5000
@@ -65,7 +67,7 @@ def test_configured_device_below_floor_while_the_other_card_is_free_defers_namin
 
 def test_configured_device_free_while_the_other_card_is_full_admits(tmp_path, fake_server, monkeypatch):
     layout = devices_layout(tmp_path, vram_device="alpha")
-    lltask(layout, fake_server, vram_mb=0)
+    lltask(layout, fake_server)
     spec = local_llm.ADAPTER.prepare(layout, testing.task(layout, "LL"), "LL.a1")
     calls = []
 
@@ -108,11 +110,12 @@ def test_vram_device_naming_no_entry_raises_from_the_config_helper_and_fails_the
     assert not check.ok and "gamma" in check.detail and "vram_device" in check.detail
 
 
-def test_a_bare_integer_is_used_as_the_index(tmp_path):
+def test_a_bare_integer_is_used_as_the_index(tmp_path, fake_server):
     layout = devices_layout(tmp_path, vram_device=7)
     cfg = local_llm.local_llm_config(layout)
     assert cfg["vram_device_index"] == 7
     assert cfg.get("vram_device_name") is None
+    lltask(layout, fake_server)
     spec = local_llm.ADAPTER.prepare(layout, testing.task(layout, "LL"), "LL.a1")
     assert spec["vram_device_index"] == 7
     assert "vram_device_name" not in spec
