@@ -414,10 +414,10 @@ bare non-negative integer (the index itself, returned as `{"name": None, "index"
 None}` — never reverse-looked-up against `devices`), or a key of `policy["devices"]` (returned as
 `{"name": <key>, "index": <its index>, "vram_floor_mb": <its own floor, or None when it declares none>}`).
 
-Raises `PluginError` when `device` names an entry `policy["devices"]` does not hold, when that entry is not a
-mapping, when its `index` is missing, not an integer or negative, when its declared `usable_vram_floor_mb` is
-not an integer, or when `device` itself is a bool or a negative integer: a misconfigured device is a named
-refusal, never a silent fall back to the first card.
+Raises `PluginError` when `policy["devices"]` itself is not a mapping, when `device` names an entry it does not
+hold, when that entry is not a mapping, when its `index` is missing, not an integer or negative, when its
+declared `usable_vram_floor_mb` is not an integer, or when `device` itself is a bool or a negative integer: a
+misconfigured device is a named refusal, never a silent fall back to the first card.
 
 ## Time
 

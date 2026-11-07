@@ -128,9 +128,10 @@ def gpu_device(policy: dict, device: str | int | None) -> dict | None:
     entry's own floor when it declares one, or None for a bare index. Returns None when `device` is None - which
     is every project that sets nothing, and the behaviour every 2.0..2.2 caller has.
 
-    Raises PluginError when `device` names an entry the policy's `devices` mapping does not hold, when the entry
-    is not a mapping, when its `index` is missing or is not a non-negative integer, or when its declared floor is
-    not an integer: a misconfigured device is a named refusal, never a silent fall back to the first card.
+    Raises PluginError when the policy's `devices` entry itself is not a mapping, when `device` names an entry
+    it does not hold, when that entry is not a mapping, when its `index` is missing or is not a non-negative
+    integer, or when its declared floor is not an integer: a misconfigured device is a named refusal, never a
+    silent fall back to the first card.
     """
     if device is None:
         return None
@@ -141,6 +142,8 @@ def gpu_device(policy: dict, device: str | int | None) -> dict | None:
             raise PluginError(f"device {device!r} must be a non-negative integer index")
         return {"name": None, "index": device, "vram_floor_mb": None}
     devices = (policy or {}).get("devices") or {}
+    if not isinstance(devices, dict):
+        raise PluginError(f"resources.gpu.devices must be a mapping, not {type(devices).__name__}")
     entry = devices.get(device)
     if entry is None:
         raise PluginError(f"device {device!r} is not in resources.gpu.devices")

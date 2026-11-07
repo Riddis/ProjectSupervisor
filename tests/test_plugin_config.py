@@ -225,3 +225,33 @@ def test_a_negative_entry_index_is_refused():
     policy = {"devices": {"alpha": {"index": -1}}}
     with pytest.raises(plugins.PluginError, match="alpha"):
         _config.gpu_device(policy, "alpha")
+
+
+NOT_A_MAPPING = [["alpha", "beta"], "alpha", 9, True]
+
+
+@pytest.mark.parametrize("devices", NOT_A_MAPPING)
+def test_a_devices_block_that_is_not_a_mapping_is_a_named_refusal_not_a_crash(devices):
+    with pytest.raises(plugins.PluginError, match="resources.gpu.devices") as excinfo:
+        _config.gpu_device({"devices": devices}, "alpha")
+    assert type(devices).__name__ in str(excinfo.value)
+
+
+@pytest.mark.parametrize("devices", NOT_A_MAPPING)
+def test_a_bare_integer_device_ignores_a_malformed_devices_block(devices):
+    assert _config.gpu_device({"devices": devices}, 9) == {"name": None, "index": 9, "vram_floor_mb": None}
+
+
+def test_a_none_valued_device_key_still_raises_as_an_unknown_device():
+    policy = {"devices": {"alpha": None, "beta": {"index": 1}}}
+    with pytest.raises(plugins.PluginError, match="alpha"):
+        _config.gpu_device(policy, "alpha")
+
+
+class _ExplodingPolicy(dict):
+    def get(self, *a, **k):
+        raise AssertionError("policy must not be read when device is None")
+
+
+def test_device_none_short_circuits_before_a_malformed_devices_block_is_ever_read():
+    assert _config.gpu_device(_ExplodingPolicy(devices=["alpha", "beta"]), None) is None
