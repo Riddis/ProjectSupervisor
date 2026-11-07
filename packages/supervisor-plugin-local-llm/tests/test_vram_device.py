@@ -119,3 +119,19 @@ def test_a_bare_integer_is_used_as_the_index(tmp_path, fake_server):
     spec = local_llm.ADAPTER.prepare(layout, testing.task(layout, "LL"), "LL.a1")
     assert spec["vram_device_index"] == 7
     assert "vram_device_name" not in spec
+
+
+def test_vram_device_true_is_refused_not_silently_coerced_to_index_1(tmp_path):
+    layout = devices_layout(tmp_path, vram_device=True)
+    with pytest.raises(plugin.PluginError) as excinfo:
+        local_llm.local_llm_config(layout)
+    assert "plugins.local_llm.vram_device" in str(excinfo.value)
+    assert "True" in str(excinfo.value)
+
+
+def test_vram_device_negative_index_is_refused_from_the_config_helper(tmp_path):
+    layout = devices_layout(tmp_path, vram_device=-1)
+    with pytest.raises(plugin.PluginError) as excinfo:
+        local_llm.local_llm_config(layout)
+    assert "plugins.local_llm.vram_device" in str(excinfo.value)
+    assert "-1" in str(excinfo.value)
