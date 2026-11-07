@@ -16,6 +16,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   nothing the policy's `devices` mapping holds. Every 2.0..2.2 caller of all five names is unaffected: an unset
   device is `None` throughout, and every probe call with no index behaves exactly as before.
 
+- **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and
+  counts the current phase's tasks only ("Phase N tasks completed"); it links to the task list filtered to that
+  phase (`/tasks?phase=N`, new). Phase & gates lists every gate in phase order, passed ones included, instead of
+  the first five from the current phase on. Its Eligible tasks list also shows tasks that open once the in-flight
+  ones finish (every dependency still open is IN_PROGRESS, WAITING_FOR_REVIEW or WAITING_FOR_HUMAN), each marked
+  with the tasks it waits on.
+
 - **Fixed: a diagnosis `defer` parked its task on prose that nothing acted on.** The manager (or architect) could
   describe, under `blocked_on`, a fix task that did not exist yet; `diagnosis.ingest` only wrote that on the task
   and left it BLOCKED, the stall sweep skipped it as "parked on purpose", and the loop went idle until the owner

@@ -17,12 +17,15 @@ router = APIRouter()
 
 
 @router.get("/tasks")
-def task_list(request: Request, status: str = "", layout: Layout = Depends(require_auth)):
+def task_list(request: Request, status: str = "", phase: str = "", layout: Layout = Depends(require_auth)):
     tasks = sorted(tasks_mod.load_all(layout).values(), key=lambda t: (t.phase, t.id))
     elig_ids = {t.id for t in tasks_mod.eligible(layout, {t.id: t for t in tasks})}
     if status:
         tasks = [t for t in tasks if t.status.value == status]
+    if phase.isdigit():
+        tasks = [t for t in tasks if t.phase == int(phase)]
     return render(request, "tasks_list.html", {"tasks": tasks, "elig_ids": elig_ids, "filter_status": status,
+                                               "filter_phase": phase if phase.isdigit() else "",
                                                "statuses": [s.value for s in TaskStatus], "flash": decode_flash(request)})
 
 

@@ -131,11 +131,52 @@ def test_overview_resolves_busy_attempt_and_renders_real_gates(layout, auth_clie
     context = overview_context(layout)
     assert context["busy_task"].id == "T0-05"
     assert context["uptime_seconds"] is None
-    assert context["nearby_gates"][0]["id"] == "G0"
-    assert context["nearby_gates"][0]["status"] == "OPEN"
+    assert context["gates"][0]["id"] == "G0"
+    assert context["gates"][0]["status"] == "OPEN"
     response = auth_client.get("/overview")
     assert response.status_code == 200
     assert 'class="gate-open"' in response.text
+
+
+def test_overview_keeps_passed_gates_and_counts_the_current_phase_only(layout, auth_client):
+    from supervisor import gates as gates_mod
+    from supervisor.ui.routes.overview import overview_context
+
+    make_task(layout, "T0-01", status="COMPLETE")
+    make_task(layout, "T1-01", phase=1, status="COMPLETE")
+    make_task(layout, "T1-02", phase=1)
+    gates_mod.set_status(layout, "G0", "PASSED", ["docs/report.md"], actor="owner-ui")
+    context = overview_context(layout)
+    assert context["phase"] == 1
+    assert [g["id"] for g in context["gates"]] == ["G0", "G6"]
+    assert (context["phase_done_count"], context["phase_task_count"]) == (1, 2)
+    text = auth_client.get("/overview").text
+    assert 'class="gate-passed"' in text
+    assert "Phase 1 tasks completed" in text and 'href="/tasks?phase=1"' in text
+
+
+def test_overview_lists_tasks_the_in_flight_ones_unblock(layout, auth_client):
+    from supervisor.ui.routes.overview import overview_context
+
+    make_task(layout, "T0-01", status="COMPLETE")
+    make_task(layout, "T0-02", deps=["T0-01"], status="IN_PROGRESS")
+    make_task(layout, "T0-03", deps=["T0-02"])
+    make_task(layout, "T0-04", deps=["T0-01", "T0-02"])
+    make_task(layout, "T0-05", deps=["T0-02", "T0-06"])       # T0-06 has not started: not unblocked by T0-02 alone
+    make_task(layout, "T0-06")
+    context = overview_context(layout)
+    assert [(r["task"].id, r["after"]) for r in context["unblocked_next"]] == [("T0-03", ["T0-02"]),
+                                                                              ("T0-04", ["T0-02"])]
+    assert [t.id for t in context["eligible"]] == ["T0-06"]
+    text = auth_client.get("/overview").text
+    assert "After T0-02" in text and "No tasks ready to dispatch" not in text
+
+
+def test_task_list_filters_by_phase(layout, auth_client):
+    make_task(layout, "T0-01")
+    make_task(layout, "T1-01", phase=1)
+    text = auth_client.get("/tasks?phase=1").text
+    assert 'href="/tasks/T1-01"' in text and 'href="/tasks/T0-01"' not in text
 
 
 def test_task_detail_renders_a_fixture_task_with_attempts(layout, auth_client):
