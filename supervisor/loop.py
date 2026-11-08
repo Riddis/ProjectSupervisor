@@ -331,10 +331,12 @@ class Supervisor:
             task = Task.model_validate(doc)
         return task, extra
 
-    def _ensure_in_progress(self, task_id: str, note: str) -> None:
+    def _ensure_in_progress(self, task_id: str, note: str, kind: str = "delivery") -> None:
         t = tasks_mod.load(self.layout, task_id)
         if t.held:
             return     # an owner Hold is durable on the task (F9) - the loop's own launch never reverses it (F11)
+        if kind == "delivery" and tasks_mod.unmet_dependency(self.layout, t) is not None:
+            return     # G6, 2.4.0: the gate refuses the launch that follows; never flip FAILED/BLOCKED first
         if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY, TaskStatus.FAILED, TaskStatus.BLOCKED):
             tasks_mod.set_status(self.layout, task_id, TaskStatus.IN_PROGRESS, actor="loop", note=note)
 
@@ -352,9 +354,10 @@ class Supervisor:
 
     def launch(self, rec: dict) -> dict:
         ad = REGISTRY[rec["adapter"]]
-        conversation = (rec.get("spec") or {}).get("kind") == "conversation"
-        if not conversation and (rec.get("spec") or {}).get("kind") != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
-            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}")
+        job_kind = (rec.get("spec") or {}).get("kind", "delivery")
+        conversation = job_kind == "conversation"
+        if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
+            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
         try:
             handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
         except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
@@ -378,7 +381,7 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", deferred_until=0, deferred_lane=None)
         # The one gate: decision, capacity, limits and ownership — for every launch path alike. A refused
         # record stays PREPARED and is retried by reconcile() each iteration; the reason is recorded once per change.
-        kind = (rec.get("spec") or {}).get("kind", "delivery")
+        kind = job_kind
         try:
             task = None if conversation else tasks_mod.load(self.layout, rec["task_id"])
         except tasks_mod.TaskError:                           # record without a readable task: owns nothing, still gated
@@ -548,7 +551,7 @@ class Supervisor:
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
             return
         if kind != diagnosis_mod.KIND:
-            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}")
+            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
         if result.status == "FAILED" and str(result.error or "").startswith("login_required:"):
             return self._lane_login_failed(rec, result, kind)
         run_dir = (rec.get("spec") or {}).get("run_dir")

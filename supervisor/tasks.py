@@ -230,13 +230,28 @@ def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
     return lanes, python_jobs, note
 
 
+def unmet_dependency(layout: Layout, task: Task, tasks: dict[str, Task] | None = None) -> str | None:
+    """The first entry of `task.depends_on` that is not COMPLETE, as "<id> (<status>)" (G6, 2.4.0) — a dependency
+    this project has no task for is reported as "<id> (missing)". `tasks` is an optional preloaded graph
+    (`eligible()`'s own cache); without it each dependency is loaded from disk."""
+    for dep_id in task.depends_on:
+        dep = (tasks or {}).get(dep_id)
+        if dep is None:
+            try:
+                dep = load(layout, dep_id)
+            except TaskError:
+                return f"{dep_id} (missing)"
+        if dep.status != TaskStatus.COMPLETE:
+            return f"{dep_id} ({dep.status.value})"
+    return None
+
+
 def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
     tasks = tasks or load_all(layout)
     gate_data = gates_mod.load(layout)
-    done = {t.id for t in tasks.values() if t.status == TaskStatus.COMPLETE}
     out = [t for t in tasks.values()
            if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY)
-           and all(d in done for d in t.depends_on)
+           and unmet_dependency(layout, t, tasks) is None
            and gates_mod.phase_open(layout, t.phase, gate_data)]
     return sorted(out, key=lambda t: (-t.priority, t.phase, t.id))
 
