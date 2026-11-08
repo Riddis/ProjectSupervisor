@@ -327,7 +327,7 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
                 ok = False
                 continue
             cwd = resolved
-        interpreter = _cwd_interpreter(cwd)
+        interpreter = _cwd_interpreter(cwd) if declared_cwd else sys.executable
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             results.append({"command": command, "exit_code": None, "error": "test budget exhausted; not run"})
