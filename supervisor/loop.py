@@ -331,10 +331,12 @@ class Supervisor:
             task = Task.model_validate(doc)
         return task, extra
 
-    def _ensure_in_progress(self, task_id: str, note: str) -> None:
+    def _ensure_in_progress(self, task_id: str, note: str, kind: str = "delivery") -> None:
         t = tasks_mod.load(self.layout, task_id)
         if t.held:
             return     # an owner Hold is durable on the task (F9) - the loop's own launch never reverses it (F11)
+        if kind == "delivery" and tasks_mod.unmet_dependency(self.layout, t) is not None:
+            return     # G6, 2.4.0: the gate refuses the launch that follows; never flip FAILED/BLOCKED first
         if t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY, TaskStatus.FAILED, TaskStatus.BLOCKED):
             tasks_mod.set_status(self.layout, task_id, TaskStatus.IN_PROGRESS, actor="loop", note=note)
 
@@ -352,9 +354,10 @@ class Supervisor:
 
     def launch(self, rec: dict) -> dict:
         ad = REGISTRY[rec["adapter"]]
-        conversation = (rec.get("spec") or {}).get("kind") == "conversation"
-        if not conversation and (rec.get("spec") or {}).get("kind") != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
-            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}")
+        job_kind = (rec.get("spec") or {}).get("kind", "delivery")
+        conversation = job_kind == "conversation"
+        if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
+            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
         try:
             handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
         except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
@@ -378,7 +381,7 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", deferred_until=0, deferred_lane=None)
         # The one gate: decision, capacity, limits and ownership — for every launch path alike. A refused
         # record stays PREPARED and is retried by reconcile() each iteration; the reason is recorded once per change.
-        kind = (rec.get("spec") or {}).get("kind", "delivery")
+        kind = job_kind
         try:
             task = None if conversation else tasks_mod.load(self.layout, rec["task_id"])
         except tasks_mod.TaskError:                           # record without a readable task: owns nothing, still gated
@@ -548,7 +551,7 @@ class Supervisor:
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
             return
         if kind != diagnosis_mod.KIND:
-            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}")
+            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
         if result.status == "FAILED" and str(result.error or "").startswith("login_required:"):
             return self._lane_login_failed(rec, result, kind)
         run_dir = (rec.get("spec") or {}).get("run_dir")
@@ -579,20 +582,26 @@ class Supervisor:
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
                 tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=volatile,
                               reason="state/ and rendered projections are not deliverables")
+            in_run_dir = [f for f in files if f == "runs" or f.startswith("runs/")]
+            if in_run_dir:                                          # G4, 2.4.0: evidence (handoff, logs), never a
+                files = [f for f in files if f not in in_run_dir]  # deliverable — admitting it would make ownership
+                tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=in_run_dir,
+                              reason="run-directory files are evidence, not deliverables; cite them in notes")
             try:
                 dg = digest_of(manifest([self.layout.root / a for a in files], root=self.layout.root)) if files else digest_of({"attempt": rec["attempt_id"]})
             except ValueError as exc:
                 dg, result = digest_of({"attempt": rec["attempt_id"]}), Result(status="FAILED", error=f"manifest: {exc}")
             tasks_mod.record_delivery(self.layout, task_id, dg, actor="loop", result=result.notes or None, paths=files)
             if result.status == "COMPLETE" and not missing:
-                # a model lane must show its work: the brief asks for the commands it ran (packets.RESULT_CONTRACT_
-                # DELIVERY), and a task that declares tests is not verified without them. Deterministic adapters
-                # (python/process/...) declare no tests and are judged on their artifacts.
+                # a model lane must show its work: the brief asks for the commands it ran
+                # (packets.result_contract_delivery(layout, task)), and a task that declares tests is not verified
+                # without them. Deterministic adapters (python/process/...) declare no tests and are judged on
+                # their artifacts.
                 model_lane = rec["adapter"] in gate.MODEL_LANES
                 tracked = verify_mod.as_job(self.layout) and "process" in REGISTRY
                 outcome = verify_mod.verify(self.layout, task, files, (result.raw or {}).get("tests") or [],
                                             self._before_manifest(rec),
-                                            require_tests=bool(model_lane and task.tests),
+                                            require_tests=task.requires_commands(model_lane),
                                             ignore=self._concurrent_owned(rec),
                                             checks=[c.model_dump() for c in task.checks], run_commands=not tracked)
                 if outcome.ok and outcome.report.get("pending_commands"):
@@ -660,13 +669,15 @@ class Supervisor:
         run_dir.mkdir(parents=True, exist_ok=True)
         input_path = run_dir / "verify_input.json"
         atomic_json(input_path, {"root": str(self.layout.root), "task_id": task.id, "digest": dg, "commands": commands,
-                                 "fixed": fixed, "delivery_attempt": delivery_rec["attempt_id"]})
+                                 "fixed": fixed, "delivery_attempt": delivery_rec["attempt_id"],
+                                 "roots": list(task.test_roots)})
         # The child runs with the task root as cwd, which need not contain the supervisor package: import it by path.
         pkg_parent = str(Path(verify_mod.__file__).resolve().parents[1])
         code = (f"import sys; sys.path.insert(0, {pkg_parent!r}); from supervisor.verify_job import main; "
                 f"sys.exit(main(['verify_job', {str(input_path)!r}]))")
         doc = task.model_dump(mode="json")
-        doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code], "timeout_s": verify_mod.TEST_BUDGET_S + 120}
+        doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code],
+                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120}
         view = Task.model_validate(doc)
         rec = self.dispatch(view, "process", note=f"verify delivery {delivery_rec['attempt_id']}", kind=self.VERIFY_KIND,
                             extra={"verify_digest": dg, "verify_delivery": delivery_rec["attempt_id"], "verify_commands": len(commands)})

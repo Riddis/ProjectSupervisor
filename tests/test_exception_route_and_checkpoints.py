@@ -233,7 +233,7 @@ def repo(layout):
     assert git(root, "init", "-q").returncode == 0
     git(root, "config", "user.email", "t@example.com"); git(root, "config", "user.name", "tests")
     git(root, "config", "commit.gpgsign", "false")
-    (root / ".gitignore").write_text("runs/\nstate/runtime/\nstate/log.jsonl\nstate/.lock\n")
+    (root / ".gitignore").write_text("runs/\nstate/runtime/\nstate/log.jsonl\nstate/.lock\nignored_output/\n")
     git(root, "add", "-A"); git(root, "commit", "-q", "-m", "init")
     return root
 
@@ -284,12 +284,13 @@ def test_ignored_paths_are_listed_not_committed_and_pre_since_tasks_are_left_alo
     complete_task(layout, "OLD")
     cp_old = tasks.load(layout, "OLD").model_extra["checkpoint"]
     assert cp_old["status"] == "committed"
-    # a task whose only delivered path is git-ignored
-    (layout.root / "runs").mkdir(exist_ok=True)
-    ptask(layout, "R", name="runs/R.txt")
+    # a task whose only delivered path is git-ignored (not under runs/: that path is dropped before checkpointing
+    # ever sees it, 2.4.0 G4 — this exercises the checkpoint's own git-ignore skip, a separate mechanism)
+    (layout.root / "ignored_output").mkdir(exist_ok=True)
+    ptask(layout, "R", name="ignored_output/R.txt")
     Supervisor(layout, sleep_s=0).once()
     cp = tasks.load(layout, "R").model_extra["checkpoint"]
-    assert cp["status"] == "skipped" and cp["ignored"] == ["runs/R.txt"]
+    assert cp["status"] == "skipped" and cp["ignored"] == ["ignored_output/R.txt"]
     # since: tasks completed before the cut-off are not checkpointed
     (layout.config / "routing.yaml").write_text(yaml.safe_dump({"checkpoint": {"since": "2999-01-01T00:00:00+00:00"}}))
     ptask(layout, "N")
