@@ -46,6 +46,15 @@ class HumanApproval(str, Enum):
     gate = "gate"
 
 
+class Evidence(str, Enum):
+    """What a delivery must report to verify (G1, 2.4.0): `auto` keeps the pre-2.4.0 rule (a command is required
+    exactly when the task declares `tests` and the job ran on a model lane); `commands` requires one on any lane,
+    even with no declared `tests`; `review` requires none — the criteria are judged by reading the artifacts."""
+    auto = "auto"
+    commands = "commands"
+    review = "review"
+
+
 class CostCategory(str, Enum):
     """What a task costs when it runs; routing.yaml `cost_lanes` maps each to a default adapter."""
     deterministic = "deterministic"   # software only (python/process adapters)
@@ -131,6 +140,7 @@ class Check(BaseModel):
     check; a worker's reported `tests` are additional evidence and can never replace these."""
     command: str
     timeout_s: Optional[int] = None
+    cwd: Optional[str] = None            # G2, 2.4.0: one of the task's own `test_roots`, or the project root
 
     model_config = {"extra": "forbid"}
 
@@ -145,7 +155,9 @@ class Task(BaseModel):
     actions: list[str] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
     tests: list[str] = Field(default_factory=list)              # prose: what must be true (for the worker and reviewers)
+    evidence: Evidence = Evidence.auto                          # G1, 2.4.0: must a delivery report a command
     checks: list[Check] = Field(default_factory=list)           # executable: what the supervisor re-runs
+    test_roots: list[str] = Field(default_factory=list)         # G2, 2.4.0: directories a declared command may `cwd` into
     reviewer: list[str] = Field(default_factory=list)
     review_note: Optional[str] = None
     acceptance: str = ""
@@ -214,3 +226,11 @@ class Task(BaseModel):
 
     def needs_approval(self) -> bool:
         return self.human_approval != HumanApproval.none
+
+    def requires_commands(self, model_lane: bool) -> bool:
+        """Whether this delivery must report at least one re-run command (G1, 2.4.0)."""
+        if self.evidence == Evidence.commands:
+            return True
+        if self.evidence == Evidence.review:
+            return False
+        return bool(model_lane and self.tests)          # "auto": the pre-2.4.0 rule, unchanged

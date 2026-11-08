@@ -592,7 +592,7 @@ class Supervisor:
                 tracked = verify_mod.as_job(self.layout) and "process" in REGISTRY
                 outcome = verify_mod.verify(self.layout, task, files, (result.raw or {}).get("tests") or [],
                                             self._before_manifest(rec),
-                                            require_tests=bool(model_lane and task.tests),
+                                            require_tests=task.requires_commands(model_lane),
                                             ignore=self._concurrent_owned(rec),
                                             checks=[c.model_dump() for c in task.checks], run_commands=not tracked)
                 if outcome.ok and outcome.report.get("pending_commands"):
