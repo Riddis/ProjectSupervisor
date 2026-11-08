@@ -11,18 +11,38 @@ import json
 
 import yaml
 
-from . import policy
+from . import policy, verify
 from ._vendor.contract import manifest
 from .models.task import Task
 from .paths import Layout
 
-RESULT_CONTRACT_DELIVERY = (
-    "## Result contract\nWhen finished, end your answer with exactly one fenced JSON block:\n"
-    '```json\n{"kind":"delivery","schema_version":1,"status":"COMPLETE|PARTIAL|BLOCKED","artifacts":["relative/paths"],'
-    '"tests":[{"command":"python -m pytest tests/test_x.py","exit_code":0}],"notes":"one paragraph","decisions":[]}\n```\n'
-    "`tests` is required whenever the task declares tests: verification re-runs every command and trusts the exit code "
-    "it observes, never the one you report. Commands must match config/routing.yaml `verification."
-    "allowed_test_commands` (a pytest/unittest/ruff invocation); anything else is a verification failure.\n")
+
+def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True) -> str:
+    """The `## Result contract` block, rendered for this task's own case (G1/G3/G5, 2.4.0): whether a command is
+    required, the project's configured limits, and its own allowed command list — never one constant string for
+    every task."""
+    requires = task.requires_commands(model_lane)
+    evidence_sentence = (
+        "This task needs command evidence: your result must report at least one command in `tests`. If every "
+        "criterion is about a document, write a small pytest under your run directory that reads that document "
+        "read-only and asserts what the criteria say, run it, and report it."
+        if requires else
+        "No command is required for this task. Report `tests: []`. Any command you do report is re-run here and "
+        "must pass."
+    )
+    lim = verify.limits(layout)
+    allowed = ", ".join(f"`{c}`" for c in verify.allowed_test_commands(layout))
+    return (
+        "## Result contract\nWhen finished, end your answer with exactly one fenced JSON block:\n"
+        '```json\n{"kind":"delivery","schema_version":1,"status":"COMPLETE|PARTIAL|BLOCKED","artifacts":["relative/paths"],'
+        '"tests":[{"command":"python -m pytest tests/test_x.py","exit_code":0}],"notes":"one paragraph","decisions":[]}\n```\n'
+        f"{evidence_sentence}\n"
+        f"Each command must finish in **{lim['per_command_timeout_s']} s** and all of them together in "
+        f"**{lim['budget_s']} s**; at most **{lim['max_commands']}** commands are re-run. A full suite that cannot "
+        "finish inside that is saved as a log under your run directory and cited in `notes` — never declared as a "
+        "command.\n"
+        f"Only these commands are re-run, matched by prefix: {allowed}. A helper script is never a command — wrap "
+        "what it asserts in a pytest.\n")
 
 
 def role_card(layout: Layout, role: str) -> str:
@@ -54,12 +74,26 @@ def _checks_block(task: Task) -> str:
             + "\n".join(f"- `{c.command}`" for c in task.checks))
 
 
+def _test_roots_note(task: Task) -> str:
+    """Where a declared test command re-runs (G2, 2.4.0): named roots when the task sets any, else the one
+    sentence that is true when it does not."""
+    if task.test_roots:
+        example = task.test_roots[0]
+        return ("\n\n**Where your test commands re-run.** Verification re-runs each command you report from "
+                "`<project root>` by default. A command that must run in another directory names it as `cwd` in "
+                "its own entry, and only these are allowed: " + ", ".join(task.test_roots) + ". The interpreter is "
+                "chosen here — that directory's `.venv` if it has one, otherwise the supervisor's own — so what "
+                "you write as the first word of the command does not select it.\n"
+                '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`')
+    return "\n\nVerification re-runs each command from `<project root>` with the supervisor's own interpreter."
+
+
 def _ownership_block(task: Task) -> str:
     if task.exclusive() or not task.owned_paths:
         return ("\n\n## Write scope\nExclusive: you may edit anything in the repository; every change you make must be "
-                "listed in `artifacts` (undeclared writes fail verification).")
+                "listed in `artifacts` (undeclared writes fail verification)." + _test_roots_note(task))
     return ("\n\n## Write scope\nOnly these paths (anything written outside them fails verification):\n"
-            + "\n".join(f"- {p}" for p in task.owned_paths))
+            + "\n".join(f"- {p}" for p in task.owned_paths) + _test_roots_note(task))
 
 
 GUIDANCE_HEADING = "## Guidance (read before starting; earlier attempts failed or were stopped)"
@@ -121,14 +155,24 @@ def review_guidance_block(task: Task, digest: str) -> str:
             + _format_guidance(items))
 
 
+def _tests_heading(task: Task) -> str:
+    """G1, 2.4.0: the Tests section heading names whether a command is required — delivery_brief is only ever
+    sent on a model lane (escalation.dispatch_revision, the claude_cli/claude_api adapters), so `model_lane=True`."""
+    return ("## Tests (at least one of these must be a command the supervisor can re-run)" if task.requires_commands(True)
+            else "## Tests (judged by reading the artifacts; no command is required)")
+
+
 def delivery_brief(layout: Layout, task: Task) -> str:
     card = role_card(layout, task.owner_role)
     return policy.assert_packet_clean(((card + "\n\n") if card else "") + (
         f"# Task {task.id}: {task.title}\n\nRole: {task.owner_role}\nRepository: {layout.root}\n\n"
         f"## Objective\n{task.objective}\n\n## Actions\n" + "\n".join(f"- {a}" for a in task.actions) +
         "\n\n## Expected artifacts (all of these; you may add more, never fewer)\n" + "\n".join(f"- {a}" for a in task.artifacts) +
-        "\n\n## Tests\n" + "\n".join(f"- {t}" for t in task.tests) + _checks_block(task) + _ownership_block(task) + _guidance_block(task) +
-        f"\n\n## Acceptance\n{task.acceptance}\n\n" + RESULT_CONTRACT_DELIVERY),
+        "\n\nFiles under `runs/` are this attempt's own working notes (handoff, logs, evidence): never list them in "
+        "`artifacts` — they are dropped from the delivery. Cite their paths in `notes` instead.\n\n" +
+        _tests_heading(task) + "\n" + "\n".join(f"- {t}" for t in task.tests) + _checks_block(task) +
+        _ownership_block(task) + _guidance_block(task) +
+        f"\n\n## Acceptance\n{task.acceptance}\n\n" + result_contract_delivery(layout, task)),
         layout, f"delivery packet {task.id}")
 
 

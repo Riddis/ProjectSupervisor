@@ -86,6 +86,6 @@ def test_schema_invalid_response_fails(layout, fake_server):
 def test_vram_preflight_defers(layout, fake_server, monkeypatch):
     lltask(layout, fake_server, vram_mb=4000)
     spec = local_llm.ADAPTER.prepare(layout, testing.task(layout, "LL"), "LL.a1")
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 500)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 500)
     with pytest.raises(plugin.CapacityDeferred):
         local_llm.ADAPTER.submit(spec)

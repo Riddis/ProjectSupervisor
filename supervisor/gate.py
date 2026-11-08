@@ -140,6 +140,12 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
         # `held` read); only the delivery/continuation lane is refused here.
         note = f" ({task.held['note']})" if task.held.get("note") else ""
         return f"held by the owner{note}"
+    if kind == "delivery" and task is not None:
+        dep = tasks_mod.unmet_dependency(layout, task, tasks)
+        if dep:
+            # G6, 2.4.0: a revision re-dispatched before the work it depends on is finished. The record stays
+            # PREPARED (retried every reconcile()) instead of launching a worker against unfinished dependencies.
+            return f"waiting on {dep}"
     if role is None and task is not None and kind in OWNER_ROLE_KINDS:
         role = task.owner_role
     if role and role_inactive(layout, role):

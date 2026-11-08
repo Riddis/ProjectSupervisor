@@ -200,7 +200,13 @@ def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: 
     doc["job"] = job
     revision_task = Task.model_validate(doc)
     note = f"revision after {source} failure" + (" (senior model)" if senior else "")
-    return supervisor.dispatch(revision_task, adapter_name, note=note)
+    rec = supervisor.dispatch(revision_task, adapter_name, note=note)
+    dep = tasks_mod.unmet_dependency(layout, task)
+    if dep and rec.get("attempt_id"):
+        # G6, 2.4.0: the record is queued either way (crash-safe, same spirit as a continuation's own note) - the
+        # gate refuses it at launch time; this note says why, at queue time, so the owner is not left guessing.
+        tasks_mod.add_note(layout, task.id, f"{rec['attempt_id']}: revision queued; waiting on {dep}", actor="escalation")
+    return rec
 
 
 def _attempt_no(attempt_id: str) -> int:

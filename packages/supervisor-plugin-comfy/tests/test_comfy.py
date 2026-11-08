@@ -50,7 +50,7 @@ def ad():
 def test_vram_preflight_refuses_below_floor(layout, ad, monkeypatch):
     ctask(layout, vram_mb=4000)
     spec = ad.prepare(layout, testing.task(layout, "CF"), "CF.a1")
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 1000)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 1000)
     with pytest.raises(plugin.CapacityDeferred):
         ad.submit(spec)
 
@@ -488,11 +488,11 @@ def test_prepare_sets_no_deadline(layout, ad):
 def test_capacity_deferred_submit_keeps_the_full_budget_on_a_later_success(layout, ad, monkeypatch):
     ctask(layout, vram_mb=4000)
     spec = ad.prepare(layout, testing.task(layout, "CF"), "CF.a1")
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 1000)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 1000)
     with pytest.raises(plugin.CapacityDeferred):
         ad.submit(spec)                                             # deferred: no deadline exists anywhere yet
     time.sleep(0.05)                                                 # simulate time passing while deferred
-    monkeypatch.setattr(plugin.gpu, "free_mb", lambda: 8000)
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 8000)
     monkeypatch.setattr(ad, "_get", lambda base, path, **kw: FakeResponse({"ok": True}))
     monkeypatch.setattr(ad, "_post", lambda base, path, payload, **kw: FakeResponse({"prompt_id": "late-id"}))
     before = time.time()

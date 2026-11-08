@@ -15,7 +15,15 @@ class Ffmpeg(BaseModel):
 class Settings(BaseModel):
     """Declares the values with a default, the same ones comfy_config() fills in; other keys (`root`, the ComfyUI
     install, a `vram_floor_mb` override) pass through as written. `pinned_nodes` and `pins_file` name the
-    installation's own pin manifest (empty/generic by default: no custom node is required unless configured)."""
+    installation's own pin manifest (empty/generic by default: no custom node is required unless configured).
+    `vram_device` names the card this lane's preflight reads: a key of `resources.gpu.devices`, or a bare
+    integer index, resolved through `supervisor.plugin.gpu_device`. Declared here rather than left to
+    `extra="allow"` - an undeclared key is accepted and silently ignored, which would defeat the whole point of
+    naming a device. Unset (the default) resolves to no device at all, which is every project that configures
+    nothing and the behaviour every prior release has.
+    `bool` comes first in the union so pydantic's smart-union matches a `True`/`False` input against it exactly,
+    rather than lax-coercing it into `int`: `gpu_device()` already refuses a bool explicitly, and that refusal
+    only fires if the bool survives validation unchanged."""
     model_config = ConfigDict(extra="allow")
     base_url: str = "http://127.0.0.1:8188"
     timeout_s: int = 1800
@@ -26,3 +34,4 @@ class Settings(BaseModel):
     pinned_nodes: list[str] = []
     pins_file: str = "comfy_pins.json"
     ffmpeg: Ffmpeg = Ffmpeg()
+    vram_device: bool | str | int | None = None

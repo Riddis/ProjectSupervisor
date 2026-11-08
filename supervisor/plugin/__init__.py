@@ -17,18 +17,18 @@ from ..inbox import InboxError
 from ..paths import Layout
 from ..store import now_iso
 from . import policy
-from ._config import config, resources
+from ._config import config, gpu_device, resources
 from ._inbox import close_owned_item, owned_item, owned_items, update_owned_item
 from ._lanes import AgentLane, agent_lane
 from ._ops import log_event, submit_command
 from ._registry import Registry
 
 # Grouped by purpose in docs/PLUGIN_API.md: registration (Registry, PluginError); configuration (config,
-# resources); project paths (Layout); files (atomic_json, atomic_write_text, contained, read_json); job lanes
-# (Adapter, CapacityDeferred, ProcessAdapter, Result, job_spec); agent lanes (agent_lane, AgentLane); inbox items
-# (owned_items, owned_item, update_owned_item, close_owned_item, InboxError); commands and the log (submit_command,
-# log_event); policy (a module); Control Center pages (ui, a module); doctor checks (Check); the shared GPU probe
-# (gpu, a module); time (now_iso).
+# resources, gpu_device); project paths (Layout); files (atomic_json, atomic_write_text, contained, read_json); job
+# lanes (Adapter, CapacityDeferred, ProcessAdapter, Result, job_spec); agent lanes (agent_lane, AgentLane); inbox
+# items (owned_items, owned_item, update_owned_item, close_owned_item, InboxError); commands and the log
+# (submit_command, log_event); policy (a module); Control Center pages (ui, a module); doctor checks (Check); the
+# shared GPU probe (gpu, a module); time (now_iso).
 __all__ = [
     "Adapter",
     "AgentLane",
@@ -47,6 +47,7 @@ __all__ = [
     "config",
     "contained",
     "gpu",
+    "gpu_device",
     "job_spec",
     "log_event",
     "now_iso",

@@ -167,9 +167,15 @@ def test_an_odd_name_that_exists_on_disk_raises_no_warning(layout):
 
 @pytest.mark.parametrize("good", ["README.md", "experiments/EXP-1[0-9][0-9].yaml", "out/run/contact_sheet*.png",
                                   "bench/runs/*/summary.json", "strategies/S[1-6].yaml", "workflows/flow_v1.json",
-                                  "state/tasks/T10-0[2-9].yaml"])
+                                  "state/decisions/D-900-widget.md"])
 def test_real_paths_and_globs_pass(good):
     assert tasks.artifact_errors([contract(good)]) == []
+
+
+def test_a_path_under_state_outside_decisions_is_refused_even_though_it_looks_like_a_real_path():
+    """2.4.0, G4: no file under `state/` outside `state/decisions/` can ever be a deliverable — this used to be
+    accepted as a merely odd-looking but legal artifact entry (`state/tasks/T10-0[2-9].yaml`)."""
+    assert tasks.artifact_errors([contract("state/tasks/T10-0[2-9].yaml")]) != []
 
 
 def test_an_existing_directory_is_refused_when_the_root_is_known(layout):

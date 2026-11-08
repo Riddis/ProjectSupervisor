@@ -12,6 +12,63 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   ones finish (every dependency still open is IN_PROGRESS, WAITING_FOR_REVIEW or WAITING_FOR_HUMAN), each marked
   with the tasks it waits on.
 
+- **Task contract: `evidence` separates "what a reviewer judges" from "must a delivery report a command".**
+  `Task.evidence: "auto" | "commands" | "review" = "auto"` and the new `task.requires_commands(model_lane)`
+  replace the inferred rule (`bool(model_lane and task.tests)`) everywhere a caller decided whether a delivery
+  needed command evidence. `auto` is the pre-2.4.0 rule, unchanged; `commands` requires one on any lane, even with
+  an empty `tests`; `review` requires none (a command the worker reports anyway is still re-run and must pass). The
+  delivery brief's Tests heading and Result contract block now name which case the task is.
+
+- **Task contract: `test_roots` and `Check.cwd` let a declared command run outside the project.** A `tests` entry
+  (or a contract `checks` entry) may carry `"cwd"`, naming one of the task's own `test_roots` (root-relative or
+  absolute) or the project root; the verifier resolves it itself, picking that directory's own `.venv` interpreter
+  when it has one, else the supervisor's own, and refuses a `cwd` outside the allowed roots (naming them in the
+  failure) rather than silently falling back to the project root. Empty `test_roots` (the default) is today's
+  behaviour exactly: the project root only, the supervisor's own interpreter.
+
+- **Configuration: the three test-evidence limits are now `routing.yaml verification.*`.**
+  `per_command_timeout_s` (default 300), `budget_s` (default 900) and `max_commands` (default 10) replace the
+  `supervisor.verify` module constants as the tunable surface; the constants remain as the fallbacks. The tracked
+  verify job (`verification_job.as_job: true`, still the default) honours the configured values and its own
+  process timeout becomes `budget_s + 120`; the inline path (`as_job: false`) clamps the two time limits to the
+  built-in 300/900 ceiling because it runs inside the loop, holding `state/.lock`.
+
+- **Fixed: a run-directory artifact failed containment instead of being dropped.** `loop.ingest()` now drops any
+  declared artifact under `runs/` the same way it already drops a volatile `state/` file or a rendered projection —
+  logged `artifacts_dropped`, never a verification failure — so a worker that lists its own `HANDOFF.md` or
+  evidence files (as the brief tells it to) is not punished for it. A **contract** artifact under `runs/`, or under
+  `state/` outside `state/decisions/`, is now refused at `task import`/`task create` time (`tasks.artifact_
+  problems`'s error criterion): no file there can ever satisfy a delivery.
+
+- **Fixed: a refused test command's message named the configuration key but not the allowed list.** The
+  observation is now `"command not in verification.allowed_test_commands; allowed: <list> (config/routing.yaml
+  verification.allowed_test_commands)"`, and the delivery brief states the project's own list verbatim.
+  `python -m ruff`, `python3 -m ruff` and `py -m ruff` join the default `verification.allowed_test_commands`
+  alongside the bare `ruff` forms already there (an asymmetry with `pytest`'s own `python -m pytest` forms that
+  was never a decision).
+
+- **Fixed: an automatic revision could launch before the work it depends on finished.** `tasks.unmet_dependency()`
+  is now the one predicate for "this task's dependencies are met", read by `gate.check()` (refuses a `delivery`
+  launch — scheduled, a revision, or a capacity continuation — while a dependency is not COMPLETE, returning
+  `"waiting on <id> (<status>)"`), by `loop._ensure_in_progress()` (leaves a FAILED/BLOCKED task's status alone
+  while it is set, rather than flipping it to IN_PROGRESS ahead of a refusal that follows) and by `tasks.
+  eligible()` (refactored onto it). The queued record stays PREPARED and retries itself every `reconcile()`, so
+  the same attempt id launches the moment the dependency completes — no second revision spent.
+  `escalation.dispatch_revision` also adds one note on the task at queue time naming the unmet dependency.
+
+## 2.3.0 — 2026-11-07
+
+- **Plugin API: the shared GPU probe takes an optional device, and a new resolver reads a project's own device
+  policy.** `` `gpu` `` (`` `gpu.free_mb` ``, `` `gpu.used_mb` ``, `` `gpu.total_mb` ``, `` `gpu.available` ``)
+  each gain one optional parameter, `index: int | None = None`: unset, the argv and the parse are byte-identical
+  to before; given, `-i <index>` is inserted and that card's own row is read. The probe's contract is unchanged —
+  it never raises, and an index that names no card reads as unknown (`None`), not another card and not a crash.
+  A new name, `` `gpu_device` ``, is exported on `supervisor.plugin`: a pure function of the shared GPU resource
+  policy (`resources(layout)["gpu"]`) and a plugin's own `device` setting, returning the resolved card's name,
+  index and own floor, `None` when the setting is unset, and raising `PluginError` when the setting names
+  nothing the policy's `devices` mapping holds. Every 2.0..2.2 caller of all five names is unaffected: an unset
+  device is `None` throughout, and every probe call with no index behaves exactly as before.
+
 - **Fixed: a diagnosis `defer` parked its task on prose that nothing acted on.** The manager (or architect) could
   describe, under `blocked_on`, a fix task that did not exist yet; `diagnosis.ingest` only wrote that on the task
   and left it BLOCKED, the stall sweep skipped it as "parked on purpose", and the loop went idle until the owner

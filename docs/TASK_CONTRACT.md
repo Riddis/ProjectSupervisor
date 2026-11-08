@@ -19,7 +19,9 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `actions` | the steps, as the worker should take them |
 | `artifacts` | repo-relative file paths or globs (`*?[`, `**`) the delivery must produce — **the floor**: a worker may add, never omit. Every entry must be able to match a file. `task import` and `task create` **refuse** an entry no file can ever satisfy, because the floor would fail every delivery forever: absolute or escaping paths, directories (`src/` — write `src/**/*.py`) and characters no file name can hold (`<id>`). They **warn** about, but accept, a legal name that reads like prose or a placeholder (`contact sheets`, `S1..S6`, `EXP-1xx`, `round_N`, `{x}`) — `Final Report.md` and `out/xx.json` are real file names; an entry that already matches a file raises no warning |
 | `tests` | prose: what must be true (for the worker and reviewers) |
-| `checks` | executable: `[{command, timeout_s?}]` the supervisor re-runs on every delivery, whatever the worker reports; commands must match `verification.allowed_test_commands` |
+| `evidence` | `auto` (default) / `commands` / `review` — whether a delivery must report at least one re-run command (2.4.0, G1). `auto` keeps the pre-2.4.0 rule: a command is required exactly when `tests` is non-empty and the job ran on a model lane. `commands` requires one on any lane, even with an empty `tests`. `review` requires none — the named reviewer or the owner judges `tests` by reading the artifacts; a command the worker reports anyway is still re-run and must pass |
+| `checks` | executable: `[{command, timeout_s?, cwd?}]` the supervisor re-runs on every delivery, whatever the worker reports; commands must match `verification.allowed_test_commands`. `cwd` (2.4.0, G2) must be the project root or inside `test_roots` |
+| `test_roots` | directories, root-relative or absolute, a declared command's own `cwd` may point into (2.4.0, G2) — empty (default) means the project root only. A command whose entry carries `cwd` runs there with that directory's own `.venv` interpreter if it has one, else the supervisor's own; `cwd` outside `test_roots` is refused, never a silent fallback to the project root |
 | `owned_paths` | roots the worker may write; `["."]` = exclusive (whole tree, nothing else writes meanwhile). Required for every model-lane task |
 | `reviewer` | role ids whose ACCEPT is required (each reviews frozen inputs in its own lane) |
 | `review_note` | guidance for the reviewers |
@@ -86,6 +88,23 @@ releases the task behind its dependencies or goes to the owner), so a task left 
 is swept like any other stall. When the whole pipeline is idle (nothing
 running, nothing eligible, nothing waiting on the owner, work remaining) for twice the grace period, one
 **Pipeline idle — nothing can run** item lists the stuck tasks and what each waits for (once per stuck set).
+
+### Verification (2.4.0)
+
+A delivery's `tests` entries (`{command, exit_code, cwd?, timeout_s?}`) may each carry a `cwd` naming one of the
+task's own `test_roots` (G2) — the verifier resolves the interpreter itself and refuses a `cwd` outside them rather
+than falling back to the project root. The three re-run limits — per-command timeout, overall budget, command count
+— are `routing.yaml verification.per_command_timeout_s` / `budget_s` / `max_commands` (G3; default 300/900/10, the
+pre-2.4.0 constants); the tracked verify job honours the configured values, the inline path (`verification_job.
+as_job: false`) clamps the two time limits to that same built-in ceiling because it runs inside the loop, holding
+`state/.lock`. A command outside `verification.allowed_test_commands` fails naming the allowed list, not just the
+configuration key (G5); `python -m ruff`/`python3 -m ruff`/`py -m ruff` are in the framework's own default list
+beside the bare `ruff` forms. A declared path under `runs/` is dropped from the recorded artifacts like a volatile
+store file, logged `artifacts_dropped`, never a containment failure (G4); a **contract** artifact under `runs/` or
+under `state/` outside `state/decisions/` is refused at `task import`/`task create` time, because no file there can
+ever satisfy a delivery. An automatic revision for a task whose `depends_on` is not yet COMPLETE is queued but held
+at the launch gate (`waiting on <id> (<status>)`) rather than dispatched; it launches, within the same attempt id,
+once the dependency reaches COMPLETE (G6).
 
 ## Gates (`state/gates.yaml`)
 
