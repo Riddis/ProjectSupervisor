@@ -593,9 +593,10 @@ class Supervisor:
                 dg, result = digest_of({"attempt": rec["attempt_id"]}), Result(status="FAILED", error=f"manifest: {exc}")
             tasks_mod.record_delivery(self.layout, task_id, dg, actor="loop", result=result.notes or None, paths=files)
             if result.status == "COMPLETE" and not missing:
-                # a model lane must show its work: the brief asks for the commands it ran (packets.RESULT_CONTRACT_
-                # DELIVERY), and a task that declares tests is not verified without them. Deterministic adapters
-                # (python/process/...) declare no tests and are judged on their artifacts.
+                # a model lane must show its work: the brief asks for the commands it ran
+                # (packets.result_contract_delivery(layout, task)), and a task that declares tests is not verified
+                # without them. Deterministic adapters (python/process/...) declare no tests and are judged on
+                # their artifacts.
                 model_lane = rec["adapter"] in gate.MODEL_LANES
                 tracked = verify_mod.as_job(self.layout) and "process" in REGISTRY
                 outcome = verify_mod.verify(self.layout, task, files, (result.raw or {}).get("tests") or [],
