@@ -1,3 +1,10 @@
-# Review owners. A pull request touching a plugin package kept in this repository asks the framework's
-# maintainer for review (docs/PLUGIN_STANDARD.md, "Where a package lives").
+# Review owners. A pull request touching a plugin package kept in this repository, or the plugin surface itself
+# (the loader, the public plugin API and its docs, migrations), asks the framework's maintainer for review
+# (docs/PLUGIN_STANDARD.md, "Where a package lives"; docs/BOUNDARY.md, G5/G6).
 /packages/ @Riddis
+/supervisor/plugin/ @Riddis
+/supervisor/plugins.py @Riddis
+/supervisor/plugin_check.py @Riddis
+/supervisor/migrations.py @Riddis
+/docs/PLUGIN_API.md @Riddis
+/docs/PLUGIN_STANDARD.md @Riddis
