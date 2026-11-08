@@ -660,13 +660,15 @@ class Supervisor:
         run_dir.mkdir(parents=True, exist_ok=True)
         input_path = run_dir / "verify_input.json"
         atomic_json(input_path, {"root": str(self.layout.root), "task_id": task.id, "digest": dg, "commands": commands,
-                                 "fixed": fixed, "delivery_attempt": delivery_rec["attempt_id"]})
+                                 "fixed": fixed, "delivery_attempt": delivery_rec["attempt_id"],
+                                 "roots": list(task.test_roots)})
         # The child runs with the task root as cwd, which need not contain the supervisor package: import it by path.
         pkg_parent = str(Path(verify_mod.__file__).resolve().parents[1])
         code = (f"import sys; sys.path.insert(0, {pkg_parent!r}); from supervisor.verify_job import main; "
                 f"sys.exit(main(['verify_job', {str(input_path)!r}]))")
         doc = task.model_dump(mode="json")
-        doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code], "timeout_s": verify_mod.TEST_BUDGET_S + 120}
+        doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code],
+                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120}
         view = Task.model_validate(doc)
         rec = self.dispatch(view, "process", note=f"verify delivery {delivery_rec['attempt_id']}", kind=self.VERIFY_KIND,
                             extra={"verify_digest": dg, "verify_delivery": delivery_rec["attempt_id"], "verify_commands": len(commands)})

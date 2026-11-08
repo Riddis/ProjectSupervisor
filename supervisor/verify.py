@@ -42,7 +42,8 @@ TEST_TIMEOUT_S = 300          # per command
 TEST_BUDGET_S = 900           # total for one verification: the loop is single-threaded and holds state/.lock
 MAX_TEST_COMMANDS = 10
 ALLOWED_TEST_COMMANDS = ["pytest", "python -m pytest", "python3 -m pytest", "py -m pytest",
-                         "python -m unittest", "ruff check", "ruff"]
+                         "python -m unittest", "ruff check", "ruff",
+                         "python -m ruff", "python3 -m ruff", "py -m ruff"]
 # Volatile or oversized trees the repo-wide scan prunes: the supervisor's own run dirs and task store, the venv,
 # tool caches, the git object store and the (multi-GB) model cache.
 EXCLUDED_DIRS = {".git", ".venv", ".ruff_cache", ".pytest_cache", "__pycache__", "node_modules", "runs", "state",
@@ -186,6 +187,26 @@ def containment_violations(paths: list[str], owned_paths: list[str], root: Path)
     return [p for p in paths if not contained(p, owned_paths, root)]
 
 
+def limits(layout: Layout) -> dict:
+    """The three test-evidence limits (G3, 2.4.0): `verification.per_command_timeout_s`, `budget_s` and
+    `max_commands`, each falling back to this module's own constant when unconfigured or malformed."""
+    out = {"per_command_timeout_s": TEST_TIMEOUT_S, "budget_s": TEST_BUDGET_S, "max_commands": MAX_TEST_COMMANDS}
+    cfg = layout.config / "routing.yaml"
+    if cfg.exists():
+        try:
+            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            doc = {}
+        v = (doc.get("verification") or {}) if isinstance(doc, dict) else {}
+        for key in ("per_command_timeout_s", "budget_s", "max_commands"):
+            if key in v:
+                try:
+                    out[key] = int(v[key])
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
 def allowed_test_commands(layout: Layout) -> list[str]:
     cfg = layout.config / "routing.yaml"
     if cfg.exists():
@@ -236,14 +257,45 @@ def _isolate_pytest(argv: list[str], root: Path, tag: str) -> list[str]:
     return argv
 
 
-def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | None = None, tag: str = "verify") -> tuple[bool, list[dict]]:
-    """Re-run each declared command; returns (all passed, observations). Bounded by MAX_TEST_COMMANDS,
-    TEST_TIMEOUT_S per command and TEST_BUDGET_S overall — the supervisor is single-threaded and the owner's
-    PAUSE/STOP cannot be applied while this runs."""
+def _cwd_interpreter(cwd: Path) -> str:
+    """The interpreter a command's `cwd` runs under (G2, 2.4.0): that directory's own `.venv` if it has one, else
+    the supervisor's own — never whatever the declared command's argv[0] spells."""
+    venv_py = cwd / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return str(venv_py) if venv_py.exists() else sys.executable
+
+
+def _resolve_root_relative(p: str, root: Path) -> Path:
+    path = Path(p)
+    return path if path.is_absolute() else root / path
+
+
+def _cwd_allowed(resolved: Path, root: Path, roots: tuple[str, ...]) -> bool:
+    """True when `resolved` is the project root itself or lies inside one resolved entry of `roots` (G2)."""
+    if resolved == root:
+        return True
+    for r in roots:
+        try:
+            base = _resolve_root_relative(r, root).resolve()
+        except OSError:
+            continue
+        if resolved == base or resolved.is_relative_to(base):
+            return True
+    return False
+
+
+def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | None = None, tag: str = "verify",
+                       roots: tuple[str, ...] = (), timeout_s: int = TEST_TIMEOUT_S, budget_s: int = TEST_BUDGET_S,
+                       max_commands: int = MAX_TEST_COMMANDS) -> tuple[bool, list[dict]]:
+    """Re-run each declared command; returns (all passed, observations). Bounded by `max_commands`, `timeout_s`
+    per command and `budget_s` overall (G3, 2.4.0 — defaults are the pre-2.4.0 constants). Each entry's own `cwd`,
+    when given, must resolve inside `roots` (the task's own `test_roots`, G2, 2.4.0) or the project root itself;
+    otherwise the command is refused and never run. The supervisor is single-threaded and the owner's PAUSE/STOP
+    cannot be applied while this runs."""
     allowed = allowed if allowed is not None else list(ALLOWED_TEST_COMMANDS)
+    root = Path(root).resolve()
     ok, results = True, []
-    deadline = time.monotonic() + TEST_BUDGET_S
-    for entry in declared[:MAX_TEST_COMMANDS]:
+    deadline = time.monotonic() + budget_s
+    for entry in declared[:max_commands]:
         command = str((entry or {}).get("command", "")).strip() if isinstance(entry, dict) else ""
         if not command:
             results.append({"command": "", "exit_code": None, "error": "malformed test entry: no command"})
@@ -257,9 +309,25 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
             continue
         if not allowed_here:
             results.append({"command": command, "exit_code": None,
-                            "error": "command not in verification.allowed_test_commands"})
+                            "error": "command not in verification.allowed_test_commands; allowed: "
+                                     + ", ".join(allowed) + " (config/routing.yaml verification.allowed_test_commands)"})
             ok = False
             continue
+        cwd = root
+        declared_cwd = (entry or {}).get("cwd") if isinstance(entry, dict) else None
+        if declared_cwd:
+            try:
+                resolved = _resolve_root_relative(str(declared_cwd), root).resolve()
+            except OSError:
+                resolved = _resolve_root_relative(str(declared_cwd), root)
+            if not resolved.is_dir() or not _cwd_allowed(resolved, root, roots):
+                results.append({"command": command, "exit_code": None,
+                                "error": f"cwd not inside the task's test_roots: {resolved}; allowed: "
+                                         + ", ".join([str(root), *roots])})
+                ok = False
+                continue
+            cwd = resolved
+        interpreter = _cwd_interpreter(cwd)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             results.append({"command": command, "exit_code": None, "error": "test budget exhausted; not run"})
@@ -267,13 +335,13 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
             continue
         argv = test_argv(command)
         if _basename(argv[0]).lower().removesuffix(".exe") in ("python", "python3", "py"):
-            argv[0] = sys.executable            # the supervisor's own interpreter, never whatever `python` is on PATH
+            argv[0] = interpreter               # the resolved interpreter, never whatever `python` is on PATH
         elif _basename(argv[0]).lower().removesuffix(".exe") in ("pytest", "ruff"):
-            argv = [sys.executable, "-m", _basename(argv[0]).lower().removesuffix(".exe")] + argv[1:]
+            argv = [interpreter, "-m", _basename(argv[0]).lower().removesuffix(".exe")] + argv[1:]
         argv = _isolate_pytest(argv, root, f"{tag}_{int(time.time())}")
-        per_command = int(entry.get("timeout_s") or TEST_TIMEOUT_S) if isinstance(entry, dict) else TEST_TIMEOUT_S
+        per_command = int(entry.get("timeout_s") or timeout_s) if isinstance(entry, dict) else timeout_s
         try:
-            proc = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=min(per_command, remaining),
+            proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=min(per_command, remaining),
                                   env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
             code = proc.returncode
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -281,14 +349,16 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
             ok = False
             continue
         obs = {"command": command, "exit_code": code}
+        if declared_cwd:
+            obs["cwd"] = str(declared_cwd)
         if code != 0:
             obs["output_tail"] = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-1500:]
         results.append(obs)
         if code != 0:
             ok = False
-    if len(declared) > MAX_TEST_COMMANDS:
-        results.append({"command": f"[{len(declared) - MAX_TEST_COMMANDS} further command(s)]", "exit_code": None,
-                        "error": f"more than MAX_TEST_COMMANDS={MAX_TEST_COMMANDS} declared; not run"})
+    if len(declared) > max_commands:
+        results.append({"command": f"[{len(declared) - max_commands} further command(s)]", "exit_code": None,
+                        "error": f"more than {max_commands} commands declared (verification.max_commands); not run"})
         ok = False
     return ok, results
 
@@ -388,6 +458,9 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
         fixed = [c["command"] for c in checks]
         if not run_commands:
             return Outcome(True, "artifacts present; commands pending", report={"pending_commands": to_run, "fixed": fixed})
-        ok, results = run_declared_tests(layout.root, to_run, allowed_test_commands(layout), tag=f"verify_{task.id}")
+        lim = limits(layout)              # the inline path clamps the two time limits (G3): it holds state/.lock
+        ok, results = run_declared_tests(layout.root, to_run, allowed_test_commands(layout), tag=f"verify_{task.id}",
+                                         roots=tuple(task.test_roots), timeout_s=min(lim["per_command_timeout_s"], TEST_TIMEOUT_S),
+                                         budget_s=min(lim["budget_s"], TEST_BUDGET_S), max_commands=lim["max_commands"])
         return commands_outcome(ok, results, fixed, bool(checks))
     return Outcome(True, "artifacts present" if files else "no artifacts declared")
