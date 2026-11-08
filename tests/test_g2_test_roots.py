@@ -3,6 +3,7 @@ by the verifier (that directory's `.venv` if it has one, else the supervisor's o
 own argv[0] spells. Invented directories throughout (D-005): "widget-lib" is not a real project."""
 import os
 import sys
+import types
 from pathlib import Path
 
 from supervisor import packets, tasks, verify
@@ -73,3 +74,43 @@ def test_brief_states_the_project_root_only_rule_when_test_roots_is_empty(layout
     task = tasks.load(layout, "T")
     brief = packets.delivery_brief(layout, task)
     assert "Verification re-runs each command from `<project root>` with the supervisor's own interpreter." in brief
+
+
+def test_no_cwd_runs_under_the_supervisors_own_interpreter_even_when_the_root_has_a_venv(layout, monkeypatch):
+    """Ruling §3, resolution step 1: "No `cwd` in the entry -> cwd = root, interpreter sys.executable. Unchanged
+    from today." A project root that owns its own `.venv` must not change which interpreter an entry without
+    `cwd` runs under (the worktree's own `_cwd_interpreter()` test above only exercises a bare directory)."""
+    venv_py = layout.root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+
+    verify.run_declared_tests(layout.root, [{"command": "pytest -q"}, {"command": "python -m pytest -q"}])
+
+    assert [c[0] for c in calls] == [sys.executable, sys.executable]
+
+
+def test_a_contract_check_without_cwd_also_runs_under_the_supervisors_own_interpreter(layout, monkeypatch):
+    """The same rule for the task's own `checks` (loop.py passes `checks=[c.model_dump() for c in task.checks]`,
+    so an unset `cwd` arrives as the key `cwd: None`, not a missing key)."""
+    venv_py = layout.root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    venv_py.parent.mkdir(parents=True)
+    venv_py.write_text("", encoding="utf-8")
+    make_task(layout, "T", checks=[{"command": "pytest -q"}])
+    task = tasks.load(layout, "T")
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+
+    outcome = verify.verify(layout, task, [], checks=[c.model_dump() for c in task.checks])
+
+    assert calls and calls[0][0] == sys.executable
+    assert outcome.ok
