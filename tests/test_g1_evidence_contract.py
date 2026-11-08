@@ -55,6 +55,30 @@ def _write_widget(root, run_dir, **_):
     return {"status": "COMPLETE", "artifacts": ["widget.txt"]}
 
 
+def test_evidence_commands_failure_names_the_evidence_choice_not_prose_tests(layout):
+    """F2: under `evidence: commands` with `tests: []` the task declares no tests at all - the failure must not
+    claim it does, and must instead name the planner's `evidence` choice that actually demands the command."""
+    make_task(layout, "T", evidence="commands", tests=[])
+    task = tasks.load(layout, "T")
+    outcome = verify.verify(layout, task, [], declared_tests=[], require_tests=task.requires_commands(False))
+    assert outcome.ok is False
+    assert outcome.detail.startswith("no test evidence")
+    assert "the task declares tests" not in outcome.detail
+    assert "evidence: commands" in outcome.detail
+
+
+def test_model_lane_default_evidence_failure_still_names_the_true_reason(layout):
+    """The one case where "the task declares tests" is actually true: prose tests on a model lane, default
+    (`auto`) evidence. F2's reword must keep this sentence true here, and must not mention `evidence: commands`."""
+    make_task(layout, "T", cost_category="claude")           # evidence="auto" (default), tests=["t"] (the default)
+    task = tasks.load(layout, "T")
+    outcome = verify.verify(layout, task, [], declared_tests=[], require_tests=task.requires_commands(True))
+    assert outcome.ok is False
+    assert outcome.detail.startswith("no test evidence")
+    assert "declares tests" in outcome.detail
+    assert "evidence: commands" not in outcome.detail
+
+
 def test_loop_honours_evidence_commands_on_a_deterministic_lane(layout):
     """loop.ingest must pass `task.requires_commands(model_lane)` to verify(), not the old inferred rule: a
     deterministic job with `evidence: commands` and no declared tests must not complete without a command."""

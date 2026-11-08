@@ -450,7 +450,11 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
             return Outcome(False, what + ", ".join(sorted(undeclared)[:20]))
     checks = list(checks or [])
     if not declared_tests and require_tests:
-        return Outcome(False, "no test evidence: the task declares tests, so the delivery must report the commands "
+        if task.evidence == "commands":
+            why = "this task requires command evidence (`evidence: commands`)"
+        else:
+            why = "this task declares tests on a model lane"
+        return Outcome(False, f"no test evidence: {why}, so the delivery must report the commands "
                               "it ran as `tests: [{command, exit_code}]` and they must pass when re-run here")
     to_run = checks + [t for t in (declared_tests or [])
                        if not any(str((t or {}).get("command", "")).strip() == c["command"].strip() for c in checks)]
