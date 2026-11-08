@@ -119,7 +119,9 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
 
     Errors — structurally no file can ever satisfy the entry, so it would fail every delivery forever and a new or
     re-imported contract carrying one is refused: empty or padded entries, absolute or escaping paths, directories
-    ("cycle_N/", or with `root` an existing directory) and characters no file name can hold ("<id>").
+    ("cycle_N/", or with `root` an existing directory), characters no file name can hold ("<id>"), and a path under
+    `runs/` or under `state/` outside `AUTHORED_STATE` — the loop drops both as evidence, never a deliverable
+    (G4, 2.4.0), so no artifact entry there can ever be satisfied.
 
     Warnings — the spelling looks like prose or a placeholder ("runs contact sheets", "S1..S6", "EXP-1xx",
     "round_N") but is a legal file name, and real projects do name files "Final Report.md" or "out/xx.json". The
@@ -136,8 +138,10 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
             elif a.endswith(("/", "\\")) or (root is not None and not any(c in a for c in "*?[")
                                                 and (root / a).is_dir()):
                 why = "is a directory — list its files or a glob such as dir/*"
+            elif a.startswith("runs/") or (a.startswith("state/") and not a.startswith(AUTHORED_STATE)):
+                why = "is under runs/ or state/ (outside state/decisions/) — never a deliverable (G4, 2.4.0)"
             elif _ILLEGAL.search(a):
-                why = "has a placeholder or a character no file name can hold (<...>, \", |) — use a glob such as runs/*/summary.json"
+                why = "has a placeholder or a character no file name can hold (<...>, \", |) — use a glob such as out/*/summary.json"
             if why:
                 errors.append(f"{t.id}: artifact {a!r} {why}")
                 continue

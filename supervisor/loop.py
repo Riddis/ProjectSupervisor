@@ -579,6 +579,11 @@ class Supervisor:
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
                 tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=volatile,
                               reason="state/ and rendered projections are not deliverables")
+            in_run_dir = [f for f in files if f == "runs" or f.startswith("runs/")]
+            if in_run_dir:                                          # G4, 2.4.0: evidence (handoff, logs), never a
+                files = [f for f in files if f not in in_run_dir]  # deliverable — admitting it would make ownership
+                tasks_mod.log(self.layout, "artifacts_dropped", "loop", task=task_id, dropped=in_run_dir,
+                              reason="run-directory files are evidence, not deliverables; cite them in notes")
             try:
                 dg = digest_of(manifest([self.layout.root / a for a in files], root=self.layout.root)) if files else digest_of({"attempt": rec["attempt_id"]})
             except ValueError as exc:
