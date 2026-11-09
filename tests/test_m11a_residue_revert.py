@@ -15,6 +15,8 @@ revert does not need to tell them apart to be safe: it quarantines before it res
 edit is recoverable, never silently lost."""
 from __future__ import annotations
 
+import hashlib
+import json
 import subprocess
 
 import pytest
@@ -27,6 +29,18 @@ from tests.conftest import make_task
 
 def git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+
+
+def events(layout, name: str) -> list[dict]:
+    """The structured log records of one event name, parsed - the Log row is about a record's own fields, so the
+    test reads them as fields rather than looking for a substring in the file."""
+    lines = (layout.state / "log.jsonl").read_text(encoding="utf-8").splitlines()
+    return [r for r in (json.loads(ln) for ln in lines if ln.strip()) if r.get("event") == name]
+
+
+def note_texts(layout, task_id: str) -> list[str]:
+    t = tasks.load(layout, task_id)
+    return [str(n.get("note") or "") for n in ((t.model_extra or {}).get("notes") or [])]
 
 
 @pytest.fixture
@@ -84,8 +98,41 @@ def test_a_rejected_attempts_own_residue_is_reverted_and_quarantined(layout, sco
     assert (layout.root / "other" / "shared.txt").read_text(encoding="utf-8") == "original"
     # nothing is deleted: a1's own content is quarantined under its own run dir
     assert (run_dir1 / "undeclared" / "other" / "shared.txt").read_text(encoding="utf-8") == "a1 edit"
-    log_text = (layout.state / "log.jsonl").read_text(encoding="utf-8")
-    assert '"event": "residue_reverted"' in log_text and '"path": "other/shared.txt"' in log_text
+
+    # CONTRIBUTOR_RULING.md §5.2's Log row: one event per path with the TWO digests and the quarantine location -
+    # the digest it was restored to and the one the attempt left behind (now readable in the quarantine), so the
+    # record says what was replaced with what and not merely that something was.
+    reverted = events(layout, "residue_reverted")
+    assert len(reverted) == 1
+    assert reverted[0]["path"] == "other/shared.txt"
+    assert reverted[0]["before_sha256"] == hashlib.sha256(b"original").hexdigest()
+    assert reverted[0]["after_sha256"] == hashlib.sha256(b"a1 edit").hexdigest()
+    assert reverted[0]["quarantine"] == (run_dir1 / "undeclared" / "other" / "shared.txt").as_posix()
+
+
+def test_a_reverted_path_is_named_in_one_note_on_the_task_and_opens_no_owner_item(layout, scoped, repo):
+    """The other half of §5.2's Log row: the event alone is not enough. The next attempt reads the task, not
+    `state/log.jsonl`, and a tree that changed under it between attempts is otherwise unexplained - so one note on
+    the task names the reverted paths and where their previous content is quarantined. No owner item, though: an
+    automatic repair that files an inbox item against itself is not a repair."""
+    task = scoped
+    run_dir1 = layout.runs / "T" / "T.a1"
+    run_dir1.mkdir(parents=True)
+    before1 = verify.snapshot(layout, task)
+    (layout.root / "owned" / "out.txt").write_text("delivered 1", encoding="utf-8")
+    (layout.root / "other" / "shared.txt").write_text("a1 edit", encoding="utf-8")
+    outcome1 = verify.verify(layout, task, ["owned/out.txt"], before=before1)
+    assert outcome1.ok is False
+
+    tasks.record_delivery(layout, "T", "dg1", actor="loop", paths=["owned/out.txt"])
+    rec1 = {"task_id": "T", "attempt_id": "T.a1", "adapter": "python", "spec": {"run_dir": str(run_dir1)}}
+    Supervisor(layout, sleep_s=0).record_outcome("T", "dg1", outcome1, rec1, substantive=False, worker_status="FAILED")
+
+    texts = [n for n in note_texts(layout, "T") if "residue reverted" in n]
+    assert len(texts) == 1, note_texts(layout, "T")
+    assert "other/shared.txt" in texts[0]
+    assert (run_dir1 / "undeclared").as_posix() in texts[0]
+    assert inbox.open_items(layout, "owner") == []
 
 
 def test_the_retrys_own_cleanup_of_already_reverted_residue_is_not_charged(layout, scoped, repo):
@@ -161,18 +208,59 @@ def test_a_path_git_cannot_account_for_is_left_exactly_as_found_and_named(layout
     # left exactly as found: never reverted, never quarantined, never deleted
     assert (layout.root / "other" / "uncommitted.txt").read_text(encoding="utf-8") == "the attempt's own edit"
     assert not (run_dir1 / "undeclared" / "other" / "uncommitted.txt").exists()
-    t = tasks.load(layout, "T")
-    notes = (t.model_extra or {}).get("notes") or []
-    assert any("not reverted" in (n.get("note") or "") and "other/uncommitted.txt" in (n.get("note") or "")
-              for n in notes)
+    assert any("not reverted (a path git cannot account for: other/uncommitted.txt)" in n
+              for n in note_texts(layout, "T")), note_texts(layout, "T")
+    assert events(layout, "residue_reverted") == []      # no event for a path that was not reverted
 
-    # one deduped owner decision item is opened for the path git cannot account for
+    # one deduped owner decision item is opened for the path git cannot account for, and it carries the path under
+    # its OWN reason: the item is what the Limits row exists to route, so the reason cannot live only in the note
     items = inbox.open_items(layout, "owner")
     assert len(items) == 1
     item = items[0]
     assert item["task_id"] == "T" and item.get("residue_left") == ["other/uncommitted.txt"]
-    assert "other/uncommitted.txt" in item["summary"]
+    assert "a path git cannot account for: other/uncommitted.txt" in item["summary"]
 
     # deduped: a second rejection that leaves exactly the same path untouched does not stack a second item
-    Supervisor(layout, sleep_s=0)._notify_residue_left("T", ["other/uncommitted.txt"])
+    Supervisor(layout, sleep_s=0)._notify_residue_left("T", {"a path git cannot account for":
+                                                             ["other/uncommitted.txt"]})
     assert inbox.open_items(layout, "owner") == items
+
+
+def test_each_cause_of_a_left_path_is_named_by_its_own_reason(layout, scoped, repo):
+    """The prior round replaced one blended sentence ("git cannot account for them, or they are a link, a
+    directory, too large, or hit a quarantine error") with one reason per cause, in both the task note and the
+    owner item. Nothing pinned that mapping, so it could regress to a blend with every test still green: this
+    drives all five causes through `_revert_residue()` and asserts each path appears under its own reason."""
+    run_dir = layout.runs / "T" / "T.a1"
+    (run_dir / "undeclared" / "other").mkdir(parents=True)
+    # a file where the quarantine's own directory must be created: the mkdir below it raises OSError
+    (run_dir / "undeclared" / "other" / "blocked").write_text("not a directory", encoding="utf-8")
+    (layout.root / "other" / "blocked").mkdir()
+    (layout.root / "other" / "blocked" / "x.txt").write_text("created by the attempt", encoding="utf-8")
+    (layout.root / "other" / "uncommitted.txt").write_text("never committed", encoding="utf-8")
+    digest = hashlib.sha256(b"never committed").hexdigest()
+    residue = {
+        "other/big.bin": {"before": {"kind": "large"}, "after": {"kind": "large"}},
+        "other/adir": {"before": {"kind": "dir"}, "after": {"kind": "dir"}},
+        "other/uncommitted.txt": {"before": {"kind": "file", "sha256": digest}, "after": {"kind": "file"}},
+        "other/blocked/x.txt": {"before": {"kind": "missing"}, "after": {"kind": "file"}},
+    }
+    sup = Supervisor(layout, sleep_s=0)
+    sup._revert_residue("T", residue, str(run_dir))
+    # the fifth cause is the absence of a run directory to quarantine into: its own call, its own reason
+    sup._revert_residue("T", {"other/no_run_dir.txt": {"before": {"kind": "file", "sha256": digest}}}, None)
+
+    texts = " || ".join(note_texts(layout, "T"))
+    for reason, rel in [("a file above LARGE_FILE_BYTES", "other/big.bin"),
+                        ("a link or a directory", "other/adir"),
+                        ("a path git cannot account for", "other/uncommitted.txt"),
+                        ("a quarantine or restore error", "other/blocked/x.txt"),
+                        ("no run directory to quarantine the current content into", "other/no_run_dir.txt")]:
+        assert f"{reason}: {rel}" in texts, texts
+    # nothing was restored or deleted, and the owner item says the same five things the note does
+    assert (layout.root / "other" / "blocked" / "x.txt").read_text(encoding="utf-8") == "created by the attempt"
+    assert events(layout, "residue_reverted") == []
+    item = next(i for i in inbox.open_items(layout, "owner") if "other/adir" in (i.get("residue_left") or []))
+    said = item["summary"] + (item.get("detail") or "")
+    assert "a quarantine or restore error: other/blocked/x.txt" in said and \
+           "a link or a directory: other/adir" in said

@@ -65,6 +65,12 @@ def _epoch(iso: str) -> float:
         return time.time()                       # unparseable: treat as "just now" (never acts early)
 
 
+def _residue_reasons(by_reason: dict[str, list[str]]) -> str:
+    """The paths a revert left exactly as found, each under its own reason — one shared rendering for the task note
+    and the owner item, so the two can never drift into saying different things about the same residue."""
+    return "; ".join(f"{reason}: {', '.join(sorted(paths))}" for reason, paths in sorted(by_reason.items()))
+
+
 def scheduler_routing(layout: Layout) -> dict:
     import yaml
     cfg = layout.config / "routing.yaml"
@@ -455,12 +461,17 @@ class Supervisor:
         when `git`'s own content for it at HEAD hashes to the `before` digest the snapshot recorded (never guessed
         at); a link, a directory, a file above LARGE_FILE_BYTES, one git cannot account for, or one a quarantine/
         restore OSError hit is left exactly as found instead — one reason string per cause (not one blended
-        sentence), because the next attempt will otherwise fail on something it cannot fix. No note, no inbox item,
-        and no `residue_reverted` event for one that goes untouched — a half-repair is not silently called a
-        repair."""
+        sentence), because the next attempt will otherwise fail on something it cannot fix.
+
+        Which case gets which record (`CONTRIBUTOR_RULING.md` §5.2's Log row). A path that *was* reverted: one
+        `residue_reverted` event carrying both of the snapshot's digests and the quarantine location, and its name
+        in one note on the task — and no owner item, because an automatic repair that files an inbox item against
+        itself is not a repair. A path left exactly as found: its own reason in that task's "not reverted" note and
+        one deduped owner decision item, and no `residue_reverted` event, because a half-repair is not silently
+        called a repair."""
         root = self.layout.root
         quarantine = Path(run_dir) / "undeclared" if run_dir else None
-        reverted: list[str] = []
+        reverted: list[tuple[str, str | None, str | None]] = []
         left: list[tuple[str, str]] = []
         for rel, entry in residue.items():
             before_e, after_e = entry.get("before") or {}, entry.get("after") or {}
@@ -496,30 +507,37 @@ class Supervisor:
             except OSError:
                 left.append((rel, "a quarantine or restore error"))
                 continue
-            reverted.append(rel)
-        for rel in reverted:
+            reverted.append((rel, before_e.get("sha256"), after_e.get("sha256")))
+        for rel, before_sha, after_sha in reverted:
             tasks_mod.log(self.layout, "residue_reverted", "loop", task=task_id, path=rel,
+                          before_sha256=before_sha, after_sha256=after_sha,
                           quarantine=(quarantine / rel).as_posix() if quarantine else None)
+        if reverted and quarantine is not None:    # a revert needs a quarantine: with no run directory nothing moves
+            tasks_mod.add_note(self.layout, task_id,
+                               f"residue reverted ({', '.join(rel for rel, _, _ in reverted)}); the content found "
+                               f"there is quarantined under {quarantine.as_posix()}", actor="loop")
         if left:
             by_reason: dict[str, list[str]] = {}
             for rel, reason in left:
                 by_reason.setdefault(reason, []).append(rel)
-            note = "; ".join(f"{reason}: {', '.join(sorted(paths))}" for reason, paths in sorted(by_reason.items()))
-            tasks_mod.add_note(self.layout, task_id, f"residue not reverted ({note})", actor="loop")
-            self._notify_residue_left(task_id, sorted(rel for rel, _ in left))
+            tasks_mod.add_note(self.layout, task_id, f"residue not reverted ({_residue_reasons(by_reason)})",
+                               actor="loop")
+            self._notify_residue_left(task_id, by_reason)
 
-    def _notify_residue_left(self, task_id: str, left: list[str]) -> None:
+    def _notify_residue_left(self, task_id: str, by_reason: dict[str, list[str]]) -> None:
         """`CONTRIBUTOR_RULING.md` §5.2's Limits row: a path left exactly as found needs an owner decision, because
         the next attempt will otherwise fail on something it cannot fix. One deduped item per (task, this exact set
         of left paths) — not one per rejection, so a retry rejected again for the same untouched residue does not
-        stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape)."""
-        key = list(left)
+        stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape).
+        The item names each path under its own reason, as the task note does: the reason is the thing the owner has
+        to act on, and it is this item, not the note, that the Limits row exists to route."""
+        key = sorted(rel for paths in by_reason.values() for rel in paths)
         if any(i.get("task_id") == task_id and (i.get("residue_left") or []) == key
                for i in inbox_mod.open_items(self.layout, "owner")):
             return
         summary, detail = inbox_mod.fit(
-            f"{task_id}'s rejected delivery left {len(key)} unowned path(s) exactly as found — git cannot account "
-            f"for them, or they are a link, a directory, too large, or hit a quarantine error: {', '.join(key)}. "
+            f"{task_id}'s rejected delivery left {len(key)} unowned path(s) exactly as found — "
+            f"{_residue_reasons(by_reason)}. "
             "The next attempt will fail on this residue unless it is cleared by hand.")
         try:
             inbox_mod.create(self.layout, for_role="owner", subject=f"Residue left on {task_id}",
