@@ -466,17 +466,24 @@ def _allowance_scope(target: Path) -> tuple[str, str] | None:
     return ("archive", dist) if dist else None
 
 
+_CATALOG_INDEX = "plugins-catalog/index.yaml"
+
+
 def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, list[str]]) -> set[str]:
     """The words a project allows in this file: its package's own name, inside `packages/<distribution>/` at the top
-    of the git repository the file is in, or in that distribution's own wheel or sdist. Nothing else: not a
-    lookalike path deeper in the tree, a folder named like the package elsewhere, a folder outside git, or an
-    archive whose file name or metadata names another distribution (review 2.0.0 R1)."""
+    of the git repository the file is in, in that distribution's own wheel or sdist, or in the catalog index itself
+    (`plugins-catalog/index.yaml`, CONTRIBUTOR_RULING.md 2.3: the one file that may name any in-repo package it
+    lists). Nothing else: not a lookalike path deeper in the tree, a folder named like the package elsewhere, a
+    folder outside git, or an archive whose file name or metadata names another distribution (review 2.0.0 R1)."""
     if not allowed or scope is None:
         return set()
     kind, where = scope
     if kind == "archive":
         return {w.lower() for w in allowed.get(where, [])}
-    parts = (where + rel).split("/")
+    path = where + rel
+    if path == _CATALOG_INDEX:
+        return {w.lower() for words in allowed.values() for w in words}
+    parts = path.split("/")
     if len(parts) < 3 or parts[0] != "packages":
         return set()
     return {w.lower() for w in allowed.get(_distribution(parts[1]), [])}

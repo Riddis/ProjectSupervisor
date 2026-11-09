@@ -458,6 +458,30 @@ def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatc
     assert not any(path.startswith("packages/") for path, _l, _w in found)
 
 
+# ----------------------------------------------------- the catalog index (2.5.0, CONTRIBUTOR_RULING.md 2.3): an
+# in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there - the one new location
+# in _allowance_scope, not a second mechanism. Everywhere else the word is still a hit.
+
+def test_the_catalog_index_may_name_an_in_repo_packages_own_word(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {
+        "plugins-catalog/index.yaml": "version: 1\nplugins:\n  - identity: quuxify\n"
+                                      "    distribution: supervisor-plugin-quuxify\n"
+                                      "    home: packages/supervisor-plugin-quuxify\n",
+        "docs/OTHER.md": "quuxify\n",
+    })
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("docs/OTHER.md", 1, "quuxify") in found
+    assert not any(path == "plugins-catalog/index.yaml" for path, _l, _w in found)
+
+
+def test_the_catalog_index_allowance_does_not_reach_a_lookalike_path(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {"docs/plugins-catalog/index.yaml": "quuxify\n"})
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("docs/plugins-catalog/index.yaml", 1, "quuxify") in found
+
+
 def test_the_words_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, BANG_ALLOWING)
     root = package(tmp_path, {"outside!packages/supervisor-plugin-cedar/notes.txt": "cedar\n"})
