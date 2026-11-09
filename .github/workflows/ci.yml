@@ -134,15 +134,20 @@ jobs:
   package:
     # Per package and framework: both wheels built (the framework's from its tag or HEAD), a fresh environment, the
     # installed proof (found, loaded, G5, a task on its lane or python job) and the package's suite, with no source
-    # on the path. Branch protection requires only the `all gates` aggregator below (M7), not each of these
-    # churning names.
-    name: package ${{ matrix.package }} (framework ${{ matrix.framework }})
+    # on the path. 2.5.0's M4: the os axis G3 suite already has, so every leg is proven on both platforms - this is
+    # a workflow change only (tools/ci_package.py run() already resolves Scripts/python.exe on win32). The dynamic
+    # leg list is read into its own named axis (`leg`, not `include`) so it genuinely cross-multiplies with `os`:
+    # an `include:` entry with no `os` key would merge into every existing os combination instead of multiplying.
+    # Branch protection requires only the `all gates` aggregator below (M7), not each of these churning names.
+    name: package ${{ matrix.leg.package }} (framework ${{ matrix.leg.framework }}, ${{ matrix.os }})
     needs: packages
     if: needs.packages.outputs.count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.packages.outputs.matrix) }}
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        leg: ${{ fromJSON(needs.packages.outputs.matrix).include }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -151,7 +156,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python tools/ci_package.py run "packages/${{ matrix.package }}" --framework "${{ matrix.framework }}" --workdir "$RUNNER_TEMP/package-ci"
+      - run: python tools/ci_package.py run "packages/${{ matrix.leg.package }}" --framework "${{ matrix.leg.framework }}" --workdir "$RUNNER_TEMP/package-ci"
 
   all_gates:
     # 2.5.0's M7 (docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.5): one fixed-name job in place of the six-and-
