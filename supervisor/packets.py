@@ -74,26 +74,26 @@ def _checks_block(task: Task) -> str:
             + "\n".join(f"- `{c.command}`" for c in task.checks))
 
 
-def _test_roots_note(task: Task) -> str:
+def _test_roots_note(layout: Layout, task: Task) -> str:
     """Where a declared test command re-runs (G2, 2.4.0): named roots when the task sets any, else the one
     sentence that is true when it does not."""
     if task.test_roots:
         example = task.test_roots[0]
         return ("\n\n**Where your test commands re-run.** Verification re-runs each command you report from "
-                "`<project root>` by default. A command that must run in another directory names it as `cwd` in "
+                f"`{layout.root}` by default. A command that must run in another directory names it as `cwd` in "
                 "its own entry, and only these are allowed: " + ", ".join(task.test_roots) + ". The interpreter is "
                 "chosen here — that directory's `.venv` if it has one, otherwise the supervisor's own — so what "
                 "you write as the first word of the command does not select it.\n"
                 '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`')
-    return "\n\nVerification re-runs each command from `<project root>` with the supervisor's own interpreter."
+    return f"\n\nVerification re-runs each command from `{layout.root}` with the supervisor's own interpreter."
 
 
-def _ownership_block(task: Task) -> str:
+def _ownership_block(layout: Layout, task: Task) -> str:
     if task.exclusive() or not task.owned_paths:
         return ("\n\n## Write scope\nExclusive: you may edit anything in the repository; every change you make must be "
-                "listed in `artifacts` (undeclared writes fail verification)." + _test_roots_note(task))
+                "listed in `artifacts` (undeclared writes fail verification)." + _test_roots_note(layout, task))
     return ("\n\n## Write scope\nOnly these paths (anything written outside them fails verification):\n"
-            + "\n".join(f"- {p}" for p in task.owned_paths) + _test_roots_note(task))
+            + "\n".join(f"- {p}" for p in task.owned_paths) + _test_roots_note(layout, task))
 
 
 GUIDANCE_HEADING = "## Guidance (read before starting; earlier attempts failed or were stopped)"
@@ -171,7 +171,7 @@ def delivery_brief(layout: Layout, task: Task) -> str:
         "\n\nFiles under `runs/` are this attempt's own working notes (handoff, logs, evidence): never list them in "
         "`artifacts` — they are dropped from the delivery. Cite their paths in `notes` instead.\n\n" +
         _tests_heading(task) + "\n" + "\n".join(f"- {t}" for t in task.tests) + _checks_block(task) +
-        _ownership_block(task) + _guidance_block(task) +
+        _ownership_block(layout, task) + _guidance_block(task) +
         f"\n\n## Acceptance\n{task.acceptance}\n\n" + result_contract_delivery(layout, task)),
         layout, f"delivery packet {task.id}")
 
