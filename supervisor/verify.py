@@ -220,10 +220,27 @@ def allowed_test_commands(layout: Layout) -> list[str]:
     return list(ALLOWED_TEST_COMMANDS)
 
 
+def _unquote(t: str) -> str:
+    """Strip one pair of matching quotes wrapping the whole of `t`, never an inner one."""
+    return t[1:-1] if len(t) > 1 and t[0] == t[-1] in "\"'" else t
+
+
 def test_argv(command: str) -> list[str]:
-    """argv for a declared test command — no shell, quotes stripped (Windows paths keep their backslashes)."""
+    """argv for a declared test command — no shell, quotes stripped (Windows paths keep their backslashes).
+    `shlex.split(posix=False)` quotes a whole token (`"a b"` -> one token) but never unquotes one: an option's own
+    value after its first `=` (`--basetemp="…"`) survives as one token whose own first character is `-`, not a
+    quote, so the old whole-token check never matched it and the inner quotes reached pytest's own argv (N6,
+    2.5.0). The part after the first `=` in an option token (one starting with `-`) is unquoted the same way the
+    whole token already is."""
     tokens = shlex.split(command, posix=False)
-    return [t[1:-1] if len(t) > 1 and t[0] == t[-1] in "\"'" else t for t in tokens]
+    out = []
+    for t in tokens:
+        if t.startswith("-") and "=" in t:
+            key, _, val = t.partition("=")
+            out.append(f"{_unquote(key)}={_unquote(val)}")
+        else:
+            out.append(_unquote(t))
+    return out
 
 
 def _basename(path: str) -> str:
@@ -248,13 +265,30 @@ def permitted(command: str, allowed: list[str]) -> bool:
 
 
 def _isolate_pytest(argv: list[str], root: Path, tag: str) -> list[str]:
-    """Concurrent pytest runs (two agents, or an agent and this verifier) sharing pyproject's --basetemp wipe each
-    other's temp dirs on Windows; give every run its own basetemp."""
-    if "pytest" in " ".join(argv[:3]) and not any(a.startswith("--basetemp") for a in argv):
-        parent = root / "runs" / "pytest_tmp"
-        parent.mkdir(parents=True, exist_ok=True)          # pytest makes the basetemp, never a missing parent (1.13.0)
-        argv = argv + [f"--basetemp={(parent / tag).as_posix()}"]
-    return argv
+    """Concurrent pytest runs (two agents, or an agent and this verifier) sharing a --basetemp wipe each other's temp
+    dirs on Windows; every run gets its own. (N6, 2.5.0) The vendored handoff text tells every agent to supply its
+    own `--basetemp` for its own run — right advice for that run, which stays unchanged — but this is the
+    verifier's re-run of a declared command, in the verifier's own process, and an agent-supplied basetemp here
+    would point back at the agent's own evidence directory, which pytest clears on use. So this always replaces
+    any `--basetemp=X` or `--basetemp X` an agent declared (both forms stripped) rather than only filling one in
+    when none is present: the agent's basetemp is that agent's evidence, the verifier's scratch is the verifier's,
+    and the verifier's wins every time, unconditionally."""
+    if "pytest" not in " ".join(argv[:3]):
+        return argv
+    cleaned, skip_next = [], False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a.startswith("--basetemp="):
+            continue
+        if a == "--basetemp":
+            skip_next = True
+            continue
+        cleaned.append(a)
+    parent = root / "runs" / "pytest_tmp"
+    parent.mkdir(parents=True, exist_ok=True)               # pytest makes the basetemp, never a missing parent (1.13.0)
+    return cleaned + [f"--basetemp={(parent / tag).as_posix()}"]
 
 
 def _cwd_interpreter(cwd: Path) -> str:
