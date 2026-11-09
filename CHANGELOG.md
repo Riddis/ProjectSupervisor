@@ -3,7 +3,14 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.5.0 — 2026-11-10
+
+This release's own entries are written here before it ships.
+
+## 2.4.0 — 2026-11-08
+
+The tag `v2.4.0` was cut before this heading moved, so its own released tree still reads `## Unreleased` over
+these six entries; the tag is not re-cut, and this heading is the whole remedy.
 
 - **Task contract: `evidence` separates "what a reviewer judges" from "must a delivery report a command".**
   `Task.evidence: "auto" | "commands" | "review" = "auto"` and the new `task.requires_commands(model_lane)`
