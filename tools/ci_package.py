@@ -11,8 +11,12 @@ oldest-in-range is already its newest-in-range gets two legs, not three. It prin
 JSON, or writes `matrix=` and `count=` to `--github-output`.
 
 `run` tests one package as a project installs it, with no source on the path:
-1. the framework's wheel is built from that ref (`git archive`, never the working tree), and the package's wheel
-   from a copy of its folder, both in the work folder;
+1. the framework's wheel is built from that ref (`git archive`, never the working tree), with SOURCE_DATE_EPOCH set
+   to that ref's own commit time; the package's wheel is built *twice*, from a copy of its folder, with
+   SOURCE_DATE_EPOCH set to the package's own last commit time - and `run` refuses if the two sha256 differ (2.5.0's
+   M1: a rebuild of one source, one toolchain, one run reproduces its own digest; it does not promise that a rebuild
+   on another machine or another day reproduces a *published* digest - see docs/releases/2.5.0/
+   CI_PACKAGE_RECORD.md);
 2. a fresh virtual environment there gets the framework wheel with its `dev` and `ui` extras, then the package's;
 3. tools/ci_installed_plugin.py proves it installed (found, loaded, G5, a task on its lane or python job), with
    the options the package's pyproject.toml gives under `[tool.supervisor.ci]`: `lane`, `python_job`, and a
@@ -25,8 +29,10 @@ owner's local word list, so it is a release check (plugin-release), not a CI ste
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -99,6 +105,40 @@ def matrix(root: Path | None = None) -> dict:
     return {"include": include}
 
 
+def commit_epoch(repo: Path, ref: str, path: str | None = None) -> str:
+    """The last commit time touching `ref` (and, if given, scoped to one `path` inside it), as a string for
+    SOURCE_DATE_EPOCH - so a wheel built from the same source twice embeds the same file timestamps."""
+    args = ["git", "-C", str(repo), "log", "-1", "--format=%ct", ref]
+    if path is not None:
+        args += ["--", path]
+    out = subprocess.run(args, capture_output=True, text=True, check=True).stdout.strip()
+    if not out:
+        raise SystemExit(f"{repo}: no commit found for SOURCE_DATE_EPOCH (ref={ref!r}, path={path!r})")
+    return out
+
+
+def reproducible_wheel(src: Path, out: Path, epoch: str) -> tuple[str, str]:
+    """Build src's wheel twice into separate folders under `out`, both with SOURCE_DATE_EPOCH=`epoch`, and refuse
+    when the two sha256 differ. Proves "two builds of one source, one toolchain, one run produce one digest" - not
+    that a rebuild on another machine or another day reproduces a *published* digest (docs/releases/2.5.0/
+    CI_PACKAGE_RECORD.md names what else can still move one)."""
+    env = {**os.environ, "SOURCE_DATE_EPOCH": epoch}
+    name, digests = None, []
+    for leg in ("a", "b"):
+        folder = out / leg
+        folder.mkdir(parents=True)
+        proc = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(folder), str(src)],
+                              capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            raise SystemExit(f"FAIL building {src.name}'s wheel ({leg}): {proc.stdout}{proc.stderr}")
+        wheel = next(folder.glob("*.whl"))
+        name = name or wheel.name
+        digests.append(hashlib.sha256(wheel.read_bytes()).hexdigest())
+    if digests[0] != digests[1]:
+        raise SystemExit(f"FAIL: {src.name}'s wheel is not reproducible: {digests[0]} != {digests[1]}")
+    return name, digests[0]
+
+
 def _step(n: int, what: str, cmd: list[str], **kw) -> None:
     print(f"{n} {what}: {' '.join(cmd)}", flush=True)
     proc = subprocess.run(cmd, check=False, **kw)
@@ -125,12 +165,19 @@ def run(package: Path, framework: str, workdir: Path) -> int:
         raise SystemExit(f"FAIL at step 1: git archive {framework}: {archive.stderr.decode(errors='replace')}")
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as t:
         t.extractall(fw_src, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))   # 3.11.4+
+    fw_epoch = commit_epoch(ROOT, framework)
     _step(1, f"the framework's wheel at {framework}",
-          [sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(wheels), str(fw_src)])
+          [sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(wheels), str(fw_src)],
+          env={**os.environ, "SOURCE_DATE_EPOCH": fw_epoch})
     pkg_src = work / "package-src"
     shutil.copytree(package, pkg_src, ignore=SKIP)
-    _step(1, "the package's wheel", [sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(wheels),
-                                     str(pkg_src)])
+    pkg_epoch = commit_epoch(ROOT, "HEAD", str(package.relative_to(ROOT)))
+    print(f"1 the package's wheel, built twice to compare: pip wheel --no-deps -q -w <two folders> {pkg_src}"
+          f" (SOURCE_DATE_EPOCH={pkg_epoch})", flush=True)
+    pkg_wheel_name, pkg_digest = reproducible_wheel(pkg_src, work / "repro", pkg_epoch)
+    shutil.copy2(work / "repro" / "a" / pkg_wheel_name, wheels / pkg_wheel_name)
+    shutil.rmtree(work / "repro")
+    print(f"  reproducible: {pkg_wheel_name} sha256={pkg_digest}")
     shutil.rmtree(fw_src)
     shutil.rmtree(pkg_src)
     fw_wheel = next(wheels.glob("supervisor_framework-*.whl"))
@@ -169,7 +216,6 @@ def run(package: Path, framework: str, workdir: Path) -> int:
 
 
 def _env() -> dict:
-    import os
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "SUPERVISOR_ROOT")}
     env["PYTHONIOENCODING"] = "utf-8"
     return env

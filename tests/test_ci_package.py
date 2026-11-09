@@ -24,8 +24,10 @@ def ci():
     return mod
 
 
-def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+def git(repo: Path, *args: str, when: str | None = None) -> None:
+    import os
+    env = {**os.environ, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when} if when else None
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
 
 
 def add_package(repo: Path, identity: str, framework: str, ci_table: str = "") -> Path:
@@ -101,6 +103,29 @@ def test_a_package_names_its_lane_python_job_and_config_for_ci(ci, repo):
     assert ci.ci_options(dist) == {"lane": "alpha", "python_job": "alpha_sync",
                                    "config": {"endpoint": "http://127.0.0.1:9"}}
     assert ci.ci_options(add_package(repo, "beta", ">=1.2,<2")) == {}
+
+
+def commit_time(repo: Path, ref: str, path: str | None = None) -> str:
+    args = ["git", "-C", str(repo), "log", "-1", "--format=%ct", ref]
+    if path is not None:
+        args += ["--", path]
+    return subprocess.run(args, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_the_epoch_is_the_packages_own_last_commit_time_not_the_repos(ci, repo):
+    dist = add_package(repo, "alpha", ">=1.2,<2")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "add alpha", when="2026-01-01T00:00:00")
+    pkg_epoch = commit_time(repo, "HEAD", str(dist.relative_to(repo)))
+    (repo / "README.md").write_text("fw, touched again\n", encoding="utf-8")   # a later commit outside the package
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "touch something outside the package", when="2026-06-01T00:00:00")
+    assert commit_time(repo, "HEAD") != pkg_epoch                             # the repo's own last commit moved on
+    assert ci.commit_epoch(repo, "HEAD", str(dist.relative_to(repo))) == pkg_epoch
+
+
+def test_the_framework_epoch_is_the_whole_refs_commit_time(ci, repo):
+    assert ci.commit_epoch(repo, "v1.2.0") == commit_time(repo, "v1.2.0")
 
 
 def test_a_folder_without_exactly_one_manifest_is_refused(ci, repo):
