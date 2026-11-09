@@ -417,6 +417,15 @@ def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list
     return inside, outside
 
 
+def undeclared_residue(before: dict, after: dict, outside: list[str]) -> dict[str, dict]:
+    """M11(a), first shape (2.5.0): the `before`/`after` manifest entry for each of `_undeclared()`'s own `outside`
+    paths — a rejected attempt's writes to paths it did not own. `supervisor.loop` reverts these at the moment the
+    attempt is rejected, before the retry dispatches, so there is nothing left to clean up (and be blamed for
+    cleaning up). No second definition of "unowned change": `outside` is exactly what `verify()` already computed
+    to fail the delivery."""
+    return {p: {"before": before.get(p), "after": after.get(p)} for p in outside}
+
+
 def as_job(layout: Layout) -> bool:
     """run the command part of verification as a tracked process job (default) instead of inside the loop."""
     cfg = layout.config / "routing.yaml"
@@ -481,7 +490,9 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
         undeclared = outside_repo if scoped else inside_repo + outside_repo
         if undeclared:
             what = "undeclared writes outside owned paths: " if scoped else "undeclared writes: "
-            return Outcome(False, what + ", ".join(sorted(undeclared)[:20]))
+            residue = undeclared_residue(before.get("repo") or {}, after.get("repo") or {}, outside_repo)
+            return Outcome(False, what + ", ".join(sorted(undeclared)[:20]),
+                           report={"residue": residue} if residue else {})
     checks = list(checks or [])
     if not declared_tests and require_tests:
         if task.evidence == "commands":

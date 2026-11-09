@@ -4,6 +4,7 @@ render → sleep (wake file shortens the sleep). Resumable after a kill at any p
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -446,6 +447,79 @@ class Supervisor:
         p = Path(run_dir) / "before_manifest.json"
         return read_json(p) if p.exists() else None
 
+    def _revert_residue(self, task_id: str, residue: dict[str, dict], run_dir: str | None) -> None:
+        """M11(a), first shape (2.5.0): restore the unowned paths a rejected attempt changed, now, before the retry's
+        own baseline is taken. Nothing is deleted: the path's current content is quarantined under
+        `<run dir>/undeclared/<path>` first — moved there when the attempt created the path, copied there when it
+        changed one that already existed — so the owner can audit and undo every action. A path is restored only
+        when `git`'s own content for it at HEAD hashes to the `before` digest the snapshot recorded (never guessed
+        at); a link, a directory, a file above LARGE_FILE_BYTES, or one git cannot account for is left exactly as
+        found, named in one note on the task, because the next attempt will otherwise fail on something it cannot
+        fix. No note and no `residue_reverted` event for one that goes untouched — a half-repair is not silently
+        called a repair."""
+        root = self.layout.root
+        quarantine = Path(run_dir) / "undeclared" if run_dir else None
+        reverted, left = [], []
+        for rel, entry in residue.items():
+            before_e, after_e = entry.get("before") or {}, entry.get("after") or {}
+            if quarantine is None:
+                left.append(rel)                   # no run dir to quarantine into: nothing is ever deleted unquarantined
+                continue
+            if ({before_e.get("kind"), after_e.get("kind")} - {None, "missing", "file"}
+               or before_e.get("kind") == "large" or after_e.get("kind") == "large"):
+                left.append(rel)                   # a link, a directory, or above LARGE_FILE_BYTES: not this mechanism's
+                continue
+            path = root / rel
+            content = None
+            if before_e.get("kind") == "file":
+                content = self._git_blob_at_head(rel, str(before_e.get("sha256") or ""))
+                if content is None:
+                    left.append(rel)               # git cannot account for it: left exactly as found, never guessed at
+                    continue
+            try:
+                if path.exists():
+                    dest = quarantine / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if before_e.get("kind") in (None, "missing"):
+                        path.replace(dest)          # the attempt created it: moved, nothing is deleted
+                    else:
+                        shutil.copy2(path, dest)    # the attempt changed it: copied before the restore
+                if content is None:                 # before == missing: restoring means the path does not exist
+                    if path.exists():
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(content)
+            except OSError:
+                left.append(rel)
+                continue
+            reverted.append(rel)
+        for rel in reverted:
+            tasks_mod.log(self.layout, "residue_reverted", "loop", task=task_id, path=rel,
+                          quarantine=(quarantine / rel).as_posix() if quarantine else None)
+        if left:
+            tasks_mod.add_note(self.layout, task_id,
+                               "residue not reverted (left exactly as found; a path git cannot account for): "
+                               + ", ".join(sorted(left)), actor="loop")
+
+    def _git_blob_at_head(self, rel: str, before_sha256: str) -> bytes | None:
+        """`rel`'s content at HEAD, gated on its own digest matching `before_sha256` — the snapshot's own claim about
+        what the path held before the rejected attempt touched it. None when git has no such path, the read fails,
+        or the content does not hash to the digest the snapshot recorded: a restore never guesses."""
+        import hashlib
+        import subprocess
+        try:
+            proc = subprocess.run(["git", "-C", str(self.layout.root), "show", f"HEAD:{rel}"],
+                                  capture_output=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        content = proc.stdout
+        if hashlib.sha256(content).hexdigest() != before_sha256:
+            return None
+        return content
+
     def _concurrent_owned(self, rec: dict) -> tuple[str, ...]:
         """Ownership of OTHER tasks' delivery jobs that overlapped this attempt: their writes are not this delivery's
         undeclared changes (supervisor.verify `ignore`). Reviews and chat turns own nothing. An exclusive job that ran
@@ -628,7 +702,15 @@ class Supervisor:
 
         Before 1.6.0 only a substantive failure (the worker claimed COMPLETE, verification disagreed) reached
         escalation; a worker that ended BLOCKED/FAILED/PARTIAL, or crashed, timed out or was lost, left the task
-        FAILED with no retry, no diagnosis and no owner item."""
+        FAILED with no retry, no diagnosis and no owner item.
+
+        M11(a), first shape (2.5.0): when the rejection is for writes outside owned paths, `outcome.report["residue"]`
+        (verify.undeclared_residue) names each one with its before/after entry. Reverted here, once, before the
+        verification record is written — not at the retry's dispatch — so a rejected attempt's residue never reaches
+        the next attempt's own `before_manifest.json` baseline at all; there is nothing left for it to clean up, and
+        so nothing it can be blamed for cleaning up."""
+        if not outcome.ok and (getattr(outcome, "report", None) or {}).get("residue"):
+            self._revert_residue(task_id, outcome.report["residue"], (rec.get("spec") or {}).get("run_dir"))
         report_path = None
         if getattr(outcome, "report", None) and (rec.get("spec") or {}).get("run_dir"):
             rp = Path(rec["spec"]["run_dir"]) / "verification.json"
