@@ -1,6 +1,7 @@
 """tools/ci_package.py: the CI of the plugin packages kept in this repository under packages/<distribution>/
 (2.0.0, decision D2 of the boundary plan's phase 5). Each package is tested against the oldest framework release in
-its manifest's range and against HEAD; a package's own tag (`<identity>-vX.Y.Z`) is never taken for a framework
+its manifest's range, the newest *released* framework in that range (2.5.0's M2, deduplicated with the oldest when
+the two coincide) and against HEAD; a package's own tag (`<identity>-vX.Y.Z`) is never taken for a framework
 release. The `run` step (wheels, a fresh environment, the installed proof, the suite) runs in CI on a package
 scaffolded there; here, the matrix and the options it reads."""
 from __future__ import annotations
@@ -54,19 +55,28 @@ def repo(tmp_path):
     return root
 
 
-def test_each_package_runs_against_its_oldest_framework_release_and_head(ci, repo):
-    add_package(repo, "alpha", ">=1.2,<2")
-    add_package(repo, "beta", ">=1.3,<2")            # the oldest release in range is 1.10.0 (by number, not name)
+def test_each_package_runs_against_its_oldest_newest_and_head(ci, repo):
+    add_package(repo, "alpha", ">=1.2,<2")           # in range: v1.2.0 (oldest), v1.10.0 (newest) - two releases
+    add_package(repo, "beta", ">=1.3,<2")            # in range: only v1.10.0 - oldest and newest coincide
     (repo / "packages" / "README.md").write_text("what lives here\n", encoding="utf-8")
     assert ci.matrix(repo) == {"include": [
         {"package": "supervisor-plugin-alpha", "framework": "v1.2.0"},
+        {"package": "supervisor-plugin-alpha", "framework": "v1.10.0"},
         {"package": "supervisor-plugin-alpha", "framework": "HEAD"},
         {"package": "supervisor-plugin-beta", "framework": "v1.10.0"},
         {"package": "supervisor-plugin-beta", "framework": "HEAD"},
     ]}
 
 
-def test_a_package_tag_is_never_its_oldest_framework(ci, repo):
+def test_a_package_whose_oldest_in_range_is_already_the_newest_has_no_duplicate(ci, repo):
+    add_package(repo, "delta", ">=1.10,<2")          # only v1.10.0 is in range: oldest and newest are one release
+    assert ci.matrix(repo) == {"include": [
+        {"package": "supervisor-plugin-delta", "framework": "v1.10.0"},
+        {"package": "supervisor-plugin-delta", "framework": "HEAD"},
+    ]}
+
+
+def test_a_package_tag_is_never_its_oldest_or_newest_framework(ci, repo):
     add_package(repo, "gamma", ">=1.4,<1.9")         # only the package tag v1-v1.5.0 looks like it is in range
     assert ci.matrix(repo) == {"include": [{"package": "supervisor-plugin-gamma", "framework": "HEAD"}]}
 
@@ -81,7 +91,7 @@ def test_the_github_output_carries_the_matrix_and_its_size(ci, repo, monkeypatch
     out = tmp_path / "github_output"
     assert ci.main(["matrix", "--github-output", str(out)]) == 0
     lines = dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines())
-    assert lines["count"] == "2" and json.loads(lines["matrix"])["include"][0]["framework"] == "v1.2.0"
+    assert lines["count"] == "3" and json.loads(lines["matrix"])["include"][0]["framework"] == "v1.2.0"
 
 
 def test_a_package_names_its_lane_python_job_and_config_for_ci(ci, repo):

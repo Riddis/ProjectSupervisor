@@ -4,9 +4,11 @@
     python tools/ci_package.py matrix [--github-output <file>]
     python tools/ci_package.py run packages/<distribution> --framework <vX.Y.Z | HEAD> [--workdir <folder>]
 
-`matrix` lists every folder under packages/ that holds a pyproject.toml, twice: against the oldest framework release
-(a `vX.Y.Z` tag, never a package's `<identity>-vX.Y.Z`) in its manifest's `framework` range, and against HEAD. It
-prints the GitHub Actions matrix as JSON, or writes `matrix=` and `count=` to `--github-output`.
+`matrix` lists every folder under packages/ that holds a pyproject.toml, against the oldest framework release and
+the newest *released* framework release (both `vX.Y.Z` tags, never a package's `<identity>-vX.Y.Z`) in its
+manifest's `framework` range, and against HEAD - deduplicated by (package, framework), so a package whose
+oldest-in-range is already its newest-in-range gets two legs, not three. It prints the GitHub Actions matrix as
+JSON, or writes `matrix=` and `count=` to `--github-output`.
 
 `run` tests one package as a project installs it, with no source on the path:
 1. the framework's wheel is built from that ref (`git archive`, never the working tree), and the package's wheel
@@ -71,16 +73,29 @@ def oldest_in_range(spec: str, tags: list[str]) -> str | None:
     return next((t for t in tags if rng.contains(t[1:], prereleases=False)), None)
 
 
+def newest_in_range(spec: str, tags: list[str]) -> str | None:
+    """The newest *released* tag in range (`tags` is oldest first) - never HEAD, never a package's own tag."""
+    from packaging.specifiers import SpecifierSet
+    rng = SpecifierSet(spec)
+    return next((t for t in reversed(tags) if rng.contains(t[1:], prereleases=False)), None)
+
+
 def matrix(root: Path | None = None) -> dict:
+    """Oldest release in range, newest release in range, and HEAD - deduplicated by (package, framework), because a
+    package whose oldest-in-range is already its newest-in-range would otherwise produce two legs with one name."""
     include, tags = [], releases(root)
     for package in packages(root):
-        oldest = oldest_in_range(manifest(package)["framework"], tags)
-        if oldest:
-            include.append({"package": package.name, "framework": oldest})
-        else:
-            print(f"note: {package.name}: no framework release in {manifest(package)['framework']} yet; HEAD only",
-                  file=sys.stderr)
-        include.append({"package": package.name, "framework": "HEAD"})
+        spec = manifest(package)["framework"]
+        oldest, newest = oldest_in_range(spec, tags), newest_in_range(spec, tags)
+        if not oldest:
+            print(f"note: {package.name}: no framework release in {spec} yet; HEAD only", file=sys.stderr)
+        legs, seen = [], set()
+        for framework in (oldest, newest, "HEAD"):
+            if framework is None or (package.name, framework) in seen:
+                continue
+            seen.add((package.name, framework))
+            legs.append({"package": package.name, "framework": framework})
+        include.extend(legs)
     return {"include": include}
 
 
