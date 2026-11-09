@@ -82,9 +82,9 @@ right after: doctor's `git` check and the setup commit need one, and the loop co
 - A project that keeps no agent role: the owner plans the later phases and writes what no job can (an owner task
   for each, with a date), and the runbook comes from a deterministic job or an owner task. Say so in the plan, in
   place of the interview's planning roles.
-- Plugins: first look for an existing plugin package that does the job (a package the owner names; the
-  framework's catalog index arrives with phase 6), and install it rather than write a new one. Otherwise follow the
-  framework's `plugin-new` skill: `supervisor plugin new <name>` writes the module and its manifest in the
+- Plugins: first look for an existing plugin package that does the job (a package the owner names, or one listed
+  in the framework's catalog index, `plugins-catalog/index.yaml`), and install it rather than write a new one.
+  Otherwise follow the framework's `plugin-new` skill: `supervisor plugin new <name>` writes the module and its manifest in the
   standard shape (`docs/PLUGIN_STANDARD.md`); implement what the owner described; anything unknown becomes a
   `TODO` plus a phase-0 task "finish and prove the <name> lane" with a doctor check as acceptance. `plugin new`
   lists the plugin in `project.yaml` itself; do not add it a second time. Each plugin passes `supervisor
