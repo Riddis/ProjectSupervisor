@@ -453,28 +453,31 @@ class Supervisor:
         `<run dir>/undeclared/<path>` first — moved there when the attempt created the path, copied there when it
         changed one that already existed — so the owner can audit and undo every action. A path is restored only
         when `git`'s own content for it at HEAD hashes to the `before` digest the snapshot recorded (never guessed
-        at); a link, a directory, a file above LARGE_FILE_BYTES, or one git cannot account for is left exactly as
-        found, named in one note on the task, because the next attempt will otherwise fail on something it cannot
-        fix. No note and no `residue_reverted` event for one that goes untouched — a half-repair is not silently
-        called a repair."""
+        at); a link, a directory, a file above LARGE_FILE_BYTES, one git cannot account for, or one a quarantine/
+        restore OSError hit is left exactly as found instead — one reason string per cause (not one blended
+        sentence), because the next attempt will otherwise fail on something it cannot fix. No note, no inbox item,
+        and no `residue_reverted` event for one that goes untouched — a half-repair is not silently called a
+        repair."""
         root = self.layout.root
         quarantine = Path(run_dir) / "undeclared" if run_dir else None
-        reverted, left = [], []
+        reverted: list[str] = []
+        left: list[tuple[str, str]] = []
         for rel, entry in residue.items():
             before_e, after_e = entry.get("before") or {}, entry.get("after") or {}
             if quarantine is None:
-                left.append(rel)                   # no run dir to quarantine into: nothing is ever deleted unquarantined
+                left.append((rel, "no run directory to quarantine the current content into"))
                 continue
-            if ({before_e.get("kind"), after_e.get("kind")} - {None, "missing", "file"}
-               or before_e.get("kind") == "large" or after_e.get("kind") == "large"):
-                left.append(rel)                   # a link, a directory, or above LARGE_FILE_BYTES: not this mechanism's
+            kinds = {before_e.get("kind"), after_e.get("kind")}
+            if kinds - {None, "missing", "file"}:
+                reason = "a file above LARGE_FILE_BYTES" if "large" in kinds else "a link or a directory"
+                left.append((rel, reason))             # not this mechanism's to restore
                 continue
             path = root / rel
             content = None
             if before_e.get("kind") == "file":
                 content = self._git_blob_at_head(rel, str(before_e.get("sha256") or ""))
                 if content is None:
-                    left.append(rel)               # git cannot account for it: left exactly as found, never guessed at
+                    left.append((rel, "a path git cannot account for"))   # never guessed at
                     continue
             try:
                 if path.exists():
@@ -491,16 +494,39 @@ class Supervisor:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(content)
             except OSError:
-                left.append(rel)
+                left.append((rel, "a quarantine or restore error"))
                 continue
             reverted.append(rel)
         for rel in reverted:
             tasks_mod.log(self.layout, "residue_reverted", "loop", task=task_id, path=rel,
                           quarantine=(quarantine / rel).as_posix() if quarantine else None)
         if left:
-            tasks_mod.add_note(self.layout, task_id,
-                               "residue not reverted (left exactly as found; a path git cannot account for): "
-                               + ", ".join(sorted(left)), actor="loop")
+            by_reason: dict[str, list[str]] = {}
+            for rel, reason in left:
+                by_reason.setdefault(reason, []).append(rel)
+            note = "; ".join(f"{reason}: {', '.join(sorted(paths))}" for reason, paths in sorted(by_reason.items()))
+            tasks_mod.add_note(self.layout, task_id, f"residue not reverted ({note})", actor="loop")
+            self._notify_residue_left(task_id, sorted(rel for rel, _ in left))
+
+    def _notify_residue_left(self, task_id: str, left: list[str]) -> None:
+        """`CONTRIBUTOR_RULING.md` §5.2's Limits row: a path left exactly as found needs an owner decision, because
+        the next attempt will otherwise fail on something it cannot fix. One deduped item per (task, this exact set
+        of left paths) — not one per rejection, so a retry rejected again for the same untouched residue does not
+        stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape)."""
+        key = list(left)
+        if any(i.get("task_id") == task_id and (i.get("residue_left") or []) == key
+               for i in inbox_mod.open_items(self.layout, "owner")):
+            return
+        summary, detail = inbox_mod.fit(
+            f"{task_id}'s rejected delivery left {len(key)} unowned path(s) exactly as found — git cannot account "
+            f"for them, or they are a link, a directory, too large, or hit a quarantine error: {', '.join(key)}. "
+            "The next attempt will fail on this residue unless it is cleared by hand.")
+        try:
+            inbox_mod.create(self.layout, for_role="owner", subject=f"Residue left on {task_id}",
+                             summary=summary, detail=detail, kind="question", from_="loop", task_id=task_id,
+                             extra={"residue_left": key})
+        except inbox_mod.InboxFull:
+            tasks_mod.log(self.layout, "inbox_full", "loop", reason="residue_left", task=task_id)
 
     def _git_blob_at_head(self, rel: str, before_sha256: str) -> bytes | None:
         """`rel`'s content at HEAD, gated on its own digest matching `before_sha256` — the snapshot's own claim about

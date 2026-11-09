@@ -19,7 +19,7 @@ import subprocess
 
 import pytest
 
-from supervisor import tasks, verify
+from supervisor import inbox, tasks, verify
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
@@ -141,7 +141,9 @@ def test_a_human_edit_of_an_unowned_path_is_also_reverted(layout, scoped, repo):
 
 def test_a_path_git_cannot_account_for_is_left_exactly_as_found_and_named(layout, scoped, repo):
     """A before-digest git's own HEAD does not match (here: the path was never committed at all, so `git show`
-    fails) is never guessed at - left exactly as found, and named on the task rather than silently dropped."""
+    fails) is never guessed at - left exactly as found, and named on the task rather than silently dropped.
+    CONTRIBUTOR_RULING.md §5.2's Limits row: this also opens one deduped owner decision item, because the next
+    attempt will otherwise fail on something it cannot fix - a task note alone routes to nothing an owner reads."""
     task = scoped
     run_dir1 = layout.runs / "T" / "T.a1"
     run_dir1.mkdir(parents=True)
@@ -163,3 +165,14 @@ def test_a_path_git_cannot_account_for_is_left_exactly_as_found_and_named(layout
     notes = (t.model_extra or {}).get("notes") or []
     assert any("not reverted" in (n.get("note") or "") and "other/uncommitted.txt" in (n.get("note") or "")
               for n in notes)
+
+    # one deduped owner decision item is opened for the path git cannot account for
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1
+    item = items[0]
+    assert item["task_id"] == "T" and item.get("residue_left") == ["other/uncommitted.txt"]
+    assert "other/uncommitted.txt" in item["summary"]
+
+    # deduped: a second rejection that leaves exactly the same path untouched does not stack a second item
+    Supervisor(layout, sleep_s=0)._notify_residue_left("T", ["other/uncommitted.txt"])
+    assert inbox.open_items(layout, "owner") == items
