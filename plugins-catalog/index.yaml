@@ -1,0 +1,9 @@
+# plugins-catalog/index.yaml - the framework's plugin catalog (docs/PLUGIN_STANDARD.md, "Where a package lives";
+# docs/releases/2.5.0/CONTRIBUTOR_RULING.md section 2). One entry per shared package, in either home: this
+# repository's own packages/<distribution>/, or anyone else's https:// repository. Validated by
+# tools/catalog_check.py; see plugins-catalog/README.md for how a listing is proposed and reviewed.
+#
+# No listing yet: the mechanism (this file, its schema, the validator and the review skill) is built here; the
+# first listings and the review record are the next task's own evidence.
+version: 1
+plugins: []
