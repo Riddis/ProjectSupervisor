@@ -661,9 +661,12 @@ def default_user_names(cfg: dict) -> list[str]:
 
 
 def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None,
-          terms: dict[str, list[str]] | None = ..., allowed: dict | None = None) -> Report:
-    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances; by
-    default both from the local project-terms file."""
+          terms: dict[str, list[str]] | None = ..., allowed: dict | None = ...) -> Report:
+    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances,
+    each defaulting off its own sentinel: unset, each is loaded from the local project-terms file independently of
+    whether the other was given, so a caller passing one without the other never silently drops the one it left
+    out (N5 — the two once shared a single sentinel, which made `terms=` alone drop every package's own-name
+    allowance and enforce a stricter rule than the `--words` gate's own default call)."""
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
@@ -677,7 +680,7 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     report.violations += vendor
     report.notes += stale
     info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms,
-                                       load_package_allowances() if terms is ... else allowed)
+                                       load_package_allowances() if allowed is ... else allowed)
     report.violations += info
     report.skipped += skipped
     return report
