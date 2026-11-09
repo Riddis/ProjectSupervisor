@@ -134,7 +134,8 @@ jobs:
   package:
     # Per package and framework: both wheels built (the framework's from its tag or HEAD), a fresh environment, the
     # installed proof (found, loaded, G5, a task on its lane or python job) and the package's suite, with no source
-    # on the path. Branch protection requires each package's two jobs.
+    # on the path. Branch protection requires only the `all gates` aggregator below (M7), not each of these
+    # churning names.
     name: package ${{ matrix.package }} (framework ${{ matrix.framework }})
     needs: packages
     if: needs.packages.outputs.count != '0'
@@ -151,3 +152,19 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python tools/ci_package.py run "packages/${{ matrix.package }}" --framework "${{ matrix.framework }}" --workdir "$RUNNER_TEMP/package-ci"
+
+  all_gates:
+    # 2.5.0's M7 (docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.5): one fixed-name job in place of the six-and-
+    # growing `package …` matrix contexts that required a branch-protection rename PATCH twice already
+    # (docs/releases/packages/RELEASE_RECORD_1.1.0.md §2, I-034). T4-24's one protection PATCH requires this job's
+    # own name, `all gates`, instead of `packages (list)` and every `package …` context.
+    name: all gates
+    needs: [packages, package]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: every needed job succeeded (a skipped package matrix only when there is no package)
+        run: |
+          test "${{ needs.packages.result }}" = "success"
+          test "${{ needs.package.result }}" = "success" \
+            || { test "${{ needs.package.result }}" = "skipped" && test "${{ needs.packages.outputs.count }}" = "0"; }
