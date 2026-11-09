@@ -71,4 +71,5 @@ records a package's licence, and never approves one.
 - `docs/FRAMEWORK_VS_PLUGIN.md` for the shorter version of the boundary.
 - `docs/BOUNDARY.md` for the full gate table, the layer model and the rules for the hard cases.
 - `docs/PLUGIN_STANDARD.md` and `docs/PLUGIN_API.md` if your change touches a plugin or the plugin surface.
+- `plugins-catalog/README.md` if you are proposing or updating a catalog listing, rather than a code change.
 - The `.github/pull_request_template.md` checklist, filled in, is how you show the gates you ran.
