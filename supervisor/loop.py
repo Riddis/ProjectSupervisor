@@ -951,8 +951,11 @@ class Supervisor:
             at = str((stop or {}).get("at") or task.updated or "")
             if not at or now - _epoch(at) < grace:
                 continue
+            if task.held:
+                continue                                          # a deliberate hold (F9/F11/F13's durable identity) by
+                                                                    # any actor, not just a guess at the actor's name (M11(b), 2.5.0)
             if str((stop or {}).get("by") or "").startswith("owner"):
-                continue                                          # the owner put it here (Hold, set-status): their call
+                continue                      # a `set-status` stop by the owner leaves no `held`: their call too
             mine = [i for i in items if i.get("task_id") == task.id]
             if any(i.get("status") in ("open", "snoozed") for i in mine):
                 continue                                          # waiting on the owner (a snooze defers, it is not a stall)
