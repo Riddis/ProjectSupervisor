@@ -264,3 +264,85 @@ def test_each_cause_of_a_left_path_is_named_by_its_own_reason(layout, scoped, re
     said = item["summary"] + (item.get("detail") or "")
     assert "a quarantine or restore error: other/blocked/x.txt" in said and \
            "a link or a directory: other/adir" in said
+
+
+def _two_tasks(layout):
+    """Two scoped tasks, A and B, each owning its own root - the shape round 4's finding needs: A is rejected and
+    reverted while B, a second writing task, has its own verification window already open."""
+    for task_id, owned in (("A", "owned_a"), ("B", "owned_b")):
+        make_task(layout, task_id)
+
+        def fn(doc, owned=owned):
+            doc["owned_paths"] = [owned]
+            doc["artifacts"] = [f"{owned}/out.txt"]
+            doc["job"] = {"adapter": "python", "fn": "noop"}
+
+        tasks._update(layout, task_id, fn)
+        tasks.set_status(layout, task_id, "IN_PROGRESS")
+        (layout.root / owned).mkdir(exist_ok=True)
+    return tasks.load(layout, "A"), tasks.load(layout, "B")
+
+
+def test_a_concurrent_tasks_verification_is_not_charged_for_the_revert_of_a_modified_path(layout, repo):
+    """Round 4's own finding: `_revert_residue()` writes into the tree at a path outside the rejected attempt's
+    owned roots - exactly the paths a second, concurrently writing task's own verification also scans, and is not
+    excused on (`ignore` only covers what another job *owns*, never a stranger's residue). A's edit of
+    `other/shared.txt` is still in the tree when B's own before-snapshot is taken; A is then rejected and its
+    revert restores the path to HEAD's content before B's own after-snapshot is taken. Without the revert recorded
+    through `verify.record_own_write()`, B is charged for A's own repair - the fix re-creating the class it
+    repairs. This is exactly the shape CONTRIBUTOR_RULING.md's ledger (`own_writes.jsonl` / `_supervisor_wrote`)
+    exists to explain, so it must explain this write too, not only `settings.update`'s."""
+    task_a, task_b = _two_tasks(layout)
+    run_dir_a = layout.runs / "A" / "A.a1"
+    run_dir_a.mkdir(parents=True)
+
+    before_a = verify.snapshot(layout, task_a)
+    (layout.root / "owned_a" / "out.txt").write_text("delivered a", encoding="utf-8")
+    (layout.root / "other" / "shared.txt").write_text("a1 edit", encoding="utf-8")   # A's own undeclared write
+
+    before_b = verify.snapshot(layout, task_b)   # B's window opens while A's dirty edit still sits in the tree
+
+    outcome_a = verify.verify(layout, task_a, ["owned_a/out.txt"], before=before_a)
+    assert outcome_a.ok is False and "other/shared.txt" in outcome_a.detail
+
+    tasks.record_delivery(layout, "A", "dgA", actor="loop", paths=["owned_a/out.txt"])
+    rec_a = {"task_id": "A", "attempt_id": "A.a1", "adapter": "python", "spec": {"run_dir": str(run_dir_a)}}
+    Supervisor(layout, sleep_s=0).record_outcome("A", "dgA", outcome_a, rec_a, substantive=False, worker_status="FAILED")
+
+    # A's rejection reverted the path inside B's still-open window
+    assert (layout.root / "other" / "shared.txt").read_text(encoding="utf-8") == "original"
+
+    (layout.root / "owned_b" / "out.txt").write_text("delivered b", encoding="utf-8")
+    outcome_b = verify.verify(layout, task_b, ["owned_b/out.txt"], before=before_b)
+    assert outcome_b.ok is True, outcome_b.detail
+
+
+def test_a_concurrent_tasks_verification_is_not_charged_for_the_revert_of_a_created_path(layout, repo):
+    """The ledger edge the previous round's `record_own_write`/`_supervisor_wrote` could not express at all: A
+    creates a brand-new unowned path, B's own before-snapshot sees it already there, A is rejected and the revert
+    DELETES it (restoring A's own absence) before B's own after-snapshot is taken. `_supervisor_wrote()` must
+    accept a target of `None` (the ledger's own `"after": None`) for a deletion to be explained the same way a
+    replacement is."""
+    task_a, task_b = _two_tasks(layout)
+    run_dir_a = layout.runs / "A" / "A.a1"
+    run_dir_a.mkdir(parents=True)
+
+    before_a = verify.snapshot(layout, task_a)
+    (layout.root / "owned_a" / "out.txt").write_text("delivered a", encoding="utf-8")
+    (layout.root / "other" / "created.txt").write_text("a1 created", encoding="utf-8")   # A's own undeclared write
+
+    before_b = verify.snapshot(layout, task_b)   # B's before-manifest already holds A's newly created path
+
+    outcome_a = verify.verify(layout, task_a, ["owned_a/out.txt"], before=before_a)
+    assert outcome_a.ok is False and "other/created.txt" in outcome_a.detail
+
+    tasks.record_delivery(layout, "A", "dgA", actor="loop", paths=["owned_a/out.txt"])
+    rec_a = {"task_id": "A", "attempt_id": "A.a1", "adapter": "python", "spec": {"run_dir": str(run_dir_a)}}
+    Supervisor(layout, sleep_s=0).record_outcome("A", "dgA", outcome_a, rec_a, substantive=False, worker_status="FAILED")
+
+    # A's rejection reverted the created path out of existence, inside B's still-open window
+    assert not (layout.root / "other" / "created.txt").exists()
+
+    (layout.root / "owned_b" / "out.txt").write_text("delivered b", encoding="utf-8")
+    outcome_b = verify.verify(layout, task_b, ["owned_b/out.txt"], before=before_b)
+    assert outcome_b.ok is True, outcome_b.detail

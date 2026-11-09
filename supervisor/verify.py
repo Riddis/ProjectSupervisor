@@ -58,16 +58,18 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 OWN_WRITES = "own_writes.jsonl"
 
 
-def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes, actor: str, why: str = "") -> None:
-    """Record that the supervisor replaces root-relative `rel`, holding `before` (None: absent), with `after`. Called
-    BEFORE the write: a crash between the two leaves a transition nothing took, never a supervisor write that
-    verification blames on an agent."""
+def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes | None, actor: str,
+                     why: str = "") -> None:
+    """Record that the supervisor replaces root-relative `rel`, holding `before` (None: absent), with `after`
+    (None: the write deletes `rel` rather than leaving content — M11(a)'s residue revert, 2.5.0). Called BEFORE the
+    write: a crash between the two leaves a transition nothing took, never a supervisor write that verification
+    blames on an agent."""
     import hashlib
     import json
 
     from .store import now_iso
     entry = {"ts": now_iso(), "path": rel, "before": hashlib.sha256(before).hexdigest() if before is not None else None,
-             "after": hashlib.sha256(after).hexdigest(), "actor": actor, "why": why}
+             "after": hashlib.sha256(after).hexdigest() if after is not None else None, "actor": actor, "why": why}
     p = layout.runtime / OWN_WRITES
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8", newline="\n") as f:
@@ -76,11 +78,12 @@ def record_own_write(layout: Layout, rel: str, before: bytes | None, after: byte
         os.fsync(f.fileno())
 
 
-def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str]]]:
-    """path -> {(sha256 before, sha256 after)} for every write record_own_write() recorded. An unreadable line is
-    skipped: it explains nothing, so the change it would have explained still fails verification."""
+def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str | None]]]:
+    """path -> {(sha256 before, sha256 after)} for every write record_own_write() recorded; a None entry is an
+    absent path on that side (created from nothing, or deleted to nothing). An unreadable line is skipped: it
+    explains nothing, so the change it would have explained still fails verification."""
     import json
-    out: dict[str, set[tuple[str | None, str]]] = {}
+    out: dict[str, set[tuple[str | None, str | None]]] = {}
     p = layout.runtime / OWN_WRITES
     try:
         lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
@@ -89,23 +92,26 @@ def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str]]]:
     for line in lines:
         try:
             e = json.loads(line)
-            out.setdefault(str(e["path"]), set()).add((e.get("before"), str(e["after"])))
+            out.setdefault(str(e["path"]), set()).add((e.get("before"), e.get("after")))
         except (ValueError, KeyError, TypeError):
             continue
     return out
 
 
-def _supervisor_wrote(before: dict | None, after: dict | None, edges: set[tuple[str | None, str]]) -> bool:
+def _supervisor_wrote(before: dict | None, after: dict | None, edges: set[tuple[str | None, str | None]]) -> bool:
     """True when recorded supervisor writes alone take a path from its snapshot content (`before`; absent counts) to
-    its content now (`after`). An agent's edit anywhere in between breaks the chain, so the change stays its own."""
+    its content now (`after`; absent counts — a supervisor write can delete, not just replace, M11(a)). An agent's
+    edit anywhere in between breaks the chain, so the change stays its own. A link, a directory, a large-file entry
+    or an unreadable one is never this mechanism's to explain, on either side."""
     b, a = before or {}, after or {}
-    if not edges or a.get("kind") != "file" or b.get("kind") not in (None, "missing", "file"):
+    if not edges or a.get("kind") not in (None, "missing", "file") or b.get("kind") not in (None, "missing", "file"):
         return False
     start = b.get("sha256") if b.get("kind") == "file" else None
+    target = a.get("sha256") if a.get("kind") == "file" else None
     seen, frontier = {start}, [start]
     while frontier:
         cur = frontier.pop()
-        if cur == a.get("sha256"):
+        if cur == target:
             return True
         for src, dst in edges:
             if src == cur and dst not in seen:

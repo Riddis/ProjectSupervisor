@@ -463,6 +463,20 @@ class Supervisor:
         restore OSError hit is left exactly as found instead — one reason string per cause (not one blended
         sentence), because the next attempt will otherwise fail on something it cannot fix.
 
+        Each restore is itself a supervisor write into the working tree, at a path outside the rejected attempt's
+        owned roots — exactly the paths a second, concurrently writing task's own verification also scans and is
+        not excused on (its `ignore` only covers the roots another job *owns*, never a stranger's residue). Left
+        unrecorded, this write re-creates the class M11(a) repairs: a rejection of one attempt inside another's
+        verification window would charge that attempt for the revert. So the current content is read and the
+        transition recorded through `verify.record_own_write()` — which can now express a deletion (`after=None`)
+        as well as a replacement — before the quarantine copy and the restore/unlink, per that function's own
+        contract (a crash between the record and the write leaves a transition nothing took, never one blamed on
+        an agent). The quarantine copy itself is not recorded: it is written under the run directory, which
+        `repo_manifest`'s `EXCLUDED_DIRS` already prunes from every scan, so no concurrent verification ever sees
+        it. After each filesystem write this re-reads what was just written and compares it to the bytes it was
+        meant to hold; a mismatch is folded into the same "a quarantine or restore error" case as an `OSError`,
+        since a silently truncated copy or restore is exactly that kind of failure with no exception raised.
+
         Which case gets which record (`CONTRIBUTOR_RULING.md` §5.2's Log row). A path that *was* reverted: one
         `residue_reverted` event carrying both of the snapshot's digests and the quarantine location, and its name
         in one note on the task — and no owner item, because an automatic repair that files an inbox item against
@@ -491,19 +505,26 @@ class Supervisor:
                     left.append((rel, "a path git cannot account for"))   # never guessed at
                     continue
             try:
-                if path.exists():
+                current = path.read_bytes() if path.exists() else None
+                verify_mod.record_own_write(self.layout, rel, before=current, after=content, actor="loop",
+                                            why=f"M11(a) residue revert for {task_id}")
+                if current is not None:
                     dest = quarantine / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     if before_e.get("kind") in (None, "missing"):
                         path.replace(dest)          # the attempt created it: moved, nothing is deleted
                     else:
                         shutil.copy2(path, dest)    # the attempt changed it: copied before the restore
+                    if dest.read_bytes() != current:
+                        raise OSError("quarantine copy does not match the content it was meant to hold")
                 if content is None:                 # before == missing: restoring means the path does not exist
                     if path.exists():
                         path.unlink()
                 else:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(content)
+                    if path.read_bytes() != content:
+                        raise OSError("restored content does not match the content it was meant to hold")
             except OSError:
                 left.append((rel, "a quarantine or restore error"))
                 continue
