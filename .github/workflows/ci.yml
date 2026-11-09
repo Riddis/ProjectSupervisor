@@ -106,10 +106,15 @@ jobs:
           cd "$RUNNER_TEMP/supervisor-plugin-ci-sample" && "$PY" -m pytest -q
       - name: a package kept under packages/ is tested the way its own job tests it (tools/ci_package.py)
         # No package is in the repository yet when this runs on 2.0.0, so the per-package job below has nothing to
-        # run; this step proves its path on a package scaffolded into packages/ in the runner (never committed).
+        # run; this step proves its path on a package scaffolded into packages/ in the runner. commit_epoch()
+        # (tools/ci_package.py) is path-scoped and needs a commit to read, so this scratch package is committed
+        # here, in the runner's own checkout only - never pushed, never reaching origin.
         run: |
           "$RUNNER_TEMP/env/bin/supervisor" plugin new ci_pkg --package --dir packages
-          python tools/ci_package.py run packages/supervisor-plugin-ci-pkg --framework HEAD --workdir "$RUNNER_TEMP/package-ci"
+          git -c user.name=ci -c user.email=ci@example.invalid add packages/supervisor-plugin-ci-pkg
+          git -c user.name=ci -c user.email=ci@example.invalid commit -q -m "ci: scaffold the G5 reference package (not pushed)"
+      - name: the scaffolded package, built and run through tools/ci_package.py
+        run: python tools/ci_package.py run packages/supervisor-plugin-ci-pkg --framework HEAD --workdir "$RUNNER_TEMP/package-ci"
 
   packages:
     # The plugin packages kept in this repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md), from
