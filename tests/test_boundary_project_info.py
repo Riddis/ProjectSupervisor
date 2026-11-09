@@ -459,8 +459,9 @@ def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatc
 
 
 # ----------------------------------------------------- the catalog index (2.5.0, CONTRIBUTOR_RULING.md 2.3): an
-# in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there - the one new location
-# in _allowance_scope, not a second mechanism. Everywhere else the word is still a hit.
+# in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there, and only inside that
+# package's own entry (_catalog_path, _catalog_line_distributions) - not a second mechanism, a per-line scope over
+# the same file. Everywhere else, and in any other listed package's entry, the word is still a hit.
 
 def test_the_catalog_index_may_name_an_in_repo_packages_own_word(tmp_path, monkeypatch):
     terms_file(tmp_path, monkeypatch, ALLOWING)
@@ -480,6 +481,38 @@ def test_the_catalog_index_allowance_does_not_reach_a_lookalike_path(tmp_path, m
     root = framework(tmp_path, {"docs/plugins-catalog/index.yaml": "quuxify\n"})
     found = g1d(boundary.check(root, user_names=[]))
     assert ("docs/plugins-catalog/index.yaml", 1, "quuxify") in found
+
+
+TWO_PACKAGES_ALLOWING = TERMS + """
+[projects.zorblax.packages]
+supervisor-plugin-quuxify = ["quuxify"]
+supervisor-plugin-zorblax = ["zorblax"]
+"""
+
+
+def test_the_catalog_allowance_is_scoped_to_each_entrys_own_distribution(tmp_path, monkeypatch):
+    """CONTRIBUTOR_RULING.md 2.3 opens the allowance 'for the words allowed to that entry's own distribution', not
+    the whole file: one listed package's word must not sit unflagged in another listed package's own entry, even
+    in the one free-text field (summary)."""
+    terms_file(tmp_path, monkeypatch, TWO_PACKAGES_ALLOWING)
+    text = ("version: 1\nplugins:\n"
+            "  - identity: quuxify\n"
+            "    distribution: supervisor-plugin-quuxify\n"
+            "    summary: a lane, not the zorblax one\n"
+            "    home: packages/supervisor-plugin-quuxify\n"
+            "  - identity: second_lane\n"
+            "    distribution: supervisor-plugin-zorblax\n"
+            "    summary: the zorblax lane itself, unlike quuxify\n"
+            "    home: packages/supervisor-plugin-zorblax\n")
+    lines = text.splitlines()
+    zorblax_in_quuxifys_entry = next(i for i, l in enumerate(lines, 1) if "not the zorblax one" in l)
+    quuxify_in_zorblaxs_entry = next(i for i, l in enumerate(lines, 1) if "unlike quuxify" in l)
+    root = framework(tmp_path, {"plugins-catalog/index.yaml": text})
+    found = [f for f in g1d(boundary.check(root, user_names=[])) if f[0] == "plugins-catalog/index.yaml"]
+    assert found == sorted([
+        ("plugins-catalog/index.yaml", zorblax_in_quuxifys_entry, "zorblax"),
+        ("plugins-catalog/index.yaml", quuxify_in_zorblaxs_entry, "quuxify"),
+    ])
 
 
 def test_the_words_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatch):
