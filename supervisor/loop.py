@@ -71,6 +71,24 @@ def _residue_reasons(by_reason: dict[str, list[str]]) -> str:
     return "; ".join(f"{reason}: {', '.join(sorted(paths))}" for reason, paths in sorted(by_reason.items()))
 
 
+def _restore_current_bytes(path: Path, current: bytes | None) -> bool:
+    """Best-effort: put `path` back to hold exactly `current` (None: absent), after an `OSError` struck once a
+    quarantine or restore step had already moved, copied, written or deleted something. Called only when a
+    mutation actually happened — a failure before any of them already leaves the path exactly as found, nothing
+    to undo. True when `path` now matches `current` (the "quarantine or restore error" reason stays honest);
+    false when even this fails, so the caller can say the path is in an unknown state rather than call it found."""
+    try:
+        if current is None:
+            if path.exists():
+                path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(current)
+        return True
+    except OSError:
+        return False
+
+
 def scheduler_routing(layout: Layout) -> dict:
     import yaml
     cfg = layout.config / "routing.yaml"
@@ -461,7 +479,11 @@ class Supervisor:
         when `git`'s own content for it at HEAD hashes to the `before` digest the snapshot recorded (never guessed
         at); a link, a directory, a file above LARGE_FILE_BYTES, one git cannot account for, or one a quarantine/
         restore OSError hit is left exactly as found instead — one reason string per cause (not one blended
-        sentence), because the next attempt will otherwise fail on something it cannot fix.
+        sentence), because the next attempt will otherwise fail on something it cannot fix. A quarantine/restore
+        OSError raised after a move, copy, write or unlink already happened (the created-path move in particular,
+        which takes the path out of the tree before the error can strike) is put back to the content it held
+        before this call, so "left exactly as found" stays true of it too; only when that put-back itself fails
+        does the reason say the path's state is no longer known, rather than call it found regardless.
 
         Each restore is itself a supervisor write into the working tree, at a path outside the rejected attempt's
         owned roots — exactly the paths a second, concurrently writing task's own verification also scans and is
@@ -504,6 +526,8 @@ class Supervisor:
                 if content is None:
                     left.append((rel, "a path git cannot account for"))   # never guessed at
                     continue
+            current = None
+            mutated = False                         # set once a move/copy/unlink/write actually happened
             try:
                 current = path.read_bytes() if path.exists() else None
                 verify_mod.record_own_write(self.layout, rel, before=current, after=content, actor="loop",
@@ -515,18 +539,29 @@ class Supervisor:
                         path.replace(dest)          # the attempt created it: moved, nothing is deleted
                     else:
                         shutil.copy2(path, dest)    # the attempt changed it: copied before the restore
+                    mutated = True
                     if dest.read_bytes() != current:
                         raise OSError("quarantine copy does not match the content it was meant to hold")
                 if content is None:                 # before == missing: restoring means the path does not exist
                     if path.exists():
                         path.unlink()
+                        mutated = True
                 else:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(content)
+                    mutated = True
                     if path.read_bytes() != content:
                         raise OSError("restored content does not match the content it was meant to hold")
             except OSError:
-                left.append((rel, "a quarantine or restore error"))
+                # a failure before any mutation already leaves the path exactly as found; a failure after one
+                # (the created-path move, in particular, already took the path out of the tree) is put back to
+                # `current` before this is called "found" rather than described wrongly.
+                if mutated and not _restore_current_bytes(path, current):
+                    reason = ("a quarantine or restore error, and the path could not be put back as it stood "
+                              "before the revert")
+                    left.append((rel, reason))
+                else:
+                    left.append((rel, "a quarantine or restore error"))
                 continue
             reverted.append((rel, before_e.get("sha256"), after_e.get("sha256")))
         for rel, before_sha, after_sha in reverted:

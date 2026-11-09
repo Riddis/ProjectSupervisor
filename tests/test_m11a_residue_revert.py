@@ -266,6 +266,77 @@ def test_each_cause_of_a_left_path_is_named_by_its_own_reason(layout, scoped, re
            "a link or a directory: other/adir" in said
 
 
+def test_a_created_paths_quarantine_mismatch_is_put_back_before_being_called_found(layout, scoped, repo, monkeypatch):
+    """Round 5's own finding (chief_architect, round 4 review): for a path the attempt *created*,
+    `path.replace(dest)` already moves it out of the tree before the post-move integrity re-read can raise, so a
+    mismatch there used to leave the path gone - not "as found" - while the reason string still said `a
+    quarantine or restore error` as if nothing had moved. The put-back now runs before that reason is used, so
+    the path really is exactly as found, not merely described that way."""
+    run_dir = layout.runs / "T" / "T.a1"
+    (run_dir / "undeclared" / "other").mkdir(parents=True)
+    (layout.root / "other" / "created.txt").write_text("created by the attempt", encoding="utf-8")
+    residue = {"other/created.txt": {"before": {"kind": "missing"}, "after": {"kind": "file"}}}
+
+    import pathlib
+    real_read_bytes = pathlib.Path.read_bytes
+    dest = run_dir / "undeclared" / "other" / "created.txt"
+
+    def fake_read_bytes(self):
+        if self == dest:
+            return b"corrupted in transit"            # simulates the post-move copy not matching `current`
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", fake_read_bytes)
+
+    sup = Supervisor(layout, sleep_s=0)
+    sup._revert_residue("T", residue, str(run_dir))
+
+    # put back exactly as it stood before the revert attempt - not gone, not the restore content (there is none)
+    assert (layout.root / "other" / "created.txt").read_text(encoding="utf-8") == "created by the attempt"
+    texts = " || ".join(note_texts(layout, "T"))
+    assert "a quarantine or restore error: other/created.txt" in texts, texts
+    assert events(layout, "residue_reverted") == []
+
+
+def test_a_put_back_that_also_fails_says_the_path_is_not_known_found(layout, scoped, repo, monkeypatch):
+    """The rarer double failure: the post-move mismatch above, *and* the put-back itself fails. The path is then
+    genuinely gone, so the reason must say so rather than reuse "a quarantine or restore error" as if the path
+    were untouched - the same silent mislabelling this round's other test closes, on the one path where it cannot
+    be closed by a put-back."""
+    run_dir = layout.runs / "T" / "T.a1"
+    (run_dir / "undeclared" / "other").mkdir(parents=True)
+    (layout.root / "other" / "created.txt").write_text("created by the attempt", encoding="utf-8")
+    residue = {"other/created.txt": {"before": {"kind": "missing"}, "after": {"kind": "file"}}}
+
+    import pathlib
+    real_read_bytes = pathlib.Path.read_bytes
+    real_write_bytes = pathlib.Path.write_bytes
+    dest = run_dir / "undeclared" / "other" / "created.txt"
+    path = layout.root / "other" / "created.txt"
+
+    def fake_read_bytes(self):
+        if self == dest:
+            return b"corrupted in transit"
+        return real_read_bytes(self)
+
+    def fake_write_bytes(self, data):
+        if self == path:
+            raise OSError("disk full (simulated)")     # the put-back's own write fails too
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", fake_read_bytes)
+    monkeypatch.setattr(pathlib.Path, "write_bytes", fake_write_bytes)
+
+    sup = Supervisor(layout, sleep_s=0)
+    sup._revert_residue("T", residue, str(run_dir))
+
+    assert not path.exists()                            # genuinely gone - never silently called "found"
+    texts = " || ".join(note_texts(layout, "T"))
+    assert "a quarantine or restore error, and the path could not be put back as it stood before the revert: " \
+           "other/created.txt" in texts, texts
+    assert events(layout, "residue_reverted") == []
+
+
 def _two_tasks(layout):
     """Two scoped tasks, A and B, each owning its own root - the shape round 4's finding needs: A is rejected and
     reverted while B, a second writing task, has its own verification window already open."""
