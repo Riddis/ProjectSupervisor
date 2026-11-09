@@ -122,6 +122,20 @@ def test_the_real_index_validates(catalog):
     assert catalog.check(catalog.INDEX, catalog.ROOT) == []
 
 
+def test_g3_fetches_full_history_so_the_real_index_check_is_not_vacuous_once_entries_exist():
+    """tools/catalog_check.py's tag-dependent refusals (the framework range, g5.framework, a packages/ entry's own
+    tag) read `git tag --list` over the checkout `test_the_real_index_validates` runs against. That test is
+    vacuous today only because the real index is still empty (`plugins: []`): no git call happens. The 'suite' job
+    (G3) is where it runs, on a fresh `actions/checkout` every time; without full history that checkout carries no
+    tags, so the day T4-14 adds the first entry, every tag-dependent check would refuse it - not because it is
+    malformed, but because the checkout cannot see the tags that satisfy it (chief_architect review, T4-13).
+    Pinned here, not only in the CI YAML, so a reverted checkout step fails a test instead of merging unnoticed."""
+    workflow = yaml.safe_load((REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+    checkout = next(step for step in workflow["jobs"]["suite"]["steps"]
+                    if str(step.get("uses", "")).startswith("actions/checkout"))
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+
+
 def test_the_cli_passes_clean_and_fails_on_a_hit(fw, tmp_path):
     import sys
     good = write_index(fw, [foreign_entry()])

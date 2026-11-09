@@ -51,6 +51,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history and tags: tools/catalog_check.py's tag-dependent refusals, run
+                                   # here against the real plugins-catalog/index.yaml, read this repository's own
+                                   # release tags (`git tag --list`) and see none on a shallow checkout
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
