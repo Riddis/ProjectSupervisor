@@ -22,7 +22,7 @@ FRAMEWORK = REPO / ".claude" / "skills"
 TEMPLATE = REPO / "supervisor" / "template" / "_dot_claude" / "skills"
 
 FRAMEWORK_SKILLS = {"framework-change", "framework-release", "migration-author", "supervisor-setup", "plugin-new",
-                    "plugin-promote", "plugin-release", "boundary-review"}
+                    "plugin-promote", "plugin-release", "boundary-review", "catalog-review"}
 TEMPLATE_SKILLS = {"supervisor-setup", "maintenance-window", "rehearsal", "project-upgrade", "project-restore",
                    "runtime-diagnose", "task-author", "stuck-task", "role-change"}
 
@@ -32,6 +32,7 @@ ENDS_WITH = {
     "plugin-promote": ["supervisor plugin check", "G5"],
     "plugin-release": ["G5", "sha256"],
     "boundary-review": ["G1", "G1d", "G2", "G3", "G5", "G7"],
+    "catalog-review": ["G5", "digest", "suite"],
     "maintenance-window": ["supervisor doctor", "G6", "test suite"],
     "rehearsal": ["supervisor doctor", "G6", "test suite"],
     "project-upgrade": ["supervisor doctor", "G6", "test suite", "supervisor skills status"],

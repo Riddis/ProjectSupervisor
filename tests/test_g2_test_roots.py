@@ -67,13 +67,16 @@ def test_brief_names_the_allowed_test_roots_when_set(layout):
     brief = packets.delivery_brief(layout, task)
     assert "C:/work/widget-lib" in brief and '"cwd"' in brief
     assert "Where your test commands re-run" in brief
+    assert f"from `{layout.root}` by default" in brief
+    assert "<project root>" not in brief
 
 
 def test_brief_states_the_project_root_only_rule_when_test_roots_is_empty(layout):
     make_task(layout, "T")
     task = tasks.load(layout, "T")
     brief = packets.delivery_brief(layout, task)
-    assert "Verification re-runs each command from `<project root>` with the supervisor's own interpreter." in brief
+    assert f"Verification re-runs each command from `{layout.root}` with the supervisor's own interpreter." in brief
+    assert "<project root>" not in brief
 
 
 def test_no_cwd_runs_under_the_supervisors_own_interpreter_even_when_the_root_has_a_venv(layout, monkeypatch):

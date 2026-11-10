@@ -466,11 +466,18 @@ def _allowance_scope(target: Path) -> tuple[str, str] | None:
     return ("archive", dist) if dist else None
 
 
+_CATALOG_INDEX = "plugins-catalog/index.yaml"
+
+
 def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, list[str]]) -> set[str]:
     """The words a project allows in this file: its package's own name, inside `packages/<distribution>/` at the top
     of the git repository the file is in, or in that distribution's own wheel or sdist. Nothing else: not a
     lookalike path deeper in the tree, a folder named like the package elsewhere, a folder outside git, or an
-    archive whose file name or metadata names another distribution (review 2.0.0 R1)."""
+    archive whose file name or metadata names another distribution (review 2.0.0 R1). The catalog index
+    (`plugins-catalog/index.yaml`) is not decided here: `_catalog_path` and `_catalog_line_distributions` scope its
+    allowance per entry, per line, because CONTRIBUTOR_RULING.md 2.3 opens the allowance "for the words allowed to
+    that entry's own distribution" - one set for the whole file would let one listed package's word sit unflagged
+    in another's."""
     if not allowed or scope is None:
         return set()
     kind, where = scope
@@ -480,6 +487,34 @@ def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, li
     if len(parts) < 3 or parts[0] != "packages":
         return set()
     return {w.lower() for w in allowed.get(_distribution(parts[1]), [])}
+
+
+def _catalog_path(scope: tuple[str, str] | None, rel: str) -> bool:
+    """Whether a scanned member is `plugins-catalog/index.yaml` at the top of its own repository (not a lookalike
+    path deeper in the tree, same discipline as `_allowed_here`)."""
+    return scope is not None and scope[0] == "folder" and scope[1] + rel == _CATALOG_INDEX
+
+
+_CATALOG_ENTRY_START = re.compile(r"^\s*-\s")
+_CATALOG_DISTRIBUTION = re.compile(r"""^\s*distribution:\s*["']?([A-Za-z0-9][A-Za-z0-9._-]*)["']?\s*$""")
+
+
+def _catalog_line_distributions(lines: list[str]) -> list[str | None]:
+    """For `plugins-catalog/index.yaml` only: each line's own `plugins:` entry's `distribution` (normalised,
+    CONTRIBUTOR_RULING.md 2.3's "that entry's own distribution"), for every line of that entry - including
+    `identity`, read before `distribution` in the schema's own key order - or None for a line outside any entry, or
+    inside one that names none. A line-based approximation, not a YAML parse (G1d stays standard library only), and
+    never wider than the ruling: a word belongs to one entry only, by that entry's own `distribution:` line,
+    wherever in the entry it is read from."""
+    starts = [i for i, line in enumerate(lines) if _CATALOG_ENTRY_START.match(line)]
+    spans = list(zip(starts, starts[1:] + [len(lines)]))
+    result: list[str | None] = [None] * len(lines)
+    for start, end in spans:
+        dist = next((_distribution(m.group(1)) for line in lines[start:end]
+                     if (m := _CATALOG_DISTRIBUTION.match(line))), None)
+        for i in range(start, end):
+            result[i] = dist
+    return result
 
 
 def repository_files(root: Path) -> list[Path]:
@@ -574,14 +609,19 @@ def scan_words(target: Path, terms: dict[str, list[str]], where: str = "",
             lines = data.decode("utf-8").splitlines() if data is not None else []
         except UnicodeDecodeError:
             lines = []
+        catalog = _catalog_path(scope, real)
+        dists = _catalog_line_distributions(lines) if catalog else None
         for project, rx in rules:
-            ok = _allowed_here(scope, real, (allowed or {}).get(project) or {})
+            proj_allowed = (allowed or {}).get(project) or {}
+            ok = set() if catalog else _allowed_here(scope, real, proj_allowed)
             detail = f"a word of project {project!r} in {where or target.name}"
             out += [Finding("G1d", rel, 0, m.group(0), detail + " (a file name)") for m in rx.finditer(rel)
                     if m.group(0).lower() not in ok]
             for no, line in enumerate(lines, 1):
+                line_ok = {w.lower() for w in proj_allowed.get(dists[no - 1], [])} if catalog and dists[no - 1] \
+                    else ok
                 out += [Finding("G1d", rel, no, m.group(0), detail) for m in rx.finditer(line)
-                        if m.group(0).lower() not in ok]
+                        if m.group(0).lower() not in line_ok]
     return out
 
 
@@ -621,9 +661,12 @@ def default_user_names(cfg: dict) -> list[str]:
 
 
 def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = None,
-          terms: dict[str, list[str]] | None = ..., allowed: dict | None = None) -> Report:
-    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances; by
-    default both from the local project-terms file."""
+          terms: dict[str, list[str]] | None = ..., allowed: dict | None = ...) -> Report:
+    """Every rule over the framework at `root`. `terms` is G1d's word list and `allowed` its package allowances,
+    each defaulting off its own sentinel: unset, each is loaded from the local project-terms file independently of
+    whether the other was given, so a caller passing one without the other never silently drops the one it left
+    out (N5 — the two once shared a single sentinel, which made `terms=` alone drop every package's own-name
+    allowance and enforce a stricter rule than the `--words` gate's own default call)."""
     root = Path(root).resolve()
     cfg = load_config(root) if cfg is None else cfg
     files = package_files(root)
@@ -637,7 +680,7 @@ def check(root: Path, cfg: dict | None = None, user_names: list[str] | None = No
     report.violations += vendor
     report.notes += stale
     info, skipped = check_project_info(root, cfg, load_project_terms() if terms is ... else terms,
-                                       load_package_allowances() if terms is ... else allowed)
+                                       load_package_allowances() if allowed is ... else allowed)
     report.violations += info
     report.skipped += skipped
     return report

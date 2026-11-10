@@ -91,10 +91,9 @@ the tag comes after the build, never before.
   the release record before installing (`python -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],
   'rb').read()).hexdigest())" <wheel>`), install it, record it with its hash in the project's lock or runbook, then
   migrate, doctor and the suite.
-- A package listed in the framework's catalog gets its index entry updated in a pull request to the framework:
-  the version, the artifact hash and the date of the G5 run. The maintainers re-run G5 on that exact artifact
-  before listing it. The catalog arrives with phase 6 of the boundary plan; until then, the tag's record is the
-  release record.
+- A package listed in the framework's catalog (`plugins-catalog/index.yaml`, `plugins-catalog/README.md`) gets its
+  index entry updated in a pull request to the framework: the version, the artifact hash and the date of the G5
+  run. The maintainers re-run G5 on that exact artifact before listing it (the `catalog-review` skill).
 
 ## Checks it ends with
 

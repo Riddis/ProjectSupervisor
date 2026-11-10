@@ -3,7 +3,91 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.5.0 — 2026-11-10
+
+- **Added: the contributor opening.** `CONTRIBUTING.md` states the framework's three layers and their one-way
+  dependency ("project → plugin packages → framework"), rule 1 (the second user) and rule 3, the gate table by
+  kind of change, the review order, and the owner's licence (Apache 2.0 with the Commons Clause, no CLA). The
+  pull-request template (`.github/pull_request_template.md`) is a template of prose questions covering rule 1, the
+  second user, API/migration/docs impact, a gates-run table and the plugin-package-home section. `.github/
+  CODEOWNERS` keeps its `v2.4.0` line (`/packages/ @Riddis`) and extends to the rest of the plugin surface.
+
+- **Added: the plugin catalog, `plugins-catalog/index.yaml`, and its validator, `tools/catalog_check.py`.** One
+  `version: 1` file holding one `plugins:` list, sorted by identity, naming a plugin either as a package kept in
+  this repository or as a foreign package by its own home URL, tag and wheel digest. `catalog_check.py` validates
+  both home shapes and refuses eleven distinct ways an entry can be malformed, each naming the field it refused on;
+  it reuses `tools/ci_package.py`'s own release reading (`releases()`, `oldest_in_range()`, `manifest()`) rather
+  than parsing a version or a tag itself. The G1d word allowance for an in-repo package's own name is now scoped to
+  each catalog entry's own `distribution:`, not the whole file (`supervisor/boundary.py`). CI's `suite` job now
+  fetches tags (`fetch-depth: 0`) so the real index is actually checked, not vacuously. The `catalog-review` skill
+  is the human half of a listing: a candidate needs both the validator's own exit 1 (or a clean pass) and the
+  skill's own written refusal, because the two answer different questions. `plugins-catalog/README.md` describes
+  both home shapes, and `CONTRIBUTING.md` now points a contributor at the listing procedure.
+
+- **Added: the catalog's first listings.** `plugins-catalog/index.yaml` names the three packages already kept
+  under this repository's own `packages/`, each hashed against the artifact it lists.
+
+- **Added: reproducible package wheels, and the matrix's missing leg.** `tools/ci_package.py`'s package job now
+  exports `SOURCE_DATE_EPOCH` (from `commit_epoch()`, path-scoped for the package and unscoped for the ref) and
+  builds the package wheel twice, refusing on a digest mismatch — "two builds, one toolchain, one run, one digest",
+  proven within a run and a toolchain, never across machines or days. The per-package matrix (`matrix()`) now also
+  runs the newest framework release in its own supported range (`newest_in_range()`), deduplicated by
+  `(package, framework)` so a package whose oldest-in-range release is already the newest gets no duplicate leg.
+
+- **Added: one `all gates` job, replacing six churning `package …` required contexts, and a per-package `os`
+  axis.** `.github/workflows/ci.yml` gains job `all_gates` (`name: all gates`, `needs: [packages, package],
+  if: always()`), green exactly when `packages` and `package` both succeed, or `package` is skipped with a zero
+  count — the one context branch protection now needs instead of a `packages (list)` context plus one `package …`
+  context per matrix leg, which else churns on every matrix change. The package job's matrix also crosses a named
+  `os` array against its existing legs (no `include:`, so it multiplies rather than merging), running every package
+  leg on both `ubuntu-latest` and `windows-latest`.
+
+- **Fixed: the `G5 reference plugin` job's own scratch package failed `commit_epoch()` because it was never
+  committed.** The job scaffolds a disposable package purely to exercise `tools/ci_package.py run()`'s path; once
+  that function started reading `SOURCE_DATE_EPOCH` from the package's own commit history (the entry above), the
+  scaffolded, uncommitted package had none, and the job failed with "no commit found for SOURCE_DATE_EPOCH". The
+  workflow now commits the scaffolded package, in the runner's own checkout only, before building it;
+  `tools/ci_package.py` itself is unchanged.
+
+- **Fixed: a rejected attempt's own undeclared writes stayed in the tree and were blamed on the next retry.**
+  `supervisor/loop.py` now reverts that residue itself, at the moment an attempt is rejected, before the retry's
+  own baseline is taken: each undeclared path is quarantined (moved or copied into the attempt's own run
+  directory, nothing deleted) and restored from git only when git's content for it hashes to the snapshot's own
+  recorded digest, otherwise left exactly as found and reported. A successful revert logs one `residue_reverted`
+  event per path with both digests and the quarantine location and opens no owner item; a path that cannot be
+  restored (too large, or one git cannot account for) opens one deduped owner item instead. `residue_reverted` is
+  a new log event that other projects' own tooling may see. Attribution between two attempts running concurrently,
+  and a human edit made outside Settings, are unchanged — this reverts the first attempt's own leftover, not a
+  dispute between two writers.
+
+- **Fixed: the stall sweep could reopen a task a manager had explicitly held.** `supervisor/loop.py`'s
+  `sweep_stalled` now reads `task.held` as its own clause before it checks the stalled actor's name, so a
+  non-owner hold on a task stays respected by the sweep exactly as it already is everywhere else a hold is read.
+
+- **Fixed: a declared pytest command's own `--basetemp` could be split into a bogus positional, or silently
+  ignored.** `supervisor/verify.py`'s `test_argv` now unquotes the part of an option token after its first `=`
+  before splitting it, and `_isolate_pytest` always strips a `--basetemp=X` or `--basetemp X` an agent declared and
+  appends its own, instead of sometimes honouring the agent's value.
+
+- **Fixed: the delivery brief's Write-scope sentences rendered the literal placeholder `<project root>` instead of
+  the task's own root.** `supervisor/packets.py` now renders `layout.root` in both sentences, so a worker reads the
+  path verification actually checks against, not a placeholder that never resolves to one.
+
+- **Fixed: `supervisor.boundary.check()`'s `terms` and `allowed` parameters shared one sentinel, so passing `terms=`
+  alone silently dropped the package word allowances.** Each parameter now defaults off its own `...` sentinel,
+  decided independently; a caller that passes one without the other now gets the same package allowances a caller
+  passing neither gets.
+
+- **Added: a version-stamp test.** `tests/test_version_stamp.py` pins `__version__` against `pyproject.toml`'s own
+  `version` and against this file's topmost **version** heading (`## Unreleased` is skipped), so the three
+  disagreeing — as they did at the `v2.4.0` tag, which this release's own branch-opening entry above restamps — is
+  caught before a release, not after. It deliberately does not compare against the newest tag, since a release
+  branch's `HEAD` is ahead of the newest tag by design.
+
+## 2.4.0 — 2026-11-08
+
+The tag `v2.4.0` was cut before this heading moved, so its own released tree still reads `## Unreleased` over
+these six entries; the tag is not re-cut, and this heading is the whole remedy.
 
 - **Task contract: `evidence` separates "what a reviewer judges" from "must a delivery report a command".**
   `Task.evidence: "auto" | "commands" | "review" = "auto"` and the new `task.requires_commands(model_lane)`

@@ -51,6 +51,10 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history and tags: tools/catalog_check.py's tag-dependent refusals, run
+                                   # here against the real plugins-catalog/index.yaml, read this repository's own
+                                   # release tags (`git tag --list`) and see none on a shallow checkout
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -102,10 +106,15 @@ jobs:
           cd "$RUNNER_TEMP/supervisor-plugin-ci-sample" && "$PY" -m pytest -q
       - name: a package kept under packages/ is tested the way its own job tests it (tools/ci_package.py)
         # No package is in the repository yet when this runs on 2.0.0, so the per-package job below has nothing to
-        # run; this step proves its path on a package scaffolded into packages/ in the runner (never committed).
+        # run; this step proves its path on a package scaffolded into packages/ in the runner. commit_epoch()
+        # (tools/ci_package.py) is path-scoped and needs a commit to read, so this scratch package is committed
+        # here, in the runner's own checkout only - never pushed, never reaching origin.
         run: |
           "$RUNNER_TEMP/env/bin/supervisor" plugin new ci_pkg --package --dir packages
-          python tools/ci_package.py run packages/supervisor-plugin-ci-pkg --framework HEAD --workdir "$RUNNER_TEMP/package-ci"
+          git -c user.name=ci -c user.email=ci@example.invalid add packages/supervisor-plugin-ci-pkg
+          git -c user.name=ci -c user.email=ci@example.invalid commit -q -m "ci: scaffold the G5 reference package (not pushed)"
+      - name: the scaffolded package, built and run through tools/ci_package.py
+        run: python tools/ci_package.py run packages/supervisor-plugin-ci-pkg --framework HEAD --workdir "$RUNNER_TEMP/package-ci"
 
   packages:
     # The plugin packages kept in this repository (packages/<distribution>/, docs/PLUGIN_STANDARD.md), from
@@ -130,14 +139,20 @@ jobs:
   package:
     # Per package and framework: both wheels built (the framework's from its tag or HEAD), a fresh environment, the
     # installed proof (found, loaded, G5, a task on its lane or python job) and the package's suite, with no source
-    # on the path. Branch protection requires each package's two jobs.
-    name: package ${{ matrix.package }} (framework ${{ matrix.framework }})
+    # on the path. 2.5.0's M4: the os axis G3 suite already has, so every leg is proven on both platforms - this is
+    # a workflow change only (tools/ci_package.py run() already resolves Scripts/python.exe on win32). The dynamic
+    # leg list is read into its own named axis (`leg`, not `include`) so it genuinely cross-multiplies with `os`:
+    # an `include:` entry with no `os` key would merge into every existing os combination instead of multiplying.
+    # Branch protection requires only the `all gates` aggregator below (M7), not each of these churning names.
+    name: package ${{ matrix.leg.package }} (framework ${{ matrix.leg.framework }}, ${{ matrix.os }})
     needs: packages
     if: needs.packages.outputs.count != '0'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.packages.outputs.matrix) }}
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        leg: ${{ fromJSON(needs.packages.outputs.matrix).include }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,4 +161,20 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python tools/ci_package.py run "packages/${{ matrix.package }}" --framework "${{ matrix.framework }}" --workdir "$RUNNER_TEMP/package-ci"
+      - run: python tools/ci_package.py run "packages/${{ matrix.leg.package }}" --framework "${{ matrix.leg.framework }}" --workdir "$RUNNER_TEMP/package-ci"
+
+  all_gates:
+    # 2.5.0's M7 (docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.5): one fixed-name job in place of the six-and-
+    # growing `package …` matrix contexts that required a branch-protection rename PATCH twice already
+    # (docs/releases/packages/RELEASE_RECORD_1.1.0.md §2, I-034). T4-24's one protection PATCH requires this job's
+    # own name, `all gates`, instead of `packages (list)` and every `package …` context.
+    name: all gates
+    needs: [packages, package]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: every needed job succeeded (a skipped package matrix only when there is no package)
+        run: |
+          test "${{ needs.packages.result }}" = "success"
+          test "${{ needs.package.result }}" = "success" \
+            || { test "${{ needs.package.result }}" = "skipped" && test "${{ needs.packages.outputs.count }}" = "0"; }
