@@ -23,6 +23,12 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   (`partials/overview_metrics.html`) that the five-second `/overview/live` poll swaps out-of-band, like the
   Supervisor card.
 
+- **Fixed: `boundary-review/SKILL.md` never named gate G6 for a plugin-package review.** Section 3's gate list and
+  the closing "Checks it ends with" summary now both carry G6, matching `docs/BOUNDARY.md`'s own table (a
+  `plugin-new`/`plugin-promote`/`plugin-release` review needs it); a reviewer following the skill as written would
+  otherwise never re-run `supervisor doctor` in a disposable project using the package. Docs only; merged to `main`
+  after `v2.5.0` was tagged (pull request #25), so it ships here instead.
+
 ## 2.5.0 — 2026-11-10
 
 - **Added: the contributor opening.** `CONTRIBUTING.md` states the framework's three layers and their one-way
