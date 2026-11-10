@@ -3,6 +3,26 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.5.1 — 2026-11-10
+
+- **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and
+  counts the current phase's tasks only ("Phase N tasks completed"); it links to the task list filtered to that
+  phase (`/tasks?phase=N`, new). Phase & gates lists every gate in phase order, passed ones included, instead of
+  the first five from the current phase on. Its Eligible tasks list also shows tasks that open once the in-flight
+  ones finish (every dependency still open is IN_PROGRESS, WAITING_FOR_REVIEW or WAITING_FOR_HUMAN), each marked
+  with the tasks it waits on.
+
+- **Fixed: the Overview's Current phase and task cards, and STATE.md, counted a CANCELLED task as unfinished.** The
+  current phase was the lowest phase with any task not COMPLETE, so one cancelled leftover held a project in an
+  earlier phase after its gate had passed. `tasks.current_phase()` now treats COMPLETE and CANCELLED both as closed
+  (once every task is closed it is the last phase that had tasks), and STATE.md, the Overview and the chat state
+  packet all use it. Task totals leave cancelled tasks out (`tasks.active()`); STATE.md's Tasks line says how many
+  were cancelled.
+
+- **Fixed: the Overview's metric cards only changed on a page reload.** They are now a partial
+  (`partials/overview_metrics.html`) that the five-second `/overview/live` poll swaps out-of-band, like the
+  Supervisor card.
+
 ## 2.5.0 — 2026-11-10
 
 - **Added: the contributor opening.** `CONTRIBUTING.md` states the framework's three layers and their one-way
@@ -88,13 +108,6 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 The tag `v2.4.0` was cut before this heading moved, so its own released tree still reads `## Unreleased` over
 these six entries; the tag is not re-cut, and this heading is the whole remedy.
-
-- **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and
-  counts the current phase's tasks only ("Phase N tasks completed"); it links to the task list filtered to that
-  phase (`/tasks?phase=N`, new). Phase & gates lists every gate in phase order, passed ones included, instead of
-  the first five from the current phase on. Its Eligible tasks list also shows tasks that open once the in-flight
-  ones finish (every dependency still open is IN_PROGRESS, WAITING_FOR_REVIEW or WAITING_FOR_HUMAN), each marked
-  with the tasks it waits on.
 
 - **Task contract: `evidence` separates "what a reviewer judges" from "must a delivery report a command".**
   `Task.evidence: "auto" | "commands" | "review" = "auto"` and the new `task.requires_commands(model_lane)`

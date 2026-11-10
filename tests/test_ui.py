@@ -155,6 +155,26 @@ def test_overview_keeps_passed_gates_and_counts_the_current_phase_only(layout, a
     assert "Phase 1 tasks completed" in text and 'href="/tasks?phase=1"' in text
 
 
+def test_a_cancelled_task_neither_holds_the_phase_nor_counts_as_unfinished(layout, auth_client):
+    from supervisor import render
+    from supervisor import tasks as tasks_mod
+    from supervisor.ui.routes.overview import overview_context
+
+    make_task(layout, "T0-01", status="COMPLETE")
+    make_task(layout, "T0-02", status="CANCELLED")          # a cut leftover in an earlier phase
+    make_task(layout, "T1-01", phase=1, status="COMPLETE")
+    make_task(layout, "T1-02", phase=1, status="CANCELLED")
+    make_task(layout, "T1-03", phase=1)
+    context = overview_context(layout)
+    assert context["phase"] == 1
+    assert (context["phase_done_count"], context["phase_task_count"]) == (1, 2)
+    line = next(ln for ln in render.state_lines(layout) if "**Tasks:**" in ln)
+    assert line.startswith("- **Tasks:** 2/3 complete (2 cancelled) ·")
+    assert render.phase_and_gates_passed(layout, tasks_mod.load_all(layout))[0] == 1
+    tasks_mod.set_status(layout, "T1-03", "CANCELLED", actor="owner", note="cut", force=True)
+    assert overview_context(layout)["phase"] == 1               # every task closed: the last phase that had tasks
+
+
 def test_overview_lists_tasks_the_in_flight_ones_unblock(layout, auth_client):
     from supervisor.ui.routes.overview import overview_context
 
@@ -371,7 +391,8 @@ def test_overview_live_fragment_refreshes_now_running_and_the_supervisor_card(la
     assert r.status_code == 200
     assert r.text.count('id="now-running"') == 1 and 'hx-trigger="every 5s' in r.text
     assert 'id="supervisor-live" hx-swap-oob="true"' in r.text
-    assert 'id="ctrl-result"' not in r.text                    # action results survive a refresh
+    assert 'id="overview-metrics" class="metric-grid" hx-swap-oob="true"' in r.text   # the metric cards follow too
+    assert 'id="ctrl-result"' not in r.text                   # action results survive a refresh
     assert 'hx-swap-oob' not in auth_client.get("/overview").text
 
 

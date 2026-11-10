@@ -12,12 +12,7 @@
 {% if update and update.newer_release %}<section class="panel update-panel"><div class="section-heading"><h2>Framework release available</h2><span class="section-note">{{ update.pinned_tag }} &rarr; {{ update.newer_release }}</span></div>
   <p class="section-note">This project runs a framework checkout pinned at a release tag. Take {{ update.newer_release }} in a maintenance window: drain, stop, in the framework checkout <code>git fetch origin tag {{ update.newer_release }}</code> and <code>git checkout {{ update.newer_release }}</code>, migrate, doctor, start (docs/UPDATING.md, &ldquo;Pinned checkouts&rdquo;).{% if update.migration_hint %} The changelog mentions a migration.{% endif %} Origin last checked {{ update.checked_iso | localtime }}{% if update.refresh_error %}; the latest refresh failed ({{ update.refresh_error }}){% endif %}.</p>
 </section>{% endif %}
-<div class="metric-grid">
-  <a class="metric-card" href="/agents"><span class="metric-icon">{{ icon('jobs') }}</span><div class="metric-body"><span class="metric-label">Open jobs</span><strong>{{ open_jobs | length }}</strong><span class="metric-caption">Agent workload</span></div></a>
-  <a class="metric-card" href="/inbox"><span class="metric-icon">{{ icon('bell') }}</span><div class="metric-body"><span class="metric-label">Needs your attention</span><strong>{{ needs_you }}</strong><span class="metric-caption">{{ open_inbox_count }} inbox &middot; {{ waiting_count }} waiting task{{ "" if waiting_count == 1 else "s" }}</span></div></a>
-  <a class="metric-card" href="/roadmap"><span class="metric-icon">{{ icon('flag') }}</span><div class="metric-body"><span class="metric-label">Current phase</span><strong>{{ phase }}<small> / {{ phases_total - 1 }}</small></strong><progress value="{{ phase }}" max="{{ [1, phases_total - 1] | max }}" aria-label="Current phase"></progress><span class="metric-caption">{{ phases_passed | length }} gates passed</span></div></a>
-  <a class="metric-card" href="/tasks?phase={{ phase }}"><span class="metric-icon">{{ icon('check') }}</span><div class="metric-body"><span class="metric-label">Phase {{ phase }} tasks completed</span><strong>{{ phase_done_count }}<small> / {{ phase_task_count }}</small></strong><progress value="{{ phase_done_count }}" max="{{ phase_task_count or 1 }}" aria-label="Phase {{ phase }} tasks completed"></progress><span class="metric-caption">{{ ((phase_done_count / phase_task_count * 100) if phase_task_count else 0) | round | int }}% complete</span></div></a>
-</div>
+{% include "partials/overview_metrics.html" %}
 {% include "partials/overview_now.html" %}
 <div class="dashboard-grid">
 <section class="panel supervisor-panel">

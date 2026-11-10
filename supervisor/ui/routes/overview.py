@@ -173,7 +173,7 @@ def overview_context(layout: Layout) -> dict:
     elig = tasks_mod.eligible(layout, tasks)
     phases_total = len(gate_data.get("phases") or {})
     phases_passed = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
-    current_phase = min((t.phase for t in tasks.values() if t.status != TaskStatus.COMPLETE), default=0)
+    current_phase = tasks_mod.current_phase(tasks)
     rt = runtime.read(layout)
     live = runtime.is_live(layout)
     open_inbox = inbox_mod.open_items(layout)
@@ -204,7 +204,7 @@ def overview_context(layout: Layout) -> dict:
     all_gates = [dict(row, id=key, label=labels.get(row.get("phase"), "Phase gate"))
                  for key, row in (gate_data.get("gates") or {}).items()]
     all_gates.sort(key=lambda g: g.get("phase", 0))
-    phase_tasks = [t for t in tasks.values() if t.phase == current_phase]
+    phase_tasks = [t for t in tasks_mod.active(tasks) if t.phase == current_phase]
     active_jobs = [j for j in open_jobs if j.get("phase") in gate_mod.ACTIVE_PHASES and j.get("adapter") != "human"]
     draining = live and rt.get("decision") == "DRAIN"
     try:
