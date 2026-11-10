@@ -29,6 +29,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   otherwise never re-run `supervisor doctor` in a disposable project using the package. Docs only; merged to `main`
   after `v2.5.0` was tagged (pull request #25), so it ships here instead.
 
+- **Fixed: `framework-change/SKILL.md` told a contributor to add a CHANGELOG entry "under `## Unreleased`", a
+  heading this file no longer carries once a release has stamped it closed.** Followed literally after such a
+  stamp the instruction breaks `tests/test_changelog_stamp.py`; leaving the entry out instead breaks
+  `tests/test_changelog_entries_2_5_0.py`. Step 5 now names the file's topmost heading instead, whatever release
+  it names, tagged or not. Docs only; merged to `main` after this head was cut (pull request #26), so it ships
+  here instead.
+
 ## 2.5.0 — 2026-11-10
 
 - **Added: the contributor opening.** `CONTRIBUTING.md` states the framework's three layers and their one-way
