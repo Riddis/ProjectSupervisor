@@ -388,6 +388,89 @@ def test_a_concurrent_tasks_verification_is_not_charged_for_the_revert_of_a_modi
     assert outcome_b.ok is True, outcome_b.detail
 
 
+def test_a_deleted_paths_partial_restore_is_put_back_before_being_called_found(layout, scoped, repo, monkeypatch):
+    """P3-2's twin of round 5's created-path finding: for a path the attempt *deleted*, restoring it means writing
+    git's content back via `write_bytes`. `mutated` used to be set AFTER that call, so an `OSError` raised by the
+    write itself - a full disk after part of the content has already landed - left `mutated` False, and the
+    put-back (`_restore_current_bytes`) was never even attempted: a partial fragment of `other/shared.txt` stayed
+    on disk where the path had been absent, while the note still read the plain, now-dishonest, `a quarantine or
+    restore error` reason, the same wording round 5 reserved for a path genuinely left as found. `mutated` now
+    being set before the write means the fragment is put back to absent - the path's actual state before this
+    revert attempt - before that reason is used."""
+    run_dir = layout.runs / "T" / "T.a1"
+    (run_dir / "undeclared" / "other").mkdir(parents=True)
+    path = layout.root / "other" / "shared.txt"
+    path.unlink()                                       # the attempt deleted this committed, unowned path
+    digest = hashlib.sha256(b"original").hexdigest()
+    residue = {"other/shared.txt": {"before": {"kind": "file", "sha256": digest}, "after": {"kind": "missing"}}}
+
+    import pathlib
+    real_write_bytes = pathlib.Path.write_bytes
+
+    def fake_write_bytes(self, data):
+        if self == path:
+            real_write_bytes(self, data[:3])             # part of the content lands...
+            raise OSError("disk full (simulated) partway through the restore write")
+        return real_write_bytes(self, data)
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", fake_write_bytes)
+
+    sup = Supervisor(layout, sleep_s=0)
+    sup._revert_residue("T", residue, str(run_dir))
+
+    # put back exactly as the attempt left it - absent, never a 3-byte fragment of "original"
+    assert not path.exists(), "a partial write must not be left on disk and called 'exactly as found'"
+    texts = " || ".join(note_texts(layout, "T"))
+    assert "a quarantine or restore error: other/shared.txt" in texts, texts
+    assert events(layout, "residue_reverted") == []       # a path left exactly as found is never "reverted"
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1 and items[0].get("residue_left") == ["other/shared.txt"]
+
+
+def test_a_modified_paths_quarantine_copy_failure_is_put_back_before_being_called_found(layout, scoped, repo,
+                                                                                          monkeypatch):
+    """The same ordering bug at the other site named by P3-2: for a *modified* path the quarantine step is
+    `shutil.copy2`, not a move, and `mutated` used to be set AFTER that call too. An `OSError` the copy itself
+    raises - not the post-copy mismatch round 5 already covers, where `mutated` was already True by the time of
+    the check - left `mutated` False, so the put-back was never even attempted for this site either. The live
+    path happens to be untouched by a failed copy regardless (copy2 only ever writes its destination), so the
+    put-back's own write is a safe no-op here - but the mechanism must not depend on that accident: the fix makes
+    `_restore_current_bytes` run for this site exactly as it does for the write-bytes and unlink sites."""
+    run_dir = layout.runs / "T" / "T.a1"
+    (run_dir / "undeclared" / "other").mkdir(parents=True)
+    (layout.root / "other" / "shared.txt").write_text("modified by the attempt", encoding="utf-8")
+    digest = hashlib.sha256(b"original").hexdigest()
+    residue = {"other/shared.txt": {"before": {"kind": "file", "sha256": digest}, "after": {"kind": "file"}}}
+
+    import shutil as shutil_mod
+
+    from supervisor import loop as loop_mod
+
+    def fake_copy2(src, dst):
+        raise OSError("disk full (simulated) partway through the quarantine copy")
+
+    real_restore = loop_mod._restore_current_bytes
+    calls: list[bool] = []
+
+    def tracking_restore(path, current):
+        calls.append(True)
+        return real_restore(path, current)
+
+    monkeypatch.setattr(shutil_mod, "copy2", fake_copy2)
+    monkeypatch.setattr(loop_mod, "_restore_current_bytes", tracking_restore)
+
+    sup = Supervisor(layout, sleep_s=0)
+    sup._revert_residue("T", residue, str(run_dir))
+
+    assert len(calls) == 1, "the put-back must run for a quarantine-copy failure too, not only write_bytes/unlink"
+    assert (layout.root / "other" / "shared.txt").read_text(encoding="utf-8") == "modified by the attempt"
+    texts = " || ".join(note_texts(layout, "T"))
+    assert "a quarantine or restore error: other/shared.txt" in texts, texts
+    assert events(layout, "residue_reverted") == []
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1 and items[0].get("residue_left") == ["other/shared.txt"]
+
+
 def test_a_concurrent_tasks_verification_is_not_charged_for_the_revert_of_a_created_path(layout, repo):
     """The ledger edge the previous round's `record_own_write`/`_supervisor_wrote` could not express at all: A
     creates a brand-new unowned path, B's own before-snapshot sees it already there, A is rejected and the revert
