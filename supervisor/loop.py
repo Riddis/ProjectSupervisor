@@ -527,7 +527,8 @@ class Supervisor:
                     left.append((rel, "a path git cannot account for"))   # never guessed at
                     continue
             current = None
-            mutated = False                         # set once a move/copy/unlink/write actually happened
+            mutated = False                         # set just before a move/copy/unlink/write starts, not after
+                                                      # it returns, so a failure inside the call still counts
             try:
                 current = path.read_bytes() if path.exists() else None
                 verify_mod.record_own_write(self.layout, rel, before=current, after=content, actor="loop",
@@ -535,21 +536,21 @@ class Supervisor:
                 if current is not None:
                     dest = quarantine / rel
                     dest.parent.mkdir(parents=True, exist_ok=True)
+                    mutated = True              # set before the move/copy, not after: a failure inside it
                     if before_e.get("kind") in (None, "missing"):
                         path.replace(dest)          # the attempt created it: moved, nothing is deleted
                     else:
                         shutil.copy2(path, dest)    # the attempt changed it: copied before the restore
-                    mutated = True
                     if dest.read_bytes() != current:
                         raise OSError("quarantine copy does not match the content it was meant to hold")
                 if content is None:                 # before == missing: restoring means the path does not exist
                     if path.exists():
+                        mutated = True               # set before the unlink, not after
                         path.unlink()
-                        mutated = True
                 else:
                     path.parent.mkdir(parents=True, exist_ok=True)
+                    mutated = True                   # set before the write, not after: a partial write still counts
                     path.write_bytes(content)
-                    mutated = True
                     if path.read_bytes() != content:
                         raise OSError("restored content does not match the content it was meant to hold")
             except OSError:
