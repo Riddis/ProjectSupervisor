@@ -1,16 +1,38 @@
 """docs/reviews/RELEASE_REVIEW_2.5.0.md P2-3: the ## 2.5.0 heading T4-43 stamped must carry one entry per
 user-visible change in c4e6f963..HEAD, not stay the placeholder sentence T4-43 left it with. This is a check on
 presence and shape, not on prose: it asserts a stable keyword per change and that every feature-bearing path the
-range touches is named by some entry, not that any particular sentence survives unchanged - the next release
-deletes this file, as it is specific to this range's own two fixed endpoints."""
+range touches is named by some entry, not that any particular sentence survives unchanged.
+
+The range's own end, HEAD, keeps moving while the tree is still 2.5.0, so the module self-retires instead of
+pinning a fixed endpoint: every test here is skipped once the tree's own `__version__` is no longer "2.5.0" (the
+`pytestmark` below), so an ordinary post-release commit that touches a path this file has no keyword for cannot
+turn a required gate red for a change this file was never meant to describe. Delete this file once that skip is
+permanent."""
 from __future__ import annotations
 
 import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 BASE_SHA = "c4e6f963d80989d4e5044f4327f0ca8aefce6a50"  # v2.4.0, the branch point
+
+
+def _current_version() -> str | None:
+    match = re.search(
+        r'__version__\s*=\s*"([^"]+)"',
+        (ROOT / "supervisor" / "__init__.py").read_text(encoding="utf-8"),
+    )
+    return match.group(1) if match else None
+
+
+pytestmark = pytest.mark.skipif(
+    _current_version() != "2.5.0",
+    reason="test_changelog_entries_2_5_0.py is specific to the 2.5.0 release range and self-retires once the "
+           "tree's __version__ moves past 2.5.0 - delete this file at that point",
+)
 
 _HEADING = re.compile(r"^##\s+(\d+\.\d+\.\d+|Unreleased)(?:\s+—\s+\d{4}-\d{2}-\d{2})?\s*$")
 
@@ -67,11 +89,16 @@ _CHANGE_KEYWORDS = (
 
 
 def _ranged_files() -> list[str]:
-    out = subprocess.run(
+    result = subprocess.run(
         ["git", "-C", str(ROOT), "log", "--name-only", "--format=", f"{BASE_SHA}..HEAD"],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    return sorted({line.strip() for line in out.splitlines() if line.strip()})
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(
+            f"cannot read the range {BASE_SHA}..HEAD (e.g. a shallow clone where the base sha is "
+            f"unreachable): {result.stderr.strip()}"
+        )
+    return sorted({line.strip() for line in result.stdout.splitlines() if line.strip()})
 
 
 def _changelog_text() -> str:
