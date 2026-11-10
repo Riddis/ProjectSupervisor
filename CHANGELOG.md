@@ -3,15 +3,6 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
-
-- **Fixed: the boundary-review skill's own gate list named G6.** `.claude/skills/boundary-review/SKILL.md`
-  section 3 ("The gates, re-run") and its closing "Checks it ends with" list re-ran G1, G2, G3, G5 and
-  G4 but never named G6, even though `docs/BOUNDARY.md`'s own gate table requires G6 (project
-  compatibility) for a plugin-package change. A reviewer following the skill as written for a plugin
-  package would never re-run `supervisor doctor` in a disposable project using it. Docs only, no code or
-  gate behaviour changed.
-
 ## 2.5.0 — 2026-11-10
 
 - **Added: the contributor opening.** `CONTRIBUTING.md` states the framework's three layers and their one-way
