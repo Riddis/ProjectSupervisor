@@ -6,6 +6,7 @@ package]`, runs `if: always()` so a failed dependency does not simply skip it, a
 `REQUIRED_CONTEXT_NAME` - it does not choose the name."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,6 +17,40 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
 REQUIRED_CONTEXT_NAME = "all gates"  # the exact string T4-24's branch-protection PATCH must require
+
+# P3-6: a `bash` on PATH is not necessarily a shell (the WSL launcher without a distro exits 1 for every script,
+# printing a UTF-16 "WSL is not installed" message - exactly what runs/T4-21/T4-21.a4/verification.json hit when
+# System32 came before Git for Windows on the verifying host's PATH). These are Git for Windows' own well-known
+# install locations, tried only as a fallback when the first `bash` PATH offers cannot run one.
+_GIT_FOR_WINDOWS_BASH = (r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe")
+
+
+def _can_run_a_script(bash_path: str) -> bool:
+    try:
+        probe = subprocess.run([bash_path, "--noprofile", "--norc", "-c", "exit 0"],
+                                capture_output=True, text=True, timeout=10)
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
+def _discover_bash() -> str:
+    """The first `bash` PATH offers, smoke-tested with `exit 0`; Git for Windows' own `bash.exe` as a fallback
+    when it cannot run that; a named skip, never a failure, when nothing on this host can."""
+    found = shutil.which("bash")
+    assert found, "bash is required to exercise the aggregator's own shell logic"
+    if _can_run_a_script(found):
+        return found
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(env_var)
+        if not base:
+            continue
+        for rel in _GIT_FOR_WINDOWS_BASH:
+            candidate = str(Path(base) / rel)
+            if Path(candidate).is_file() and _can_run_a_script(candidate):
+                return candidate
+    pytest.skip(f"the first bash on PATH ({found}) cannot run a shell script and no working Git for Windows "
+                f"bash.exe was found as a fallback - rejected: {found}")
 
 
 def load_job():
@@ -55,8 +90,7 @@ def run_step(packages_result: str, package_result: str, packages_count: str) -> 
         .replace("${{ needs.packages.outputs.count }}", packages_count)
     )
     assert "${{" not in script, f"an unreplaced expression survived substitution: {script!r}"
-    bash = shutil.which("bash")
-    assert bash, "bash is required to exercise the aggregator's own shell logic"
+    bash = _discover_bash()
     # GitHub Actions' own default for a bash `run:` step (docs.github.com, "Default shell"): errexit and pipefail,
     # so the first failing `test` already stops the script - reproduced here rather than a bare `bash -c`.
     return subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
