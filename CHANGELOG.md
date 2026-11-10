@@ -118,6 +118,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   behaviour changed; found and contributed through the contributor opening above, maintainer-merged against a
   freshly re-run G1/G2/G3.
 
+- **Fixed: `framework-change/SKILL.md` told a contributor to add a CHANGELOG entry "under `## Unreleased`",
+  a heading this file no longer carries once a release has stamped it closed.** Followed literally after such a
+  stamp, the instruction breaks `tests/test_changelog_stamp.py`; leaving the entry out instead breaks
+  `tests/test_changelog_entries_2_5_0.py` (docs/plan/CONTRIBUTION_DRYRUN.md, Gap 2). Step 5 now says the entry
+  goes under the file's topmost heading, whatever release that names, tagged or not - not a literal string that
+  is not always there.
+
 ## 2.4.0 — 2026-11-08
 
 The tag `v2.4.0` was cut before this heading moved, so its own released tree still reads `## Unreleased` over
