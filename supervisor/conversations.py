@@ -160,7 +160,7 @@ def state_packet(layout: Layout) -> dict:
     from .models.task import TaskStatus
     tasks = tasks_mod.load_all(layout)
     elig = tasks_mod.eligible(layout, tasks)
-    phase = min((t.phase for t in tasks.values() if t.status != TaskStatus.COMPLETE), default=0)
+    phase = tasks_mod.current_phase(tasks)
     return {
         "phase": phase,
         "eligible_tasks": [t.id for t in elig],

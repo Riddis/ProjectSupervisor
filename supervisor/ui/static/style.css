@@ -146,6 +146,7 @@ button.primary:hover { background:#c2a5ff; }
 .eligible-list > a { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:9px 0; font-size:11px; }
 .eligible-list > a small { display:block; color:#a4aec4; font-size:9px; margin-top:3px; }
 .eligible-list > a .icon { width:13px; height:13px; }
+.eligible-list > a .after-note { color:var(--accent); }
 .empty-state { color:#a995d5; padding-top:8px; }
 .empty-state > .icon { color:#a48cdd; width:23px; height:23px; margin-bottom:4px; }
 .empty-state p { color:#b7c4df; font-size:11px; margin:4px 0 6px; }

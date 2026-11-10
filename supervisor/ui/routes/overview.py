@@ -151,13 +151,29 @@ def controls(live: bool, rt: dict) -> list[dict]:
             for a, label, ic, on, hint, why in rows]
 
 
+IN_FLIGHT = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN}
+
+
+def unblocked_next(layout: Layout, tasks: dict, gate_data: dict) -> list[dict]:
+    """Tasks that become eligible once the in-flight tasks complete: every dependency still open is in flight."""
+    done = {t.id for t in tasks.values() if t.status == TaskStatus.COMPLETE}
+    flight = {t.id for t in tasks.values() if t.status in IN_FLIGHT}
+    rows = []
+    for t in tasks.values():
+        pending = [d for d in t.depends_on if d not in done]
+        if (t.status in (TaskStatus.NOT_STARTED, TaskStatus.READY) and pending and all(d in flight for d in pending)
+                and gates_mod.phase_open(layout, t.phase, gate_data)):
+            rows.append({"task": t, "after": pending})
+    return sorted(rows, key=lambda r: (-r["task"].priority, r["task"].phase, r["task"].id))
+
+
 def overview_context(layout: Layout) -> dict:
     tasks = tasks_mod.load_all(layout)
     gate_data = gates_mod.load(layout)
     elig = tasks_mod.eligible(layout, tasks)
     phases_total = len(gate_data.get("phases") or {})
     phases_passed = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
-    current_phase = min((t.phase for t in tasks.values() if t.status != TaskStatus.COMPLETE), default=0)
+    current_phase = tasks_mod.current_phase(tasks)
     rt = runtime.read(layout)
     live = runtime.is_live(layout)
     open_inbox = inbox_mod.open_items(layout)
@@ -187,7 +203,8 @@ def overview_context(layout: Layout) -> dict:
     labels = project_mod.phase_labels(layout)
     all_gates = [dict(row, id=key, label=labels.get(row.get("phase"), "Phase gate"))
                  for key, row in (gate_data.get("gates") or {}).items()]
-    nearby_gates = [g for g in all_gates if g.get("phase", 0) >= current_phase][:5]
+    all_gates.sort(key=lambda g: g.get("phase", 0))
+    phase_tasks = [t for t in tasks_mod.active(tasks) if t.phase == current_phase]
     active_jobs = [j for j in open_jobs if j.get("phase") in gate_mod.ACTIVE_PHASES and j.get("adapter") != "human"]
     draining = live and rt.get("decision") == "DRAIN"
     try:
@@ -207,12 +224,13 @@ def overview_context(layout: Layout) -> dict:
         "phase": current_phase, "phase_label": labels.get(current_phase, "Project progress"),
         "project_name": project_mod.name(layout), "panels": _panels(layout),
         "phases_total": phases_total, "phases_passed": phases_passed,
-        "eligible": elig, "nearby_gates": nearby_gates, "heartbeat_age": heartbeat_age,
+        "eligible": elig, "unblocked_next": unblocked_next(layout, tasks, gate_data), "gates": all_gates, "heartbeat_age": heartbeat_age,
         "uptime_seconds": uptime_seconds, "started_local": started_local, "busy_task": busy_task, "runtime": rt, "live": live, "needs_you": needs_you,
         "open_inbox_count": len(open_inbox), "waiting_count": len(waiting),
         "capacity": cap, "now": now, "disk": _disk(layout),
         "open_jobs": open_jobs, "job_counts": job_counts, "last_events": logtail.tail(layout, 10),
-        "task_count": len(tasks), "done_count": sum(1 for t in tasks.values() if t.status == TaskStatus.COMPLETE),
+        "phase_task_count": len(phase_tasks),
+        "phase_done_count": sum(1 for t in phase_tasks if t.status == TaskStatus.COMPLETE),
     }
 
 

@@ -173,8 +173,7 @@ def phase_and_gates_passed(layout: Layout, tasks: dict) -> tuple[int, list[str]]
     instead of a second derivation that can silently drift from it."""
     gate_data = gates_mod.load(layout)
     phases_done = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
-    current_phase = min((t.phase for t in tasks.values() if t.status != TaskStatus.COMPLETE), default=0)
-    return current_phase, [f"G{p}" for p in phases_done]
+    return tasks_mod.current_phase(tasks), [f"G{p}" for p in phases_done]
 
 
 def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: list[str] | None = None) -> list[str]:
@@ -186,6 +185,8 @@ def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: lis
     waiting = [t for t in tasks.values() if t.status == TaskStatus.WAITING_FOR_HUMAN]
     blocked = [t for t in tasks.values() if t.status in (TaskStatus.BLOCKED, TaskStatus.FAILED)]
     done = sum(1 for t in tasks.values() if t.status == TaskStatus.COMPLETE)
+    cancelled = len(tasks) - len(tasks_mod.active(tasks))
+    cancelled_note = f" ({cancelled} cancelled)" if cancelled else ""
     current_phase, gates_passed = phase_and_gates_passed(layout, tasks)
     open_inbox = [store.read(p) for p in sorted(layout.inbox.glob("*.yaml"))]
     open_inbox = [i for i in open_inbox if i.get("status") == "open"]
@@ -195,7 +196,7 @@ def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: lis
     lines = [f"# STATE — {project_mod.name(layout)} (rendered — do not edit) — store last changed {stamp}", "",
              "## Where we are", "",
              f"- **Phase:** {current_phase} ({project_mod.phase_label(layout, current_phase)}) · gates passed: {', '.join(gates_passed) or 'none'}",
-             f"- **Tasks:** {done}/{len(tasks)} complete · in flight: {', '.join(t.id for t in in_flight) or 'none'} · "
+             f"- **Tasks:** {done}/{len(tasks_mod.active(tasks))} complete{cancelled_note} · in flight: {', '.join(t.id for t in in_flight) or 'none'} · "
              f"waiting for owner: {', '.join(t.id for t in waiting) or 'none'} · blocked/failed: {', '.join(t.id for t in blocked) or 'none'}",
              f"- **Eligible next:** {', '.join(t.id for t in elig) or 'none'}",
              f"- **Supervisor:** {runtime.get('status', 'not running')}" + (f" (pid {runtime.get('pid')}, heartbeat {runtime.get('heartbeat')})" if runtime.get('pid') else ""),

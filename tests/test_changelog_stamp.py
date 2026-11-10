@@ -24,13 +24,15 @@ def _headings() -> list[tuple[str, str | None]]:
     return out
 
 
-def test_topmost_version_heading_is_2_5_0_with_a_dated_heading():
+def test_the_2_5_0_heading_and_the_topmost_one_are_dated():
+    """2.5.0 was the topmost heading at its release; a later release sits above it, so this pins that ## 2.5.0
+    exists and stays dated, and that whatever heading is topmost carries a date too."""
     headings = _headings()
     version_headings = [(name, date) for name, date in headings if name != "Unreleased"]
     assert version_headings, "CHANGELOG.md has no version heading"
     name, date = version_headings[0]
-    assert name == "2.5.0", f"the topmost version heading is {name!r}, not 2.5.0"
-    assert date, "the ## 2.5.0 heading carries no date in the YYYY-MM-DD form its neighbours use"
+    assert date, f"the topmost ## {name} heading carries no date in the YYYY-MM-DD form its neighbours use"
+    assert dict(version_headings).get("2.5.0"), "no dated ## 2.5.0 heading exists"
 
 
 def test_2_4_0_heading_is_dated_2026_11_08_and_sits_above_2_3_0():

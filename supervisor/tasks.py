@@ -23,8 +23,8 @@ from pydantic import ValidationError
 from . import gates as gates_mod
 from . import policy as policy_mod
 from . import store
-from .models.task import (ALLOWED, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval, ReviewRecord,
-                          ReviewVerdict, Task, TaskStatus, VerificationRecord)
+from .models.task import (ALLOWED, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval,
+                          ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
 from .paths import Layout
 
 ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED}
@@ -254,6 +254,18 @@ def eligible(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]
            and unmet_dependency(layout, t, tasks) is None
            and gates_mod.phase_open(layout, t.phase, gate_data)]
     return sorted(out, key=lambda t: (-t.priority, t.phase, t.id))
+
+
+def current_phase(tasks: dict[str, Task]) -> int:
+    """The lowest phase with a task still open. COMPLETE and CANCELLED both close a task, so a cancelled leftover
+    never holds the project in an earlier phase; once every task is closed it is the last phase that had tasks."""
+    open_phases = [t.phase for t in tasks.values() if t.status not in TERMINAL]
+    return min(open_phases, default=max((t.phase for t in tasks.values()), default=0))
+
+
+def active(tasks: dict[str, Task]) -> list[Task]:
+    """The tasks that count towards progress: every task except the CANCELLED ones."""
+    return [t for t in tasks.values() if t.status != TaskStatus.CANCELLED]
 
 
 def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:

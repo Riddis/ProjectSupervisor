@@ -2,8 +2,9 @@
 {% block title %}Tasks — Control Center{% endblock %}
 {% block content %}
 <section class="panel">
-  <h2>Tasks</h2>
+  <h2>Tasks{% if filter_phase %} &middot; phase {{ filter_phase }} <small><a href="/tasks{{ '?status=' ~ filter_status if filter_status }}">all phases</a></small>{% endif %}</h2>
   <form method="get" action="/tasks">
+    {% if filter_phase %}<input type="hidden" name="phase" value="{{ filter_phase }}">{% endif %}
     <select name="status" onchange="this.form.submit()">
       <option value="">all statuses</option>
       {% for s in statuses %}<option value="{{ s }}" {{ "selected" if s == filter_status }}>{{ s }}</option>{% endfor %}
