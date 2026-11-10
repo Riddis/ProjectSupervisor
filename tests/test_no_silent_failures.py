@@ -216,6 +216,17 @@ def test_sweep_leaves_an_owner_hold_alone(layout):
     assert sup.sweep_stalled(now=time.time() + 3600) == [] and sup.sent == []
 
 
+def test_sweep_leaves_a_non_owner_hold_alone(layout):
+    """M11(b), 2.5.0: `held` is the durable identity, set by any actor the owner's workflow delegates to - not
+    only one whose name starts with `owner`. The sweep must read `held` itself; guessing from the actor's name on
+    the stop missed a manager's own Hold (`tasks.hold()` accepts any actor) and let the sweep retry/escalate a
+    task that actor had deliberately stopped."""
+    now = _stop(layout, "T", "BLOCKED", minutes_ago=15)
+    tasks.hold(layout, "T", actor="manager", note="held pending a dependent review")
+    sup = Recorder(layout)
+    assert sup.sweep_stalled(now=now) == [] and sup.sent == []
+
+
 def test_sweep_leaves_a_snoozed_decision_alone(layout):
     now = _stop(layout, "T", "BLOCKED", minutes_ago=15)
     item = inbox.create(layout, for_role="owner", subject="s", summary="s", kind=inbox.DECISION_KIND,

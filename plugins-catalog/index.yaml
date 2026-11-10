@@ -1,0 +1,49 @@
+# plugins-catalog/index.yaml - the framework's plugin catalog (docs/PLUGIN_STANDARD.md, "Where a package lives";
+# docs/releases/2.5.0/CONTRIBUTOR_RULING.md section 2). One entry per shared package, in either home: this
+# repository's own packages/<distribution>/, or anyone else's https:// repository. Validated by
+# tools/catalog_check.py; see plugins-catalog/README.md for how a listing is proposed and reviewed.
+#
+version: 1
+plugins:
+  - identity: comfy
+    distribution: supervisor-plugin-comfy
+    summary: A ComfyUI generation lane, with install, API, ffmpeg and GPU doctor checks and the overview panel.
+    home: packages/supervisor-plugin-comfy
+    version: 1.1.0
+    framework: ">=2.3,<3"
+    licence: Apache-2.0 WITH Commons-Clause
+    tag: comfy-v1.1.0
+    artifact:
+      name: supervisor_plugin_comfy-1.1.0-py3-none-any.whl
+      sha256: dc6b65aeb35d66ba012bf9a3e76f0834de8a8fd63fee37e65a05768b916c9d9c
+    g5:
+      date: "2026-11-09"
+      framework: v2.4.0
+  - identity: local_llm
+    distribution: supervisor-plugin-local-llm
+    summary: A local LLM adapter talking to an Ollama server, with install and API doctor checks.
+    home: packages/supervisor-plugin-local-llm
+    version: 1.1.0
+    framework: ">=2.3,<3"
+    licence: Apache-2.0 WITH Commons-Clause
+    tag: local_llm-v1.1.0
+    artifact:
+      name: supervisor_plugin_local_llm-1.1.0-py3-none-any.whl
+      sha256: 42091efa06dea9f4e28e6c9fef582b7b787d9cefce835c17016fb3278a64a7bd
+    g5:
+      date: "2026-11-09"
+      framework: v2.4.0
+  - identity: review_rounds
+    distribution: supervisor-plugin-review-rounds
+    summary: A review page, inbox kinds, commands, a CLI and a doctor check for round and labelling verdicts.
+    home: packages/supervisor-plugin-review-rounds
+    version: 1.0.0
+    framework: ">=2.0,<3"
+    licence: Apache-2.0 WITH Commons-Clause
+    tag: review_rounds-v1.0.0
+    artifact:
+      name: supervisor_plugin_review_rounds-1.0.0-py3-none-any.whl
+      sha256: f6826ea9ae6f804657fada038ffbd66e4d8857ffa7bd7804024258cf07543052
+    g5:
+      date: "2026-11-09"
+      framework: v2.4.0

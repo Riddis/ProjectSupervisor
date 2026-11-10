@@ -4,6 +4,7 @@ render → sleep (wake file shortens the sleep). Resumable after a kill at any p
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 import traceback
@@ -62,6 +63,30 @@ def _epoch(iso: str) -> float:
         return _dt.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return time.time()                       # unparseable: treat as "just now" (never acts early)
+
+
+def _residue_reasons(by_reason: dict[str, list[str]]) -> str:
+    """The paths a revert left exactly as found, each under its own reason — one shared rendering for the task note
+    and the owner item, so the two can never drift into saying different things about the same residue."""
+    return "; ".join(f"{reason}: {', '.join(sorted(paths))}" for reason, paths in sorted(by_reason.items()))
+
+
+def _restore_current_bytes(path: Path, current: bytes | None) -> bool:
+    """Best-effort: put `path` back to hold exactly `current` (None: absent), after an `OSError` struck once a
+    quarantine or restore step had already moved, copied, written or deleted something. Called only when a
+    mutation actually happened — a failure before any of them already leaves the path exactly as found, nothing
+    to undo. True when `path` now matches `current` (the "quarantine or restore error" reason stays honest);
+    false when even this fails, so the caller can say the path is in an unknown state rather than call it found."""
+    try:
+        if current is None:
+            if path.exists():
+                path.unlink()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(current)
+        return True
+    except OSError:
+        return False
 
 
 def scheduler_routing(layout: Layout) -> dict:
@@ -446,6 +471,156 @@ class Supervisor:
         p = Path(run_dir) / "before_manifest.json"
         return read_json(p) if p.exists() else None
 
+    def _revert_residue(self, task_id: str, residue: dict[str, dict], run_dir: str | None) -> None:
+        """M11(a), first shape (2.5.0): restore the unowned paths a rejected attempt changed, now, before the retry's
+        own baseline is taken. Nothing is deleted: the path's current content is quarantined under
+        `<run dir>/undeclared/<path>` first — moved there when the attempt created the path, copied there when it
+        changed one that already existed — so the owner can audit and undo every action. A path is restored only
+        when `git`'s own content for it at HEAD hashes to the `before` digest the snapshot recorded (never guessed
+        at); a link, a directory, a file above LARGE_FILE_BYTES, one git cannot account for, or one a quarantine/
+        restore OSError hit is left exactly as found instead — one reason string per cause (not one blended
+        sentence), because the next attempt will otherwise fail on something it cannot fix. A quarantine/restore
+        OSError raised after a move, copy, write or unlink already happened (the created-path move in particular,
+        which takes the path out of the tree before the error can strike) is put back to the content it held
+        before this call, so "left exactly as found" stays true of it too; only when that put-back itself fails
+        does the reason say the path's state is no longer known, rather than call it found regardless.
+
+        Each restore is itself a supervisor write into the working tree, at a path outside the rejected attempt's
+        owned roots — exactly the paths a second, concurrently writing task's own verification also scans and is
+        not excused on (its `ignore` only covers the roots another job *owns*, never a stranger's residue). Left
+        unrecorded, this write re-creates the class M11(a) repairs: a rejection of one attempt inside another's
+        verification window would charge that attempt for the revert. So the current content is read and the
+        transition recorded through `verify.record_own_write()` — which can now express a deletion (`after=None`)
+        as well as a replacement — before the quarantine copy and the restore/unlink, per that function's own
+        contract (a crash between the record and the write leaves a transition nothing took, never one blamed on
+        an agent). The quarantine copy itself is not recorded: it is written under the run directory, which
+        `repo_manifest`'s `EXCLUDED_DIRS` already prunes from every scan, so no concurrent verification ever sees
+        it. After each filesystem write this re-reads what was just written and compares it to the bytes it was
+        meant to hold; a mismatch is folded into the same "a quarantine or restore error" case as an `OSError`,
+        since a silently truncated copy or restore is exactly that kind of failure with no exception raised.
+
+        Which case gets which record (`CONTRIBUTOR_RULING.md` §5.2's Log row). A path that *was* reverted: one
+        `residue_reverted` event carrying both of the snapshot's digests and the quarantine location, and its name
+        in one note on the task — and no owner item, because an automatic repair that files an inbox item against
+        itself is not a repair. A path left exactly as found: its own reason in that task's "not reverted" note and
+        one deduped owner decision item, and no `residue_reverted` event, because a half-repair is not silently
+        called a repair."""
+        root = self.layout.root
+        quarantine = Path(run_dir) / "undeclared" if run_dir else None
+        reverted: list[tuple[str, str | None, str | None]] = []
+        left: list[tuple[str, str]] = []
+        for rel, entry in residue.items():
+            before_e, after_e = entry.get("before") or {}, entry.get("after") or {}
+            if quarantine is None:
+                left.append((rel, "no run directory to quarantine the current content into"))
+                continue
+            kinds = {before_e.get("kind"), after_e.get("kind")}
+            if kinds - {None, "missing", "file"}:
+                reason = "a file above LARGE_FILE_BYTES" if "large" in kinds else "a link or a directory"
+                left.append((rel, reason))             # not this mechanism's to restore
+                continue
+            path = root / rel
+            content = None
+            if before_e.get("kind") == "file":
+                content = self._git_blob_at_head(rel, str(before_e.get("sha256") or ""))
+                if content is None:
+                    left.append((rel, "a path git cannot account for"))   # never guessed at
+                    continue
+            current = None
+            mutated = False                         # set just before a move/copy/unlink/write starts, not after
+                                                      # it returns, so a failure inside the call still counts
+            try:
+                current = path.read_bytes() if path.exists() else None
+                verify_mod.record_own_write(self.layout, rel, before=current, after=content, actor="loop",
+                                            why=f"M11(a) residue revert for {task_id}")
+                if current is not None:
+                    dest = quarantine / rel
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    mutated = True              # set before the move/copy, not after: a failure inside it
+                    if before_e.get("kind") in (None, "missing"):
+                        path.replace(dest)          # the attempt created it: moved, nothing is deleted
+                    else:
+                        shutil.copy2(path, dest)    # the attempt changed it: copied before the restore
+                    if dest.read_bytes() != current:
+                        raise OSError("quarantine copy does not match the content it was meant to hold")
+                if content is None:                 # before == missing: restoring means the path does not exist
+                    if path.exists():
+                        mutated = True               # set before the unlink, not after
+                        path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    mutated = True                   # set before the write, not after: a partial write still counts
+                    path.write_bytes(content)
+                    if path.read_bytes() != content:
+                        raise OSError("restored content does not match the content it was meant to hold")
+            except OSError:
+                # a failure before any mutation already leaves the path exactly as found; a failure after one
+                # (the created-path move, in particular, already took the path out of the tree) is put back to
+                # `current` before this is called "found" rather than described wrongly.
+                if mutated and not _restore_current_bytes(path, current):
+                    reason = ("a quarantine or restore error, and the path could not be put back as it stood "
+                              "before the revert")
+                    left.append((rel, reason))
+                else:
+                    left.append((rel, "a quarantine or restore error"))
+                continue
+            reverted.append((rel, before_e.get("sha256"), after_e.get("sha256")))
+        for rel, before_sha, after_sha in reverted:
+            tasks_mod.log(self.layout, "residue_reverted", "loop", task=task_id, path=rel,
+                          before_sha256=before_sha, after_sha256=after_sha,
+                          quarantine=(quarantine / rel).as_posix() if quarantine else None)
+        if reverted and quarantine is not None:    # a revert needs a quarantine: with no run directory nothing moves
+            tasks_mod.add_note(self.layout, task_id,
+                               f"residue reverted ({', '.join(rel for rel, _, _ in reverted)}); the content found "
+                               f"there is quarantined under {quarantine.as_posix()}", actor="loop")
+        if left:
+            by_reason: dict[str, list[str]] = {}
+            for rel, reason in left:
+                by_reason.setdefault(reason, []).append(rel)
+            tasks_mod.add_note(self.layout, task_id, f"residue not reverted ({_residue_reasons(by_reason)})",
+                               actor="loop")
+            self._notify_residue_left(task_id, by_reason)
+
+    def _notify_residue_left(self, task_id: str, by_reason: dict[str, list[str]]) -> None:
+        """`CONTRIBUTOR_RULING.md` §5.2's Limits row: a path left exactly as found needs an owner decision, because
+        the next attempt will otherwise fail on something it cannot fix. One deduped item per (task, this exact set
+        of left paths) — not one per rejection, so a retry rejected again for the same untouched residue does not
+        stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape).
+        The item names each path under its own reason, as the task note does: the reason is the thing the owner has
+        to act on, and it is this item, not the note, that the Limits row exists to route."""
+        key = sorted(rel for paths in by_reason.values() for rel in paths)
+        if any(i.get("task_id") == task_id and (i.get("residue_left") or []) == key
+               for i in inbox_mod.open_items(self.layout, "owner")):
+            return
+        summary, detail = inbox_mod.fit(
+            f"{task_id}'s rejected delivery left {len(key)} unowned path(s) exactly as found — "
+            f"{_residue_reasons(by_reason)}. "
+            "The next attempt will fail on this residue unless it is cleared by hand.")
+        try:
+            inbox_mod.create(self.layout, for_role="owner", subject=f"Residue left on {task_id}",
+                             summary=summary, detail=detail, kind="question", from_="loop", task_id=task_id,
+                             extra={"residue_left": key})
+        except inbox_mod.InboxFull:
+            tasks_mod.log(self.layout, "inbox_full", "loop", reason="residue_left", task=task_id)
+
+    def _git_blob_at_head(self, rel: str, before_sha256: str) -> bytes | None:
+        """`rel`'s content at HEAD, gated on its own digest matching `before_sha256` — the snapshot's own claim about
+        what the path held before the rejected attempt touched it. None when git has no such path, the read fails,
+        or the content does not hash to the digest the snapshot recorded: a restore never guesses."""
+        import hashlib
+        import subprocess
+        try:
+            proc = subprocess.run(["git", "-C", str(self.layout.root), "show", f"HEAD:{rel}"],
+                                  capture_output=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        content = proc.stdout
+        if hashlib.sha256(content).hexdigest() != before_sha256:
+            return None
+        return content
+
     def _concurrent_owned(self, rec: dict) -> tuple[str, ...]:
         """Ownership of OTHER tasks' delivery jobs that overlapped this attempt: their writes are not this delivery's
         undeclared changes (supervisor.verify `ignore`). Reviews and chat turns own nothing. An exclusive job that ran
@@ -628,7 +803,15 @@ class Supervisor:
 
         Before 1.6.0 only a substantive failure (the worker claimed COMPLETE, verification disagreed) reached
         escalation; a worker that ended BLOCKED/FAILED/PARTIAL, or crashed, timed out or was lost, left the task
-        FAILED with no retry, no diagnosis and no owner item."""
+        FAILED with no retry, no diagnosis and no owner item.
+
+        M11(a), first shape (2.5.0): when the rejection is for writes outside owned paths, `outcome.report["residue"]`
+        (verify.undeclared_residue) names each one with its before/after entry. Reverted here, once, before the
+        verification record is written — not at the retry's dispatch — so a rejected attempt's residue never reaches
+        the next attempt's own `before_manifest.json` baseline at all; there is nothing left for it to clean up, and
+        so nothing it can be blamed for cleaning up."""
+        if not outcome.ok and (getattr(outcome, "report", None) or {}).get("residue"):
+            self._revert_residue(task_id, outcome.report["residue"], (rec.get("spec") or {}).get("run_dir"))
         report_path = None
         if getattr(outcome, "report", None) and (rec.get("spec") or {}).get("run_dir"):
             rp = Path(rec["spec"]["run_dir"]) / "verification.json"
@@ -951,8 +1134,11 @@ class Supervisor:
             at = str((stop or {}).get("at") or task.updated or "")
             if not at or now - _epoch(at) < grace:
                 continue
+            if task.held:
+                continue                                          # a deliberate hold (F9/F11/F13's durable identity) by
+                                                                    # any actor, not just a guess at the actor's name (M11(b), 2.5.0)
             if str((stop or {}).get("by") or "").startswith("owner"):
-                continue                                          # the owner put it here (Hold, set-status): their call
+                continue                      # a `set-status` stop by the owner leaves no `held`: their call too
             mine = [i for i in items if i.get("task_id") == task.id]
             if any(i.get("status") in ("open", "snoozed") for i in mine):
                 continue                                          # waiting on the owner (a snooze defers, it is not a stall)

@@ -58,16 +58,18 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 OWN_WRITES = "own_writes.jsonl"
 
 
-def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes, actor: str, why: str = "") -> None:
-    """Record that the supervisor replaces root-relative `rel`, holding `before` (None: absent), with `after`. Called
-    BEFORE the write: a crash between the two leaves a transition nothing took, never a supervisor write that
-    verification blames on an agent."""
+def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes | None, actor: str,
+                     why: str = "") -> None:
+    """Record that the supervisor replaces root-relative `rel`, holding `before` (None: absent), with `after`
+    (None: the write deletes `rel` rather than leaving content — M11(a)'s residue revert, 2.5.0). Called BEFORE the
+    write: a crash between the two leaves a transition nothing took, never a supervisor write that verification
+    blames on an agent."""
     import hashlib
     import json
 
     from .store import now_iso
     entry = {"ts": now_iso(), "path": rel, "before": hashlib.sha256(before).hexdigest() if before is not None else None,
-             "after": hashlib.sha256(after).hexdigest(), "actor": actor, "why": why}
+             "after": hashlib.sha256(after).hexdigest() if after is not None else None, "actor": actor, "why": why}
     p = layout.runtime / OWN_WRITES
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a", encoding="utf-8", newline="\n") as f:
@@ -76,11 +78,12 @@ def record_own_write(layout: Layout, rel: str, before: bytes | None, after: byte
         os.fsync(f.fileno())
 
 
-def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str]]]:
-    """path -> {(sha256 before, sha256 after)} for every write record_own_write() recorded. An unreadable line is
-    skipped: it explains nothing, so the change it would have explained still fails verification."""
+def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str | None]]]:
+    """path -> {(sha256 before, sha256 after)} for every write record_own_write() recorded; a None entry is an
+    absent path on that side (created from nothing, or deleted to nothing). An unreadable line is skipped: it
+    explains nothing, so the change it would have explained still fails verification."""
     import json
-    out: dict[str, set[tuple[str | None, str]]] = {}
+    out: dict[str, set[tuple[str | None, str | None]]] = {}
     p = layout.runtime / OWN_WRITES
     try:
         lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
@@ -89,23 +92,26 @@ def own_transitions(layout: Layout) -> dict[str, set[tuple[str | None, str]]]:
     for line in lines:
         try:
             e = json.loads(line)
-            out.setdefault(str(e["path"]), set()).add((e.get("before"), str(e["after"])))
+            out.setdefault(str(e["path"]), set()).add((e.get("before"), e.get("after")))
         except (ValueError, KeyError, TypeError):
             continue
     return out
 
 
-def _supervisor_wrote(before: dict | None, after: dict | None, edges: set[tuple[str | None, str]]) -> bool:
+def _supervisor_wrote(before: dict | None, after: dict | None, edges: set[tuple[str | None, str | None]]) -> bool:
     """True when recorded supervisor writes alone take a path from its snapshot content (`before`; absent counts) to
-    its content now (`after`). An agent's edit anywhere in between breaks the chain, so the change stays its own."""
+    its content now (`after`; absent counts — a supervisor write can delete, not just replace, M11(a)). An agent's
+    edit anywhere in between breaks the chain, so the change stays its own. A link, a directory, a large-file entry
+    or an unreadable one is never this mechanism's to explain, on either side."""
     b, a = before or {}, after or {}
-    if not edges or a.get("kind") != "file" or b.get("kind") not in (None, "missing", "file"):
+    if not edges or a.get("kind") not in (None, "missing", "file") or b.get("kind") not in (None, "missing", "file"):
         return False
     start = b.get("sha256") if b.get("kind") == "file" else None
+    target = a.get("sha256") if a.get("kind") == "file" else None
     seen, frontier = {start}, [start]
     while frontier:
         cur = frontier.pop()
-        if cur == a.get("sha256"):
+        if cur == target:
             return True
         for src, dst in edges:
             if src == cur and dst not in seen:
@@ -220,10 +226,27 @@ def allowed_test_commands(layout: Layout) -> list[str]:
     return list(ALLOWED_TEST_COMMANDS)
 
 
+def _unquote(t: str) -> str:
+    """Strip one pair of matching quotes wrapping the whole of `t`, never an inner one."""
+    return t[1:-1] if len(t) > 1 and t[0] == t[-1] in "\"'" else t
+
+
 def test_argv(command: str) -> list[str]:
-    """argv for a declared test command — no shell, quotes stripped (Windows paths keep their backslashes)."""
+    """argv for a declared test command — no shell, quotes stripped (Windows paths keep their backslashes).
+    `shlex.split(posix=False)` quotes a whole token (`"a b"` -> one token) but never unquotes one: an option's own
+    value after its first `=` (`--basetemp="…"`) survives as one token whose own first character is `-`, not a
+    quote, so the old whole-token check never matched it and the inner quotes reached pytest's own argv (N6,
+    2.5.0). The part after the first `=` in an option token (one starting with `-`) is unquoted the same way the
+    whole token already is."""
     tokens = shlex.split(command, posix=False)
-    return [t[1:-1] if len(t) > 1 and t[0] == t[-1] in "\"'" else t for t in tokens]
+    out = []
+    for t in tokens:
+        if t.startswith("-") and "=" in t:
+            key, _, val = t.partition("=")
+            out.append(f"{_unquote(key)}={_unquote(val)}")
+        else:
+            out.append(_unquote(t))
+    return out
 
 
 def _basename(path: str) -> str:
@@ -248,13 +271,30 @@ def permitted(command: str, allowed: list[str]) -> bool:
 
 
 def _isolate_pytest(argv: list[str], root: Path, tag: str) -> list[str]:
-    """Concurrent pytest runs (two agents, or an agent and this verifier) sharing pyproject's --basetemp wipe each
-    other's temp dirs on Windows; give every run its own basetemp."""
-    if "pytest" in " ".join(argv[:3]) and not any(a.startswith("--basetemp") for a in argv):
-        parent = root / "runs" / "pytest_tmp"
-        parent.mkdir(parents=True, exist_ok=True)          # pytest makes the basetemp, never a missing parent (1.13.0)
-        argv = argv + [f"--basetemp={(parent / tag).as_posix()}"]
-    return argv
+    """Concurrent pytest runs (two agents, or an agent and this verifier) sharing a --basetemp wipe each other's temp
+    dirs on Windows; every run gets its own. (N6, 2.5.0) The vendored handoff text tells every agent to supply its
+    own `--basetemp` for its own run — right advice for that run, which stays unchanged — but this is the
+    verifier's re-run of a declared command, in the verifier's own process, and an agent-supplied basetemp here
+    would point back at the agent's own evidence directory, which pytest clears on use. So this always replaces
+    any `--basetemp=X` or `--basetemp X` an agent declared (both forms stripped) rather than only filling one in
+    when none is present: the agent's basetemp is that agent's evidence, the verifier's scratch is the verifier's,
+    and the verifier's wins every time, unconditionally."""
+    if "pytest" not in " ".join(argv[:3]):
+        return argv
+    cleaned, skip_next = [], False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a.startswith("--basetemp="):
+            continue
+        if a == "--basetemp":
+            skip_next = True
+            continue
+        cleaned.append(a)
+    parent = root / "runs" / "pytest_tmp"
+    parent.mkdir(parents=True, exist_ok=True)               # pytest makes the basetemp, never a missing parent (1.13.0)
+    return cleaned + [f"--basetemp={(parent / tag).as_posix()}"]
 
 
 def _cwd_interpreter(cwd: Path) -> str:
@@ -383,6 +423,15 @@ def _undeclared(before: dict, after: dict, declared: set[str], owned_paths: list
     return inside, outside
 
 
+def undeclared_residue(before: dict, after: dict, outside: list[str]) -> dict[str, dict]:
+    """M11(a), first shape (2.5.0): the `before`/`after` manifest entry for each of `_undeclared()`'s own `outside`
+    paths — a rejected attempt's writes to paths it did not own. `supervisor.loop` reverts these at the moment the
+    attempt is rejected, before the retry dispatches, so there is nothing left to clean up (and be blamed for
+    cleaning up). No second definition of "unowned change": `outside` is exactly what `verify()` already computed
+    to fail the delivery."""
+    return {p: {"before": before.get(p), "after": after.get(p)} for p in outside}
+
+
 def as_job(layout: Layout) -> bool:
     """run the command part of verification as a tracked process job (default) instead of inside the loop."""
     cfg = layout.config / "routing.yaml"
@@ -447,7 +496,9 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
         undeclared = outside_repo if scoped else inside_repo + outside_repo
         if undeclared:
             what = "undeclared writes outside owned paths: " if scoped else "undeclared writes: "
-            return Outcome(False, what + ", ".join(sorted(undeclared)[:20]))
+            residue = undeclared_residue(before.get("repo") or {}, after.get("repo") or {}, outside_repo)
+            return Outcome(False, what + ", ".join(sorted(undeclared)[:20]),
+                           report={"residue": residue} if residue else {})
     checks = list(checks or [])
     if not declared_tests and require_tests:
         if task.evidence == "commands":

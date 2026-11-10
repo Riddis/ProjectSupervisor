@@ -146,11 +146,18 @@ def test_the_cli_prints_g1d_hits_and_fails(tmp_path, monkeypatch):
 
 
 def test_the_framework_repository_holds_no_project_information():
-    """Runs against the contributor's own local word list; in CI there is none, and the generic rules run instead."""
-    terms = boundary.load_project_terms(boundary.project_terms_path(_REAL_ENV))
+    """Runs against the contributor's own local word list; in CI there is none, and the generic rules run instead.
+    N5: the autouse `_no_real_terms` fixture points `SUPERVISOR_PROJECT_TERMS` at a nonexistent file for every test
+    here, so `check()`'s own default `load_package_allowances()` (no path given) would read that fake env, not the
+    real file this test deliberately reads via `_REAL_ENV` for `terms` - `allowed` must be loaded from the same
+    real path and passed explicitly, or a workstation whose local file names a package under packages/ fails here
+    for a reason this test, not the framework, caused."""
+    real_path = boundary.project_terms_path(_REAL_ENV)
+    terms = boundary.load_project_terms(real_path)
     if not terms:
         pytest.skip("no local project-terms file: G1d runs on a contributor's machine, not in CI")
-    report = boundary.check(Path(__file__).resolve().parents[1], user_names=[], terms=terms)
+    allowed = boundary.load_package_allowances(real_path)
+    report = boundary.check(Path(__file__).resolve().parents[1], user_names=[], terms=terms, allowed=allowed)
     assert g1d(report) == [], "\n".join(str(f) for f in report.violations if f.rule == "G1d")
 
 
@@ -323,6 +330,29 @@ def test_the_allowance_holds_for_that_distributions_archives_only(tmp_path, monk
     assert hits(boundary.scan_words(sdist, terms, allowed=allowed)) == []
 
 
+def test_check_with_terms_alone_still_loads_package_allowances(tmp_path, monkeypatch):
+    """N5: `check()` once defaulted both `terms` and `allowed` off the single `terms` sentinel, so a caller passing
+    `terms=` alone (exactly `tests/test_boundary_project_info.py`'s own repository-wide check, and the shape that
+    kept the full suite red on a workstation whose local file names a package under packages/) silently dropped
+    every package's own-name allowance and enforced a stricter rule than the `--words` gate's own default call."""
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {
+        "packages/supervisor-plugin-quuxify/supervisor_plugin_quuxify/lane.py": "X = 'quuxify'\n",
+    })
+    terms = boundary.load_project_terms()
+    assert g1d(boundary.check(root, user_names=[], terms=terms)) == []
+
+
+def test_check_with_terms_and_allowed_both_given_is_unchanged(tmp_path, monkeypatch):
+    """The second call shape N5 must not regress: passing both explicitly already worked, and must keep working."""
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {
+        "packages/supervisor-plugin-quuxify/supervisor_plugin_quuxify/lane.py": "X = 'quuxify'\n",
+    })
+    terms, allowed = boundary.load_project_terms(), boundary.load_package_allowances()
+    assert g1d(boundary.check(root, user_names=[], terms=terms, allowed=allowed)) == []
+
+
 # ----------------------------------------------------------- F-WORDS-CRLF: a setuptools build on Windows writes the
 # wheel's dist-info METADATA and the sdist's PKG-INFO through a text-mode handle, so the lines end '\r\n'. The header
 # match anchored on a bare '$', which re.MULTILINE never matches before '\r': the allowance read None and every word
@@ -456,6 +486,63 @@ def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatc
     assert ("outside!packages/supervisor-plugin-cedar/notes.txt", 0, "cedar") in found
     assert ("outside!packages/supervisor-plugin-cedar/notes.txt", 1, "cedar") in found
     assert not any(path.startswith("packages/") for path, _l, _w in found)
+
+
+# ----------------------------------------------------- the catalog index (2.5.0, CONTRIBUTOR_RULING.md 2.3): an
+# in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there, and only inside that
+# package's own entry (_catalog_path, _catalog_line_distributions) - not a second mechanism, a per-line scope over
+# the same file. Everywhere else, and in any other listed package's entry, the word is still a hit.
+
+def test_the_catalog_index_may_name_an_in_repo_packages_own_word(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {
+        "plugins-catalog/index.yaml": "version: 1\nplugins:\n  - identity: quuxify\n"
+                                      "    distribution: supervisor-plugin-quuxify\n"
+                                      "    home: packages/supervisor-plugin-quuxify\n",
+        "docs/OTHER.md": "quuxify\n",
+    })
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("docs/OTHER.md", 1, "quuxify") in found
+    assert not any(path == "plugins-catalog/index.yaml" for path, _l, _w in found)
+
+
+def test_the_catalog_index_allowance_does_not_reach_a_lookalike_path(tmp_path, monkeypatch):
+    terms_file(tmp_path, monkeypatch, ALLOWING)
+    root = framework(tmp_path, {"docs/plugins-catalog/index.yaml": "quuxify\n"})
+    found = g1d(boundary.check(root, user_names=[]))
+    assert ("docs/plugins-catalog/index.yaml", 1, "quuxify") in found
+
+
+TWO_PACKAGES_ALLOWING = TERMS + """
+[projects.zorblax.packages]
+supervisor-plugin-quuxify = ["quuxify"]
+supervisor-plugin-zorblax = ["zorblax"]
+"""
+
+
+def test_the_catalog_allowance_is_scoped_to_each_entrys_own_distribution(tmp_path, monkeypatch):
+    """CONTRIBUTOR_RULING.md 2.3 opens the allowance 'for the words allowed to that entry's own distribution', not
+    the whole file: one listed package's word must not sit unflagged in another listed package's own entry, even
+    in the one free-text field (summary)."""
+    terms_file(tmp_path, monkeypatch, TWO_PACKAGES_ALLOWING)
+    text = ("version: 1\nplugins:\n"
+            "  - identity: quuxify\n"
+            "    distribution: supervisor-plugin-quuxify\n"
+            "    summary: a lane, not the zorblax one\n"
+            "    home: packages/supervisor-plugin-quuxify\n"
+            "  - identity: second_lane\n"
+            "    distribution: supervisor-plugin-zorblax\n"
+            "    summary: the zorblax lane itself, unlike quuxify\n"
+            "    home: packages/supervisor-plugin-zorblax\n")
+    lines = text.splitlines()
+    zorblax_in_quuxifys_entry = next(i for i, l in enumerate(lines, 1) if "not the zorblax one" in l)
+    quuxify_in_zorblaxs_entry = next(i for i, l in enumerate(lines, 1) if "unlike quuxify" in l)
+    root = framework(tmp_path, {"plugins-catalog/index.yaml": text})
+    found = [f for f in g1d(boundary.check(root, user_names=[])) if f[0] == "plugins-catalog/index.yaml"]
+    assert found == sorted([
+        ("plugins-catalog/index.yaml", zorblax_in_quuxifys_entry, "zorblax"),
+        ("plugins-catalog/index.yaml", quuxify_in_zorblaxs_entry, "quuxify"),
+    ])
 
 
 def test_the_words_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatch):
