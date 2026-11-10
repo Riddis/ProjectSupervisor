@@ -52,7 +52,7 @@ def _ruff_command() -> list[str] | None:
     for candidate in (ROOT / ".venv" / "Scripts" / "ruff.exe", ROOT / ".venv" / "bin" / "ruff"):
         if candidate.exists():
             return [str(candidate)]
-    probe = subprocess.run([sys.executable, "-m", "ruff", "--version"], capture_output=True)
+    probe = subprocess.run([sys.executable, "-m", "ruff", "--version"], capture_output=True, check=False)
     if probe.returncode == 0:
         return [sys.executable, "-m", "ruff"]
     return None
@@ -61,7 +61,7 @@ def _ruff_command() -> list[str] | None:
 def _ranged_python_files() -> list[str]:
     result = subprocess.run(
         ["git", "-C", str(ROOT), "diff", "--name-only", f"{BASE_SHA}..HEAD"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         pytest.skip(
@@ -76,7 +76,7 @@ def _lines_added_by_the_range(path: str) -> set[int]:
     itself) - the range's own definition of "added", never a round's own cached line number."""
     blame = subprocess.run(
         ["git", "-C", str(ROOT), "blame", "--porcelain", path],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if blame.returncode != 0:
         pytest.skip(f"cannot blame {path}: {blame.stderr.strip()}")
@@ -92,7 +92,8 @@ def _lines_added_by_the_range(path: str) -> set[int]:
             if sha == BASE_SHA:
                 checked[sha] = False
             else:
-                anc = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", BASE_SHA, sha])
+                anc = subprocess.run(["git", "-C", str(ROOT), "merge-base", "--is-ancestor", BASE_SHA, sha],
+                                      check=False)
                 checked[sha] = anc.returncode == 0
         if checked[sha]:
             added.add(line_no)
@@ -108,7 +109,7 @@ def test_ruff_check_reports_no_finding_on_a_line_this_range_added():
         pytest.skip("no ruff.exe in the worktree's own .venv and ruff is not importable from this interpreter")
     proc = subprocess.run(
         [*ruff_command, "check", "--output-format", "concise", *files],
-        cwd=str(ROOT), capture_output=True, text=True,
+        cwd=str(ROOT), capture_output=True, text=True, check=False,
     )
     added_lines = {f: _lines_added_by_the_range(f) for f in files}
     flagged_on_added_lines = []

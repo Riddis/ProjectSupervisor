@@ -128,7 +128,7 @@ def reproducible_wheel(src: Path, out: Path, epoch: str) -> tuple[str, str]:
         folder = out / leg
         folder.mkdir(parents=True)
         proc = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps", "-q", "-w", str(folder), str(src)],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=env, check=False)
         if proc.returncode != 0:
             raise SystemExit(f"FAIL building {src.name}'s wheel ({leg}): {proc.stdout}{proc.stderr}")
         wheel = next(folder.glob("*.whl"))

@@ -140,10 +140,10 @@ def test_the_cli_passes_clean_and_fails_on_a_hit(fw, tmp_path):
     import sys
     good = write_index(fw, [foreign_entry()])
     assert subprocess.run([sys.executable, str(REPO / "tools" / "catalog_check.py"), str(good), "--root",
-                           str(fw)]).returncode == 0
+                           str(fw)], check=False).returncode == 0
     bad = write_index(fw, [{**foreign_entry(), "artifact": {"name": "x.whl"}}])
     assert subprocess.run([sys.executable, str(REPO / "tools" / "catalog_check.py"), str(bad), "--root",
-                           str(fw)]).returncode == 1
+                           str(fw)], check=False).returncode == 1
 
 
 # ------------------------------------------------------------------------------------- each numbered refusal (2.5)

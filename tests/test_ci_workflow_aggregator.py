@@ -28,7 +28,7 @@ _GIT_FOR_WINDOWS_BASH = (r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe")
 def _can_run_a_script(bash_path: str) -> bool:
     try:
         probe = subprocess.run([bash_path, "--noprofile", "--norc", "-c", "exit 0"],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, check=False)
     except OSError:
         return False
     return probe.returncode == 0
@@ -94,7 +94,7 @@ def run_step(packages_result: str, package_result: str, packages_count: str) -> 
     # GitHub Actions' own default for a bash `run:` step (docs.github.com, "Default shell"): errexit and pipefail,
     # so the first failing `test` already stops the script - reproduced here rather than a bare `bash -c`.
     return subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
 
 
 @pytest.mark.parametrize(

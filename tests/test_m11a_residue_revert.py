@@ -23,7 +23,6 @@ import pytest
 
 from supervisor import inbox, tasks, verify
 from supervisor.loop import Supervisor
-from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
 
 

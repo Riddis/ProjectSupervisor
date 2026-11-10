@@ -91,7 +91,7 @@ _CHANGE_KEYWORDS = (
 def _ranged_files() -> list[str]:
     result = subprocess.run(
         ["git", "-C", str(ROOT), "log", "--name-only", "--format=", f"{BASE_SHA}..HEAD"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         pytest.skip(

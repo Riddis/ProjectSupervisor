@@ -57,7 +57,7 @@ def _run_target(path_value: str, basetemp: Path) -> subprocess.CompletedProcess:
     basetemp.mkdir(parents=True, exist_ok=True)
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--basetemp={basetemp}", TARGET],
-        cwd=str(REPO), env=env, capture_output=True, text=True, timeout=120,
+        cwd=str(REPO), env=env, capture_output=True, text=True, timeout=120, check=False,
     )
 
 

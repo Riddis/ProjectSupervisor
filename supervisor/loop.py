@@ -611,7 +611,7 @@ class Supervisor:
         import subprocess
         try:
             proc = subprocess.run(["git", "-C", str(self.layout.root), "show", f"HEAD:{rel}"],
-                                  capture_output=True, timeout=30)
+                                  capture_output=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError):
             return None
         if proc.returncode != 0:
