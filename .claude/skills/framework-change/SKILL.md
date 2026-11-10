@@ -71,9 +71,11 @@ All four, and say in the pull request which ran (the gate table in `docs/BOUNDAR
 - **G7** the written answers from step 1, plus: plugin API impact (names added, deprecated or changed),
   migration impact, docs updated.
 
-Then `CHANGELOG.md` under `## Unreleased` (what changed and why, for owners and plugin authors), and the
-commit naming the module or hook. Never commit framework changes from a project repo; never put project files in
-the framework.
+Then `CHANGELOG.md`: the entry goes under the file's **topmost heading**, not literally under `## Unreleased`.
+A release's branch opens with its own dated heading (`## X.Y.Z — <date>`) from the day it opens, so the topmost
+heading is always the one in progress, whether or not that release has tagged yet; `tests/test_changelog_stamp.py`
+refuses a literal `## Unreleased` heading once a release has stamped it closed. And the commit naming the module
+or hook. Never commit framework changes from a project repo; never put project files in the framework.
 
 ## 6. Release and rollout
 
