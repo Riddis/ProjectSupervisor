@@ -67,6 +67,9 @@ Read the whole diff before the gates.
   - For local work, only your own platform has run. Say so; the other runs when it is pushed.
 - **G5** for a plugin: `supervisor plugin check <identity>`. For a package, across its framework range;
   for a package under `packages/`, its CI jobs run that against the oldest framework and HEAD.
+- **G6** for a plugin package: `supervisor doctor` in a disposable project that uses it — framework range,
+  no internal imports (`plugin_imports`), the loader's manifest checks — and a clean, tagged framework
+  checkout.
 - **G4**, for a release: the version rule, the CHANGELOG's Migration and Rollback lines, the tag only after
   acceptance.
 
@@ -96,6 +99,7 @@ A REVISE lists exactly what would make it an ACCEPT.
 
 ## Checks it ends with
 
-- G1 (with G1d), G2 and G3 re-run: G3 locally, plus CI's exact-head checks for a pushed head. G5 for any plugin.
+- G1 (with G1d), G2 and G3 re-run: G3 locally, plus CI's exact-head checks for a pushed head. G5 and G6 for
+  any plugin package.
 - G7: every question in section 2 answered in writing.
 - G4 too, for a release.
