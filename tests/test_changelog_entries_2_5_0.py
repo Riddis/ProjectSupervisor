@@ -64,6 +64,7 @@ _PATH_KEYWORDS: dict[str, tuple[str, ...]] = {
     "supervisor/loop.py": ("supervisor/loop.py",),
     "supervisor/verify.py": ("supervisor/verify.py",),
     "supervisor/packets.py": ("supervisor/packets.py",),
+    ".claude/skills/boundary-review/SKILL.md": ("boundary-review` skill's own gate list",),
 }
 
 # One stable keyword per user-visible change in the range, each naming something the change actually did -

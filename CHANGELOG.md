@@ -104,6 +104,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   caught before a release, not after. It deliberately does not compare against the newest tag, since a release
   branch's `HEAD` is ahead of the newest tag by design.
 
+- **Fixed: the `boundary-review` skill's own gate list never named G6.** `.claude/skills/boundary-review/SKILL.md`
+  section 3 ("The gates, re-run") and its closing "Checks it ends with" list re-ran G1, G2, G3 and G5 but never
+  G6, even though `docs/BOUNDARY.md`'s own gate table requires G6 (project compatibility) for a
+  `plugin-new`/`plugin-promote`/`plugin-release` review. A reviewer following the skill as written for a plugin
+  package would never re-run `supervisor doctor` in a disposable project using it. Docs only, no code or gate
+  behaviour changed; found and contributed through the contributor opening above, maintainer-merged against a
+  freshly re-run G1/G2/G3.
+
 ## 2.4.0 — 2026-11-08
 
 The tag `v2.4.0` was cut before this heading moved, so its own released tree still reads `## Unreleased` over
