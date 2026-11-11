@@ -3,6 +3,20 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.6.0 — 2026-11-11
+
+- **Added: a machine-wide, re-entrant, project-held resource lease, `supervisor.leases`.** Two projects' own
+  supervisor loops sharing one physical resource (two GPUs on one machine, each project running its own loop)
+  previously had only a VRAM-floor preflight — a read, not a reservation, and no way to make a resident holder
+  give anything back. A project opts in with `resources.<name>.lease` in its own `config/routing.yaml` (`path`,
+  `label`, `stale_after_s`, `wait_s`, `hand_over_timeout_s`); absent that block every operation is a no-op that
+  already has the resource, so this is a drop-in for every project that configures nothing. The lease is held per
+  *project* (an id derived from its root, never a name the framework writes), not per process, so a job the loop
+  launches and that job's own long-lived server can hold it re-entrantly; a hand-over window stops a busy project
+  starving a quiet one. **Plugin API:** `resource_lease` (`supervisor.plugin.resource_lease(layout, name) ->
+  ResourceLease`) and `ResourceLease` (`acquire`, `renew`, `release`, `release_requested`) are new, documented in
+  `docs/PLUGIN_API.md` under "Resource leases".
+
 ## 2.5.1 — 2026-11-10
 
 - **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and

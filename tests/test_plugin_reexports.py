@@ -34,8 +34,8 @@ def test_the_reexported_names_are_the_framework_objects():
                   "atomic_json", "atomic_write_text", "contained", "gpu", "now_iso", "read_json"}
     assert reexported <= set(plugin.__all__)
     own = {"Registry", "PluginError", "InboxError", "config", "resources", "gpu_device", "AgentLane",
-           "agent_lane", "owned_items", "owned_item", "update_owned_item", "close_owned_item",
-           "submit_command", "log_event", "policy", "ui"}
+           "agent_lane", "ResourceLease", "resource_lease", "owned_items", "owned_item", "update_owned_item",
+           "close_owned_item", "submit_command", "log_event", "policy", "ui"}
     assert set(plugin.__all__) - reexported == own                     # supervisor.plugin's own operations (step 3 on)
 
 

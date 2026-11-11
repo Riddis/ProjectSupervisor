@@ -919,6 +919,72 @@
         }
       }
     },
+    "ResourceLease": {
+      "bases": [],
+      "init": {
+        "params": [
+          {
+            "annotation": "Layout",
+            "kind": "positional_or_keyword",
+            "name": "layout"
+          },
+          {
+            "annotation": "str",
+            "kind": "positional_or_keyword",
+            "name": "name"
+          }
+        ]
+      },
+      "kind": "class",
+      "members": {
+        "acquire": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "float | None",
+              "default": "None",
+              "kind": "positional_or_keyword",
+              "name": "wait_s"
+            }
+          ],
+          "returns": "bool"
+        },
+        "release": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "None"
+        },
+        "release_requested": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "bool"
+        },
+        "renew": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "None"
+        }
+      }
+    },
     "Result": {
       "bases": [],
       "init": {
@@ -1379,6 +1445,22 @@
           "name": "path"
         }
       ]
+    },
+    "resource_lease": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "name"
+        }
+      ],
+      "returns": "ResourceLease"
     },
     "resources": {
       "kind": "function",

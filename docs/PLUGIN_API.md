@@ -288,6 +288,45 @@ The handle is read-only: setting an attribute raises `AttributeError`. A launch 
 process, outside the loop's job records, capacity gate and timeouts; use a job lane (`Adapter`) for work the loop
 should schedule and recover.
 
+## Resource leases
+
+A resource two projects' own supervisor loops might otherwise grab at once (two GPUs, one machine, each project
+running its own loop) is shared through a lease, not a second lock grown in a package: one project at a time holds
+it, re-entrantly across that project's own processes.
+
+### `resource_lease`
+
+`resource_lease(layout, name) -> ResourceLease`: the project's handle on `resources.<name>.lease` in
+`config/routing.yaml`. Reads the configuration fresh each call; the returned handle acts for this process.
+
+### `ResourceLease`
+
+What `resource_lease` returns. Held per *project* (an opaque id derived from the project root, never a name the
+framework writes; the `label` a project configures is that project's own value), not per process: `acquire` adds
+this process's own entry when the resource is free or already this project's, so a job the loop launches and that
+job's own long-lived server can hold the same lease re-entrantly, and one releasing never drops the other's hold.
+An entry whose process has died, or whose `renew()` is older than `stale_after_s`, is pruned rather than honoured,
+so a crash never wedges the lease. Absent `resources.<name>.lease` configuration, every method below is a no-op
+that already has the resource — the behaviour of every project that configures nothing.
+
+| Member | Meaning |
+|---|---|
+| `acquire(wait_s=None) -> bool` | True once this process holds an entry. Polls every 50 ms up to `wait_s` (the configuration's own `wait_s` by default; `0` tries once) before reporting unavailable: held by another project, or free but inside another project's hand-over window (see below) |
+| `renew() -> None` | refresh this process's own entry so it does not go stale while the work it covers continues |
+| `release() -> None` | drop this process's own entry; harmless when it holds none |
+| `release_requested() -> bool` | True when another project is waiting: the holder's own long-lived code checks this to let go early rather than wait out its idle timeout |
+
+**The hand-over window.** A project that cannot take a held lease records its own id as `release_requested_by`
+(`acquire` does this automatically) so the holder's `release_requested()` sees it. Once the lease is free, the
+*previous* holder's own next `acquire()` still yields to a fresh, unanswered request from another project for up
+to `hand_over_timeout_s`, so a chain of short jobs from one project cannot starve a quiet one forever; past that
+window the request is still recorded but no longer holds anyone back.
+
+**Configuration**, under `resources.<name>.lease` in `config/routing.yaml`: `path` (required; a file outside
+every repository, so the lease is visible to every project on the machine), `label` (this project's own name for
+the lease file; defaults to `name`), `stale_after_s` (default 120), `wait_s` (default 60), `hand_over_timeout_s`
+(default 900).
+
 ## Inbox items
 
 A plugin that claims an inbox kind with `registry.inbox_kind(kind, ...)` owns the items of that kind: it creates
