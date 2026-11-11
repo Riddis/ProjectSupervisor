@@ -99,7 +99,9 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
                 label = name or (f"#{index}" if index is not None else None)
                 prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
                 raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, f"{prefix} {free}MiB below floor {floor}MiB")
-        _server.ensure_started(spec["cfg"])
+        if not _server.ensure_started(spec["cfg"], spec["root"]):
+            raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS,
+                                          f"{spec['cfg']['base_url']} not ready yet (cold start)")
         return super().submit(spec)
 
 

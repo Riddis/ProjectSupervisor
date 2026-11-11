@@ -64,7 +64,7 @@ def test_submit_admits_when_every_configured_card_meets_its_floor(tmp_path, monk
     task = _task(layout, prompt="hello")
     spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
     monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: {3: 9000, 5: 9000}.get(index))
-    monkeypatch.setattr(_server, "ensure_started", lambda cfg: None)
+    monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: True)
     monkeypatch.setattr(plugin.ProcessAdapter, "submit", lambda self, spec: {"ok": True})
     assert llm_endpoint.ADAPTER.submit(spec) == {"ok": True}
 
@@ -74,6 +74,16 @@ def test_submit_with_no_devices_configured_falls_back_to_the_shared_floor(tmp_pa
     task = _task(layout, prompt="hello")
     spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
     monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 100)
-    monkeypatch.setattr(_server, "ensure_started", lambda cfg: None)
+    monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: True)
     monkeypatch.setattr(plugin.ProcessAdapter, "submit", lambda self, spec: {"ok": True})
     assert llm_endpoint.ADAPTER.submit(spec) == {"ok": True}      # no floor configured anywhere: nothing to defer on
+
+
+def test_submit_defers_rather_than_block_while_the_server_is_cold_starting(tmp_path, monkeypatch):
+    layout = _layout(tmp_path, plugin_cfg={})
+    task = _task(layout, prompt="hello")
+    spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: None)
+    monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: False)
+    with pytest.raises(plugin.CapacityDeferred, match="not ready"):
+        llm_endpoint.ADAPTER.submit(spec)
