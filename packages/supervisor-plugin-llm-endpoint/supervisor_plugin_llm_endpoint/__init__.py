@@ -108,5 +108,70 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
 ADAPTER = LlmEndpointAdapter()
 
 
+# ------------------------------------------------------------------ doctor check
+
+
+def _models_present(base_url: str, model: str) -> bool | None:
+    """True/False once `/v1/models` answers, None when it cannot be asked (reachable does not imply this
+    endpoint, or any endpoint, serves that route)."""
+    import requests
+    try:
+        resp = requests.get(base_url.rstrip("/") + "/v1/models", timeout=5.0)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    ids = {m.get("id") for m in (resp.json() or {}).get("data") or [] if isinstance(m, dict)}
+    return model in ids
+
+
+def check_llm_endpoint(layout: plugin.Layout) -> plugin.Check:
+    cfg = llm_endpoint_config(layout)
+    reachable = _server._health_ok(cfg["base_url"], cfg.get("health_path", "/health"))
+    if not reachable:
+        if cfg.get("argv"):
+            return plugin.Check("llm_endpoint", True, f"{cfg['base_url']} not reachable now; configured to start "
+                                "on demand (llm_endpoint.start, or a job that needs it)", warn=True)
+        return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} unreachable and plugins.llm_endpoint.argv "
+                            "is not configured: nothing can start it")
+    model = cfg.get("model")
+    if model:
+        present = _models_present(cfg["base_url"], model)
+        if present is False:
+            return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} reachable, but {model} is not in "
+                                "its /v1/models")
+    try:
+        state = plugin.read_json(_server.state_path(layout.root))
+    except (OSError, ValueError):
+        state = {}
+    pid = state.get("pid")
+    if pid is not None:
+        import psutil
+        try:
+            alive = psutil.Process(pid).is_running()
+        except psutil.Error:
+            alive = False
+        if not alive:
+            return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} reachable, but the state file names "
+                                f"pid {pid}, which is not running: the watchdog may have crashed without cleaning up")
+    return plugin.Check("llm_endpoint", True, f"{cfg['base_url']} healthy" + (f", {model} present" if model else ""))
+
+
+# ------------------------------------------------------------------ owner commands
+
+
+def _start_command(layout: plugin.Layout, payload: dict, actor: str) -> dict:
+    cfg = llm_endpoint_config(layout)
+    ready = _server.ensure_started(cfg, str(layout.root))
+    return {"status": "ok", "ready": ready}
+
+
+def _stop_command(layout: plugin.Layout, payload: dict, actor: str) -> dict:
+    _server.request_stop(str(layout.root))
+    return {"status": "ok"}
+
+
 def setup(registry) -> None:
     registry.adapter(ADAPTER)
+    registry.doctor_check(check_llm_endpoint)
+    registry.command("llm_endpoint.start", _start_command)
+    registry.command("llm_endpoint.stop", _stop_command)

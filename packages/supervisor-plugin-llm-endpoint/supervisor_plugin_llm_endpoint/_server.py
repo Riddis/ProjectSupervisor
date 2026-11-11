@@ -37,6 +37,29 @@ def activity_path(root) -> Path:
     return Path(root) / "state" / "runtime" / "llm_endpoint_activity"
 
 
+def stop_path(root) -> Path:
+    return Path(root) / "state" / "runtime" / "llm_endpoint_stop_requested"
+
+
+def request_stop(root) -> None:
+    """The owner command `llm_endpoint.stop`: ask the watchdog to let go at its next poll, however long that
+    is - never a direct kill from here, so the watchdog's own cleanup (child, lease, state file) always runs."""
+    path = stop_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+
+def _stop_requested(root) -> bool:
+    path = stop_path(root)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return True
+    return False
+
+
 def _write_state(root, data: dict) -> None:
     path = state_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,8 +120,10 @@ def ensure_started(cfg: dict, root: str) -> bool:
 
 
 def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
-    """The watchdog's own loop. Returns why it stopped: `start_timeout`, `child_exited`, `idle` or
-    `release_requested`. Blocking; meant to be the whole of the watchdog process's work."""
+    """The watchdog's own loop. Returns why it stopped: `start_timeout`, `child_exited`, `idle`,
+    `release_requested` or `stop_requested` (the owner command `llm_endpoint.stop`). Blocking; meant to be the
+    whole of the watchdog process's work."""
+    _stop_requested(root)                       # clear any stale request left from a previous run before this one
     layout = plugin.Layout(root)
     lease = plugin.resource_lease(layout, "gpu")
     lease.acquire(wait_s=cfg.get("wait_s", 60))
@@ -110,6 +135,8 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         while not _health_ok(cfg["base_url"], health_path):
             if proc.poll() is not None:
                 return "child_exited"
+            if _stop_requested(root):
+                return "stop_requested"
             if time.time() > deadline:
                 return "start_timeout"
             time.sleep(poll_s)
@@ -120,6 +147,8 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
             lease.renew()
             if proc.poll() is not None:
                 return "child_exited"
+            if _stop_requested(root):
+                return "stop_requested"
             if is_idle(root, idle_stop_s):
                 return "idle"
             if lease.release_requested():
