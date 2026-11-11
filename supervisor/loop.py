@@ -895,7 +895,19 @@ class Supervisor:
                 self.launch(rec)                                      # same attempt id: never a duplicate
         self.settle()
         self.repair_continuations()
+        self._renew_gpu_lease_if_active()
         self._release_gpu_lease_if_idle()
+
+    def _renew_gpu_lease_if_active(self) -> None:
+        """Refresh this project's own entry in the machine-wide GPU lease (R4) each reconcile() for as long as
+        one of its own jobs still holds the resource slot, so a job that outlives `stale_after_s` (a render, a
+        local-model benchmark) is not pruned as abandoned while it is still running — the same walk over open
+        records that `_release_gpu_lease_if_idle()` makes right after decides whether to renew or to let go, so
+        the two can never disagree about whether this project is still active. A record that has left RUNNING
+        (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out of `open_records()` and is
+        never renewed."""
+        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
+            leases.resource_lease(self.layout, "gpu").renew()
 
     def _release_gpu_lease_if_idle(self) -> None:
         """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
