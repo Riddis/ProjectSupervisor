@@ -205,6 +205,20 @@ class ResourceLease:
         return bool(pending and pending != self._holder)
 
 
+def status(layout: Layout, name: str) -> dict:
+    """A read-only snapshot for `supervisor doctor`: `{"configured": False}`, or `{"configured": True, "path",
+    "live": [{"label", "pid"}, ...], "stale": <pruned count>, "waiting": <label or None>}`."""
+    cfg = _lease_config(layout, name)
+    if cfg is None:
+        return {"configured": False}
+    doc = _read(cfg)
+    live = _live_entries(doc, cfg, time.time())
+    waiting = doc.get("release_requested_label") if doc.get("release_requested_by") else None
+    return {"configured": True, "path": str(cfg.path),
+            "live": [{"label": e["label"], "pid": e["pid"]} for e in live],
+            "stale": len(doc.get("entries", [])) - len(live), "waiting": waiting}
+
+
 def holder_label(layout: Layout, name: str) -> str | None:
     """The label of whichever project currently holds `resources.<name>.lease` live, when it is not this one;
     `None` when it is free, held by this project, or no lease is configured. A read-only peek for

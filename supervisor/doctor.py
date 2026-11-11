@@ -254,8 +254,28 @@ def check_policy(layout: Layout) -> Check:
     return Check("policy", True, f"{policy.CONFIG_NAME} ok (built-in floor" + (" + project values)" if (layout.config / policy.CONFIG_NAME).exists() else " only)"))
 
 
+def check_gpu_lease(layout: Layout) -> Check:
+    """`resources.gpu.lease` (R4): unconfigured is fine (every project before this release, and every one that
+    does not opt in); configured, who holds it now and whether any entry needed pruning."""
+    from . import leases
+    try:
+        info = leases.status(layout, "gpu")
+    except Exception as exc:                               # noqa: BLE001 - report, never crash doctor
+        return Check("gpu_lease", False, f"resources.gpu.lease unreadable: {exc}"[:300])
+    if not info["configured"]:
+        return Check("gpu_lease", True, "no lease configured (resources.gpu.lease unset): this project's own "
+                     "VRAM preflight is the only guard against another project's GPU work")
+    holders = ", ".join(f"{e['label']} (pid {e['pid']})" for e in info["live"]) or "free"
+    detail = f"{info['path']}: {holders}"
+    if info["stale"]:
+        detail += f"; {info['stale']} stale entr{'y' if info['stale'] == 1 else 'ies'} pruned on read"
+    if info["waiting"]:
+        detail += f"; {info['waiting']} is waiting for it"
+    return Check("gpu_lease", True, detail[:300])
+
+
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_plugins, check_plugin_manifests,
+          check_git, check_claude_cli, check_codex_cli, check_gpu_lease, check_plugins, check_plugin_manifests,
           check_plugin_imports]
 
 
