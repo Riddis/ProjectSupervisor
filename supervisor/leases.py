@@ -205,6 +205,18 @@ class ResourceLease:
         return bool(pending and pending != self._holder)
 
 
+def holder_label(layout: Layout, name: str) -> str | None:
+    """The label of whichever project currently holds `resources.<name>.lease` live, when it is not this one;
+    `None` when it is free, held by this project, or no lease is configured. A read-only peek for
+    `supervisor.gate`'s launch check — the loop takes the lease for real only right before `submit()`."""
+    cfg = _lease_config(layout, name)
+    if cfg is None:
+        return None
+    me = _holder_id(layout)
+    others = [e for e in _live_entries(_read(cfg), cfg, time.time()) if e["holder"] != me]
+    return others[0]["label"] if others else None
+
+
 def resource_lease(layout: Layout, name: str) -> ResourceLease:
     """The project's handle on the machine-wide lease `resources.<name>.lease` names (docs/PLUGIN_API.md). Reads
     configuration fresh each call; the returned handle acts for this process from here on."""

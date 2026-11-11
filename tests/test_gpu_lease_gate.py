@@ -1,0 +1,83 @@
+"""The GPU lease (supervisor.leases) wired into the ordinary launch path (D-013 R4): `supervisor.gate` refuses to
+launch a resource-holding job while another project's lease entry is live, and the loop takes the lease for real
+right before `submit()` and lets go of it once none of this project's jobs holds the resource slot any more.
+Two project Layouts, pointed at the same lease file, stand in for "two projects on one machine"."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from supervisor import jobs, leases, tasks, testing
+from supervisor.adapters.base import Adapter, Result
+from supervisor.loop import Supervisor
+from tests.conftest import make_task
+
+
+class ControllableGpuLane(Adapter):
+    """A gpu=True lane whose jobs stay RUNNING until the test flips them done (unlike FakeLane, always alive=False):
+    submit() really runs (so the acquire-before-submit hook is exercised), alive() reports from a shared dict."""
+    gpu = True
+
+    def __init__(self, name: str):
+        self.name = name
+        self.done: dict[str, bool] = {}
+        self.submitted: list[str] = []
+
+    def prepare(self, layout, task, attempt_id):
+        run_dir = layout.runs / task.id / attempt_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir)}
+
+    def submit(self, spec):
+        self.submitted.append(spec["attempt_id"])
+        self.done[spec["attempt_id"]] = False
+        return {"kind": "controllable", "attempt_id": spec["attempt_id"]}
+
+    def alive(self, handle):
+        return not self.done.get(handle["attempt_id"], False)
+
+    def collect(self, spec, handle):
+        if self.alive(handle):
+            return None
+        return Result(status="COMPLETE")
+
+
+def _project(tmp_path, name, lease_path, label):
+    routing = {"limits": {"max_resource_jobs": 1}, "resources": {"gpu": {"lease": {"path": str(lease_path), "label": label}}}}
+    return testing.project(tmp_path / name, routing=routing)
+
+
+def test_a_second_project_waits_for_the_first_to_let_go_of_the_gpu_lease(tmp_path):
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a, lay_b = _project(tmp_path, "a", lease_file, "project-a"), _project(tmp_path, "b", lease_file, "project-b")
+    lane_a, lane_b = ControllableGpuLane("gpu_a"), ControllableGpuLane("gpu_b")
+    with testing.lane(lane_a), testing.lane(lane_b):
+        make_task(lay_a, "A", job={"adapter": "gpu_a"}, cost_category="local")
+        make_task(lay_b, "B", job={"adapter": "gpu_b"}, cost_category="local")
+        sup_a, sup_b = Supervisor(lay_a, sleep_s=0), Supervisor(lay_b, sleep_s=0)
+
+        sup_a.once()
+        assert lane_a.submitted == ["A.a1"]                        # a took the lease and launched
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+
+        sup_b.once()
+        assert lane_b.submitted == []                              # b is held: a holds the lease
+        assert jobs.for_task(lay_b, "B") == []                     # the scheduler never dispatches it in the first place
+
+        lane_a.done["A.a1"] = True                                 # a's job finishes
+        sup_a.once()                                                # settle collects it; reconcile releases the lease
+        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+
+        sup_b.once()
+        assert lane_b.submitted == ["B.a1"]                         # the lease is free: b may launch now
+        assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+
+
+def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):
+    lay = testing.project(tmp_path / "solo")
+    lane = ControllableGpuLane("gpu_solo")
+    with testing.lane(lane):
+        make_task(lay, "A", job={"adapter": "gpu_solo"}, cost_category="local")
+        sup = Supervisor(lay, sleep_s=0)
+        sup.once()
+        assert lane.submitted == ["A.a1"]
+        assert jobs.read(lay, "A.a1")["phase"] == "RUNNING"

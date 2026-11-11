@@ -14,7 +14,7 @@ from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, 
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import progress as progress_mod
-from . import gate, inbox as inbox_mod, jobs as jobs_mod, render, review as review_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
@@ -420,6 +420,13 @@ class Supervisor:
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         if rec.get("held"):
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
+        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
+            # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
+            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
+            reason = "gpu lease unavailable: another project holds it"
+            if rec.get("held") != reason:
+                tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+            return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         attempts = int(rec.get("launch_attempts", 0)) + 1
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts)
         if attempts > 2:
@@ -888,6 +895,14 @@ class Supervisor:
                 self.launch(rec)                                      # same attempt id: never a duplicate
         self.settle()
         self.repair_continuations()
+        self._release_gpu_lease_if_idle()
+
+    def _release_gpu_lease_if_idle(self) -> None:
+        """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
+        resource slot, so a quiet project never keeps another one waiting longer than its own last job's work."""
+        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
+            return
+        leases.resource_lease(self.layout, "gpu").release()
 
     def dispatch_reviews(self) -> None:
         """Review dispatch: one review job per (WAITING_FOR_REVIEW task, missing reviewer role) under
