@@ -4,6 +4,7 @@ right before `submit()` and lets go of it once none of this project's jobs holds
 Two project Layouts, pointed at the same lease file, stand in for "two projects on one machine"."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from supervisor import jobs, leases, tasks, testing
@@ -41,8 +42,11 @@ class ControllableGpuLane(Adapter):
         return Result(status="COMPLETE")
 
 
-def _project(tmp_path, name, lease_path, label):
-    routing = {"limits": {"max_resource_jobs": 1}, "resources": {"gpu": {"lease": {"path": str(lease_path), "label": label}}}}
+def _project(tmp_path, name, lease_path, label, stale_after_s=None):
+    lease_cfg = {"path": str(lease_path), "label": label}
+    if stale_after_s is not None:
+        lease_cfg["stale_after_s"] = stale_after_s
+    routing = {"limits": {"max_resource_jobs": 1}, "resources": {"gpu": {"lease": lease_cfg}}}
     return testing.project(tmp_path / name, routing=routing)
 
 
@@ -70,6 +74,41 @@ def test_a_second_project_waits_for_the_first_to_let_go_of_the_gpu_lease(tmp_pat
         sup_b.once()
         assert lane_b.submitted == ["B.a1"]                         # the lease is free: b may launch now
         assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+
+
+def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(tmp_path):
+    """F1 (docs/reviews/RELEASE_REVIEW_local-lane.md): the loop must renew its own gpu lease entry on every
+    reconcile() while the job it covers is still RUNNING, so stale_after_s never prunes a live hold out from
+    under it and another project's loop starts on top of it. Once the job leaves RUNNING the entry is let go,
+    not kept alive by renewal."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    stale_after_s = 1.0
+    lay_a = _project(tmp_path, "a", lease_file, "project-a", stale_after_s=stale_after_s)
+    lay_b = _project(tmp_path, "b", lease_file, "project-b", stale_after_s=stale_after_s)
+    lane_a, lane_b = ControllableGpuLane("gpu_a"), ControllableGpuLane("gpu_b")
+    with testing.lane(lane_a), testing.lane(lane_b):
+        make_task(lay_a, "A", job={"adapter": "gpu_a"}, cost_category="local")
+        make_task(lay_b, "B", job={"adapter": "gpu_b"}, cost_category="local")
+        sup_a, sup_b = Supervisor(lay_a, sleep_s=0), Supervisor(lay_b, sleep_s=0)
+
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"        # a holds the lease and is still running
+
+        deadline = time.monotonic() + stale_after_s * 1.6
+        while time.monotonic() < deadline:
+            time.sleep(stale_after_s / 4)
+            sup_a.once()                                             # each reconcile() must renew the live entry
+
+        # more than stale_after_s has passed since the entry was created: it must still be live, not pruned
+        assert leases.holder_label(lay_b, "gpu") == "project-a"       # b's own peek still sees a's hold
+        sup_b.once()
+        assert lane_b.submitted == []                                 # b is still refused: a's job has not ended
+        assert jobs.for_task(lay_b, "B") == []
+
+        lane_a.done["A.a1"] = True                                    # a's job finishes
+        sup_a.once()                                                   # settle() collects it; reconcile() releases
+        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+        assert leases.status(lay_a, "gpu")["live"] == []               # left RUNNING: let go, not kept renewed
 
 
 def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):
