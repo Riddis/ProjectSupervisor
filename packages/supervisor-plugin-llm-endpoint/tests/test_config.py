@@ -10,7 +10,7 @@ def test_defaults_name_no_model_no_argv_and_the_tools_own_loopback_port():
     assert settings.base_url == "http://127.0.0.1:8080"
     assert settings.model is None
     assert settings.argv is None
-    assert settings.vram_device is None
+    assert "vram_device" not in Settings.model_fields     # every configured card is checked; none is "the" device
 
 
 def test_timeouts_and_budgets_have_the_designed_defaults():
@@ -24,9 +24,7 @@ def test_timeouts_and_budgets_have_the_designed_defaults():
 
 def test_every_field_accepts_an_override():
     settings = Settings(base_url="http://127.0.0.1:8799", model="demo-model", argv=["demo-server", "--port", "8799"],
-                        start_timeout_s=60, idle_stop_s=120, timeout_s=90, context_tokens=4096, max_tokens=512,
-                        vram_device="alpha")
+                        start_timeout_s=60, idle_stop_s=120, timeout_s=90, context_tokens=4096, max_tokens=512)
     assert settings.base_url == "http://127.0.0.1:8799"
     assert settings.model == "demo-model"
     assert settings.argv == ["demo-server", "--port", "8799"]
-    assert settings.vram_device == "alpha"
