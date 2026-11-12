@@ -141,6 +141,32 @@ def test_run_does_not_stop_on_an_expired_release_request_left_by_a_waiter_that_n
     assert plugin.resource_lease(lay, "gpu").release_requested() is False
 
 
+def test_run_returns_lease_unavailable_and_starts_no_child_when_the_lease_is_held_by_another_project(
+        tmp_path, fake_health, monkeypatch):
+    """F4 (RELEASE_REVIEW_local-lane.md): run() discarded lease.acquire()'s refusal and started the configured
+    argv regardless, loading VRAM while holding no lease and while the other project's release request against
+    it sat unanswered. The fix must check the return value before spawning anything."""
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    testing.project(root, routing={"resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}}})
+    other = plugin.resource_lease(
+        testing.project(tmp_path / "other", routing={"resources": {"gpu": {
+            "lease": {"path": str(lease_file), "label": "other"}}}}), "gpu")
+    assert other.acquire(wait_s=0) is True                                 # the other project holds the cards
+    calls = []
+    monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: calls.append((a, k)) or _FakeProc())
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 5, "idle_stop_s": 0.3,
+          "wait_s": 0.2, "argv": [sys.executable, "-c", "import time; time.sleep(30)"]}
+    why = _server.run(str(root), cfg, poll_s=0.05)
+    assert why == "lease_unavailable"
+    assert calls == []                                                    # no child spawned at all
+    assert other.release_requested() is True                              # yielding, not going silent
+    state = json.loads(_server.state_path(str(root)).read_text(encoding="utf-8"))
+    assert state["pid"] is None
+    assert state["why"] == "lease"
+    other.release()
+
+
 def test_run_times_out_and_releases_when_the_server_never_becomes_healthy(tmp_path):
     lease_file = tmp_path / "lease" / "gpu.lease"
     root = tmp_path / "proj"
