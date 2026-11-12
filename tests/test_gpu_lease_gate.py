@@ -111,6 +111,38 @@ def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(t
         assert leases.status(lay_a, "gpu")["live"] == []               # left RUNNING: let go, not kept renewed
 
 
+def test_a_waiting_loop_records_a_release_request_so_the_holder_yields_and_the_waiter_then_launches(tmp_path):
+    """F2 (docs/reviews/RELEASE_REVIEW_local-lane.md): gate.check() calls gate.lease_blocked(), whose peek refuses
+    the launch before launch() ever reaches acquire() — the only place _record_waiting() lived. A loop that is
+    only ever refused by the peek therefore never asked the holder to yield. Four steps, with B driven only
+    through Supervisor.once() (never through the lease primitive, which is exactly what the existing hand-over
+    test already did and is not evidence of a loop asking): A holds the lease through a raw handle (its
+    long-lived server watchdog, not its own loop); B's loop runs and must make A's release_requested() true and
+    status() name B as the waiter; A's watchdog poll then stops and releases; B's next pass launches."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    lay_b = _project(tmp_path, "b", lease_file, "project-b")
+    holder = leases.resource_lease(lay_a, "gpu")        # A's watchdog, holding for its server — not A's loop
+    assert holder.acquire(wait_s=0) is True
+
+    lane_b = ControllableGpuLane("gpu_pb_wait")
+    with testing.lane(lane_b):
+        make_task(lay_b, "B", job={"adapter": "gpu_pb_wait"}, cost_category="local")
+        sup_b = Supervisor(lay_b, sleep_s=0)
+
+        sup_b.once()                                     # step 1: B's loop runs, refused by the peek
+        assert lane_b.submitted == []
+
+        assert holder.release_requested() is True         # step 2: A's watchdog poll would now see a request...
+        assert leases.status(lay_a, "gpu")["waiting"] == "project-b"   # ...and the doctor names B as waiting
+
+        holder.release()                                  # step 3: A's watchdog poll stops its server, A releases
+
+        sup_b.once()                                       # step 4: the lease is free, B's next pass launches
+        assert lane_b.submitted == ["B.a1"]
+        assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+
+
 def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):
     lay = testing.project(tmp_path / "solo")
     lane = ControllableGpuLane("gpu_solo")
