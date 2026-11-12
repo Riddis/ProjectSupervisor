@@ -8,16 +8,24 @@ the same process for this test)."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
+import psutil
 import pytest
 
 from supervisor import plugin, testing
 
+import supervisor_plugin_llm_endpoint as llm_endpoint
 from supervisor_plugin_llm_endpoint import _server
+
+_PKG_ROOT = Path(__file__).resolve().parents[1]
+_WORKTREE = Path(__file__).resolve().parents[3]
 
 
 class _Health(BaseHTTPRequestHandler):
@@ -176,3 +184,109 @@ def test_run_times_out_and_releases_when_the_server_never_becomes_healthy(tmp_pa
     why = _server.run(str(root), cfg, poll_s=0.05)
     assert why == "start_timeout"
     assert plugin.resource_lease(lay, "gpu").acquire(wait_s=0) is True   # released: a fresh acquire succeeds at once
+
+
+# ---------------------------------------------------------------- F5/F14: a hard-killed watchdog leaks no server
+
+
+def test_a_hard_killed_watchdog_does_not_leave_its_server_running(tmp_path, fake_health):
+    """F5 (design risk list: "tested, not assumed"), in the review probe's own shape
+    (runs/T5-04/T5-04.a3/probes/test_llm_endpoint_probes.py::test_defect_hard_killed_watchdog_leaves_an_orphan_...),
+    now proving the fix instead of the defect: `_start_child_tied_to_this_process` ties the server child to the
+    watchdog at the OS level (a Job Object with KILL_ON_JOB_CLOSE here on Windows; a process group plus
+    PR_SET_PDEATHSIG on POSIX, proven only by CI's ubuntu legs). The neighbouring tests below prove the
+    state-based backstop (F14's shape, the doctor, ensure_started(), llm_endpoint.stop) for whatever race or
+    platform that tie misses."""
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 20, "idle_stop_s": 600,
+          "argv": [sys.executable, "-c", "import time; time.sleep(120)"]}
+    testing.project(root, plugins=["llm_endpoint"], routing={
+        "resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}},
+        "plugins": {"llm_endpoint": cfg}})
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(_WORKTREE), str(_PKG_ROOT)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    wd = subprocess.Popen([sys.executable, "-m", "supervisor_plugin_llm_endpoint._server", str(root), str(cfg_path)],
+                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    child_pid = None
+    try:
+        deadline = time.time() + 25
+        state = {}
+        while time.time() < deadline:
+            try:
+                state = json.loads(_server.state_path(str(root)).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = {}
+            if state.get("pid"):
+                child_pid = state["pid"]
+                break
+            assert wd.poll() is None, "watchdog exited before becoming ready"
+            time.sleep(0.2)
+        assert child_pid, "watchdog never wrote the ready state"
+        assert state.get("create_time") is not None                    # F14's shape: the child's create_time
+        assert state.get("watchdog_pid") is not None                   # ... and the watchdog's own identity
+        wd.kill()                                                       # the dirty path: no finally, no cleanup
+        wd.wait(timeout=10)
+        deadline = time.time() + 10
+        alive = True
+        while time.time() < deadline:
+            alive = psutil.pid_exists(child_pid) and psutil.Process(child_pid).is_running()
+            if not alive:
+                break
+            time.sleep(0.2)
+        assert not alive, "the server survived its watchdog's hard kill: the OS-level tie did not hold"
+    finally:
+        if child_pid and psutil.pid_exists(child_pid):
+            try:
+                psutil.Process(child_pid).kill()
+            except psutil.Error:
+                pass
+        if wd.poll() is None:
+            wd.kill()
+
+
+@pytest.fixture
+def orphaned_server():
+    """A real sleeping python stands in for a server the risk list worries about; a real, already-exited
+    python's pid and create_time stand in for the watchdog that used to own it - the exact state F5 names,
+    built without going through `run()`'s own OS-level tie (proven above) so the state-based backstop below
+    can be tested deterministically, not raced against a Job Object that usually wins in nanoseconds."""
+    server = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    server_create_time = psutil.Process(server.pid).create_time()
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead_create_time = psutil.Process(dead.pid).create_time()
+    dead.wait(timeout=10)
+    yield {"pid": server.pid, "create_time": server_create_time,
+           "watchdog_pid": dead.pid, "watchdog_create_time": dead_create_time}
+    if server.poll() is None:
+        server.kill()
+
+
+def test_doctor_fails_when_the_state_names_a_dead_watchdog_with_a_live_server(tmp_path, fake_health, orphaned_server):
+    layout = testing.project(tmp_path, plugins=["llm_endpoint"],
+                             routing={"plugins": {"llm_endpoint": {"base_url": fake_health}}})
+    _server._write_state(str(tmp_path), orphaned_server)
+    check = llm_endpoint.check_llm_endpoint(layout)
+    assert not check.ok and "dead watchdog" in check.detail
+
+
+def test_ensure_started_kills_the_orphan_instead_of_reporting_it_healthy(tmp_path, fake_health, orphaned_server,
+                                                                         monkeypatch):
+    _server._write_state(str(tmp_path), orphaned_server)
+    spawned = []
+    monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)) or _FakeProc())
+    cfg = {"base_url": fake_health, "health_path": "/health", "argv": ["demo-server"]}
+    assert _server.ensure_started(cfg, str(tmp_path)) is False          # DEFECT at the old head: True
+    assert not psutil.pid_exists(orphaned_server["pid"]) or not psutil.Process(orphaned_server["pid"]).is_running()
+    assert len(spawned) == 1                                            # recovers: spawns a fresh watchdog
+
+
+def test_stop_command_kills_the_orphan_directly_when_no_watchdog_is_left_to_read_the_request(tmp_path, orphaned_server):
+    layout = testing.project(tmp_path, plugins=["llm_endpoint"], routing={"plugins": {"llm_endpoint": {}}})
+    _server._write_state(str(tmp_path), orphaned_server)
+    result = llm_endpoint._stop_command(layout, {}, "owner")
+    assert result.get("killed_orphan_pid") == orphaned_server["pid"]    # DEFECT at the old head: a no-op file
+    assert not psutil.pid_exists(orphaned_server["pid"]) or not psutil.Process(orphaned_server["pid"]).is_running()
+    assert not _server.stop_path(str(tmp_path)).exists()
