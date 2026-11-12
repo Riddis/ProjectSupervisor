@@ -61,10 +61,16 @@ def lease_blocked(layout: Layout, task: Task | None, adapter_name: str, kind: st
     """None when this job's resource work may launch now as far as the machine-wide GPU lease (R4) is concerned;
     else who holds it. A read-only peek against `resources.gpu.lease` (`supervisor.leases.holder_label`): the
     loop takes the lease for real only right before `submit()` (`Supervisor.launch`), so a record this refuses
-    stays PREPARED and is retried, exactly as every other gate refusal is."""
+    stays PREPARED and is retried, exactly as every other gate refusal is. This peek is also the only place a
+    loop ever learns another project holds the lease — launch() never reaches acquire() when this refuses — so
+    it is also where the loop must record its own wait (R4's fairness clause, F2): a live foreign holder makes
+    this project's `release_requested_by` its own, through `leases._record_waiting_from_peek()`, so the holder's own
+    processes (its server watchdog) see it and can yield early instead of only ever being started on top of."""
     if not holds_resource(layout, task, adapter_name, kind):
         return None
     label = leases.holder_label(layout, "gpu")
+    if label:
+        leases._record_waiting_from_peek(layout, "gpu")
     return f"gpu lease held by {label}" if label else None
 
 

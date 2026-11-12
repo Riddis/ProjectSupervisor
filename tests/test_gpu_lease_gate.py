@@ -4,6 +4,7 @@ right before `submit()` and lets go of it once none of this project's jobs holds
 Two project Layouts, pointed at the same lease file, stand in for "two projects on one machine"."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -141,6 +142,32 @@ def test_a_waiting_loop_records_a_release_request_so_the_holder_yields_and_the_w
         sup_b.once()                                       # step 4: the lease is free, B's next pass launches
         assert lane_b.submitted == ["B.a1"]
         assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+
+
+def test_repeated_waiting_passes_record_the_release_request_once_and_do_not_restart_the_window(tmp_path):
+    """A loop that polls every couple of seconds must not reset release_requested_at on every pass it is refused:
+    a window that restarts each time is a hand-over that never completes."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    lay_b = _project(tmp_path, "b", lease_file, "project-b")
+    holder = leases.resource_lease(lay_a, "gpu")
+    assert holder.acquire(wait_s=0) is True
+
+    lane_b = ControllableGpuLane("gpu_pb_idem")
+    with testing.lane(lane_b):
+        make_task(lay_b, "B", job={"adapter": "gpu_pb_idem"}, cost_category="local")
+        sup_b = Supervisor(lay_b, sleep_s=0)
+
+        sup_b.once()
+        first_at = json.loads(lease_file.read_text(encoding="utf-8"))["release_requested_at"]
+        assert first_at is not None
+
+        time.sleep(0.2)
+        sup_b.once()
+        sup_b.once()
+        second_at = json.loads(lease_file.read_text(encoding="utf-8"))["release_requested_at"]
+        assert second_at == first_at                   # repeated passes did not restart the hand-over window
+    holder.release()
 
 
 def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):

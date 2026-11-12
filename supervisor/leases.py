@@ -231,6 +231,30 @@ def holder_label(layout: Layout, name: str) -> str | None:
     return others[0]["label"] if others else None
 
 
+def _record_waiting_from_peek(layout: Layout, name: str) -> None:
+    """Record this project as waiting on `resources.<name>.lease`, for a caller that only ever peeks
+    (`holder_label`, from `supervisor.gate.lease_blocked`) and so never reaches `ResourceLease._try_take()` — the
+    only place this was previously written. Internal to the core (not part of the plugin-facing lease handle);
+    a no-op when unconfigured, when nobody else holds it live right now, or when this project's own request is
+    already on file, so repeated calls while the same hand-over window is open never push `release_requested_at`
+    forward."""
+    cfg = _lease_config(layout, name)
+    if cfg is None:
+        return
+    holder = _holder_id(layout)
+    with FileLock(_lock_path(cfg), owner="resource-lease", timeout=5.0):
+        now = time.time()
+        doc = _read(cfg)
+        live = _live_entries(doc, cfg, now)
+        if not any(e["holder"] != holder for e in live):
+            return
+        if doc.get("release_requested_by") != holder:
+            doc["release_requested_by"] = holder
+            doc["release_requested_label"] = cfg.label
+            doc["release_requested_at"] = now
+            atomic_json(cfg.path, doc)
+
+
 def resource_lease(layout: Layout, name: str) -> ResourceLease:
     """The project's handle on the machine-wide lease `resources.<name>.lease` names (docs/PLUGIN_API.md). Reads
     configuration fresh each call; the returned handle acts for this process from here on."""
