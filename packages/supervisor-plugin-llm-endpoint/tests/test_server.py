@@ -277,12 +277,33 @@ def test_a_hard_killed_watchdog_does_not_leave_its_server_running(tmp_path, fake
 
 
 def _wait_until_dead(pid: int, timeout: float = 10.0) -> bool:
+    """A real orphan's parent (the watchdog) is already dead by the time anything calls `_kill_process()` on
+    it, so the kernel has already reparented it to init/the system's subreaper, which reaps on SIGCHLD as a
+    matter of course. This fixture's stand-in has no such reaper - `orphaned_server` below starts its "server"
+    as pytest's own direct child, and `psutil.Process(pid).kill()` (SIGKILL, called from this same pytest
+    process, never the server's parent) leaves a kill with nothing to reap it - so on POSIX it sits as a zombie,
+    which `psutil.pid_exists()`/`Process.is_running()` both still report present. A zombie means the kill already
+    landed (the process has exited; only its exit status is unclaimed), so it counts as dead here."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not psutil.pid_exists(pid) or not psutil.Process(pid).is_running():
+        try:
+            proc = psutil.Process(pid)
+            if proc.status() == psutil.STATUS_ZOMBIE or not proc.is_running():
+                return True
+        except psutil.NoSuchProcess:
             return True
         time.sleep(0.1)
     return False
+
+
+def _dead_or_why_not(pid: int) -> str:
+    """A diagnostic for `_wait_until_dead()`'s own failure message, not production code: if the zombie read above
+    does not explain a future failure on some other POSIX runner, this names the pid's actual psutil status
+    instead of a bare `assert False`."""
+    try:
+        return f"pid {pid} still present, psutil status={psutil.Process(pid).status()!r}"
+    except psutil.NoSuchProcess:
+        return f"pid {pid} not present (unexpected: _wait_until_dead should have returned True)"
 
 
 @pytest.fixture
@@ -317,7 +338,7 @@ def test_ensure_started_kills_the_orphan_instead_of_reporting_it_healthy(tmp_pat
     monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)) or _FakeProc())
     cfg = {"base_url": fake_health, "health_path": "/health", "argv": ["demo-server"]}
     assert _server.ensure_started(cfg, str(tmp_path)) is False          # DEFECT at the old head: True
-    assert _wait_until_dead(orphaned_server["pid"])
+    assert _wait_until_dead(orphaned_server["pid"]), _dead_or_why_not(orphaned_server["pid"])
     assert len(spawned) == 1                                            # recovers: spawns a fresh watchdog
 
 
@@ -326,5 +347,5 @@ def test_stop_command_kills_the_orphan_directly_when_no_watchdog_is_left_to_read
     _server._write_state(str(tmp_path), orphaned_server)
     result = llm_endpoint._stop_command(layout, {}, "owner")
     assert result.get("killed_orphan_pid") == orphaned_server["pid"]    # DEFECT at the old head: a no-op file
-    assert _wait_until_dead(orphaned_server["pid"])
+    assert _wait_until_dead(orphaned_server["pid"]), _dead_or_why_not(orphaned_server["pid"])
     assert not _server.stop_path(str(tmp_path)).exists()
