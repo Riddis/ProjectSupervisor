@@ -64,6 +64,25 @@ def test_continuous_deferral_past_the_budget_raises_exactly_one_owner_item(tmp_p
     assert len(again) == 1 and again[0]["id"] == first["id"]
 
 
+def test_the_owner_inbox_being_full_does_not_turn_a_deferral_into_a_failure(tmp_path, monkeypatch):
+    layout = _layout(tmp_path, devices={"alpha": {"index": 0, "usable_vram_floor_mb": 6500}},
+                     plugin_cfg={"defer_budget_s": 0.1})
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 100)
+    monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: False)
+    for n in range(inbox.MAX_OPEN_PER_ROLE):                 # fill the owner's inbox to its cap first
+        inbox.create(layout, for_role="owner", subject=f"other item {n}", summary=f"unrelated {n}")
+    task = _task(layout, prompt="hello")
+    spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+
+    with pytest.raises(plugin.CapacityDeferred):
+        llm_endpoint.ADAPTER.submit(spec)
+    time.sleep(0.2)                                           # now past the budget, with the inbox still full
+    with pytest.raises(plugin.CapacityDeferred):              # still a deferral - never InboxFull, never a failure
+        llm_endpoint.ADAPTER.submit(spec)
+    assert _owner_items(layout) == []                         # the cap meant nothing could be written, not that
+                                                               # something else was invented to work around it
+
+
 def test_a_successful_submit_resets_the_window_so_the_next_deferral_raises_a_fresh_item(tmp_path, monkeypatch):
     layout = _layout(tmp_path, plugin_cfg={"defer_budget_s": 0.2})
     monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: None)   # no floor anywhere: defers on cold start
@@ -91,8 +110,7 @@ def test_a_successful_submit_resets_the_window_so_the_next_deferral_raises_a_fre
     with pytest.raises(plugin.CapacityDeferred):
         llm_endpoint.ADAPTER.submit(spec)
     items = _owner_items(layout)
-    assert len(items) == 2
-    assert {i["id"] for i in items} == {items[0]["id"], items[1]["id"]} and items[0]["id"] != items[1]["id"]
+    assert len(items) == 2 and items[0]["id"] != items[1]["id"]
 
 
 def test_the_deferral_start_is_persisted_in_the_state_file_and_survives_a_restart(tmp_path, monkeypatch):
@@ -134,7 +152,9 @@ def test_the_owner_item_names_the_project_the_lane_the_elapsed_time_the_reason_a
     items = _owner_items(layout)
     assert len(items) == 1
     text = items[0]["summary"] + (items[0].get("detail") or "")
+    assert layout.root.name in text                             # the project (no lease label configured here)
     assert "llm_endpoint" in text                              # the lane
+    assert "hours" in text                                      # the elapsed deferral
     assert "secondary" in text                                 # the reason the adapter last gave names the device
     assert "below floor" in text
     assert "doctor" in text or "llm_endpoint.stop" in text      # what the owner can do

@@ -212,3 +212,10 @@ def test_open_owned_item_raises_for_a_kind_that_is_not_the_callers(lay):
     with pytest.raises(plugin.InboxError, match="other_ext"):
         mod(lay, "other_ext").open_someone_elses_kind(lay, "window-1")
 
+
+def test_open_owned_item_returns_none_instead_of_inboxfull_when_the_role_is_at_the_cap(lay):
+    for n in range(inbox.MAX_OPEN_PER_ROLE):
+        inbox.create(lay, for_role="owner", subject=f"s{n}", summary=f"x{n}")
+    assert mod(lay, "owner_ext").open_item(lay, "window-1") is None
+    assert [i for i in inbox.all_items(lay) if i["kind"] == "grid"] == []   # nothing written to work around the cap
+
