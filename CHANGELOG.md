@@ -17,6 +17,16 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   ResourceLease`) and `ResourceLease` (`acquire`, `renew`, `release`, `release_requested`) are new, documented in
   `docs/PLUGIN_API.md` under "Resource leases".
 
+- **Added: a way for a plugin to raise one idempotent owner inbox item for a condition that keeps holding.**
+  `owned_item`, `owned_items`, `update_owned_item` and `close_owned_item` read, update and close items a plugin
+  already has; none of them create one, so a plugin with no other inbox-owning job (the local model lane's
+  deferral budget, D-013 R5) had no way to tell the owner at all without importing the framework's internal
+  `inbox` module directly, which G5's plugin check already refuses. **Plugin API:** `open_owned_item`
+  (`supervisor.plugin.open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
+  allowed_responses=None, free_text=True, extra=None) -> dict`) is new, documented in `docs/PLUGIN_API.md` under
+  "Inbox items": the first call for a given `dedup_key` creates the item, every later call with the same key
+  returns it unchanged.
+
 ## 2.5.1 — 2026-11-10
 
 - **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and

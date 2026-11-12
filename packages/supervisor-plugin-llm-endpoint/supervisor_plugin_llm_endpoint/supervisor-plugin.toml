@@ -8,6 +8,7 @@ framework = ">=2.6,<3"
 adapters = ["llm_endpoint"]
 doctor_checks = ["llm_endpoint"]
 commands = ["llm_endpoint.start", "llm_endpoint.stop"]
+inbox_kinds = ["llm_endpoint_capacity"]
 
 [config]
 section = "plugins.llm_endpoint"

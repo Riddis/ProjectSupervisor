@@ -23,7 +23,10 @@ from . import _server
 
 job_spec = plugin.job_spec
 
-DEFER_SECONDS = 30.0
+# D-013 section 5: the watchdog's own lease wait (wait_s, 60s default) is followed by 120s of deferral before
+# the adapter's next retry; this used to be 30 (RELEASE_REVIEW_local-lane.md F9).
+DEFER_SECONDS = 120.0
+INBOX_KIND = "llm_endpoint_capacity"
 
 
 def llm_endpoint_config(layout: plugin.Layout) -> dict:
@@ -36,6 +39,7 @@ def llm_endpoint_config(layout: plugin.Layout) -> dict:
     cfg.setdefault("context_tokens", 8192)
     cfg.setdefault("max_tokens", 2048)
     cfg.setdefault("chars_per_token", 3)
+    cfg.setdefault("defer_budget_s", 7200)
     return cfg
 
 
@@ -93,6 +97,7 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
 
     def submit(self, spec: dict) -> dict:
         cfg = spec["cfg"]
+        root = spec["root"]
         # The floor says whether a *start* will work (D-013 section 4); a resident server already
         # holds exactly the VRAM it guards, so it is only asked before a start is attempted - never
         # against a server that is already up and answering (F3, RELEASE_REVIEW_local-lane.md).
@@ -104,15 +109,50 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
                 if free is not None and free < floor:
                     label = name or (f"#{index}" if index is not None else None)
                     prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
-                    raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS,
-                                                  f"{prefix} {free}MiB below floor {floor}MiB")
-        if not _server.ensure_started(cfg, spec["root"]):
-            raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS,
-                                          f"{cfg['base_url']} not ready yet (cold start)")
+                    reason = f"{prefix} {free}MiB below floor {floor}MiB"
+                    self._on_defer(spec, reason)
+                    raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, reason)
+        if not _server.ensure_started(cfg, root):
+            reason = f"{cfg['base_url']} not ready yet (cold start)"
+            self._on_defer(spec, reason)
+            raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, reason)
+        _server.clear_deferral(root)   # reached the server: this window is over, win or lose the next one fresh
         return super().submit(spec)
+
+    @staticmethod
+    def _on_defer(spec: dict, reason: str) -> None:
+        """R5's `defer_budget_s` (D-013 section 5): persist when this continuous window of deferral started -
+        in the state file, not in this process, so a loop restart does not grant a fresh budget - and, once
+        the window has run longer than the budget, raise the one owner item it calls for. Called on every
+        deferral, not only the first: `open_owned_item` is idempotent by the window's own start time, so a
+        later call in the same window never raises a second item."""
+        root = spec["root"]
+        now = time.time()
+        started = _server.read_deferral(root).get("started", now)
+        _server.write_deferral(root, started=started, last_reason=reason)
+        elapsed = now - started
+        budget = float(spec["cfg"].get("defer_budget_s", 7200))
+        if elapsed > budget:
+            _raise_owner_deferral_item(plugin.Layout(root), root, started, elapsed, reason)
 
 
 ADAPTER = LlmEndpointAdapter()
+
+
+def _raise_owner_deferral_item(layout: plugin.Layout, root: str, started: float, elapsed: float, reason: str) -> dict:
+    """The owner item R5 requires: readable without the store, naming the project, the lane, how long it has
+    deferred and the adapter's own last reason, plus what the owner can do. Idempotent by the window's own
+    start time (`dedup_key`): called every time the budget stays exceeded, it raises nothing past the first."""
+    gpu_cfg = (plugin.resources(layout).get("gpu") or {})
+    label = ((gpu_cfg.get("lease") or {}).get("label")) or Path(root).name
+    hours = elapsed / 3600
+    subject = f"{label}: the llm_endpoint lane has deferred every job for {hours:.1f}h"
+    summary = (f"Project {label!r}, lane llm_endpoint: every job has been deferred, none run, for about "
+              f"{hours:.1f} hours. The adapter's last reason: {reason}. Run `supervisor doctor` to see what "
+              f"is holding the GPU cards and stop it, or run the llm_endpoint.stop command if this lane's own "
+              f"server is the cause; the lane keeps retrying on its own and needs no action to keep working.")
+    return plugin.open_owned_item(layout, INBOX_KIND, str(started), subject=subject, summary=summary,
+                                  allowed_responses=["ACKNOWLEDGE"], free_text=True)
 
 
 # ------------------------------------------------------------------ doctor check
@@ -189,3 +229,4 @@ def setup(registry) -> None:
     registry.doctor_check(check_llm_endpoint)
     registry.command("llm_endpoint.start", _start_command)
     registry.command("llm_endpoint.stop", _stop_command)
+    registry.inbox_kind(INBOX_KIND, "Local model lane capacity", answerable=True, show_evidence=False)

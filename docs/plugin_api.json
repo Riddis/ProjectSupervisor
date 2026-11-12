@@ -1329,6 +1329,67 @@
       "params": [],
       "returns": "str"
     },
+    "open_owned_item": {
+      "kind": "function",
+      "params": [
+        {
+          "annotation": "Layout",
+          "kind": "positional_or_keyword",
+          "name": "layout"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "kind"
+        },
+        {
+          "annotation": "str",
+          "kind": "positional_or_keyword",
+          "name": "dedup_key"
+        },
+        {
+          "annotation": "str",
+          "kind": "keyword_only",
+          "name": "subject"
+        },
+        {
+          "annotation": "str",
+          "kind": "keyword_only",
+          "name": "summary"
+        },
+        {
+          "annotation": "str",
+          "default": "'owner'",
+          "kind": "keyword_only",
+          "name": "for_role"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "keyword_only",
+          "name": "detail"
+        },
+        {
+          "annotation": "list[str] | None",
+          "default": "None",
+          "kind": "keyword_only",
+          "name": "allowed_responses"
+        },
+        {
+          "annotation": "bool",
+          "default": "True",
+          "kind": "keyword_only",
+          "name": "free_text"
+        },
+        {
+          "annotation": "dict | None",
+          "default": "None",
+          "kind": "keyword_only",
+          "name": "extra"
+        }
+      ],
+      "returns": "dict"
+    },
     "owned_item": {
       "kind": "function",
       "params": [

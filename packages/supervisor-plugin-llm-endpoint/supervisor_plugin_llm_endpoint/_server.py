@@ -123,6 +123,36 @@ def stop_path(root) -> Path:
     return Path(root) / "state" / "runtime" / "llm_endpoint_stop_requested"
 
 
+def deferral_path(root) -> Path:
+    return Path(root) / "state" / "runtime" / "llm_endpoint_deferral.json"
+
+
+def read_deferral(root) -> dict:
+    """The current deferral window, as the adapter's own process last wrote it (never the watchdog's): `{}`
+    when nothing is deferring. Read fresh every call - never cached in memory - so the window survives a loop
+    restart (D-013 R5 names this explicitly: the accounting is in the state file, not a process-lifetime
+    counter)."""
+    try:
+        return json.loads(deferral_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_deferral(root, *, started: float, last_reason: str) -> None:
+    path = deferral_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"started": started, "last_reason": last_reason}), encoding="utf-8")
+
+
+def clear_deferral(root) -> None:
+    """A submit that reaches the server: the window just ended, so the next deferral - whenever it next
+    happens - starts a fresh one and gets its own owner item rather than inheriting an old `started`."""
+    try:
+        deferral_path(root).unlink()
+    except OSError:
+        pass
+
+
 def request_stop(root) -> None:
     """The owner command `llm_endpoint.stop`: ask the watchdog to let go at its next poll, however long that
     is - never a direct kill from here, so the watchdog's own cleanup (child, lease, state file) always runs."""

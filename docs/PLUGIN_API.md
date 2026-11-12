@@ -346,6 +346,15 @@ must have claimed), as read now, by id.
 
 `owned_item(layout, item_id) -> dict`: one item, as read now.
 
+### `open_owned_item`
+
+`open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
+allowed_responses=None, free_text=True, extra=None) -> dict`: idempotently raise one item of a kind the caller
+claimed. The first call for a given `dedup_key` creates the item (`extra["dedup_key"]`, alongside whatever else
+`extra` carries); every later call with the same key - whether that item is still open or has already been
+answered - returns it unchanged, so a plugin whose condition keeps holding reports it once per occurrence rather
+than flooding the inbox. Raises InboxError when `kind` is not the caller's.
+
 ### `update_owned_item`
 
 `update_owned_item(layout, item_id, fn) -> dict`: read-modify-write under the inbox lock (`state/.inbox.lock`, the

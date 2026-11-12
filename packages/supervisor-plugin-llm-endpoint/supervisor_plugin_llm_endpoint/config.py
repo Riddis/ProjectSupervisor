@@ -13,7 +13,13 @@ against its own floor, not a single chosen one.
 `chars_per_token` is the context-budget estimate's own assumption (D-013 section 2.1): a deterministic
 characters-per-token ratio, never a call to a model. 3 is conservative for code, diffs, YAML and non-English
 text, which tokenise at roughly 2.5-3.5 chars/token with every tokenizer this lane will meet (RELEASE_REVIEW_
-local-lane.md F7); a project serving plain English prose may raise it."""
+local-lane.md F7); a project serving plain English prose may raise it.
+
+`defer_budget_s` is D-013 section 5's R5 row: after this many continuous seconds of deferral the adapter raises
+one idempotent owner inbox item naming what the adapter last gave as the reason, and keeps deferring - "Silence
+is not a report". 7200 (two hours) is the design's own default; a project may lower it for a faster heads-up.
+A float, not an int: the arithmetic it is compared against (`time.time()` deltas) is already float, and a test
+wants a sub-second budget to prove the behaviour without a real wait."""
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
@@ -31,3 +37,4 @@ class Settings(BaseModel):
     context_tokens: int = 8192
     max_tokens: int = 2048
     chars_per_token: int = 3
+    defer_budget_s: float = 7200.0

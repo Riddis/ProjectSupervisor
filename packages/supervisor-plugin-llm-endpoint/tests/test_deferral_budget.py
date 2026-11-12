@@ -33,7 +33,7 @@ def _owner_items(layout):
 
 def test_continuous_deferral_past_the_budget_raises_exactly_one_owner_item(tmp_path, monkeypatch):
     layout = _layout(tmp_path, devices={"alpha": {"index": 0, "usable_vram_floor_mb": 6500}},
-                     plugin_cfg={"defer_budget_s": 0.2})
+                     plugin_cfg={"defer_budget_s": 0.3})
     monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 100)
     monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: False)
     task = _task(layout, prompt="hello")
@@ -43,7 +43,12 @@ def test_continuous_deferral_past_the_budget_raises_exactly_one_owner_item(tmp_p
         llm_endpoint.ADAPTER.submit(spec)
     assert _owner_items(layout) == []                        # the window just opened: too soon for an item
 
-    time.sleep(0.3)
+    time.sleep(0.1)                                           # still under the 0.3s budget: a sub-1 budget must
+    with pytest.raises(plugin.CapacityDeferred):              # not be floored to 0 and fire immediately
+        llm_endpoint.ADAPTER.submit(spec)
+    assert _owner_items(layout) == []
+
+    time.sleep(0.3)                                           # now past the budget
     with pytest.raises(plugin.CapacityDeferred):
         llm_endpoint.ADAPTER.submit(spec)
     items = _owner_items(layout)
