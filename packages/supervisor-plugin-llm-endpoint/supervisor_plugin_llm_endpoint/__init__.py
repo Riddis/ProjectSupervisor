@@ -151,14 +151,15 @@ def check_llm_endpoint(layout: plugin.Layout) -> plugin.Check:
         state = {}
     pid = state.get("pid")
     if pid is not None:
-        import psutil
-        try:
-            alive = psutil.Process(pid).is_running()
-        except psutil.Error:
-            alive = False
-        if not alive:
+        if not _server._process_alive(pid, state.get("create_time")):
             return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} reachable, but the state file names "
                                 f"pid {pid}, which is not running: the watchdog may have crashed without cleaning up")
+        if not _server._process_alive(state.get("watchdog_pid"), state.get("watchdog_create_time")):
+            # F5: the state names a dead watchdog while its server is alive - nothing renews its lease, nothing
+            # idle-stops it, and reporting it "healthy" is exactly how it goes unnoticed.
+            return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} reachable and its pid {pid} is "
+                                "running, but the state names a dead watchdog while its server is alive: "
+                                "nothing will stop or renew the lease for it; llm_endpoint.stop will kill it")
     return plugin.Check("llm_endpoint", True, f"{cfg['base_url']} healthy" + (f", {model} present" if model else ""))
 
 
@@ -172,6 +173,12 @@ def _start_command(layout: plugin.Layout, payload: dict, actor: str) -> dict:
 
 
 def _stop_command(layout: plugin.Layout, payload: dict, actor: str) -> dict:
+    # F5: a stop request written for a dead watchdog has no reader. When the state names one, this command
+    # kills the orphaned server directly instead of touching a file nobody is left to notice.
+    orphan_pid = _server.dead_watchdog_with_live_server(str(layout.root))
+    if orphan_pid is not None:
+        _server._kill_process(orphan_pid)
+        return {"status": "ok", "killed_orphan_pid": orphan_pid}
     _server.request_stop(str(layout.root))
     return {"status": "ok"}
 

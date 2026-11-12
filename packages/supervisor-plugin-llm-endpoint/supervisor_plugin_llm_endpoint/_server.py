@@ -16,6 +16,8 @@ Two halves, deliberately separate:
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 import sys
 import time
@@ -27,6 +29,86 @@ from supervisor import plugin
 
 SPAWN_GUARD_S = 30.0         # ensure_started() will not spawn a second watchdog within this long of the last spawn
 POLL_S = 2.0
+
+
+# ---------------------------------------------------------------- tying the child to this process (F5)
+#
+# The watchdog's own `finally` (below) cannot run after a hard kill, so the server child must die at the OS
+# level instead of by this process's own cleanup code: a Job Object with KILL_ON_JOB_CLOSE on Windows, a new
+# process group plus PR_SET_PDEATHSIG on POSIX. Each half is guarded so the other platform never touches it.
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    _JOBOBJECTINFOCLASS_EXTENDED_LIMIT = 9
+    _PROCESS_TERMINATE_AND_SET_QUOTA = 0x0001 | 0x0100   # the two rights AssignProcessToJobObject needs
+
+    class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [("ReadOperationCount", ctypes.c_uint64), ("WriteOperationCount", ctypes.c_uint64),
+                    ("OtherOperationCount", ctypes.c_uint64), ("ReadTransferCount", ctypes.c_uint64),
+                    ("WriteTransferCount", ctypes.c_uint64), ("OtherTransferCount", ctypes.c_uint64)]
+
+    class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _JOBOBJECT_BASIC_LIMIT_INFORMATION), ("IoInfo", _IO_COUNTERS),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, object]:
+        """A Job Object with KILL_ON_JOB_CLOSE, the child assigned to it. Windows closes every handle this
+        process holds - this one included - the instant it exits by any means, including an external kill()
+        that skips `finally`, and KILL_ON_JOB_CLOSE kills every process still assigned when that happens. The
+        job handle is returned so the caller keeps it referenced for the watchdog's whole life: closing it
+        early is exactly what would kill the child early."""
+        proc = subprocess.Popen(argv)
+        job = _kernel32.CreateJobObjectW(None, None)
+        if job:
+            info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            _kernel32.SetInformationJobObject(job, _JOBOBJECTINFOCLASS_EXTENDED_LIMIT, ctypes.byref(info),
+                                              ctypes.sizeof(info))
+            handle = _kernel32.OpenProcess(_PROCESS_TERMINATE_AND_SET_QUOTA, False, proc.pid)
+            if handle:
+                _kernel32.AssignProcessToJobObject(job, handle)
+                _kernel32.CloseHandle(handle)                  # the process handle, never the job handle
+        return proc, job
+else:
+    import ctypes
+
+    def _set_pdeathsig() -> None:
+        """Runs inside the child, after fork and before exec (`preexec_fn`): PR_SET_PDEATHSIG asks the kernel
+        to deliver SIGKILL to this process the instant its parent dies, by any means - Linux only (the
+        Windows half's POSIX counterpart), silently absent on a POSIX without `prctl` (e.g. macOS), where the
+        process group below is the only guarantee."""
+        try:
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            libc.prctl(1, signal.SIGKILL)   # PR_SET_PDEATHSIG
+        except OSError:
+            pass
+
+    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, None]:
+        """A new session (so the child is the leader of its own process group, `start_new_session=True`) plus
+        PR_SET_PDEATHSIG (`_set_pdeathsig`, Linux). Exercised for real only by CI's ubuntu legs."""
+        proc = subprocess.Popen(argv, preexec_fn=_set_pdeathsig, start_new_session=True)
+        return proc, None
 
 
 def state_path(root) -> Path:
@@ -97,11 +179,67 @@ def _spawned_recently(root) -> bool:
     return time.time() - float(doc.get("spawned", 0)) < SPAWN_GUARD_S
 
 
+def _process_alive(pid, create_time) -> bool:
+    """Same check and the same 2s tolerance as the core's own resource lease (`supervisor/leases.py`,
+    `_pid_alive`): `psutil.Process(pid).is_running()` alone trusts whatever the OS later reuses that pid for
+    (F14); comparing `create_time` is what tells this process from that one."""
+    import psutil
+    if not isinstance(pid, int) or create_time is None:
+        return False
+    try:
+        p = psutil.Process(pid)
+        return abs(p.create_time() - float(create_time)) < 2.0 and p.is_running()
+    except (psutil.Error, ValueError, OSError):
+        return False
+
+
+def _kill_process(pid: int) -> None:
+    import psutil
+    try:
+        psutil.Process(pid).kill()
+    except psutil.Error:
+        pass
+
+
+def _process_create_time(pid: int) -> float | None:
+    import psutil
+    try:
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
+
+
+def dead_watchdog_with_live_server(root) -> int | None:
+    """None when the state file names no server, or names one whose watchdog is still alive; otherwise the
+    server's own pid. This is F5's leak: the lease entry is pruned because the watchdog's pid is dead, so the
+    cards look free; a bare health check or a bare `psutil.Process(pid).is_running()` both read this as a
+    normal, healthy server, because nothing about either one asks whether anything is left to stop it."""
+    try:
+        state = json.loads(state_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = state.get("pid")
+    if pid is None or not _process_alive(pid, state.get("create_time")):
+        return None
+    if _process_alive(state.get("watchdog_pid"), state.get("watchdog_create_time")):
+        return None
+    return pid
+
+
 def ensure_started(cfg: dict, root: str) -> bool:
     """True once the endpoint answers healthy. Never waits out a cold load: when it is not reachable yet, this
     starts the watchdog in the background (unless one was already started inside `SPAWN_GUARD_S`) and returns
-    False immediately - the adapter's own `CapacityDeferred` is what makes that cost no attempt."""
-    if _health_ok(cfg["base_url"], cfg.get("health_path", "/health")):
+    False immediately - the adapter's own `CapacityDeferred` is what makes that cost no attempt.
+
+    When the state file instead names a dead watchdog whose server is still alive (F5), reporting that server
+    healthy would leak it forever: nothing renews its lease, nothing idle-stops it, nothing re-adopts it. This
+    kills it and falls into the normal cold-start path below, which spawns a fresh, correctly-configured
+    watchdog - smaller and safer than teaching a new watchdog to adopt a child whose argv it never recorded."""
+    orphan_pid = dead_watchdog_with_live_server(root)
+    if orphan_pid is not None:
+        _kill_process(orphan_pid)
+        _write_state(root, {"pid": None, "stopped": time.time(), "why": "orphan"})
+    elif _health_ok(cfg["base_url"], cfg.get("health_path", "/health")):
         return True
     if not cfg.get("argv"):
         raise RuntimeError(f"{cfg['base_url']} is unreachable and plugins.llm_endpoint.argv is not configured: "
@@ -133,7 +271,7 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         _write_state(root, {"pid": None, "stopped": time.time(), "why": "lease"})
         return "lease_unavailable"
     touch_activity(root)
-    proc = subprocess.Popen(cfg["argv"])
+    proc, _job = _start_child_tied_to_this_process(cfg["argv"])   # F5: dies with this process even on a hard kill
     try:
         deadline = time.time() + cfg.get("start_timeout_s", 300)
         health_path = cfg.get("health_path", "/health")
@@ -145,7 +283,10 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
             if time.time() > deadline:
                 return "start_timeout"
             time.sleep(poll_s)
-        _write_state(root, {"pid": proc.pid, "base_url": cfg["base_url"], "started": time.time()})
+        own_pid = os.getpid()
+        _write_state(root, {"pid": proc.pid, "create_time": _process_create_time(proc.pid),
+                            "watchdog_pid": own_pid, "watchdog_create_time": _process_create_time(own_pid),
+                            "base_url": cfg["base_url"], "started": time.time()})
         idle_stop_s = cfg.get("idle_stop_s", 900)
         while True:
             time.sleep(poll_s)
@@ -160,7 +301,18 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
                 return "release_requested"
     finally:
         if proc.poll() is None:
-            proc.kill()
+            # The clean paths (idle, release_requested, stop_requested) used to call proc.kill() alone; tying
+            # the child to a new session (`_start_child_tied_to_this_process`, POSIX) makes it the leader of
+            # its own process group, so this now kills that whole group - any grandchild the configured argv
+            # spawned goes with it, not just the direct child. Windows has no such group; proc.kill() plus the
+            # Job Object's own KILL_ON_JOB_CLOSE (already in effect, not re-triggered here) cover it instead.
+            if sys.platform != "win32":
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+            else:
+                proc.kill()
             proc.wait(timeout=10)
         lease.release()
         _write_state(root, {"pid": None, "stopped": time.time()})

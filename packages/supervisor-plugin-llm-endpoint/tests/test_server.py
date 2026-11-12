@@ -247,6 +247,15 @@ def test_a_hard_killed_watchdog_does_not_leave_its_server_running(tmp_path, fake
             wd.kill()
 
 
+def _wait_until_dead(pid: int, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not psutil.pid_exists(pid) or not psutil.Process(pid).is_running():
+            return True
+        time.sleep(0.1)
+    return False
+
+
 @pytest.fixture
 def orphaned_server():
     """A real sleeping python stands in for a server the risk list worries about; a real, already-exited
@@ -279,7 +288,7 @@ def test_ensure_started_kills_the_orphan_instead_of_reporting_it_healthy(tmp_pat
     monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)) or _FakeProc())
     cfg = {"base_url": fake_health, "health_path": "/health", "argv": ["demo-server"]}
     assert _server.ensure_started(cfg, str(tmp_path)) is False          # DEFECT at the old head: True
-    assert not psutil.pid_exists(orphaned_server["pid"]) or not psutil.Process(orphaned_server["pid"]).is_running()
+    assert _wait_until_dead(orphaned_server["pid"])
     assert len(spawned) == 1                                            # recovers: spawns a fresh watchdog
 
 
@@ -288,5 +297,5 @@ def test_stop_command_kills_the_orphan_directly_when_no_watchdog_is_left_to_read
     _server._write_state(str(tmp_path), orphaned_server)
     result = llm_endpoint._stop_command(layout, {}, "owner")
     assert result.get("killed_orphan_pid") == orphaned_server["pid"]    # DEFECT at the old head: a no-op file
-    assert not psutil.pid_exists(orphaned_server["pid"]) or not psutil.Process(orphaned_server["pid"]).is_running()
+    assert _wait_until_dead(orphaned_server["pid"])
     assert not _server.stop_path(str(tmp_path)).exists()
