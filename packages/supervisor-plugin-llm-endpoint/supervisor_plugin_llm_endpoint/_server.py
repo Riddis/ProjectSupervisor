@@ -196,7 +196,9 @@ def is_idle(root, idle_stop_s: float, now: float | None = None) -> bool:
 def _health_ok(base_url: str, health_path: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.get(base_url.rstrip("/") + health_path, timeout=timeout)
-        return resp.status_code < 500
+        # F15 (RELEASE_REVIEW_local-lane.md): a 404 from a health_path the server does not serve (Ollama has
+        # no /health) is a misconfiguration, not a server that may still be loading (5xx) - only 2xx is ready.
+        return 200 <= resp.status_code < 300
     except requests.RequestException:
         return False
 
