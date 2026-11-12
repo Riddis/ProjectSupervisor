@@ -40,6 +40,7 @@ def llm_endpoint_config(layout: plugin.Layout) -> dict:
     cfg.setdefault("max_tokens", 2048)
     cfg.setdefault("chars_per_token", 3)
     cfg.setdefault("defer_budget_s", 7200)
+    cfg.setdefault("profile", "default")
     return cfg
 
 
@@ -70,6 +71,14 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         cfg = llm_endpoint_config(layout)
+        # F12 (RELEASE_REVIEW_local-lane.md): no multi-profile switching is an honest cut - T5-02 has chosen
+        # no second profile yet - but a cut must be loud. Refuse any profile but the one configured; the
+        # design job contract's own example (LOCAL_MODEL_LANE.md) names "default", and a job that names none
+        # at all is the ordinary case every existing task uses.
+        requested_profile = job.get("profile")
+        if requested_profile is not None and requested_profile != cfg["profile"]:
+            raise plugin.PluginError(f"profile {requested_profile!r} requested, but this lane serves only "
+                                     f"the configured profile {cfg['profile']!r} (no multi-profile switching)")
         prompt = job.get("prompt", "")
         if job.get("prompt_file"):
             prompt = (layout.root / job["prompt_file"]).read_text(encoding="utf-8")
