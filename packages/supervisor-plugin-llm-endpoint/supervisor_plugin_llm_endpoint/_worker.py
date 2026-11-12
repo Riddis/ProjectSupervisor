@@ -78,7 +78,10 @@ def main(request_path: str, result_path: str) -> int:
         payload = {"model": req.get("model"), "messages": [{"role": "user", "content": req.get("prompt", "")}],
                    "max_tokens": req.get("max_tokens"), "stream": True}
         if req.get("schema"):
-            payload["response_format"] = {"type": "json_schema", "json_schema": {"schema": req["schema"]}}
+            # F11 (RELEASE_REVIEW_local-lane.md): llama-server and Ollama tolerate a nameless json_schema;
+            # the OpenAI shape vLLM and OpenAI-shaped servers require it to validate the request at all.
+            payload["response_format"] = {"type": "json_schema",
+                                          "json_schema": {"name": "answer", "schema": req["schema"]}}
         _touch(req.get("activity_file"))
         started = time.time()
         for piece in _stream(req["base_url"], payload, req.get("timeout_s", 1800), state):
