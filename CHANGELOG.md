@@ -31,6 +31,24 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   attempt by a backlog it did not cause (found in this same lane's F9 round: an unguarded call raised InboxFull
   out of `submit()`, which the loop turned into a failed attempt instead of a deferral).
 
+- **Hardened before release: the lease protocol's own loop integration, caught by the local-lane round-2 review
+  (`docs/reviews/RELEASE_REVIEW_local-lane.md` F1, F2, F8).** The loop now renews a running `gpu` record's lease
+  entry on every `reconcile()`, so a job that outlives `stale_after_s` does not go stale under another project
+  still holding it; a loop that is only ever peek-refused still records its own release request against the
+  holder, so a blocked loop's ask has a sender and the holder's watchdog can see it; and a release request older
+  than `hand_over_timeout_s` is now treated as expired rather than read forever, so a waiter that gave up does
+  not keep stopping the holder's server on every poll. All three were caught before this feature's first release
+  - never shipped broken - by the chain of fixes this CHANGELOG entry now names.
+
+- **The bundled `supervisor-plugin-llm-endpoint` package (new in this release) carries its own round-2 fixes**
+  before its first tag: the VRAM floors gate a start rather than every request against a server already healthy
+  (F3), its watchdog honours a refused lease acquire instead of starting anyway (F4), a hard-killed watchdog no
+  longer leaks a resident server that nothing notices or stops (F5/F14), its worker fails loudly on a truncated
+  or broken stream instead of reporting it COMPLETE (F6), its context-budget ratio is a conservative, overridable
+  setting instead of a flat guess (F7), and a lane that defers for two continuous hours raises one idempotent
+  owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each has its own record
+  under `docs/releases/local-lane/`.
+
 ## 2.5.1 — 2026-11-10
 
 - **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and
