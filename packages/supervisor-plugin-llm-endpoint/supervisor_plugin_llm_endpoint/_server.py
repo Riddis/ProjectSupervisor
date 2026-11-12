@@ -214,12 +214,16 @@ def _spawned_recently(root) -> bool:
 def _process_alive(pid, create_time) -> bool:
     """Same check and the same 2s tolerance as the core's own resource lease (`supervisor/leases.py`,
     `_pid_alive`): `psutil.Process(pid).is_running()` alone trusts whatever the OS later reuses that pid for
-    (F14); comparing `create_time` is what tells this process from that one."""
+    (F14); comparing `create_time` is what tells this process from that one. On POSIX, `is_running()` also
+    reads a zombie (exited, not yet reaped by its parent) as present - excluded here so a pid this process's own
+    `_kill_process()` just signalled is never read as alive for the brief window before its parent reaps it."""
     import psutil
     if not isinstance(pid, int) or create_time is None:
         return False
     try:
         p = psutil.Process(pid)
+        if p.status() == psutil.STATUS_ZOMBIE:
+            return False
         return abs(p.create_time() - float(create_time)) < 2.0 and p.is_running()
     except (psutil.Error, ValueError, OSError):
         return False

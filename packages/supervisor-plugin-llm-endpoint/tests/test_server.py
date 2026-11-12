@@ -306,6 +306,25 @@ def _dead_or_why_not(pid: int) -> str:
         return f"pid {pid} not present (unexpected: _wait_until_dead should have returned True)"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="zombies are a POSIX-only process state")
+def test_process_alive_reads_a_zombie_as_not_alive():
+    """The production half of F5's same question: `_process_alive()` (used by both the doctor and
+    `dead_watchdog_with_live_server()`) must not read a zombie - exited, awaiting its parent's reap - as a live
+    server, the same gap `_wait_until_dead()` above works around for this file's own stand-in fixture."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    create_time = psutil.Process(child.pid).create_time()
+    deadline = time.time() + 10
+    status = None
+    while time.time() < deadline:  # the child exits on its own; nothing reaps it, so it zombies meanwhile
+        status = psutil.Process(child.pid).status()
+        if status == psutil.STATUS_ZOMBIE:
+            break
+        time.sleep(0.05)
+    assert status == psutil.STATUS_ZOMBIE, f"the child never reached zombie state (last status={status!r})"
+    assert _server._process_alive(child.pid, create_time) is False
+    child.wait(timeout=10)  # reap, so no zombie is left behind for the test runner to clean up
+
+
 @pytest.fixture
 def orphaned_server():
     """A real sleeping python stands in for a server the risk list worries about; a real, already-exited
