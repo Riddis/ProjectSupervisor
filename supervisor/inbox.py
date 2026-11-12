@@ -98,15 +98,25 @@ def _next_id(layout: Layout) -> str:
 def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: str = "question",
           allowed_responses: list[str] | None = None, free_text: bool = True, from_: str = "system",
           task_id: str | None = None, attempt_id: str | None = None, approval_digest: str | None = None,
-          extra: dict | None = None, detail: str | None = None) -> dict:
+          extra: dict | None = None, detail: str | None = None, dedup_key: str | None = None) -> dict:
     """Write a new open item. Enforces the per-role cap and the prose budget (summary ≤ MAX_SUMMARY_CHARS; the
     optional `detail` — the full text, see fit() — ≤ MAX_DETAIL_CHARS); the cap check and id allocation happen
-    under one lock so concurrent creates never collide or overshoot. `extra` adds fields without overriding any."""
+    under one lock so concurrent creates never collide or overshoot. `extra` adds fields without overriding any.
+
+    `dedup_key`, paired with `kind`, is checked under that same lock, before the cap: a call whose kind+dedup_key
+    already names an existing item (open or answered) returns that item unchanged instead of writing another or
+    counting against the cap. This is the atomic form `plugin.open_owned_item` needs for its own idempotence —
+    scanning for a match outside this lock and then re-entering it to create one is not an option, since
+    `locks.FileLock` is not re-entrant (a second acquire by the same thread raises `LockHeld` immediately)."""
     if len(summary) > MAX_SUMMARY_CHARS:
         raise InboxError(f"summary is {len(summary)} characters; limit is {MAX_SUMMARY_CHARS}")
     if detail is not None and len(detail) > MAX_DETAIL_CHARS:
         raise InboxError(f"detail is {len(detail)} characters; limit is {MAX_DETAIL_CHARS}")
     with FileLock(layout.state / ".inbox.lock", owner="inbox", timeout=5.0):
+        if dedup_key is not None:
+            for item in all_items(layout):
+                if item.get("kind") == kind and item.get("dedup_key") == dedup_key:
+                    return item
         if len(open_items(layout, for_role)) >= MAX_OPEN_PER_ROLE:
             raise InboxFull(for_role)
         item_id = _next_id(layout)
@@ -117,7 +127,10 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
             doc["approval_digest"] = approval_digest
         if detail and detail.strip() != summary.strip():
             doc["detail"] = detail
-        for k, v in (extra or {}).items():
+        payload = dict(extra or {})
+        if dedup_key is not None:
+            payload.setdefault("dedup_key", dedup_key)
+        for k, v in payload.items():
             doc.setdefault(k, v)
         store.write_new(path_for(layout, item_id), doc)
     tasks_mod.log(layout, "inbox_open", from_, item=item_id, for_role=for_role, task=task_id)

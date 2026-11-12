@@ -139,9 +139,9 @@ def read_deferral(root) -> dict:
 
 
 def write_deferral(root, *, started: float, last_reason: str) -> None:
-    path = deferral_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"started": started, "last_reason": last_reason}), encoding="utf-8")
+    # atomic_json (temp file + replace): read_deferral treats a truncated file as `{}`, a fresh window - a
+    # crash mid-write must never look like that and silently grant a new budget.
+    plugin.atomic_json(deferral_path(root), {"started": started, "last_reason": last_reason})
 
 
 def clear_deferral(root) -> None:

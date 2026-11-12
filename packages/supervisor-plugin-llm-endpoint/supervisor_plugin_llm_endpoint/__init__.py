@@ -139,10 +139,15 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
 ADAPTER = LlmEndpointAdapter()
 
 
-def _raise_owner_deferral_item(layout: plugin.Layout, root: str, started: float, elapsed: float, reason: str) -> dict:
+def _raise_owner_deferral_item(layout: plugin.Layout, root: str, started: float, elapsed: float,
+                               reason: str) -> dict | None:
     """The owner item R5 requires: readable without the store, naming the project, the lane, how long it has
     deferred and the adapter's own last reason, plus what the owner can do. Idempotent by the window's own
-    start time (`dedup_key`): called every time the budget stays exceeded, it raises nothing past the first."""
+    start time (`dedup_key`): called every time the budget stays exceeded, it raises nothing past the first.
+
+    `open_owned_item` returns None, writing nothing, when the owner's inbox is already at its cap - never
+    InboxFull or any other exception - so this never turns a deferral into a failed attempt; it only logs why
+    the report did not go out, for the next person reading state/log.jsonl."""
     gpu_cfg = (plugin.resources(layout).get("gpu") or {})
     label = ((gpu_cfg.get("lease") or {}).get("label")) or Path(root).name
     hours = elapsed / 3600
@@ -151,8 +156,12 @@ def _raise_owner_deferral_item(layout: plugin.Layout, root: str, started: float,
               f"{hours:.1f} hours. The adapter's last reason: {reason}. Run `supervisor doctor` to see what "
               f"is holding the GPU cards and stop it, or run the llm_endpoint.stop command if this lane's own "
               f"server is the cause; the lane keeps retrying on its own and needs no action to keep working.")
-    return plugin.open_owned_item(layout, INBOX_KIND, str(started), subject=subject, summary=summary,
+    item = plugin.open_owned_item(layout, INBOX_KIND, str(started), subject=subject, summary=summary,
                                   allowed_responses=["ACKNOWLEDGE"], free_text=True)
+    if item is None:
+        plugin.log_event(layout, "llm_endpoint_deferral_item_suppressed", reason="owner inbox full",
+                         elapsed_s=round(elapsed, 1))
+    return item
 
 
 # ------------------------------------------------------------------ doctor check

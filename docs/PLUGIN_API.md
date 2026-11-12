@@ -349,11 +349,17 @@ must have claimed), as read now, by id.
 ### `open_owned_item`
 
 `open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
-allowed_responses=None, free_text=True, extra=None) -> dict`: idempotently raise one item of a kind the caller
-claimed. The first call for a given `dedup_key` creates the item (`extra["dedup_key"]`, alongside whatever else
-`extra` carries); every later call with the same key - whether that item is still open or has already been
+allowed_responses=None, free_text=True, extra=None) -> dict | None`: idempotently raise one item of a kind the
+caller claimed. The first call for a given `dedup_key` creates the item (`extra["dedup_key"]`, alongside whatever
+else `extra` carries); every later call with the same key - whether that item is still open or has already been
 answered - returns it unchanged, so a plugin whose condition keeps holding reports it once per occurrence rather
-than flooding the inbox. Raises InboxError when `kind` is not the caller's.
+than flooding the inbox. The dedup check and the write happen together under the inbox's own lock, so two
+concurrent callers with the same key never both create one.
+
+Raises InboxError when `kind` is not the caller's - its only error, but not its only way of not writing an item:
+when `for_role`'s inbox is already at its per-role cap, this returns `None` instead (writing nothing) rather than
+raising InboxFull, so a plugin reporting a condition that keeps holding is never crashed by someone else's
+backlog. Call again later; the same `dedup_key` still applies once the owner has made room.
 
 ### `update_owned_item`
 

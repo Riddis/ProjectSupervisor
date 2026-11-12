@@ -23,9 +23,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   deferral budget, D-013 R5) had no way to tell the owner at all without importing the framework's internal
   `inbox` module directly, which G5's plugin check already refuses. **Plugin API:** `open_owned_item`
   (`supervisor.plugin.open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
-  allowed_responses=None, free_text=True, extra=None) -> dict`) is new, documented in `docs/PLUGIN_API.md` under
-  "Inbox items": the first call for a given `dedup_key` creates the item, every later call with the same key
-  returns it unchanged.
+  allowed_responses=None, free_text=True, extra=None) -> dict | None`) is new, documented in `docs/PLUGIN_API.md`
+  under "Inbox items": the first call for a given `dedup_key` creates the item, every later call with the same
+  key returns it unchanged. When the owner's own role is already at its per-role cap this returns `None` instead
+  of raising `InboxFull` - the dedup check and the cap check now happen together under `inbox.create`'s own
+  lock - so a plugin reporting a condition that keeps holding can never have its own retry turned into a failed
+  attempt by a backlog it did not cause (found in this same lane's F9 round: an unguarded call raised InboxFull
+  out of `submit()`, which the loop turned into a failed attempt instead of a deferral).
 
 ## 2.5.1 — 2026-11-10
 
