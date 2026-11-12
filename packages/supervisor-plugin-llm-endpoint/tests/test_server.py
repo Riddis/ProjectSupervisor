@@ -120,6 +120,27 @@ def test_run_stops_on_a_release_request_from_another_project(tmp_path, fake_heal
     assert done.get("why") == "release_requested"
 
 
+def test_run_does_not_stop_on_an_expired_release_request_left_by_a_waiter_that_never_came_back(tmp_path, fake_health):
+    """F8, the watchdog side: _server.run() checks lease.release_requested() every poll (acquire()'s own first
+    call also walks past the stale request and clears it, F8's fix in leases._try_take()). A request left on
+    disk by a waiter whose hand_over_timeout_s has already passed before run() even starts must not read as
+    live and must not stop the server it is about to start."""
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    lay = testing.project(root, routing={"resources": {"gpu": {
+        "lease": {"path": str(lease_file), "label": "demo", "hand_over_timeout_s": 0.2}}}})
+    lease_file.parent.mkdir(parents=True, exist_ok=True)
+    lease_file.write_text(json.dumps({
+        "entries": [], "release_requested_by": "some-other-project-hash",
+        "release_requested_label": "other", "release_requested_at": time.time() - 10,   # long past the window
+    }), encoding="utf-8")
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 5, "idle_stop_s": 0.3,
+          "argv": [sys.executable, "-c", "import time; time.sleep(30)"]}
+    why = _server.run(str(root), cfg, poll_s=0.05)
+    assert why == "idle"                                                   # not stopped by the stale request
+    assert plugin.resource_lease(lay, "gpu").release_requested() is False
+
+
 def test_run_times_out_and_releases_when_the_server_never_becomes_healthy(tmp_path):
     lease_file = tmp_path / "lease" / "gpu.lease"
     root = tmp_path / "proj"

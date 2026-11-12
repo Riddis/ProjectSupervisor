@@ -151,7 +151,11 @@ class ResourceLease:
             mine.append({"holder": self._holder, "label": cfg.label, "pid": self._pid,
                          "create_time": self._create_time, "since": now, "renewed": now})
             doc["entries"] = mine
-            if doc.get("release_requested_by") == self._holder:
+            # Clear the request on the requester's own take (as before), and also on a non-requester's take once
+            # the window has expired (F8) — a stale request left by a waiter that never came back must not sit on
+            # disk forever, reported as live by release_requested() and status() until someone takes it by chance.
+            if pending == self._holder or (pending and
+                    now - float(doc.get("release_requested_at") or 0) >= cfg.hand_over_timeout_s):
                 doc["release_requested_by"] = None
                 doc["release_requested_label"] = None
                 doc["release_requested_at"] = None
@@ -197,12 +201,16 @@ class ResourceLease:
 
     def release_requested(self) -> bool:
         """True when another project is waiting for this one to let go: the holder's own code (a long-lived
-        server watchdog) checks this to finish up and release early rather than wait for its idle timeout."""
+        server watchdog) checks this to finish up and release early rather than wait for its idle timeout. A
+        request older than `hand_over_timeout_s` reads as expired, not as a live ask to yield — the waiter has
+        had its window and did not come back for it (its loop stopped, its task cancelled)."""
         if self._cfg is None:
             return False
         doc = _read(self._cfg)
         pending = doc.get("release_requested_by")
-        return bool(pending and pending != self._holder)
+        if not (pending and pending != self._holder):
+            return False
+        return time.time() - float(doc.get("release_requested_at") or 0) < self._cfg.hand_over_timeout_s
 
 
 def status(layout: Layout, name: str) -> dict:
@@ -212,8 +220,11 @@ def status(layout: Layout, name: str) -> dict:
     if cfg is None:
         return {"configured": False}
     doc = _read(cfg)
-    live = _live_entries(doc, cfg, time.time())
-    waiting = doc.get("release_requested_label") if doc.get("release_requested_by") else None
+    now = time.time()
+    live = _live_entries(doc, cfg, now)
+    pending = doc.get("release_requested_by")
+    expired = bool(pending) and now - float(doc.get("release_requested_at") or 0) >= cfg.hand_over_timeout_s
+    waiting = doc.get("release_requested_label") if pending and not expired else None
     return {"configured": True, "path": str(cfg.path),
             "live": [{"label": e["label"], "pid": e["pid"]} for e in live],
             "stale": len(doc.get("entries", [])) - len(live), "waiting": waiting}
