@@ -95,3 +95,18 @@ def test_stop_command_writes_a_stop_request(tmp_path):
     result = llm_endpoint._stop_command(layout, {}, "owner")
     assert result["status"] == "ok"
     assert _server.stop_path(str(layout.root)).exists()
+
+
+def test_a_lease_refusal_state_does_not_read_as_healthy_and_the_owner_command_does_not_appear_to_succeed(
+        tmp_path, monkeypatch):
+    """F4's fix: the state _server.run() writes on a refused lease acquire carries pid: None and why: "lease".
+    No server was ever started, so the endpoint stays unreachable - the doctor must not read the state file as
+    a healthy server, and llm_endpoint.start (ensure_started(), which only spawns a watchdog in the background
+    and never knows the lease's outcome itself) must still report ready: False, never an apparent success."""
+    layout = _layout(tmp_path, base_url="http://127.0.0.1:1", argv=["demo-server"])
+    _server._write_state(str(tmp_path), {"pid": None, "stopped": 1.0, "why": "lease"})
+    check = llm_endpoint.check_llm_endpoint(layout)
+    assert check.ok and check.warn and "healthy" not in check.detail
+    monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: None)
+    result = llm_endpoint._start_command(layout, {}, "owner")
+    assert result == {"status": "ok", "ready": False}

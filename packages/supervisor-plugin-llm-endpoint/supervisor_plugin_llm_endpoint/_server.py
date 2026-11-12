@@ -120,13 +120,18 @@ def ensure_started(cfg: dict, root: str) -> bool:
 
 
 def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
-    """The watchdog's own loop. Returns why it stopped: `start_timeout`, `child_exited`, `idle`,
-    `release_requested` or `stop_requested` (the owner command `llm_endpoint.stop`). Blocking; meant to be the
-    whole of the watchdog process's work."""
+    """The watchdog's own loop. Returns why it stopped: `lease_unavailable` (never started: another project
+    holds the machine-wide GPU lease and would not yield within `wait_s`), `start_timeout`, `child_exited`,
+    `idle`, `release_requested` or `stop_requested` (the owner command `llm_endpoint.stop`). Blocking; meant to
+    be the whole of the watchdog process's work."""
     _stop_requested(root)                       # clear any stale request left from a previous run before this one
     layout = plugin.Layout(root)
     lease = plugin.resource_lease(layout, "gpu")
-    lease.acquire(wait_s=cfg.get("wait_s", 60))
+    if not lease.acquire(wait_s=cfg.get("wait_s", 60)):
+        # acquire() itself already recorded this project's release request against the holder (F2/F8); refusing
+        # to start honours it instead of discarding it, the inversion F4 named ("this lane always yields").
+        _write_state(root, {"pid": None, "stopped": time.time(), "why": "lease"})
+        return "lease_unavailable"
     touch_activity(root)
     proc = subprocess.Popen(cfg["argv"])
     try:
