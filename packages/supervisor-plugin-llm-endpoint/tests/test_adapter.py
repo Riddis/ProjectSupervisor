@@ -117,3 +117,21 @@ def test_submit_refuses_with_the_floors_own_message_when_the_endpoint_is_not_hea
     monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: False)
     with pytest.raises(plugin.CapacityDeferred, match="below floor 6500MiB"):
         llm_endpoint.ADAPTER.submit(spec)
+
+
+def test_submit_runs_a_second_job_on_one_load_when_the_server_stays_healthy_and_full(tmp_path, monkeypatch):
+    """D-013 section 1.2's whole reason for idle_stop_s: a chain of jobs against one loaded server pays one
+    cold start. Two submits against one already-healthy server, VRAM "full" (every card below every
+    configured floor) throughout, both reach the endpoint - the thing F3 made impossible."""
+    layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 6500},
+                                        "beta": {"index": 5, "usable_vram_floor_mb": 6500}})
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 900)   # the resident server's own VRAM, always
+    monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: True)
+    monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: True)
+    reached = []
+    monkeypatch.setattr(plugin.ProcessAdapter, "submit", lambda self, spec: reached.append(spec["task_id"]) or {"ok": True})
+    for i in range(2):
+        task = _task(layout, tid=f"T{i}", prompt="hello")
+        spec = llm_endpoint.ADAPTER.prepare(layout, task, f"T{i}.a1")
+        assert llm_endpoint.ADAPTER.submit(spec) == {"ok": True}
+    assert reached == ["T0", "T1"]                                      # both jobs reached the server, one load

@@ -91,17 +91,23 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
                 "cfg": cfg, "devices": _preflight_devices(layout)}
 
     def submit(self, spec: dict) -> dict:
-        for name, index, floor in spec.get("devices") or []:
-            if not floor:
-                continue
-            free = plugin.gpu.free_mb(index)
-            if free is not None and free < floor:
-                label = name or (f"#{index}" if index is not None else None)
-                prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
-                raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, f"{prefix} {free}MiB below floor {floor}MiB")
-        if not _server.ensure_started(spec["cfg"], spec["root"]):
+        cfg = spec["cfg"]
+        # The floor says whether a *start* will work (D-013 section 4); a resident server already
+        # holds exactly the VRAM it guards, so it is only asked before a start is attempted - never
+        # against a server that is already up and answering (F3, RELEASE_REVIEW_local-lane.md).
+        if not _server._health_ok(cfg["base_url"], cfg.get("health_path", "/health")):
+            for name, index, floor in spec.get("devices") or []:
+                if not floor:
+                    continue
+                free = plugin.gpu.free_mb(index)
+                if free is not None and free < floor:
+                    label = name or (f"#{index}" if index is not None else None)
+                    prefix = f"GPU {label} free VRAM" if label else "GPU free VRAM"
+                    raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS,
+                                                  f"{prefix} {free}MiB below floor {floor}MiB")
+        if not _server.ensure_started(cfg, spec["root"]):
             raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS,
-                                          f"{spec['cfg']['base_url']} not ready yet (cold start)")
+                                          f"{cfg['base_url']} not ready yet (cold start)")
         return super().submit(spec)
 
 
