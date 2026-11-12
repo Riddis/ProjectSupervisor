@@ -87,3 +87,33 @@ def test_submit_defers_rather_than_block_while_the_server_is_cold_starting(tmp_p
     monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: False)
     with pytest.raises(plugin.CapacityDeferred, match="not ready"):
         llm_endpoint.ADAPTER.submit(spec)
+
+
+def test_submit_reaches_the_server_despite_low_free_vram_when_the_endpoint_is_already_healthy(tmp_path, monkeypatch):
+    """F3 (RELEASE_REVIEW_local-lane.md): the floor is a start check ("free VRAM says whether a start will
+    *work*", LOCAL_MODEL_LANE.md section 4), not a per-request one. A resident server holds exactly the VRAM
+    the floor guards, so a floor applied regardless of health defers every request against a server that is
+    already up and answering - the case the original test_adapter.py never combined."""
+    layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 6500},
+                                        "beta": {"index": 5, "usable_vram_floor_mb": 6500}})
+    task = _task(layout, prompt="hello")
+    spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 900)          # the resident server's own VRAM
+    monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: True)
+    monkeypatch.setattr(_server, "ensure_started", lambda cfg, root: True)
+    monkeypatch.setattr(plugin.ProcessAdapter, "submit", lambda self, spec: {"ok": True})
+    assert llm_endpoint.ADAPTER.submit(spec) == {"ok": True}
+
+
+def test_submit_refuses_with_the_floors_own_message_when_the_endpoint_is_not_healthy_and_vram_is_short(tmp_path, monkeypatch):
+    """The complement the fix must keep: when the endpoint is not up (a start would actually be attempted),
+    VRAM below the floor still refuses the start with the floor's own message - so the fix cannot be "drop
+    the floor", only "stop applying it once the server is already serving requests"."""
+    layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 6500},
+                                        "beta": {"index": 5, "usable_vram_floor_mb": 6500}})
+    task = _task(layout, prompt="hello")
+    spec = llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+    monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 900)
+    monkeypatch.setattr(_server, "_health_ok", lambda *a, **k: False)
+    with pytest.raises(plugin.CapacityDeferred, match="below floor 6500MiB"):
+        llm_endpoint.ADAPTER.submit(spec)
