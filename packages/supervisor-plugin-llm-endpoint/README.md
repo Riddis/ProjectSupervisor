@@ -12,7 +12,7 @@ or anything else that speaks the shape.
   `plugins:` in the project's `project.yaml`.
 - Configure it under `plugins.llm_endpoint` in the project's `config/routing.yaml`: `base_url`, `model`, `argv`
   (the server's own command line, started and stopped by this package's watchdog), `health_path`,
-  `start_timeout_s`, `idle_stop_s`, `timeout_s`, `context_tokens`, `max_tokens`, `vram_device`.
+  `start_timeout_s`, `idle_stop_s`, `timeout_s`, `context_tokens`, `max_tokens`.
 - `gpu = True`: this lane holds the project's single resource slot (`limits.max_resource_jobs`) and, when the
   project configures `resources.gpu.lease`, the machine-wide GPU lease for as long as its server is up.
 - Owner commands: `llm_endpoint.start` and `llm_endpoint.stop` start or stop the managed server by hand.
