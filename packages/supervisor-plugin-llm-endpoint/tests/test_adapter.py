@@ -43,9 +43,26 @@ def test_prepare_writes_the_request_and_the_worker_argv(tmp_path):
 
 def test_prepare_fails_the_attempt_when_the_prompt_exceeds_the_context_budget(tmp_path):
     layout = _layout(tmp_path, plugin_cfg={"context_tokens": 100, "max_tokens": 50})
-    task = _task(layout, prompt="x" * 1000)                 # ~250 estimated tokens at 4 chars/token
+    task = _task(layout, prompt="x" * 1000)                 # ~250-330 estimated tokens at 3-4 chars/token
     with pytest.raises(plugin.PluginError, match="budget"):
         llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+
+
+def test_prepare_refuses_a_code_heavy_prompt_at_the_package_defaults_and_names_the_ratio_it_assumed(tmp_path):
+    """F7 (RELEASE_REVIEW_local-lane.md): a flat 4 chars/token admits 21,296 characters at the package defaults
+    (0.9 x 8192 - 2048 = 5324 tokens). Code, diffs, YAML and non-English text tokenise at ~2.5-3.5 chars/token
+    with every tokenizer this lane will meet, so 21,000 characters of code-shaped text is really ~7,000 tokens -
+    the server would then shift or truncate the prompt silently, the exact failure D-013 section 2.1 says must
+    fail loudly. This is the reviewer's own probe
+    (runs/T5-04/T5-04.a3/probes/test_llm_endpoint_probes.py::test_token_budget_admits_a_code_heavy_prompt_that_
+    overflows_at_three_chars_per_token), made into a tracked regression: it must be refused at the package
+    defaults, with the ratio the refusal assumed stated in its message."""
+    layout = _layout(tmp_path, plugin_cfg={})                      # package defaults: context_tokens=8192, max_tokens=2048
+    code = ("if (x[i] != y[j]) { z += f(a, b); }\n" * 600)[:21000]
+    task = _task(layout, prompt=code)
+    with pytest.raises(plugin.PluginError, match="chars/token") as excinfo:
+        llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+    assert "3 chars/token" in str(excinfo.value)
 
 
 def test_submit_defers_when_any_configured_cards_free_vram_is_below_its_own_floor(tmp_path, monkeypatch):
