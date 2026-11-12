@@ -17,10 +17,11 @@ from supervisor_plugin_llm_endpoint import _worker
 class _Fake(BaseHTTPRequestHandler):
     """POST /v1/chat/completions -> exactly the configured SSE lines (no `[DONE]` unless a case adds one)."""
     sse_lines: list[str] = []
+    last_payload: dict | None = None
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(n)
+        _Fake.last_payload = json.loads(self.rfile.read(n) or b"{}")
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -101,6 +102,20 @@ def test_finish_reason_and_usage_are_recorded_in_raw_on_a_normal_stream(tmp_path
     assert res["raw"]["finish_reason"] == "stop"
     assert res["raw"]["usage"] == {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
     assert (tmp_path / "out.md").read_text(encoding="utf-8") == "ok"
+
+
+# ---------------------------------------------------------------- F11 (P3): json_schema needs a name
+
+def test_a_schema_request_names_its_json_schema_so_vllm_and_openai_shaped_servers_accept_it(tmp_path, fake):
+    """RELEASE_REVIEW_local-lane.md F11: `response_format.json_schema` at this head carries only `schema`.
+    `llama-server` and Ollama tolerate the missing `name`; the OpenAI shape the design calls "the
+    widely-implemented chat-completions shape" requires it, and vLLM and OpenAI-shaped servers reject the
+    request outright."""
+    _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"{}"}}]}', 'data: [DONE]'],
+        schema={"type": "object"}, output_file=None)
+    sent = _Fake.last_payload["response_format"]["json_schema"]
+    assert sent.get("name")
+    assert sent["schema"] == {"type": "object"}
 
 
 def test_a_normal_stream_without_usage_completes_exactly_as_before(tmp_path, fake):
