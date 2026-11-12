@@ -57,6 +57,35 @@ class _FakeProc:
         return None
 
 
+# ---------------------------------------------------------------- F15 (P3): _health_ok accepts only 2xx
+
+
+class _NotFound(BaseHTTPRequestHandler):
+    """Serves a bare 404 everywhere - the shape of a misconfigured `health_path` (Ollama has no `/health`),
+    not a server that is reachable but still loading (5xx) or genuinely healthy (2xx)."""
+
+    def do_GET(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *a):
+        pass
+
+
+def test_health_ok_refuses_a_404_instead_of_reading_any_status_below_500_as_healthy(tmp_path):
+    """RELEASE_REVIEW_local-lane.md F15: at this head `_health_ok` reads `status_code < 500`, so a 404 from a
+    `health_path` the server does not serve counts as ready. A misconfiguration must read as unhealthy, not
+    as a server that may still be loading."""
+    srv = HTTPServer(("127.0.0.1", 0), _NotFound)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        assert _server._health_ok(f"http://127.0.0.1:{srv.server_port}", "/health") is False
+    finally:
+        srv.shutdown()
+
+
 def test_ensure_started_returns_true_and_spawns_nothing_when_already_healthy(tmp_path, fake_health, monkeypatch):
     calls = []
     monkeypatch.setattr(_server.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
