@@ -20,6 +20,7 @@ def test_timeouts_and_budgets_have_the_designed_defaults():
     assert settings.timeout_s == 1800
     assert settings.context_tokens == 8192
     assert settings.max_tokens == 2048
+    assert settings.chars_per_token == 3           # F7: conservative for code, diffs, YAML, non-English text
 
 
 def test_every_field_accepts_an_override():

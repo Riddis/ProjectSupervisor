@@ -65,6 +65,20 @@ def test_prepare_refuses_a_code_heavy_prompt_at_the_package_defaults_and_names_t
     assert "3 chars/token" in str(excinfo.value)
 
 
+def test_chars_per_token_is_a_settings_key_that_reaches_the_computation(tmp_path):
+    """The knob is honoured, not just defaulted: the same code-heavy prompt that overflows at 3 chars/token
+    (the test above) is admitted when a project overrides the ratio to 4 - proving `chars_per_token` reaches
+    `prepare()`'s budget arithmetic rather than sitting unused in config.py."""
+    code = ("if (x[i] != y[j]) { z += f(a, b); }\n" * 600)[:21000]
+    admitted = _layout(tmp_path / "admitted", plugin_cfg={"chars_per_token": 4})
+    spec = llm_endpoint.ADAPTER.prepare(admitted, _task(admitted, prompt=code), "T.a1")
+    assert spec["adapter"] == "llm_endpoint"                       # 21000 // 4 = 5250, under the 5324 budget
+
+    refused = _layout(tmp_path / "refused", plugin_cfg={"chars_per_token": 3})
+    with pytest.raises(plugin.PluginError, match="3 chars/token"):
+        llm_endpoint.ADAPTER.prepare(refused, _task(refused, prompt=code), "T.a1")
+
+
 def test_submit_defers_when_any_configured_cards_free_vram_is_below_its_own_floor(tmp_path, monkeypatch):
     layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 5000},
                                         "beta": {"index": 5, "usable_vram_floor_mb": 4000}})

@@ -8,7 +8,12 @@ not a project's); a project that runs a different endpoint, or more than one pro
 length, ...) is a project's own measured values (T5-02), never guessed here. Unlike the framework's single-card
 GPU-locked lanes, this one has no `vram_device` selector: the design's whole point is a model split by layer
 across every configured card, so the adapter's preflight (`resources.gpu.devices`) checks every one of them
-against its own floor, not a single chosen one."""
+against its own floor, not a single chosen one.
+
+`chars_per_token` is the context-budget estimate's own assumption (D-013 section 2.1): a deterministic
+characters-per-token ratio, never a call to a model. 3 is conservative for code, diffs, YAML and non-English
+text, which tokenise at roughly 2.5-3.5 chars/token with every tokenizer this lane will meet (RELEASE_REVIEW_
+local-lane.md F7); a project serving plain English prose may raise it."""
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
@@ -25,3 +30,4 @@ class Settings(BaseModel):
     timeout_s: int = 1800
     context_tokens: int = 8192
     max_tokens: int = 2048
+    chars_per_token: int = 3

@@ -24,7 +24,6 @@ from . import _server
 job_spec = plugin.job_spec
 
 DEFER_SECONDS = 30.0
-CHARS_PER_TOKEN = 4                 # a deterministic, conservative estimate: the budget check never calls a model
 
 
 def llm_endpoint_config(layout: plugin.Layout) -> dict:
@@ -36,11 +35,12 @@ def llm_endpoint_config(layout: plugin.Layout) -> dict:
     cfg.setdefault("timeout_s", 1800)
     cfg.setdefault("context_tokens", 8192)
     cfg.setdefault("max_tokens", 2048)
+    cfg.setdefault("chars_per_token", 3)
     return cfg
 
 
-def _estimate_tokens(text: str) -> int:
-    return len(text) // CHARS_PER_TOKEN
+def _estimate_tokens(text: str, chars_per_token: int) -> int:
+    return len(text) // chars_per_token
 
 
 def _preflight_devices(layout: plugin.Layout) -> list[tuple[str | None, int | None, int]]:
@@ -74,11 +74,12 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
             schema = json.loads((layout.root / job["schema_file"]).read_text(encoding="utf-8"))
         max_tokens = int(job.get("max_tokens", cfg["max_tokens"]))
         context_tokens = int(job.get("context_tokens", cfg["context_tokens"]))
+        chars_per_token = int(cfg["chars_per_token"])
         budget = int(0.9 * context_tokens) - max_tokens
-        estimate = _estimate_tokens(prompt)
+        estimate = _estimate_tokens(prompt, chars_per_token)
         if estimate > budget:
-            raise plugin.PluginError(f"prompt estimated at {estimate} tokens exceeds the budget "
-                                     f"0.9 x {context_tokens} - {max_tokens} = {budget}")
+            raise plugin.PluginError(f"prompt estimated at {estimate} tokens ({chars_per_token} chars/token) "
+                                     f"exceeds the budget 0.9 x {context_tokens} - {max_tokens} = {budget}")
         request = {"base_url": job.get("base_url", cfg["base_url"]), "model": job.get("model", cfg.get("model")),
                    "prompt": prompt, "schema": schema, "max_tokens": max_tokens,
                    "timeout_s": int(job.get("timeout_s", cfg["timeout_s"])), "run_root": str(layout.root),
