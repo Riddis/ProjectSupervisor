@@ -104,6 +104,39 @@ def test_hand_over_timeout_gives_the_waiter_a_window_before_the_holder_takes_a_n
     assert a.acquire(wait_s=0) is True                   # a may proceed rather than starve forever
 
 
+def test_release_requested_expires_after_the_hand_over_window_so_a_is_not_asked_to_yield_forever(tmp_path):
+    """F8. After hand_over_timeout_s, b's never coming back (its loop stopped, its task cancelled) must not
+    leave a asked to yield forever, and the doctor must not keep naming a waiter that no longer exists."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=0.5)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=0.5)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False                  # records b's release_requested
+    a.release()
+    time.sleep(0.7)                                      # the window passes; b never comes back for it
+    assert a.acquire(wait_s=0) is True                    # window over: a may take it again
+    assert a.release_requested() is False                 # expired: nobody is waiting any more
+    assert leases.status(b_layout, "gpu")["waiting"] is None   # the doctor names no waiter either
+    a.release()
+
+
+def test_release_requested_still_true_inside_the_hand_over_window(tmp_path):
+    """The companion case: the fix cannot be "always False" — a live request inside the window must still
+    read True, and the doctor must still name the waiter, so the watchdog still stops on it."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=60)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=60)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False                  # records b's release_requested
+    assert a.release_requested() is True                  # still inside the window: a is still asked to yield
+    assert leases.status(b_layout, "gpu")["waiting"] == "project-b"
+    a.release()
+
+
 def test_acquire_blocks_up_to_wait_s_then_reports_unavailable(tmp_path):
     lease_file = tmp_path / "shared" / "gpu.lease"
     a = leases.resource_lease(_project(tmp_path, "a", lease_file, "project-a"), "gpu")
