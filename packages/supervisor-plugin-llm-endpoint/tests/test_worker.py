@@ -86,3 +86,29 @@ def test_a_stream_that_never_sends_done_fails_the_attempt(tmp_path, fake):
     assert res["status"] == "FAILED"
     assert "DONE" in res["error"]
     assert not (tmp_path / "out.md").exists()
+
+
+# ---------------------------------------------------------------- F6: a normal stream is unchanged, and now carries raw data
+
+
+def test_finish_reason_and_usage_are_recorded_in_raw_on_a_normal_stream(tmp_path, fake):
+    res = _run(tmp_path, fake, [
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: [DONE]'])
+    assert res["status"] == "COMPLETE"
+    assert res["raw"]["finish_reason"] == "stop"
+    assert res["raw"]["usage"] == {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+    assert (tmp_path / "out.md").read_text(encoding="utf-8") == "ok"
+
+
+def test_a_normal_stream_without_usage_completes_exactly_as_before(tmp_path, fake):
+    """A normal stream carrying no finish_reason or usage at all (the shape every pre-existing test in this
+    package used) must be unchanged: same COMPLETE, same answer, same output_file content."""
+    res = _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"hello world"}}]}', 'data: [DONE]'])
+    assert res["status"] == "COMPLETE"
+    assert res["answer"] == "hello world"
+    assert (tmp_path / "out.md").read_text(encoding="utf-8") == "hello world"
+    assert res["raw"]["finish_reason"] is None
+    assert res["raw"]["usage"] is None
