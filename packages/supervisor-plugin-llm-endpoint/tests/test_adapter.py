@@ -79,6 +79,28 @@ def test_chars_per_token_is_a_settings_key_that_reaches_the_computation(tmp_path
         llm_endpoint.ADAPTER.prepare(refused, _task(refused, prompt=code), "T.a1")
 
 
+# ---------------------------------------------------------------- F12 (P3): an unknown profile is refused
+
+
+def test_prepare_refuses_a_profile_other_than_the_one_this_lane_serves(tmp_path):
+    """RELEASE_REVIEW_local-lane.md F12: no multi-profile switching is an honest cut (nothing in the package
+    reads `job.profile`), but at this head a task carrying `profile: other` is served by whatever is running
+    without a word. T5-02 has chosen no second profile yet, so the one configured profile is the implicit
+    default; any other name must be refused rather than silently served."""
+    layout = _layout(tmp_path, plugin_cfg={})
+    task = _task(layout, prompt="hello", profile="other")
+    with pytest.raises(plugin.PluginError, match="profile"):
+        llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")
+
+
+def test_prepare_admits_the_configured_profile_and_admits_no_profile_at_all(tmp_path):
+    layout = _layout(tmp_path, plugin_cfg={})
+    task = _task(layout, prompt="hello", profile="default")
+    assert llm_endpoint.ADAPTER.prepare(layout, task, "T.a1")["adapter"] == "llm_endpoint"
+    task2 = _task(layout, tid="T2", prompt="hello")                   # the design job contract's own example
+    assert llm_endpoint.ADAPTER.prepare(layout, task2, "T2.a1")["adapter"] == "llm_endpoint"
+
+
 def test_submit_defers_when_any_configured_cards_free_vram_is_below_its_own_floor(tmp_path, monkeypatch):
     layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 5000},
                                         "beta": {"index": 5, "usable_vram_floor_mb": 4000}})
