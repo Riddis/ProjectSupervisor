@@ -215,6 +215,110 @@ def test_run_times_out_and_releases_when_the_server_never_becomes_healthy(tmp_pa
     assert plugin.resource_lease(lay, "gpu").acquire(wait_s=0) is True   # released: a fresh acquire succeeds at once
 
 
+# ---------------------------------------------------------------- F18: the watchdog finishes the in-flight
+# request before yielding (RELEASE_REVIEW_local-lane_round2.md)
+
+
+def _wait_for_ready_pid(root, timeout=10.0):
+    deadline = time.time() + timeout
+    state = {}
+    while time.time() < deadline:
+        try:
+            state = json.loads(_server.state_path(str(root)).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        if state.get("pid"):
+            return state["pid"]
+        time.sleep(0.05)
+    return None
+
+
+def test_run_finishes_the_in_flight_request_before_yielding_to_a_release_request(tmp_path, fake_health):
+    """F18 (RELEASE_REVIEW_local-lane_round2.md): R4's fairness clause is binding and specific - "this lane's
+    watchdog FINISHES THE IN-FLIGHT REQUEST, stops the server and releases" (LOCAL_MODEL_LANE.md:267-270) - but
+    at 50660a07becd2e35a4d20073d13b93b96eecb280 `run()` returns `release_requested` on the first poll that sees
+    the request (_server.py:336-337), with no look at the activity file - the worker's own in-flight signal,
+    touched on every streamed piece (_worker.py:85-90). Here a thread stands in for the worker, touching the
+    activity file every 25 ms while B's project asks to take the lease; the fix must keep the child alive while
+    the activity keeps coming and only yield once it goes quiet. Asserts that the child OUTLIVED the first
+    poll after the request landed, not merely the eventual return value - the defect kills the child within one
+    poll regardless of the activity file, so this fails at the pre-fix head even though `why` is still
+    "release_requested" either way."""
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    testing.project(root, routing={"resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}}})
+    other_lay = testing.project(tmp_path / "other", routing={"resources": {"gpu": {
+        "lease": {"path": str(lease_file), "label": "other"}}}})
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 5, "idle_stop_s": 60,
+          "hand_over_grace_s": 0.5, "argv": [sys.executable, "-c", "import time; time.sleep(30)"]}
+    out = {}
+
+    def go():
+        out["why"] = _server.run(str(root), cfg, poll_s=0.05)
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    child_pid = _wait_for_ready_pid(root)
+    assert child_pid, "watchdog never became ready"
+
+    stop_streaming = threading.Event()
+
+    def stream():                                              # the worker mid-generation: touches on every piece
+        while not stop_streaming.is_set():
+            _server.touch_activity(str(root))
+            time.sleep(0.025)
+    w = threading.Thread(target=stream, daemon=True)
+    w.start()
+    time.sleep(0.1)
+    assert plugin.resource_lease(other_lay, "gpu").acquire(wait_s=0) is False   # B's request lands mid-stream
+    time.sleep(0.2)                                             # a couple of the watchdog's own polls
+    assert psutil.pid_exists(child_pid) and psutil.Process(child_pid).is_running(), (
+        "the watchdog killed the in-flight request's server instead of finishing it (F18): "
+        "the child did not outlive the first poll after the request landed")
+    stop_streaming.set()
+    w.join(timeout=2)
+    t.join(timeout=10)
+    assert out.get("why") == "release_requested"
+    assert _wait_until_dead(child_pid), _dead_or_why_not(child_pid)   # finished, then stopped - not leaked
+
+
+def test_run_does_not_hold_the_cards_past_hand_over_timeout_s_when_the_request_never_goes_quiet(tmp_path, fake_health):
+    """The companion bound (F18's fix shape): a wedged generation that never goes quiet must not hold the lease
+    past the request's own `hand_over_timeout_s` - R4's own "until that project has had the lease or
+    hand_over_timeout_s has passed" (LOCAL_MODEL_LANE.md:270-271). `hand_over_grace_s` is set far larger than
+    `hand_over_timeout_s` here so only the timeout bound, not the grace, can be what stops the server."""
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    testing.project(root, routing={"resources": {"gpu": {"lease": {
+        "path": str(lease_file), "label": "demo", "hand_over_timeout_s": 0.6}}}})
+    other_lay = testing.project(tmp_path / "other", routing={"resources": {"gpu": {
+        "lease": {"path": str(lease_file), "label": "other"}}}})
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 5, "idle_stop_s": 60,
+          "hand_over_grace_s": 10.0, "argv": [sys.executable, "-c", "import time; time.sleep(30)"]}
+    out = {}
+
+    def go():
+        out["why"] = _server.run(str(root), cfg, poll_s=0.05)
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    assert _wait_for_ready_pid(root), "watchdog never became ready"
+    stop_streaming = threading.Event()
+
+    def stream():
+        while not stop_streaming.is_set():
+            _server.touch_activity(str(root))
+            time.sleep(0.025)
+    w = threading.Thread(target=stream, daemon=True)
+    w.start()
+    assert plugin.resource_lease(other_lay, "gpu").acquire(wait_s=0) is False
+    asked_at = time.time()
+    t.join(timeout=10)
+    stop_streaming.set()
+    w.join(timeout=2)
+    assert out.get("why") == "release_requested"
+    elapsed = time.time() - asked_at
+    assert 0.6 <= elapsed < 5.0, elapsed   # held at least the window, but never past it by more than a poll or two
+
+
 # ---------------------------------------------------------------- F5/F14: a hard-killed watchdog leaks no server
 
 
