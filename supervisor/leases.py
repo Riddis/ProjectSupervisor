@@ -14,7 +14,16 @@ File format (JSON, at `lease.path`, outside every repository):
     {"entries": [{"holder": "<hash>", "label": "<project label>", "pid": 123, "create_time": 456.0,
                   "since": 789.0, "renewed": 789.0}, ...],
      "release_requested_by": "<hash>" | null, "release_requested_label": "<label>" | null,
-     "release_requested_at": <epoch> | null}
+     "release_requested_at": <epoch> | null, "release_requested_renewed": <epoch> | null}
+
+`release_requested_at` is the window's own start: written once, on the waiter's first refused pass, and never
+pushed forward while the same request stands (F2's idempotence, asserted by
+`tests/test_gpu_lease_gate.py::test_repeated_waiting_passes_record_the_release_request_once_and_do_not_restart_the_window`).
+`release_requested_renewed` is the waiter's *latest* ask, refreshed on every pass including repeats; every
+expiry and hand-over-window computation below reads `release_requested_renewed`, not `release_requested_at`, so
+a waiter still asking on every pass is never read as expired just because its first ask has aged past
+`hand_over_timeout_s` (F20). Both fields are written and cleared together; only `release_requested_at` is kept
+around afterwards for the no-restart guarantee.
 """
 from __future__ import annotations
 
@@ -91,11 +100,12 @@ def _read(cfg: LeaseConfig) -> dict:
         doc = read_json(cfg.path)
     except (OSError, ValueError):
         return {"entries": [], "release_requested_by": None, "release_requested_label": None,
-                "release_requested_at": None}
+                "release_requested_at": None, "release_requested_renewed": None}
     doc.setdefault("entries", [])
     doc.setdefault("release_requested_by", None)
     doc.setdefault("release_requested_label", None)
     doc.setdefault("release_requested_at", None)
+    doc.setdefault("release_requested_renewed", None)
     return doc
 
 
@@ -156,26 +166,33 @@ class ResourceLease:
                 return False
             pending = doc.get("release_requested_by")
             if (pending and pending != self._holder
-                    and now - float(doc.get("release_requested_at") or 0) < cfg.hand_over_timeout_s):
+                    and now - float(doc.get("release_requested_renewed") or 0) < cfg.hand_over_timeout_s):
                 return False                      # free, but another project's turn has not timed out yet
             _write_my_entry(doc, cfg, self._holder, self._pid, self._create_time, live, now)
             # Clear the request on the requester's own take (as before), and also on a non-requester's take once
             # the window has expired (F8) — a stale request left by a waiter that never came back must not sit on
             # disk forever, reported as live by release_requested() and status() until someone takes it by chance.
+            # The expiry read here is the same one release_requested()/status() use (F20): the waiter's latest
+            # ask, not its first.
             if pending == self._holder or (pending and
-                    now - float(doc.get("release_requested_at") or 0) >= cfg.hand_over_timeout_s):
+                    now - float(doc.get("release_requested_renewed") or 0) >= cfg.hand_over_timeout_s):
                 doc["release_requested_by"] = None
                 doc["release_requested_label"] = None
                 doc["release_requested_at"] = None
+                doc["release_requested_renewed"] = None
             atomic_json(cfg.path, doc)
             return True
 
     def _record_waiting(self, cfg: LeaseConfig, doc: dict, now: float) -> None:
+        # Every refused pass writes release_requested_renewed (F20: the waiter's latest ask, read by the expiry
+        # checks below), but release_requested_at is set only once, on the first pass, and never pushed forward
+        # while the same request stands — F2's own idempotence guarantee.
         if doc.get("release_requested_by") != self._holder:
             doc["release_requested_by"] = self._holder
             doc["release_requested_label"] = cfg.label
             doc["release_requested_at"] = now
-            atomic_json(cfg.path, doc)
+        doc["release_requested_renewed"] = now
+        atomic_json(cfg.path, doc)
 
     def renew(self) -> bool:
         """Refresh this process's own entry so it does not go stale while the work it covers continues. Reports
@@ -215,15 +232,17 @@ class ResourceLease:
     def release_requested(self) -> bool:
         """True when another project is waiting for this one to let go: the holder's own code (a long-lived
         server watchdog) checks this to finish up and release early rather than wait for its idle timeout. A
-        request older than `hand_over_timeout_s` reads as expired, not as a live ask to yield — the waiter has
-        had its window and did not come back for it (its loop stopped, its task cancelled)."""
+        request whose *latest* ask is older than `hand_over_timeout_s` reads as expired, not as a live ask to
+        yield — the waiter has had its window and did not come back for it (its loop stopped, its task
+        cancelled). A waiter still asking on every pass keeps `release_requested_renewed` fresh, so a holder
+        whose own job outlives the window is not read as unasked while the other loop is still blocked (F20)."""
         if self._cfg is None:
             return False
         doc = _read(self._cfg)
         pending = doc.get("release_requested_by")
         if not (pending and pending != self._holder):
             return False
-        return time.time() - float(doc.get("release_requested_at") or 0) < self._cfg.hand_over_timeout_s
+        return time.time() - float(doc.get("release_requested_renewed") or 0) < self._cfg.hand_over_timeout_s
 
 
 def status(layout: Layout, name: str) -> dict:
@@ -236,7 +255,7 @@ def status(layout: Layout, name: str) -> dict:
     now = time.time()
     live = _live_entries(doc, cfg, now)
     pending = doc.get("release_requested_by")
-    expired = bool(pending) and now - float(doc.get("release_requested_at") or 0) >= cfg.hand_over_timeout_s
+    expired = bool(pending) and now - float(doc.get("release_requested_renewed") or 0) >= cfg.hand_over_timeout_s
     waiting = doc.get("release_requested_label") if pending and not expired else None
     return {"configured": True, "path": str(cfg.path),
             "live": [{"label": e["label"], "pid": e["pid"]} for e in live],
@@ -290,9 +309,11 @@ def _record_waiting_from_peek(layout: Layout, name: str) -> None:
     """Record this project as waiting on `resources.<name>.lease`, for a caller that only ever peeks
     (`holder_label`, from `supervisor.gate.lease_blocked`) and so never reaches `ResourceLease._try_take()` — the
     only place this was previously written. Internal to the core (not part of the plugin-facing lease handle);
-    a no-op when unconfigured, when nobody else holds it live right now, or when this project's own request is
-    already on file, so repeated calls while the same hand-over window is open never push `release_requested_at`
-    forward."""
+    a no-op when unconfigured or when nobody else holds it live right now. Every live call refreshes
+    `release_requested_renewed` (F20: the waiter's latest ask, read by the expiry checks in `_try_take()`,
+    `release_requested()` and `status()`), but `release_requested_at` is written only once, when this project's
+    own request is not already on file, so repeated calls while the same hand-over window is open never push the
+    window's own start forward (F2's idempotence)."""
     cfg = _lease_config(layout, name)
     if cfg is None:
         return
@@ -307,7 +328,8 @@ def _record_waiting_from_peek(layout: Layout, name: str) -> None:
             doc["release_requested_by"] = holder
             doc["release_requested_label"] = cfg.label
             doc["release_requested_at"] = now
-            atomic_json(cfg.path, doc)
+        doc["release_requested_renewed"] = now
+        atomic_json(cfg.path, doc)
 
 
 def resource_lease(layout: Layout, name: str) -> ResourceLease:
