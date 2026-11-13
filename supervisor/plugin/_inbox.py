@@ -51,6 +51,31 @@ def owned_item(layout: Layout, item_id: str) -> dict:
     return item
 
 
+def open_owned_item(layout: Layout, kind: str, dedup_key: str, *, subject: str, summary: str,
+                    for_role: str = "owner", detail: str | None = None,
+                    allowed_responses: list[str] | None = None, free_text: bool = True,
+                    extra: dict | None = None) -> dict | None:
+    """Idempotently raise one inbox item of a kind the calling plugin claimed: the first call for a given
+    `dedup_key` creates it; every later call with the same key - whether the item is still open or has already
+    been answered - returns that same item unchanged. A plugin whose condition keeps holding must say so once,
+    not flood the inbox with the same report (the dedup check and the creation happen under the inbox's own
+    lock together, in `inbox.create`, so two concurrent callers with the same key never both create one).
+
+    Raises InboxError when `kind` is not the caller's. Returns None, writing nothing, when `for_role`'s inbox is
+    already at its cap (`inbox.MAX_OPEN_PER_ROLE` open items) instead of raising InboxFull: a plugin reporting a
+    condition that keeps holding must not have its own retry turned into a crash by a backlog of someone else's
+    items it did not cause and cannot clear. Call again later; the same `dedup_key` still applies once there is
+    room."""
+    who, owners = _caller(layout, "open_owned_item()")
+    _check("open_owned_item", kind, who, owners)
+    try:
+        return _inbox.create(layout, for_role=for_role, subject=subject, summary=summary, kind=kind,
+                             allowed_responses=allowed_responses, free_text=free_text, detail=detail,
+                             extra=extra, dedup_key=dedup_key)
+    except _inbox.InboxFull:
+        return None
+
+
 def update_owned_item(layout: Layout, item_id: str, fn: Callable[[dict], dict | None]) -> dict:
     """Read-modify-write one item of a kind the calling plugin claimed, under the inbox lock (state/.inbox.lock,
     the lock every inbox write takes): `fn(doc)` gets the item as read under the lock, changes it (or returns a new

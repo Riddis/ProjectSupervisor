@@ -1,0 +1,129 @@
+"""The worker subprocess (`_worker.py`): one streaming chat-completions request, `result.json` written at the
+end. A fake loopback HTTP server stands in for the real endpoint and serves whatever SSE lines a test configures
+(RELEASE_REVIEW_local-lane.md F6: `_stream()` must read `finish_reason` and notice a stream that never reaches
+`[DONE]`, instead of reporting COMPLETE on a truncated or broken one)."""
+from __future__ import annotations
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+import pytest
+
+from supervisor_plugin_llm_endpoint import _worker
+
+
+class _Fake(BaseHTTPRequestHandler):
+    """POST /v1/chat/completions -> exactly the configured SSE lines (no `[DONE]` unless a case adds one)."""
+    sse_lines: list[str] = []
+    last_payload: dict | None = None
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        _Fake.last_payload = json.loads(self.rfile.read(n) or b"{}")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for line in _Fake.sse_lines:
+            self.wfile.write((line + "\n\n").encode("utf-8"))
+            self.wfile.flush()
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.fixture
+def fake():
+    _Fake.sse_lines = []
+    srv = HTTPServer(("127.0.0.1", 0), _Fake)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    yield f"http://127.0.0.1:{srv.server_port}"
+    srv.shutdown()
+
+
+def _run(tmp_path, fake_url, sse_lines, **extra):
+    _Fake.sse_lines = sse_lines
+    req = {"base_url": fake_url, "model": "demo", "prompt": "p", "schema": None, "max_tokens": 8, "timeout_s": 10,
+           "run_root": str(tmp_path), "output_file": "out.md", "activity_file": str(tmp_path / "act")}
+    req.update(extra)
+    (tmp_path / "req.json").write_text(json.dumps(req), encoding="utf-8")
+    assert _worker.main(str(tmp_path / "req.json"), str(tmp_path / "res.json")) == 0
+    return json.loads((tmp_path / "res.json").read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------- F6: a truncated, errored or unterminated stream
+
+
+def test_a_length_truncated_stream_fails_the_attempt_naming_max_tokens(tmp_path, fake):
+    """At this head the worker never reads finish_reason: an answer cut at max_tokens is written to output_file
+    and reported COMPLETE with no trace (RELEASE_REVIEW_local-lane.md F6). It must FAILED instead, naming
+    max_tokens, and never write the truncated text as if it were the deliverable."""
+    res = _run(tmp_path, fake, [
+        'data: {"choices":[{"delta":{"content":"The summary is"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":" that the"},"finish_reason":"length"}]}',
+        'data: [DONE]'])
+    assert res["status"] == "FAILED"
+    assert "max_tokens" in res["error"] and "8" in res["error"]
+    assert not (tmp_path / "out.md").exists()
+
+
+def test_a_mid_stream_error_event_fails_the_attempt_with_the_servers_message(tmp_path, fake):
+    """A chunk with no `choices` (every runtime's in-stream error shape) is skipped silently at this head, so
+    the partial text before the error reads as the completed answer. It must FAILED with the server's message."""
+    res = _run(tmp_path, fake, [
+        'data: {"choices":[{"delta":{"content":"partial"}}]}',
+        'data: {"error":{"code":500,"message":"slot unavailable"}}'])
+    assert res["status"] == "FAILED"
+    assert "slot unavailable" in res["error"]
+    assert not (tmp_path / "out.md").exists()
+
+
+def test_a_stream_that_never_sends_done_fails_the_attempt(tmp_path, fake):
+    """A stream whose body ends (the connection closes) without ever sending `[DONE]` ends like a normal one at
+    this head. It must FAILED, naming that the stream never completed."""
+    res = _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"partial"}}]}'])
+    assert res["status"] == "FAILED"
+    assert "DONE" in res["error"]
+    assert not (tmp_path / "out.md").exists()
+
+
+# ---------------------------------------------------------------- F6: a normal stream is unchanged, and now carries raw data
+
+
+def test_finish_reason_and_usage_are_recorded_in_raw_on_a_normal_stream(tmp_path, fake):
+    res = _run(tmp_path, fake, [
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        'data: [DONE]'])
+    assert res["status"] == "COMPLETE"
+    assert res["raw"]["finish_reason"] == "stop"
+    assert res["raw"]["usage"] == {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+    assert (tmp_path / "out.md").read_text(encoding="utf-8") == "ok"
+
+
+# ---------------------------------------------------------------- F11 (P3): json_schema needs a name
+
+def test_a_schema_request_names_its_json_schema_so_vllm_and_openai_shaped_servers_accept_it(tmp_path, fake):
+    """RELEASE_REVIEW_local-lane.md F11: `response_format.json_schema` at this head carries only `schema`.
+    `llama-server` and Ollama tolerate the missing `name`; the OpenAI shape the design calls "the
+    widely-implemented chat-completions shape" requires it, and vLLM and OpenAI-shaped servers reject the
+    request outright."""
+    _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"{}"}}]}', 'data: [DONE]'],
+        schema={"type": "object"}, output_file=None)
+    sent = _Fake.last_payload["response_format"]["json_schema"]
+    assert sent.get("name")
+    assert sent["schema"] == {"type": "object"}
+
+
+def test_a_normal_stream_without_usage_completes_exactly_as_before(tmp_path, fake):
+    """A normal stream carrying no finish_reason or usage at all (the shape every pre-existing test in this
+    package used) must be unchanged: same COMPLETE, same answer, same output_file content."""
+    res = _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"hello world"}}]}', 'data: [DONE]'])
+    assert res["status"] == "COMPLETE"
+    assert res["answer"] == "hello world"
+    assert (tmp_path / "out.md").read_text(encoding="utf-8") == "hello world"
+    assert res["raw"]["finish_reason"] is None
+    assert res["raw"]["usage"] is None

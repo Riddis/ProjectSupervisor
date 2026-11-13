@@ -34,9 +34,19 @@ def test_the_reexported_names_are_the_framework_objects():
                   "atomic_json", "atomic_write_text", "contained", "gpu", "now_iso", "read_json"}
     assert reexported <= set(plugin.__all__)
     own = {"Registry", "PluginError", "InboxError", "config", "resources", "gpu_device", "AgentLane",
-           "agent_lane", "owned_items", "owned_item", "update_owned_item", "close_owned_item",
-           "submit_command", "log_event", "policy", "ui"}
+           "agent_lane", "ResourceLease", "resource_lease", "owned_items", "owned_item", "open_owned_item",
+           "update_owned_item", "close_owned_item", "submit_command", "log_event", "policy", "ui"}
     assert set(plugin.__all__) - reexported == own                     # supervisor.plugin's own operations (step 3 on)
+
+
+def test_g2_api_contract_check_is_ok_for_this_worktree():
+    """G2 bare (`python -m supervisor.api_contract check`) depends on whatever `supervisor` the ambient `python`
+    happens to resolve first, which on this machine is not always this worktree (RELEASE_REVIEW_local-lane.md
+    F17 names the same hazard for the package's own conformance test). Running the same check in-process,
+    inside this test's own pytest session, resolves `supervisor` the way every test in this file already does -
+    from the worktree - so this is the worktree's own contract, not whatever the ambient install's happens to be."""
+    from supervisor import api_contract
+    assert api_contract.run("check", echo=lambda *a, **k: None) == 0
 
 
 def test_layout_resolves_every_path_from_the_project_root(tmp_path, monkeypatch):

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import yaml
 
-from . import capacity, runtime, tasks as tasks_mod
+from . import capacity, leases, runtime, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, overlaps
 from .adapters import REGISTRY
 from .models.task import EXCLUSIVE, Task
@@ -55,6 +55,23 @@ def holds_resource(layout: Layout, task: Task | None, adapter_name: str, kind: s
         return False
     cost = getattr(task, "cost_category", None)
     return str(getattr(cost, "value", cost) or "") in cats
+
+
+def lease_blocked(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
+    """None when this job's resource work may launch now as far as the machine-wide GPU lease (R4) is concerned;
+    else who holds it. A read-only peek against `resources.gpu.lease` (`supervisor.leases.holder_label`): the
+    loop takes the lease for real only right before `submit()` (`Supervisor.launch`), so a record this refuses
+    stays PREPARED and is retried, exactly as every other gate refusal is. This peek is also the only place a
+    loop ever learns another project holds the lease — launch() never reaches acquire() when this refuses — so
+    it is also where the loop must record its own wait (R4's fairness clause, F2): a live foreign holder makes
+    this project's `release_requested_by` its own, through `leases._record_waiting_from_peek()`, so the holder's own
+    processes (its server watchdog) see it and can yield early instead of only ever being started on top of."""
+    if not holds_resource(layout, task, adapter_name, kind):
+        return None
+    label = leases.holder_label(layout, "gpu")
+    if label:
+        leases._record_waiting_from_peek(layout, "gpu")
+    return f"gpu lease held by {label}" if label else None
 
 
 def routing_doc(layout: Layout | None) -> dict:
@@ -164,6 +181,9 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     agent_busy = sum(1 for r in running if r.get("adapter") in MODEL_LANES) + extra_agent
     if holds_resource(layout, task, adapter_name, kind) and gpu_busy >= lim["max_resource_jobs"]:
         return f"resource-lock limit {lim['max_resource_jobs']} reached"
+    blocked = lease_blocked(layout, task, adapter_name, kind)
+    if blocked:
+        return blocked
     if adapter_name in MODEL_LANES and agent_busy >= lim["max_agent_jobs"]:
         return f"agent limit {lim['max_agent_jobs']} reached"
     mine = owned_for(task, adapter_name, kind)

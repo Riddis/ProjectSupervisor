@@ -14,7 +14,7 @@ from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, 
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import progress as progress_mod
-from . import gate, inbox as inbox_mod, jobs as jobs_mod, render, review as review_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
@@ -420,6 +420,13 @@ class Supervisor:
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         if rec.get("held"):
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
+        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
+            # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
+            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
+            reason = "gpu lease unavailable: another project holds it"
+            if rec.get("held") != reason:
+                tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+            return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         attempts = int(rec.get("launch_attempts", 0)) + 1
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts)
         if attempts > 2:
@@ -888,6 +895,47 @@ class Supervisor:
                 self.launch(rec)                                      # same attempt id: never a duplicate
         self.settle()
         self.repair_continuations()
+        self._renew_gpu_lease_if_active()
+        self._release_gpu_lease_if_idle()
+
+    def _renew_gpu_lease_if_active(self) -> None:
+        """Refresh this project's own entry in the machine-wide GPU lease (R4) each reconcile() for as long as
+        one of its own jobs still holds the resource slot, so a job that outlives `stale_after_s` (a render, a
+        local-model benchmark) is not pruned as abandoned while it is still running — the same walk over open
+        records that `_release_gpu_lease_if_idle()` makes right after decides whether to renew or to let go, so
+        the two can never disagree about whether this project is still active. A record that has left RUNNING
+        (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out of `open_records()` and is
+        never renewed, and — for the same reason — never re-taken below.
+
+        F19: the entry `launch()` wrote names the pid of the process that called `submit()`; a loop that
+        restarts while that job is still RUNNING (`supervisor stop`/start, a crash, a runtime move) is a new
+        process, so `renew()` finds no `(holder, pid)` match on its first tick and reports False — not because
+        the job ended, but because this entry was never this process's to begin with. `leases._reclaim()` is
+        the re-take: re-entrant within the project, so it succeeds at once whenever the cards are still this
+        project's (no other project's live entry contests it) and re-establishes exactly the entry renew()
+        could not refresh — unlike the ordinary `acquire()` a brand-new launch uses, it is never refused merely
+        because another project's hand-over request stands, since that request is about this project yielding
+        the job it is already holding, not a free slot up for grabs. It is a private function of `leases`, not
+        a method of the plugin-facing `ResourceLease` (the same reasoning as `leases._record_waiting_from_peek`):
+        a plugin must never be handed an operation that silently skips the fairness window `acquire()`
+        documents. A refusal means another project's own entry is already live there — the job already lost
+        the cards to someone else — and is logged with whatever holder the peek finds rather than passed over
+        in silence; the job record itself is not touched either way, so a refusal never wedges it."""
+        if not any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
+            return
+        lease = leases.resource_lease(self.layout, "gpu")
+        if lease.renew():
+            return
+        if not leases._reclaim(self.layout, "gpu"):
+            tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop",
+                          holder=leases.holder_label(self.layout, "gpu"))
+
+    def _release_gpu_lease_if_idle(self) -> None:
+        """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
+        resource slot, so a quiet project never keeps another one waiting longer than its own last job's work."""
+        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
+            return
+        leases.resource_lease(self.layout, "gpu").release()
 
     def dispatch_reviews(self) -> None:
         """Review dispatch: one review job per (WAITING_FOR_REVIEW task, missing reviewer role) under

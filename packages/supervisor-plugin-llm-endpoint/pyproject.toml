@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "supervisor-plugin-llm-endpoint"
+version = "1.0.0"
+description = "A Supervisor plugin: llm_endpoint"
+readme = "README.md"
+requires-python = ">=3.11"
+# The framework is not listed: it is not on an index, and the manifest's `framework` range is what the loader checks.
+dependencies = ["pydantic>=2.7", "requests>=2.31", "jsonschema>=4.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[project.entry-points."supervisor.plugins"]
+llm_endpoint = "supervisor_plugin_llm_endpoint"
+
+[tool.setuptools.packages.find]
+include = ["supervisor_plugin_llm_endpoint*"]
+
+[tool.setuptools.package-data]
+"supervisor_plugin_llm_endpoint" = ["supervisor-plugin.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# What CI drives on the installed wheel when this package lives under the framework repository's packages/
+# (tools/ci_package.py there): `lane`, `python_job`, and a `config` table for its plugins.<identity> section.
+# `lane` is left unset for the same reason supervisor-plugin-local-llm leaves it unset: the lane talks HTTP to a
+# model server on the loopback address and holds the GPU slot, and a CI runner has neither a GPU nor the server
+# binary. CI drives steps 1-3 (found as installed, loaded, G5) plus this package's own suite, which stands up a
+# fake HTTP server of its own for the adapter and worker tests. Left unset deliberately, not forgotten.

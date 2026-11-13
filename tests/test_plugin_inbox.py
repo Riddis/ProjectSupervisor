@@ -50,6 +50,9 @@ def tamper(layout, item_id, field, value):
 def close(layout, item_id, command_id=None):
     return plugin.close_owned_item(layout, item_id, "SUBMIT", note="2/2", by="owner", command_id=command_id)
 
+def open_item(layout, key, subject="s", summary="x"):
+    return plugin.open_owned_item(layout, "grid", key, subject=subject, summary=summary)
+
 def rewrite_answer(layout, item_id):
     def fn(doc):
         doc["answer"]["response"] = "REJECT"          # in place: the same dict the snapshot would hold
@@ -72,6 +75,12 @@ def close(layout, item_id):
 
 def get(layout, item_id):
     return plugin.owned_item(layout, item_id)
+
+def open_item(layout, key):
+    return plugin.open_owned_item(layout, "other_kind", key, subject="s", summary="x")
+
+def open_someone_elses_kind(layout, key):
+    return plugin.open_owned_item(layout, "grid", key, subject="s", summary="x")
 '''
 
 
@@ -181,4 +190,32 @@ def test_an_update_cannot_rewrite_a_recorded_answer_in_place(lay):
     assert inbox.load(lay, g) == before
     replay = mod(lay, "owner_ext").close(lay, g, command_id="original")
     assert replay["answer"]["response"] == "SUBMIT" and replay["answer"]["command_id"] == "original"
+
+
+def test_open_owned_item_creates_once_per_dedup_key_and_returns_the_same_item_again(lay):
+    first = mod(lay, "owner_ext").open_item(lay, "window-1")
+    again = mod(lay, "owner_ext").open_item(lay, "window-1")
+    assert first["id"] == again["id"]
+    assert len([i for i in inbox.all_items(lay) if i["kind"] == "grid"]) == 1
+    other = mod(lay, "owner_ext").open_item(lay, "window-2")
+    assert other["id"] != first["id"]
+
+
+def test_open_owned_item_still_matches_an_already_answered_item_by_its_dedup_key(lay):
+    first = mod(lay, "owner_ext").open_item(lay, "window-1")
+    mod(lay, "owner_ext").close(lay, first["id"], command_id="c-1")
+    again = mod(lay, "owner_ext").open_item(lay, "window-1")
+    assert again["id"] == first["id"] and again["status"] == "answered"
+
+
+def test_open_owned_item_raises_for_a_kind_that_is_not_the_callers(lay):
+    with pytest.raises(plugin.InboxError, match="other_ext"):
+        mod(lay, "other_ext").open_someone_elses_kind(lay, "window-1")
+
+
+def test_open_owned_item_returns_none_instead_of_inboxfull_when_the_role_is_at_the_cap(lay):
+    for n in range(inbox.MAX_OPEN_PER_ROLE):
+        inbox.create(lay, for_role="owner", subject=f"s{n}", summary=f"x{n}")
+    assert mod(lay, "owner_ext").open_item(lay, "window-1") is None
+    assert [i for i in inbox.all_items(lay) if i["kind"] == "grid"] == []   # nothing written to work around the cap
 

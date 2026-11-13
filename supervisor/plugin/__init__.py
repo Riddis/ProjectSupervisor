@@ -12,23 +12,24 @@ from .._vendor.contract import CapacityDeferred, atomic_json, atomic_write_text,
 from ..adapters.base import Adapter, Result
 from ..adapters.process import ProcessAdapter, job_spec
 from ..doctor import Check
+from ..leases import ResourceLease, resource_lease
 from ..plugins import PluginError
 from ..inbox import InboxError
 from ..paths import Layout
 from ..store import now_iso
 from . import policy
 from ._config import config, gpu_device, resources
-from ._inbox import close_owned_item, owned_item, owned_items, update_owned_item
+from ._inbox import close_owned_item, open_owned_item, owned_item, owned_items, update_owned_item
 from ._lanes import AgentLane, agent_lane
 from ._ops import log_event, submit_command
 from ._registry import Registry
 
 # Grouped by purpose in docs/PLUGIN_API.md: registration (Registry, PluginError); configuration (config,
 # resources, gpu_device); project paths (Layout); files (atomic_json, atomic_write_text, contained, read_json); job
-# lanes (Adapter, CapacityDeferred, ProcessAdapter, Result, job_spec); agent lanes (agent_lane, AgentLane); inbox
-# items (owned_items, owned_item, update_owned_item, close_owned_item, InboxError); commands and the log
-# (submit_command, log_event); policy (a module); Control Center pages (ui, a module); doctor checks (Check); the
-# shared GPU probe (gpu, a module); time (now_iso).
+# lanes (Adapter, CapacityDeferred, ProcessAdapter, Result, job_spec); agent lanes (agent_lane, AgentLane); resource
+# leases (resource_lease, ResourceLease); inbox items (owned_items, owned_item, open_owned_item, update_owned_item,
+# close_owned_item, InboxError); commands and the log (submit_command, log_event); policy (a module); Control
+# Center pages (ui, a module); doctor checks (Check); the shared GPU probe (gpu, a module); time (now_iso).
 __all__ = [
     "Adapter",
     "AgentLane",
@@ -39,6 +40,7 @@ __all__ = [
     "Layout",
     "ProcessAdapter",
     "Registry",
+    "ResourceLease",
     "Result",
     "agent_lane",
     "atomic_json",
@@ -51,10 +53,12 @@ __all__ = [
     "job_spec",
     "log_event",
     "now_iso",
+    "open_owned_item",
     "owned_item",
     "owned_items",
     "policy",
     "read_json",
+    "resource_lease",
     "resources",
     "submit_command",
     "ui",
