@@ -5,8 +5,12 @@ Two project Layouts, pointed at the same lease file, stand in for "two projects 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import time
 from pathlib import Path
+
+import psutil
 
 from supervisor import jobs, leases, tasks, testing
 from supervisor.adapters.base import Adapter, Result
@@ -168,6 +172,48 @@ def test_repeated_waiting_passes_record_the_release_request_once_and_do_not_rest
         second_at = json.loads(lease_file.read_text(encoding="utf-8"))["release_requested_at"]
         assert second_at == first_at                   # repeated passes did not restart the hand-over window
     holder.release()
+
+
+def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_path):
+    """F19 (docs/reviews/RELEASE_REVIEW_local-lane_round2.md): launch() writes the lease entry once, with this
+    process's own pid/create_time; F1's renew() refreshes only an entry whose (holder, pid) is this process's, and
+    nothing in the loop ever called acquire() for a record it merely re-adopted. So when the loop process that
+    launched a RUNNING gpu job is gone — supervisor stop/start, a crash, a runtime move — the entry is pruned as
+    dead on the next read even though the job is still running on the cards, and the other project's peek sees
+    nobody there. The restart is stood in for, as the reviewer's own probe does, by spawning a real python,
+    letting it exit, and rewriting the entry's pid/create_time to that exited process's identity — exactly what
+    the lease file holds once the old loop process is gone. The assertion is the holder B's peek names, not only
+    the absence of B's own record, so a timing accident cannot pass for the fix."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    lay_b = _project(tmp_path, "b", lease_file, "project-b")
+    lane_a, lane_b = ControllableGpuLane("gpu_a_restart"), ControllableGpuLane("gpu_b_restart")
+    with testing.lane(lane_a), testing.lane(lane_b):
+        make_task(lay_a, "A", job={"adapter": "gpu_a_restart"}, cost_category="local")
+        sup_a = Supervisor(lay_a, sleep_s=0)
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"          # a holds the lease and is still running
+
+        dead = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
+        dead_create_time = psutil.Process(dead.pid).create_time()
+        dead.wait(timeout=10)                                          # the old loop's process is now gone
+        doc = json.loads(lease_file.read_text(encoding="utf-8"))
+        for e in doc["entries"]:
+            if e["label"] == "project-a":
+                e["pid"], e["create_time"] = dead.pid, dead_create_time
+        lease_file.write_text(json.dumps(doc), encoding="utf-8")
+
+        sup_a.once()                                                   # the restarted loop's own reconcile() tick
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"           # the job itself never stopped
+
+        assert leases.holder_label(lay_b, "gpu") == "project-a"         # b's peek names the real holder, not None
+
+        make_task(lay_b, "B", job={"adapter": "gpu_b_restart"}, cost_category="local")
+        sup_b = Supervisor(lay_b, sleep_s=0)
+        sup_b.once()
+        assert lane_b.submitted == []                                   # b does not launch on top of a's job
+        assert jobs.for_task(lay_b, "B") == []
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
 
 
 def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):
