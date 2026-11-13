@@ -47,12 +47,34 @@ class ControllableGpuLane(Adapter):
         return Result(status="COMPLETE")
 
 
-def _project(tmp_path, name, lease_path, label, stale_after_s=None):
+def _project(tmp_path, name, lease_path, label, stale_after_s=None, hand_over_timeout_s=None):
     lease_cfg = {"path": str(lease_path), "label": label}
     if stale_after_s is not None:
         lease_cfg["stale_after_s"] = stale_after_s
+    if hand_over_timeout_s is not None:
+        lease_cfg["hand_over_timeout_s"] = hand_over_timeout_s
     routing = {"limits": {"max_resource_jobs": 1}, "resources": {"gpu": {"lease": lease_cfg}}}
     return testing.project(tmp_path / name, routing=routing)
+
+
+def _simulate_restart(lease_file: Path, label: str) -> None:
+    """Stand in for the loop process that launched a RUNNING gpu job being gone (supervisor stop/start, a
+    crash, a runtime move): a real python exits, and the lease entry is rewritten to that exited process's own
+    pid/create_time -- exactly what the file holds once the old loop process is gone."""
+    dead = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
+    dead_create_time = psutil.Process(dead.pid).create_time()
+    dead.wait(timeout=10)
+    doc = json.loads(lease_file.read_text(encoding="utf-8"))
+    for e in doc["entries"]:
+        if e["label"] == label:
+            e["pid"], e["create_time"] = dead.pid, dead_create_time
+    lease_file.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def log_lines(layout) -> list[dict]:
+    if not layout.log.exists():
+        return []
+    return [json.loads(line) for line in layout.log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_a_second_project_waits_for_the_first_to_let_go_of_the_gpu_lease(tmp_path):
@@ -194,14 +216,7 @@ def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_pa
         sup_a.once()
         assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"          # a holds the lease and is still running
 
-        dead = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
-        dead_create_time = psutil.Process(dead.pid).create_time()
-        dead.wait(timeout=10)                                          # the old loop's process is now gone
-        doc = json.loads(lease_file.read_text(encoding="utf-8"))
-        for e in doc["entries"]:
-            if e["label"] == "project-a":
-                e["pid"], e["create_time"] = dead.pid, dead_create_time
-        lease_file.write_text(json.dumps(doc), encoding="utf-8")
+        _simulate_restart(lease_file, "project-a")                     # the old loop's process is now gone
 
         sup_a.once()                                                   # the restarted loop's own reconcile() tick
         assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"           # the job itself never stopped
@@ -214,6 +229,132 @@ def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_pa
         assert lane_b.submitted == []                                   # b does not launch on top of a's job
         assert jobs.for_task(lay_b, "B") == []
         assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+
+
+def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_record_alone(tmp_path):
+    """F19: a refusal is not passed over in silence. When the restarted loop's renew() finds nothing to refresh
+    and acquire(wait_s=0) is refused because another project's own entry is already live on the cards -- the job
+    already lost them to someone else -- the refusal is logged naming that holder, and the refused job's own
+    record is left exactly as it was (still RUNNING): the re-take never touches jobs_mod, only the lease file,
+    so a refusal never wedges the record; the next reconcile() simply tries again."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    lay_c = _project(tmp_path, "c", lease_file, "project-c")
+    lane_a = ControllableGpuLane("gpu_a_refused")
+    with testing.lane(lane_a):
+        make_task(lay_a, "A", job={"adapter": "gpu_a_refused"}, cost_category="local")
+        sup_a = Supervisor(lay_a, sleep_s=0)
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+
+        _simulate_restart(lease_file, "project-a")
+
+        holder_c = leases.resource_lease(lay_c, "gpu")
+        assert holder_c.acquire(wait_s=0) is True            # c already started on top before a's loop ticks again
+
+        before = len(log_lines(lay_a))
+        sup_a.once()                                          # the restarted loop's tick: renew fails, retake refused
+
+        assert leases.holder_label(lay_a, "gpu") == "project-c"     # the cards really are c's now
+        events = [e for e in log_lines(lay_a)[before:] if e["event"] == "gpu_lease_retake_refused"]
+        assert events and events[-1]["holder"] == "project-c"        # named, not silent
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"         # the job record itself is not wedged
+        holder_c.release()
+
+
+def test_the_retake_only_fires_for_a_record_still_running_not_once_it_has_left_running(tmp_path):
+    """Keeps T5-18's rule for the new re-take path too, half 1: _renew_gpu_lease_if_active's own gate (an open
+    gpu job in gate.ACTIVE_PHASES) decides whether to renew AND, now, whether to re-take -- never one without
+    the other. While the job is RUNNING, a restarted loop's tick re-takes what renew() could not refresh; once
+    the job has left RUNNING (settled to DONE), the same gate releases the entry rather than kept alive by
+    either path -- the second half this record's sibling test proves in isolation, since finishing this
+    attempt here would hand the still-open task its own next continuation and reopen the gate for a different
+    reason than the one under test."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    lane_a = ControllableGpuLane("gpu_a_running_only")
+    with testing.lane(lane_a):
+        make_task(lay_a, "A", job={"adapter": "gpu_a_running_only"}, cost_category="local")
+        sup_a = Supervisor(lay_a, sleep_s=0)
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+
+        _simulate_restart(lease_file, "project-a")
+
+        sup_a.once()                                            # RUNNING -> re-taken
+        assert leases.status(lay_a, "gpu")["live"] != []
+
+        lane_a.done["A.a1"] = True
+        sup_a.once()                                             # settle() collects it; reconcile() releases
+        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+        assert leases.status(lay_a, "gpu")["live"] == []          # left RUNNING: already let go, not kept alive
+
+
+def test_a_stale_looking_entry_with_no_active_gpu_job_is_not_revived(tmp_path):
+    """The other half, isolated from any task or continuation: a project with no gpu job in gate.ACTIVE_PHASES
+    at all must not have a stale-looking entry for itself revived by either renew() or the new acquire()
+    fallback -- the active-job gate that guards both in _renew_gpu_lease_if_active() returns before either runs,
+    so a ghost entry under a different (dead) pid, as a crash racing a real release might leave one, is simply
+    left alone: not live, not re-taken, never re-establishing a hold after the job it covered has ended."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a")
+    own_holder = leases.resource_lease(lay_a, "gpu")
+    assert own_holder.acquire(wait_s=0) is True              # this process's own real (holder, pid) entry
+    holder_hash = json.loads(lease_file.read_text(encoding="utf-8"))["entries"][0]["holder"]
+    own_holder.release()
+
+    now = time.time()
+    lease_file.write_text(json.dumps({
+        "entries": [{"holder": holder_hash, "label": "project-a", "pid": 999999, "create_time": 1.0,
+                     "since": now, "renewed": now}],
+        "release_requested_by": None, "release_requested_label": None, "release_requested_at": None,
+    }), encoding="utf-8")
+
+    sup_a = Supervisor(lay_a, sleep_s=0)
+    sup_a.once()                                               # no gpu job at all: neither renewed nor re-taken
+    assert leases.status(lay_a, "gpu")["live"] == []
+
+
+def test_a_retake_leaves_another_projects_pending_release_request_untouched(tmp_path):
+    """The re-take must not disturb another project's pending hand-over, and must still succeed -- the job on
+    the cards never stopped, only the bookkeeping entry went stale, so the retake cannot be refused just
+    because B is already waiting its turn (the exact shape the reviewer's own probe drives: B's loop is
+    refused once, which records its wait, *before* A's restart). B's loop has already recorded its own
+    release_requested_by/_at (F2) while A's entry was still live; when A's restarted loop then re-takes,
+    reclaim() -- unlike acquire()/_try_take() -- never reads or writes release_requested_by/_at at all, only
+    A's own entries list, so B's requester-clearing branch in _try_take() (which only fires for "pending ==
+    self._holder, or the window has expired") is never reached by this path to begin with: the fields on disk
+    are untouched because reclaim() has no code path that could touch them, not because a check happened to
+    refuse first. The request B's loop recorded is not quietly cleared by A's own re-entrance, and A's job
+    stays visible to B rather than invisible while B's window runs down."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay_a = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=60)
+    lay_b = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=60)
+    lane_a = ControllableGpuLane("gpu_a_handover")
+    with testing.lane(lane_a):
+        make_task(lay_a, "A", job={"adapter": "gpu_a_handover"}, cost_category="local")
+        sup_a = Supervisor(lay_a, sleep_s=0)
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+
+        waiter_b = leases.resource_lease(lay_b, "gpu")              # b's own wait, recorded while a's entry is live
+        assert waiter_b.acquire(wait_s=0) is False
+        before = json.loads(lease_file.read_text(encoding="utf-8"))
+        requested_by, requested_label, requested_at = (before["release_requested_by"],
+                                                         before["release_requested_label"], before["release_requested_at"])
+        assert requested_by is not None
+
+        _simulate_restart(lease_file, "project-a")
+
+        sup_a.once()                                                 # a's restarted loop retakes while b's ask stands
+
+        after = json.loads(lease_file.read_text(encoding="utf-8"))
+        assert after["release_requested_by"] == requested_by         # b's hand-over request: untouched
+        assert after["release_requested_label"] == requested_label
+        assert after["release_requested_at"] == requested_at
+        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert leases.status(lay_a, "gpu")["live"] != []              # and the retake still succeeded
+        assert leases.holder_label(lay_b, "gpu") == "project-a"       # b's own peek names a, not nobody
 
 
 def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):

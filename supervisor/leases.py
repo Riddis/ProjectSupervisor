@@ -169,10 +169,14 @@ class ResourceLease:
             doc["release_requested_at"] = now
             atomic_json(cfg.path, doc)
 
-    def renew(self) -> None:
-        """Refresh this process's own entry so it does not go stale while the work it covers continues."""
+    def renew(self) -> bool:
+        """Refresh this process's own entry so it does not go stale while the work it covers continues. Reports
+        whether an entry was actually found and refreshed: False when no lease is configured, or when this
+        process's own `(holder, pid)` has no matching entry on file — the shape a restarted loop's first tick
+        finds, since the entry still on disk names the pid of the process that launched the job, not this one
+        (F19). A caller that gets False and still needs the resource re-takes it with `acquire()`."""
         if self._cfg is None:
-            return
+            return False
         cfg = self._cfg
         with FileLock(_lock_path(cfg), owner="resource-lease", timeout=5.0):
             doc = _read(cfg)
@@ -184,6 +188,35 @@ class ResourceLease:
                     found = True
             if found:
                 atomic_json(cfg.path, doc)
+            return found
+
+    def reclaim(self) -> bool:
+        """Re-establish this process's own entry for a resource this project is still actually holding — a job
+        that never stopped, only the bookkeeping entry `renew()` could not refresh (F19: a restarted loop's
+        first tick finds the entry `launch()` wrote under a process that is gone). Unlike `acquire()`, a
+        pending hand-over request from another project (`release_requested_by`) never refuses this: that
+        request is this project being asked to let go of the job it is *already* holding, not a brand-new
+        launch taking a free slot out from under a waiter — `_try_take()`'s fairness window exists for the
+        latter, and applying it here would read a loop restart as the end of the hold itself, for a job that
+        never ended. `reclaim()` therefore never writes `release_requested_by`/`_at` either way, so a standing
+        request is left exactly as it was. True once this process's own entry is re-established (immediately
+        when no lease is configured); False only when another project's own entry is live there right now —
+        the job has already lost the cards to someone else, or is about to."""
+        if self._cfg is None:
+            return True
+        cfg = self._cfg
+        with FileLock(_lock_path(cfg), owner="resource-lease", timeout=5.0):
+            now = time.time()
+            doc = _read(cfg)
+            live = _live_entries(doc, cfg, now)
+            if any(e["holder"] != self._holder for e in live):
+                return False
+            mine = [e for e in live if e["holder"] == self._holder]
+            mine.append({"holder": self._holder, "label": cfg.label, "pid": self._pid,
+                         "create_time": self._create_time, "since": now, "renewed": now})
+            doc["entries"] = mine
+            atomic_json(cfg.path, doc)
+            return True
 
     def release(self) -> None:
         """Drop this process's own entry. Harmless when it holds none (never acquired, already released, or no

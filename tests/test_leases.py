@@ -3,6 +3,7 @@
 same lease file to act as "two projects on one machine" the way the design's GPU-sharing problem is stated."""
 from __future__ import annotations
 
+import json
 import os
 import time
 
@@ -155,6 +156,91 @@ def test_renew_keeps_the_entry_from_going_stale(tmp_path):
     b = leases.resource_lease(b_layout, "gpu")
     assert a.acquire(wait_s=0) is True
     time.sleep(0.6)
-    a.renew()
+    assert a.renew() is True
     time.sleep(0.6)                                       # 1.2s since acquire, but renewed at 0.6s
     assert b.acquire(wait_s=0) is False                    # still fresh: not pruned
+
+
+def test_renew_reports_whether_it_refreshed_anything(tmp_path):
+    """F19: the loop's own re-take (loop.py:_renew_gpu_lease_if_active) decides whether to call reclaim() on
+    what renew() reports, so renew() must say True only when it actually found and touched this process's own
+    (holder, pid) entry. False both when no lease is configured (a no-op that already has it) and when this
+    process holds no matching entry at all -- never acquired, already released, or (F19's own case) an entry on
+    file whose pid names a different, exited process, which is what a restarted loop's first renew() finds."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay = _project(tmp_path, "a", lease_file, "project-a")
+    unconfigured = leases.resource_lease(testing.project(tmp_path / "solo"), "gpu")
+    assert unconfigured.renew() is False                   # no lease configured at all
+
+    a = leases.resource_lease(lay, "gpu")
+    assert a.renew() is False                               # never acquired: no entry to refresh
+    assert a.acquire(wait_s=0) is True
+    assert a.renew() is True                                 # now holds a real (holder, pid) entry
+    a.release()
+    assert a.renew() is False                                # released: the entry is gone again
+
+    assert a.acquire(wait_s=0) is True
+    doc = json.loads(lease_file.read_text(encoding="utf-8"))
+    for e in doc["entries"]:
+        e["pid"] = e["pid"] + 1                             # this process's own entry, but under another pid
+    lease_file.write_text(json.dumps(doc), encoding="utf-8")
+    assert a.renew() is False                                # (holder, pid) no longer matches: nothing refreshed
+
+
+def test_reclaim_is_a_no_op_with_no_lease_configured(tmp_path):
+    lay = testing.project(tmp_path / "solo")
+    assert leases.resource_lease(lay, "gpu").reclaim() is True
+
+
+def test_reclaim_re_establishes_this_projects_own_entry_after_a_pid_mismatch(tmp_path):
+    """F19's own shape: the entry on file names a pid that is no longer this process's (what renew() finding
+    nothing looks like after a restart). reclaim() succeeds re-entrantly as long as the cards are still this
+    project's, writing a fresh entry under this process's real (pid, create_time)."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    lay = _project(tmp_path, "a", lease_file, "project-a")
+    a = leases.resource_lease(lay, "gpu")
+    assert a.acquire(wait_s=0) is True
+    doc = json.loads(lease_file.read_text(encoding="utf-8"))
+    for e in doc["entries"]:
+        e["pid"], e["create_time"] = 999999, 1.0            # an exited process's identity, as after a restart
+    lease_file.write_text(json.dumps(doc), encoding="utf-8")
+    assert leases.status(lay, "gpu")["live"] == []           # pruned: the rewritten entry is not alive
+
+    assert a.reclaim() is True
+    after = json.loads(lease_file.read_text(encoding="utf-8"))["entries"]
+    assert len(after) == 1 and after[0]["pid"] == os.getpid()   # re-established under this process's own pid
+
+
+def test_reclaim_refuses_when_another_project_already_holds_it_live(tmp_path):
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a = leases.resource_lease(_project(tmp_path, "a", lease_file, "project-a"), "gpu")
+    c = leases.resource_lease(_project(tmp_path, "c", lease_file, "project-c"), "gpu")
+    assert c.acquire(wait_s=0) is True                        # c already started on top
+    assert a.reclaim() is False                                # the cards are not a's any more
+
+
+def test_reclaim_succeeds_and_leaves_another_projects_pending_request_untouched(tmp_path):
+    """Unlike acquire()/_try_take(), a standing hand-over request from another project never refuses reclaim()
+    -- that request is about this project yielding the job it is already holding, not a free slot up for
+    grabs -- and reclaim() has no code path that writes release_requested_by/_at, so a request recorded by a
+    peek that happened while this project's entry was still live is left exactly as it was."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=60)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=60)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False                        # records b's release_requested while a is live
+    before = json.loads(lease_file.read_text(encoding="utf-8"))
+    assert before["release_requested_by"] is not None
+
+    doc = json.loads(lease_file.read_text(encoding="utf-8"))
+    for e in doc["entries"]:
+        e["pid"], e["create_time"] = 999999, 1.0              # a's entry goes stale, as after a restart
+    lease_file.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert a.reclaim() is True                                  # still succeeds: the cards are still a's
+    after = json.loads(lease_file.read_text(encoding="utf-8"))
+    assert after["release_requested_by"] == before["release_requested_by"]
+    assert after["release_requested_label"] == before["release_requested_label"]
+    assert after["release_requested_at"] == before["release_requested_at"]

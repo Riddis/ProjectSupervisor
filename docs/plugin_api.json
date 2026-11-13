@@ -953,6 +953,16 @@
           ],
           "returns": "bool"
         },
+        "reclaim": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            }
+          ],
+          "returns": "bool"
+        },
         "release": {
           "kind": "method",
           "params": [
@@ -981,7 +991,7 @@
               "name": "self"
             }
           ],
-          "returns": "None"
+          "returns": "bool"
         }
       }
     },

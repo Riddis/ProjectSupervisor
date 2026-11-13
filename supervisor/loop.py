@@ -905,9 +905,28 @@ class Supervisor:
         records that `_release_gpu_lease_if_idle()` makes right after decides whether to renew or to let go, so
         the two can never disagree about whether this project is still active. A record that has left RUNNING
         (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out of `open_records()` and is
-        never renewed."""
-        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
-            leases.resource_lease(self.layout, "gpu").renew()
+        never renewed, and — for the same reason — never re-taken below.
+
+        F19: the entry `launch()` wrote names the pid of the process that called `submit()`; a loop that
+        restarts while that job is still RUNNING (`supervisor stop`/start, a crash, a runtime move) is a new
+        process, so `renew()` finds no `(holder, pid)` match on its first tick and reports False — not because
+        the job ended, but because this entry was never this process's to begin with. `reclaim()` is the
+        re-take: re-entrant within the project, so it succeeds at once whenever the cards are still this
+        project's (no other project's live entry contests it) and re-establishes exactly the entry renew()
+        could not refresh — unlike the ordinary `acquire()` a brand-new launch uses, it is never refused merely
+        because another project's hand-over request stands, since that request is about this project yielding
+        the job it is already holding, not a free slot up for grabs. A refusal means another project's own
+        entry is already live there — the job already lost the cards to someone else — and is logged with
+        whatever holder the peek finds rather than passed over in silence; the job record itself is not
+        touched either way, so a refusal never wedges it."""
+        if not any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
+            return
+        lease = leases.resource_lease(self.layout, "gpu")
+        if lease.renew():
+            return
+        if not lease.reclaim():
+            tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop",
+                          holder=leases.holder_label(self.layout, "gpu"))
 
     def _release_gpu_lease_if_idle(self) -> None:
         """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
