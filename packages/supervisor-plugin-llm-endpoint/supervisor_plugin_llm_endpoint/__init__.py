@@ -40,6 +40,7 @@ def llm_endpoint_config(layout: plugin.Layout) -> dict:
     cfg.setdefault("max_tokens", 2048)
     cfg.setdefault("chars_per_token", 3)
     cfg.setdefault("defer_budget_s", 7200)
+    cfg.setdefault("hand_over_grace_s", 3.0)
     cfg.setdefault("profile", "default")
     return cfg
 

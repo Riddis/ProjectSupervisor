@@ -193,6 +193,18 @@ def is_idle(root, idle_stop_s: float, now: float | None = None) -> bool:
     return age > idle_stop_s
 
 
+def _hand_over_timeout_s(layout) -> float:
+    """resources.gpu.lease.hand_over_timeout_s, read straight from routing.yaml the same way
+    `supervisor.leases._lease_config` does: `ResourceLease` keeps its own copy on a private `_cfg`, and this
+    package already reads the same section directly rather than reach into it (`_preflight_devices`,
+    `_raise_owner_deferral_item` in `__init__.py`). F18 (RELEASE_REVIEW_local-lane_round2.md): the bound the
+    hand-over grace below is measured against, so a wedged generation cannot hold the lease past the window
+    R4 itself names (LOCAL_MODEL_LANE.md:270-271)."""
+    gpu_cfg = plugin.resources(layout).get("gpu") or {}
+    lease_cfg = gpu_cfg.get("lease") or {}
+    return float(lease_cfg.get("hand_over_timeout_s", 900.0))
+
+
 def _health_ok(base_url: str, health_path: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.get(base_url.rstrip("/") + health_path, timeout=timeout)
@@ -324,6 +336,9 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
                             "watchdog_pid": own_pid, "watchdog_create_time": _process_create_time(own_pid),
                             "base_url": cfg["base_url"], "started": time.time()})
         idle_stop_s = cfg.get("idle_stop_s", 900)
+        hand_over_grace_s = cfg.get("hand_over_grace_s", 3.0)
+        hand_over_timeout_s = _hand_over_timeout_s(layout)
+        release_requested_since = None
         while True:
             time.sleep(poll_s)
             lease.renew()
@@ -333,7 +348,15 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
                 return "stop_requested"
             if is_idle(root, idle_stop_s):
                 return "idle"
-            if lease.release_requested():
+            if lease.release_requested() and release_requested_since is None:
+                release_requested_since = time.time()
+            if release_requested_since is not None and (
+                    # F18 (RELEASE_REVIEW_local-lane_round2.md): R4's fairness clause ("this lane's watchdog
+                    # finishes the in-flight request", LOCAL_MODEL_LANE.md:267-270) - honour the request only
+                    # once the activity file (the worker's own in-flight signal, touched on every streamed
+                    # piece) has gone quiet for hand_over_grace_s, bounded by the request's own
+                    # hand_over_timeout_s so a wedged generation cannot hold the cards past the window either.
+                    is_idle(root, hand_over_grace_s) or time.time() - release_requested_since >= hand_over_timeout_s):
                 return "release_requested"
     finally:
         if proc.poll() is None:
