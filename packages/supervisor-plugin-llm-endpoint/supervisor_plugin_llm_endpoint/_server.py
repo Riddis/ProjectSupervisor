@@ -87,13 +87,17 @@ if sys.platform == "win32":
         proc = subprocess.Popen(argv)
         job = _kernel32.CreateJobObjectW(None, None)
         tied, last_error = False, 0
-        if job:
+        if not job:
+            last_error = ctypes.get_last_error()
+        else:
             info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
             info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             _kernel32.SetInformationJobObject(job, _JOBOBJECTINFOCLASS_EXTENDED_LIMIT, ctypes.byref(info),
                                               ctypes.sizeof(info))
             handle = _kernel32.OpenProcess(_PROCESS_TERMINATE_AND_SET_QUOTA, False, proc.pid)
-            if handle:
+            if not handle:
+                last_error = ctypes.get_last_error()
+            else:
                 if _kernel32.AssignProcessToJobObject(job, handle):
                     tied = True
                 else:
@@ -331,11 +335,22 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         return "lease_unavailable"
     touch_activity(root)
     proc, _job, tied, tie_error = _start_child_tied_to_this_process(cfg["argv"])   # F5: dies even on a hard kill
-    if not tied:
-        # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say so instead of serving an untied child
-        # silently - the state-based backstop below still catches the orphan on the next call either way.
-        plugin.log_event(layout, "llm_endpoint_server_job_object_tie_failed", pid=proc.pid, win32_error=tie_error)
     try:
+        # F22 (round 2 review, regression): this used to call plugin.log_event() below BEFORE this try and before
+        # anything had loaded supervisor.plugins' registry for this layout - harmless in a test that primes it by
+        # hand, but the real watchdog runs detached (`python -m supervisor_plugin_llm_endpoint._server`,
+        # ensure_started(), stderr to DEVNULL) with nothing else to publish it, so log_event()'s calling_plugin()
+        # (visible_registry() alone does not load) resolved no one and raised PluginError - on the very host F22
+        # targets, the watchdog died before the health wait, with the one log line meant to make the gap loud
+        # being the thing that killed it, finally never running, the lease never released. _hand_over_timeout_s()
+        # below is this process's own first call into plugin.resources(), which loads that registry (plugins.load,
+        # plugin/_config.py:177) as a side effect - computing it first, inside the try, is what makes the
+        # log_event call after it safe, and finally still runs if either one does raise for some other reason.
+        hand_over_timeout_s = _hand_over_timeout_s(layout)
+        if not tied:
+            # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say so instead of serving an untied child
+            # silently - the state-based backstop below still catches the orphan on the next call either way.
+            plugin.log_event(layout, "llm_endpoint_server_job_object_tie_failed", pid=proc.pid, win32_error=tie_error)
         deadline = time.time() + cfg.get("start_timeout_s", 300)
         health_path = cfg.get("health_path", "/health")
         while not _health_ok(cfg["base_url"], health_path):
@@ -352,7 +367,6 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
                             "base_url": cfg["base_url"], "started": time.time(), "tied": tied})
         idle_stop_s = cfg.get("idle_stop_s", 900)
         hand_over_grace_s = cfg.get("hand_over_grace_s", 3.0)
-        hand_over_timeout_s = _hand_over_timeout_s(layout)
         release_requested_since = None
         while True:
             time.sleep(poll_s)

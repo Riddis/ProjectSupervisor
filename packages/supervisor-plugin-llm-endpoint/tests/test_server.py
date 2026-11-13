@@ -494,8 +494,9 @@ def test_a_failed_job_object_tie_is_logged_and_recorded_as_not_tied(tmp_path, fa
     layout = testing.project(root, plugins=["llm_endpoint"], routing={
         "resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}},
         "plugins": {"llm_endpoint": cfg}})
-    llm_endpoint.llm_endpoint_config(layout)   # primes supervisor.plugins' registry (calling_plugin needs it
-                                                # published before run(), in its own thread, can call log_event)
+    # Deliberately not primed: run() itself must publish supervisor.plugins' registry (via _hand_over_timeout_s()
+    # -> plugin.resources()) before calling log_event, the same as the real detached watchdog process, which has
+    # no equivalent of a priming call (round 2 review: this test used to pass only by priming by hand).
     out = {}
 
     def go():
