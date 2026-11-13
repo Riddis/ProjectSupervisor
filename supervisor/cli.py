@@ -176,9 +176,10 @@ def doctor():
 
 
 @app.command()
-def check():
+def check(seed: str = "state/tasks_seed.yaml"):
     """Validate the task store (fields, enums, dependencies, cycles); warn about open tasks naming a role routing does
-    not configure or has made inactive, about checks off the allowed list, and about jobs no lane or python job runs.
+    not configure or has made inactive, about checks off the allowed list, about jobs no lane or python job runs, and
+    about open tasks whose stored contract differs from the seed (a diagnosis revision, a re-routed job).
     Reads only: no plugin is set up and nothing is created (review 1.13.0)."""
     layout = _reader()
     tasks = tasks_mod.load_all(layout)
@@ -189,6 +190,14 @@ def check():
     open_tasks = [t for t in tasks.values() if t.status not in TERMINAL]
     for w in tasks_mod.contract_warnings(open_tasks, layout):
         typer.echo(f"WARN {w}")
+    seed_path = layout.root / seed
+    if seed_path.is_file():
+        try:
+            drift = tasks_mod.seed_drift(layout, seed_path, open_tasks)
+        except (OSError, yaml.YAMLError, AttributeError) as exc:
+            drift = [f"{seed}: not readable as a seed ({exc})"]
+        for w in drift:
+            typer.echo(f"WARN {w}")
     typer.echo(f"{len(tasks)} tasks; eligible: {', '.join(t.id for t in tasks_mod.eligible(layout, tasks)) or 'none'}")
     raise typer.Exit(1 if errors else 0)
 

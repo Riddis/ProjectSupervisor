@@ -277,11 +277,42 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     doc.setdefault("status", "NOT_STARTED")
     doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
+    errors, warnings = check_contract(layout, task, combined)
+    return doc, errors, warnings
+
+
+def check_contract(layout: Layout, task: Task, combined: dict[str, Task] | None = None) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for `task`'s contract in the graph `combined` (default: the store) with it in place: the
+    graph, its ownership and its artifacts are errors, `contract_warnings` stay warnings. What `check_new` (task
+    create) applies to a new task and a diagnosis `revise` (supervisor.diagnosis) to a revised one."""
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
     warnings += contract_warnings([task], layout)
-    return doc, validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
+    return validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
+
+
+def revise_contract(layout: Layout, task_id: str, fields: dict, actor: str, key: str, record: dict) -> Task:
+    """Replace contract fields of a stored task and keep the revision on it (`revisions`: what changed, from what,
+    why) — an architect diagnosis's `revise` (supervisor.diagnosis), which has already checked the result. Never the
+    `job` (commands.apply_job is its only writer). Idempotent per `key`: a replay writes nothing twice."""
+    extra = sorted(set(fields) - set(CONTRACT_FIELDS))
+    if extra:
+        raise TaskError(f"{task_id}: not contract fields: {', '.join(extra)}")
+    written = []
+
+    def fn(doc):
+        revisions = doc.setdefault("revisions", [])
+        if any(isinstance(r, dict) and r.get("key") == key for r in revisions):
+            return
+        doc.update(fields)
+        revisions.append({"at": store.now_iso(), "by": actor, "key": key, **record})
+        written.append(True)
+    t = _update(layout, task_id, fn)
+    if written:
+        log(layout, "task_contract_revised", actor, task=task_id, key=key,
+            paths=[c.get("path") for c in record.get("changes") or []])
+    return t
 
 
 def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
@@ -322,6 +353,13 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     if errors:
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
     for t in seed:
+        if t["id"] in update_ids and t["id"] in existing:
+            stored = load(layout, t["id"])
+            revs = _revised_by(stored, [f for f in drift_fields(stored, t) if f != "job"])
+            if revs:
+                warnings.append(f"{t['id']}: --update-contracts replaces a contract a diagnosis revised "
+                                f"({', '.join(c['path'] for r in revs for c in r.get('changes') or [])}) with the seed's")
+    for t in seed:
         path = path_for(layout, t["id"])
         if dry_run:
             if not path.exists():
@@ -353,6 +391,65 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
         out["dry_run"] = True
     if warnings:
         out["warnings"] = warnings
+    return out
+
+
+DRIFT_FIELDS = (*CONTRACT_FIELDS, "job")
+
+
+def drift_fields(stored: Task, entry: dict) -> list[str]:
+    """Contract fields (and the job) where the stored task differs from its seed entry, compared as validated
+    contracts so a default the seed leaves out is no difference. A seed without owned_paths or checks leaves the
+    store's in place on import (_refresh_contract), so those count only when the seed names them."""
+    try:
+        seeded = Task.model_validate(entry)
+    except ValidationError:
+        return []
+    a, b = stored.model_dump(mode="json"), seeded.model_dump(mode="json")
+    out = []
+    for f in DRIFT_FIELDS:
+        if f in ("owned_paths", "checks") and f not in entry:
+            continue
+        if f == "job":
+            if (stored.model_extra or {}).get("job") != entry.get("job"):
+                out.append(f)
+        elif a.get(f) != b.get(f):
+            out.append(f)
+    return out
+
+
+def _revised_by(stored: Task, fields: list[str]) -> list[dict]:
+    """The diagnosis revisions (revise_contract) that touched any of `fields`, oldest first."""
+    revs = [r for r in (stored.model_extra or {}).get("revisions") or [] if isinstance(r, dict)]
+    return [r for r in revs if any(str(c.get("path", "")).split(".")[0] in fields for c in r.get("changes") or [])]
+
+
+def seed_drift(layout: Layout, seed_path: Path, tasks: Iterable[Task]) -> list[str]:
+    """One warning per task whose stored contract differs from its entry in the seed, naming the fields and any
+    diagnosis revision behind them. The framework never edits a project's seed, so a contract an architect
+    diagnosis revised (supervisor.diagnosis) lives only in the store until someone brings the seed in line — and
+    `task import --update-contracts` of that task would put the seed's contract fields back. Reads only."""
+    seed = yaml.safe_load(Path(seed_path).read_text(encoding="utf-8")) or {}
+    entries = {str(t.get("id")): t for t in seed.get("tasks") or [] if isinstance(t, dict)}
+    rel = Path(seed_path).resolve()
+    try:
+        rel = rel.relative_to(layout.root.resolve()).as_posix()
+    except ValueError:
+        rel = str(seed_path)
+    out = []
+    for t in tasks:
+        if t.id not in entries:
+            continue
+        fields = drift_fields(t, entries[t.id])
+        if not fields:
+            continue
+        revs = _revised_by(t, fields)
+        why = "".join(f"; {', '.join(c['path'] for c in r.get('changes') or [])} revised by the {r.get('role') or r.get('by')} "
+                      f"diagnosis at {r.get('at')}: {str(r.get('reason') or '')[:160]}" for r in revs[-2:])
+        reverted = [f for f in fields if f != "job"]
+        out.append(f"{t.id}: the store's {', '.join(fields)} differ from {rel}{why}. Bring the seed in line"
+                   + (f"; `task import --update-contracts {t.id}` would put the seed's {', '.join(reverted)} back"
+                      if reverted else ""))
     return out
 
 

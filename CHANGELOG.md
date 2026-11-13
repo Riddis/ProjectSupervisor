@@ -255,6 +255,26 @@ these six entries; the tag is not re-cut, and this heading is the whole remedy.
   nothing the policy's `devices` mapping holds. Every 2.0..2.2 caller of all five names is unaffected: an unset
   device is `None` throughout, and every probe call with no index behaves exactly as before.
 
+- **Added: an architect diagnosis can fix a wrong task contract (`revise`).** A diagnosis could requeue with
+  guidance, defer, escalate or ask the owner, and none of those changes a contract: guidance does nothing for a
+  deterministic job, so a process task whose own argv was wrong always became an owner inbox item, even when the
+  diagnosis named the exact change. Now the manager picks `architect` for any fix that is a contract change and says
+  in `guidance` what is wrong and why; the architect's brief carries that hand-off and the stored contract (as
+  JSON). The architect may answer `revise`: `changes`, a list of `{path, value}` (`job.argv.3`, `checks.1`), plus a
+  `reason`. `diagnosis.revision_plan` applies the patch to a copy of the stored task and checks the result like
+  `task create` (`tasks.check_contract`, now shared with `tasks.check_new`; contract warnings the revision
+  introduces are refusals); `_revise` writes the job through `commands.apply_job` and the other fields through the
+  new `tasks.revise_contract` (which keeps a `revisions` record on the task), notes old value, new value and reason
+  (`by: architect`), resets the retry budget once and sets the task READY. It goes to the owner as one decision item
+  naming the proposed change when the patch is invalid or refused, touches a field outside `job`, `actions`,
+  `owned_paths`, `artifacts`, `tests`, `checks`, `acceptance`, `depends_on`, or the job's `adapter`/`model`/`role`,
+  drops or alters an existing verification entry (those fields may only grow), repeats a revise for the same
+  failure signature, exceeds two revisions per task, comes from the manager, or when `routing.yaml
+  escalation.revise: false` (new, default true; off restores the old "owner, name the `task.set_job`" contract).
+  The seed is never edited: `supervisor check` (new `--seed` option) warns about open tasks whose stored contract or
+  job differs from the seed and names the revision behind it, and `task import --update-contracts` warns when it
+  replaces a revision.
+
 - **Fixed: a diagnosis `defer` parked its task on prose that nothing acted on.** The manager (or architect) could
   describe, under `blocked_on`, a fix task that did not exist yet; `diagnosis.ingest` only wrote that on the task
   and left it BLOCKED, the stall sweep skipped it as "parked on purpose", and the loop went idle until the owner
