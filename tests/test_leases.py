@@ -138,6 +138,61 @@ def test_release_requested_still_true_inside_the_hand_over_window(tmp_path):
     a.release()
 
 
+def test_a_waiter_still_asking_every_pass_is_not_read_as_expired_once_the_window_is_older_than_its_first_ask(tmp_path):
+    """F20 (docs/reviews/RELEASE_REVIEW_local-lane_round2.md). F8's expiry read only release_requested_at, set
+    once on b's first refused pass and never refreshed (F2's own idempotence). A holder whose job outlives
+    hand_over_timeout_s therefore read "nobody is waiting" while b was still asking on every pass. b's second
+    ask, after the window from its *first* ask has already passed, must keep a asked to yield."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=0.5)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=0.5)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False                  # b's first ask, recorded
+    time.sleep(0.7)                                       # older than the window since the first ask
+    assert b.acquire(wait_s=0) is False                  # b asks again: still refused, still waiting
+    assert a.release_requested() is True                  # not expired: b never stopped asking
+    assert leases.status(b_layout, "gpu")["waiting"] == "project-b"
+    a.release()
+
+
+def test_a_waiter_that_has_stopped_asking_still_expires_after_the_window(tmp_path):
+    """The companion the fix must keep holding, so it cannot become "never expires": a waiter whose loop is
+    gone — it asked once and never came back — must still read as expired once hand_over_timeout_s has
+    passed, exactly as F8 made it."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=0.5)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=0.5)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False                  # b's one and only ask
+    time.sleep(0.7)                                       # b never asks again: its loop is gone
+    assert a.release_requested() is False                 # expired: nobody is waiting any more
+    assert leases.status(b_layout, "gpu")["waiting"] is None
+    a.release()
+    assert a.acquire(wait_s=0) is True                    # the requester's own path aside, a plain take proceeds
+
+
+def test_repeated_asks_do_not_restart_the_release_requested_at_window_start(tmp_path):
+    """F2's idempotence must survive F20's fix: the waiter's latest ask is tracked in its own field, so
+    release_requested_at — the window's own start — is written once and never pushed forward by a later ask."""
+    lease_file = tmp_path / "shared" / "gpu.lease"
+    a_layout = _project(tmp_path, "a", lease_file, "project-a", hand_over_timeout_s=60)
+    b_layout = _project(tmp_path, "b", lease_file, "project-b", hand_over_timeout_s=60)
+    a = leases.resource_lease(a_layout, "gpu")
+    b = leases.resource_lease(b_layout, "gpu")
+    assert a.acquire(wait_s=0) is True
+    assert b.acquire(wait_s=0) is False
+    first = json.loads(lease_file.read_text(encoding="utf-8"))["release_requested_at"]
+    time.sleep(0.2)
+    assert b.acquire(wait_s=0) is False                  # a second ask, still refused
+    second = json.loads(lease_file.read_text(encoding="utf-8"))["release_requested_at"]
+    assert second == first                                # the window's start never moves
+    a.release()
+
+
 def test_acquire_blocks_up_to_wait_s_then_reports_unavailable(tmp_path):
     lease_file = tmp_path / "shared" / "gpu.lease"
     a = leases.resource_lease(_project(tmp_path, "a", lease_file, "project-a"), "gpu")
