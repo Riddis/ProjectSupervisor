@@ -199,6 +199,13 @@ def touch_activity(root) -> None:
     path.touch()
 
 
+def _activity_mtime(root) -> float | None:
+    try:
+        return activity_path(root).stat().st_mtime
+    except OSError:
+        return None                      # no activity ever recorded
+
+
 def is_idle(root, idle_stop_s: float, now: float | None = None) -> bool:
     now = time.time() if now is None else now
     try:
@@ -368,6 +375,15 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         idle_stop_s = cfg.get("idle_stop_s", 900)
         hand_over_grace_s = cfg.get("hand_over_grace_s", 3.0)
         release_requested_since = None
+        # F18 (round 2 review): the activity file already carries a second meaning before any request ever
+        # lands - `touch_activity(root)` above, before the child starts, is idle_stop_s's own floor (a freshly
+        # started server with nothing in flight yet must not immediately read as idle). Snapshotting its mtime
+        # here, once, right before this loop starts (necessarily before any request can possibly have landed)
+        # and requiring a *newer* mtime below is what tells "nothing has happened since this server went live"
+        # from "a request is streaming" - without it, that start-up touch itself reads as in-flight for the
+        # first hand_over_grace_s, so a release landing in that window would wait out the whole grace instead of
+        # yielding within one poll like an actually idle server does.
+        quiescent_since_start = _activity_mtime(root)
         while True:
             time.sleep(poll_s)
             lease.renew()
@@ -379,13 +395,16 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
                 return "idle"
             if lease.release_requested() and release_requested_since is None:
                 release_requested_since = time.time()
-            if release_requested_since is not None and (
-                    # F18 (RELEASE_REVIEW_local-lane_round2.md): R4's fairness clause ("this lane's watchdog
-                    # finishes the in-flight request", LOCAL_MODEL_LANE.md:267-270) - honour the request only
-                    # once the activity file (the worker's own in-flight signal, touched on every streamed
-                    # piece) has gone quiet for hand_over_grace_s, bounded by the request's own
-                    # hand_over_timeout_s so a wedged generation cannot hold the cards past the window either.
-                    is_idle(root, hand_over_grace_s) or time.time() - release_requested_since >= hand_over_timeout_s):
+            if release_requested_since is None:
+                continue
+            mtime = _activity_mtime(root)
+            in_flight = (mtime is not None and quiescent_since_start is not None and mtime > quiescent_since_start
+                         and not is_idle(root, hand_over_grace_s))
+            # R4's fairness clause ("this lane's watchdog finishes the in-flight request", LOCAL_MODEL_LANE.md:
+            # 267-270) - honour the request only once a genuinely in-flight request (the check above) has gone
+            # quiet for hand_over_grace_s, bounded by the request's own hand_over_timeout_s so a wedged
+            # generation cannot hold the cards past the window either.
+            if not in_flight or time.time() - release_requested_since >= hand_over_timeout_s:
                 return "release_requested"
     finally:
         if proc.poll() is None:

@@ -152,9 +152,16 @@ def test_run_stops_on_a_release_request_from_another_project(tmp_path, fake_heal
     t = threading.Thread(target=go, daemon=True)
     t.start()
     time.sleep(0.3)                                                        # let the watchdog actually start the child
+    asked_at = time.time()
     assert plugin.resource_lease(other_lay, "gpu").acquire(wait_s=0) is False   # proof: demo really holds it
     t.join(timeout=10)
+    elapsed = time.time() - asked_at
     assert done.get("why") == "release_requested"
+    # F18 (round 2 review): nothing is in flight here - the only activity-file touch is run()'s own, before the
+    # child starts (idle_stop_s's own floor), well before this request lands - so the watchdog must not wait out
+    # hand_over_grace_s (the default 3.0s) just because that touch happens to be recent; the bound is one poll
+    # (poll_s=0.05), with slack for the thread scheduling this test itself does not control.
+    assert elapsed < 1.0, elapsed
 
 
 def test_run_does_not_stop_on_an_expired_release_request_left_by_a_waiter_that_never_came_back(tmp_path, fake_health):
