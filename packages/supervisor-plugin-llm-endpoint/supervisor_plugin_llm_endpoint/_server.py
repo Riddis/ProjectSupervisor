@@ -62,7 +62,7 @@ if sys.platform == "win32":
                     ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
                     ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
-    _kernel32 = ctypes.windll.kernel32
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)   # use_last_error: F22 needs a real GetLastError()
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     _kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
     _kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -72,14 +72,21 @@ if sys.platform == "win32":
     _kernel32.CloseHandle.restype = wintypes.BOOL
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
-    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, object]:
+    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, object, bool, int]:
         """A Job Object with KILL_ON_JOB_CLOSE, the child assigned to it. Windows closes every handle this
         process holds - this one included - the instant it exits by any means, including an external kill()
         that skips `finally`, and KILL_ON_JOB_CLOSE kills every process still assigned when that happens. The
         job handle is returned so the caller keeps it referenced for the watchdog's whole life: closing it
-        early is exactly what would kill the child early."""
+        early is exactly what would kill the child early.
+
+        F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): `AssignProcessToJobObject`'s own BOOL used to be
+        discarded, so a host where the tie fails (a watchdog already inside a job that forbids nesting or
+        breakaway) left the child simply untied with nothing said. Returns whether it actually took and, when
+        it did not, `GetLastError()` - the state-based backstop (the doctor, `ensure_started()`, `stop`) still
+        catches the orphan on the next call either way; this only makes the gap loud instead of silent."""
         proc = subprocess.Popen(argv)
         job = _kernel32.CreateJobObjectW(None, None)
+        tied, last_error = False, 0
         if job:
             info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
             info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -87,9 +94,12 @@ if sys.platform == "win32":
                                               ctypes.sizeof(info))
             handle = _kernel32.OpenProcess(_PROCESS_TERMINATE_AND_SET_QUOTA, False, proc.pid)
             if handle:
-                _kernel32.AssignProcessToJobObject(job, handle)
+                if _kernel32.AssignProcessToJobObject(job, handle):
+                    tied = True
+                else:
+                    last_error = ctypes.get_last_error()
                 _kernel32.CloseHandle(handle)                  # the process handle, never the job handle
-        return proc, job
+        return proc, job, tied, last_error
 else:
     import ctypes
 
@@ -104,11 +114,12 @@ else:
         except OSError:
             pass
 
-    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, None]:
+    def _start_child_tied_to_this_process(argv) -> tuple[subprocess.Popen, None, bool, int]:
         """A new session (so the child is the leader of its own process group, `start_new_session=True`) plus
-        PR_SET_PDEATHSIG (`_set_pdeathsig`, Linux). Exercised for real only by CI's ubuntu legs."""
+        PR_SET_PDEATHSIG (`_set_pdeathsig`, Linux). Exercised for real only by CI's ubuntu legs. No failure
+        mode is exposed here the way F22 names for Windows, so this half always reports tied."""
         proc = subprocess.Popen(argv, preexec_fn=_set_pdeathsig, start_new_session=True)
-        return proc, None
+        return proc, None, True, 0
 
 
 def state_path(root) -> Path:
@@ -319,7 +330,11 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         _write_state(root, {"pid": None, "stopped": time.time(), "why": "lease"})
         return "lease_unavailable"
     touch_activity(root)
-    proc, _job = _start_child_tied_to_this_process(cfg["argv"])   # F5: dies with this process even on a hard kill
+    proc, _job, tied, tie_error = _start_child_tied_to_this_process(cfg["argv"])   # F5: dies even on a hard kill
+    if not tied:
+        # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say so instead of serving an untied child
+        # silently - the state-based backstop below still catches the orphan on the next call either way.
+        plugin.log_event(layout, "llm_endpoint_server_job_object_tie_failed", pid=proc.pid, win32_error=tie_error)
     try:
         deadline = time.time() + cfg.get("start_timeout_s", 300)
         health_path = cfg.get("health_path", "/health")
@@ -334,7 +349,7 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         own_pid = os.getpid()
         _write_state(root, {"pid": proc.pid, "create_time": _process_create_time(proc.pid),
                             "watchdog_pid": own_pid, "watchdog_create_time": _process_create_time(own_pid),
-                            "base_url": cfg["base_url"], "started": time.time()})
+                            "base_url": cfg["base_url"], "started": time.time(), "tied": tied})
         idle_stop_s = cfg.get("idle_stop_s", 900)
         hand_over_grace_s = cfg.get("hand_over_grace_s", 3.0)
         hand_over_timeout_s = _hand_over_timeout_s(layout)

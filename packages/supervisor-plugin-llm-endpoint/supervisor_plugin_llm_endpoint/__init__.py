@@ -220,7 +220,14 @@ def check_llm_endpoint(layout: plugin.Layout) -> plugin.Check:
             return plugin.Check("llm_endpoint", False, f"{cfg['base_url']} reachable and its pid {pid} is "
                                 "running, but the state names a dead watchdog while its server is alive: "
                                 "nothing will stop or renew the lease for it; llm_endpoint.stop will kill it")
-    return plugin.Check("llm_endpoint", True, f"{cfg['base_url']} healthy" + (f", {model} present" if model else ""))
+    detail = f"{cfg['base_url']} healthy" + (f", {model} present" if model else "")
+    if pid is not None:
+        # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say plainly whether the OS-level tie (F5) took,
+        # rather than leaving a failed AssignProcessToJobObject unremarked; the state-based backstop above
+        # still catches the orphan it would otherwise leave on the next call either way.
+        detail += (", tied to its watchdog" if state.get("tied", True) else
+                   ", NOT tied to its watchdog (AssignProcessToJobObject failed; see the log)")
+    return plugin.Check("llm_endpoint", True, detail)
 
 
 # ------------------------------------------------------------------ owner commands

@@ -472,3 +472,44 @@ def test_stop_command_kills_the_orphan_directly_when_no_watchdog_is_left_to_read
     assert result.get("killed_orphan_pid") == orphaned_server["pid"]    # DEFECT at the old head: a no-op file
     assert _wait_until_dead(orphaned_server["pid"]), _dead_or_why_not(orphaned_server["pid"])
     assert not _server.stop_path(str(tmp_path)).exists()
+
+
+# ---------------------------------------------------------------- F22 (P3, advisory): a failed
+# AssignProcessToJobObject is silent (RELEASE_REVIEW_local-lane_round2.md)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="AssignProcessToJobObject is Windows-only")
+def test_a_failed_job_object_tie_is_logged_and_recorded_as_not_tied(tmp_path, fake_health, monkeypatch):
+    """F22: `_start_child_tied_to_this_process` used to discard `AssignProcessToJobObject`'s own BOOL, so a
+    host where the tie fails (a watchdog already inside a job that forbids nesting or breakaway) left the
+    child simply untied with nothing said. The call is made to fail here instead of needing such a host."""
+    def _fail_assign(*a):
+        _server.ctypes.set_last_error(5)   # ERROR_ACCESS_DENIED: a plausible real failure, injected here
+        return 0
+    monkeypatch.setattr(_server._kernel32, "AssignProcessToJobObject", _fail_assign)
+    lease_file = tmp_path / "lease" / "gpu.lease"
+    root = tmp_path / "proj"
+    cfg = {"base_url": fake_health, "health_path": "/health", "start_timeout_s": 5, "idle_stop_s": 1,
+          "argv": [sys.executable, "-c", "import time; time.sleep(30)"]}
+    layout = testing.project(root, plugins=["llm_endpoint"], routing={
+        "resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}},
+        "plugins": {"llm_endpoint": cfg}})
+    llm_endpoint.llm_endpoint_config(layout)   # primes supervisor.plugins' registry (calling_plugin needs it
+                                                # published before run(), in its own thread, can call log_event)
+    out = {}
+
+    def go():
+        out["why"] = _server.run(str(root), cfg, poll_s=0.05)
+    t = threading.Thread(target=go, daemon=True)
+    t.start()
+    assert _wait_for_ready_pid(root), "watchdog never became ready"
+    state = json.loads(_server.state_path(str(root)).read_text(encoding="utf-8"))
+    assert state["tied"] is False
+    check = llm_endpoint.check_llm_endpoint(layout)
+    assert check.ok and "NOT tied" in check.detail
+    t.join(timeout=10)
+    assert out.get("why") == "idle"
+    lines = [json.loads(l) for l in layout.log.read_text(encoding="utf-8").splitlines() if l.strip()]
+    tie_lines = [l for l in lines if l.get("event") == "llm_endpoint_server_job_object_tie_failed"]
+    assert len(tie_lines) == 1
+    assert tie_lines[0]["win32_error"] != 0
