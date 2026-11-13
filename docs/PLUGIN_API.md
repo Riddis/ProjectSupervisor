@@ -312,7 +312,7 @@ that already has the resource — the behaviour of every project that configures
 | Member | Meaning |
 |---|---|
 | `acquire(wait_s=None) -> bool` | True once this process holds an entry. Polls every 50 ms up to `wait_s` (the configuration's own `wait_s` by default; `0` tries once) before reporting unavailable: held by another project, or free but inside another project's hand-over window (see below) |
-| `renew() -> None` | refresh this process's own entry so it does not go stale while the work it covers continues |
+| `renew() -> bool` | refresh this process's own entry so it does not go stale while the work it covers continues; `True` when an entry was actually found and refreshed, `False` when this process holds none right now (never acquired, already released, or a restarted process that re-adopted an entry it did not itself write) — a caller that gets `False` and still needs the resource re-takes it with `acquire()` |
 | `release() -> None` | drop this process's own entry; harmless when it holds none |
 | `release_requested() -> bool` | True when another project is waiting: the holder's own long-lived code checks this to let go early rather than wait out its idle timeout |
 

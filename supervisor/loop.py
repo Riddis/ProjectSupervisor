@@ -910,21 +910,23 @@ class Supervisor:
         F19: the entry `launch()` wrote names the pid of the process that called `submit()`; a loop that
         restarts while that job is still RUNNING (`supervisor stop`/start, a crash, a runtime move) is a new
         process, so `renew()` finds no `(holder, pid)` match on its first tick and reports False — not because
-        the job ended, but because this entry was never this process's to begin with. `reclaim()` is the
-        re-take: re-entrant within the project, so it succeeds at once whenever the cards are still this
+        the job ended, but because this entry was never this process's to begin with. `leases._reclaim()` is
+        the re-take: re-entrant within the project, so it succeeds at once whenever the cards are still this
         project's (no other project's live entry contests it) and re-establishes exactly the entry renew()
         could not refresh — unlike the ordinary `acquire()` a brand-new launch uses, it is never refused merely
         because another project's hand-over request stands, since that request is about this project yielding
-        the job it is already holding, not a free slot up for grabs. A refusal means another project's own
-        entry is already live there — the job already lost the cards to someone else — and is logged with
-        whatever holder the peek finds rather than passed over in silence; the job record itself is not
-        touched either way, so a refusal never wedges it."""
+        the job it is already holding, not a free slot up for grabs. It is a private function of `leases`, not
+        a method of the plugin-facing `ResourceLease` (the same reasoning as `leases._record_waiting_from_peek`):
+        a plugin must never be handed an operation that silently skips the fairness window `acquire()`
+        documents. A refusal means another project's own entry is already live there — the job already lost
+        the cards to someone else — and is logged with whatever holder the peek finds rather than passed over
+        in silence; the job record itself is not touched either way, so a refusal never wedges it."""
         if not any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
             return
         lease = leases.resource_lease(self.layout, "gpu")
         if lease.renew():
             return
-        if not lease.reclaim():
+        if not leases._reclaim(self.layout, "gpu"):
             tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop",
                           holder=leases.holder_label(self.layout, "gpu"))
 

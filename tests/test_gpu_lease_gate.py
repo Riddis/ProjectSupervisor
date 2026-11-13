@@ -233,7 +233,7 @@ def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_pa
 
 def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_record_alone(tmp_path):
     """F19: a refusal is not passed over in silence. When the restarted loop's renew() finds nothing to refresh
-    and acquire(wait_s=0) is refused because another project's own entry is already live on the cards -- the job
+    and leases._reclaim() is refused because another project's own entry is already live on the cards -- the job
     already lost them to someone else -- the refusal is logged naming that holder, and the refused job's own
     record is left exactly as it was (still RUNNING): the re-take never touches jobs_mod, only the lease file,
     so a refusal never wedges the record; the next reconcile() simply tries again."""
@@ -292,7 +292,7 @@ def test_the_retake_only_fires_for_a_record_still_running_not_once_it_has_left_r
 
 def test_a_stale_looking_entry_with_no_active_gpu_job_is_not_revived(tmp_path):
     """The other half, isolated from any task or continuation: a project with no gpu job in gate.ACTIVE_PHASES
-    at all must not have a stale-looking entry for itself revived by either renew() or the new acquire()
+    at all must not have a stale-looking entry for itself revived by either renew() or the new leases._reclaim()
     fallback -- the active-job gate that guards both in _renew_gpu_lease_if_active() returns before either runs,
     so a ghost entry under a different (dead) pid, as a crash racing a real release might leave one, is simply
     left alone: not live, not re-taken, never re-establishing a hold after the job it covered has ended."""
@@ -321,10 +321,10 @@ def test_a_retake_leaves_another_projects_pending_release_request_untouched(tmp_
     because B is already waiting its turn (the exact shape the reviewer's own probe drives: B's loop is
     refused once, which records its wait, *before* A's restart). B's loop has already recorded its own
     release_requested_by/_at (F2) while A's entry was still live; when A's restarted loop then re-takes,
-    reclaim() -- unlike acquire()/_try_take() -- never reads or writes release_requested_by/_at at all, only
-    A's own entries list, so B's requester-clearing branch in _try_take() (which only fires for "pending ==
+    leases._reclaim() -- unlike acquire()/_try_take() -- never reads or writes release_requested_by/_at at all,
+    only A's own entries list, so B's requester-clearing branch in _try_take() (which only fires for "pending ==
     self._holder, or the window has expired") is never reached by this path to begin with: the fields on disk
-    are untouched because reclaim() has no code path that could touch them, not because a check happened to
+    are untouched because _reclaim() has no code path that could touch them, not because a check happened to
     refuse first. The request B's loop recorded is not quietly cleared by A's own re-entrance, and A's job
     stays visible to B rather than invisible while B's window runs down."""
     lease_file = tmp_path / "shared" / "gpu.lease"

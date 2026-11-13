@@ -105,6 +105,17 @@ def _live_entries(doc: dict, cfg: LeaseConfig, now: float) -> list[dict]:
             and _pid_alive(e.get("pid"), e.get("create_time"))]
 
 
+def _write_my_entry(doc: dict, cfg: LeaseConfig, holder: str, pid: int, create_time: float,
+                     live: list[dict], now: float) -> None:
+    """Keep `holder`'s own live entries, drop every other holder's, and append a fresh one for `pid`. Shared by
+    `_try_take()` and `_reclaim()` so the six-key entry shape (also read by `status()` and `holder_label()`) only
+    has to change in one place."""
+    mine = [e for e in live if e["holder"] == holder]
+    mine.append({"holder": holder, "label": cfg.label, "pid": pid, "create_time": create_time, "since": now,
+                 "renewed": now})
+    doc["entries"] = mine
+
+
 class ResourceLease:
     """One project's handle on a named machine-wide resource lease (`supervisor.plugin.resource_lease`).
     `acquire`/`renew`/`release` act for this process; several `ResourceLease` instances of one project (one per
@@ -147,10 +158,7 @@ class ResourceLease:
             if (pending and pending != self._holder
                     and now - float(doc.get("release_requested_at") or 0) < cfg.hand_over_timeout_s):
                 return False                      # free, but another project's turn has not timed out yet
-            mine = [e for e in live if e["holder"] == self._holder]
-            mine.append({"holder": self._holder, "label": cfg.label, "pid": self._pid,
-                         "create_time": self._create_time, "since": now, "renewed": now})
-            doc["entries"] = mine
+            _write_my_entry(doc, cfg, self._holder, self._pid, self._create_time, live, now)
             # Clear the request on the requester's own take (as before), and also on a non-requester's take once
             # the window has expired (F8) — a stale request left by a waiter that never came back must not sit on
             # disk forever, reported as live by release_requested() and status() until someone takes it by chance.
@@ -189,34 +197,6 @@ class ResourceLease:
             if found:
                 atomic_json(cfg.path, doc)
             return found
-
-    def reclaim(self) -> bool:
-        """Re-establish this process's own entry for a resource this project is still actually holding — a job
-        that never stopped, only the bookkeeping entry `renew()` could not refresh (F19: a restarted loop's
-        first tick finds the entry `launch()` wrote under a process that is gone). Unlike `acquire()`, a
-        pending hand-over request from another project (`release_requested_by`) never refuses this: that
-        request is this project being asked to let go of the job it is *already* holding, not a brand-new
-        launch taking a free slot out from under a waiter — `_try_take()`'s fairness window exists for the
-        latter, and applying it here would read a loop restart as the end of the hold itself, for a job that
-        never ended. `reclaim()` therefore never writes `release_requested_by`/`_at` either way, so a standing
-        request is left exactly as it was. True once this process's own entry is re-established (immediately
-        when no lease is configured); False only when another project's own entry is live there right now —
-        the job has already lost the cards to someone else, or is about to."""
-        if self._cfg is None:
-            return True
-        cfg = self._cfg
-        with FileLock(_lock_path(cfg), owner="resource-lease", timeout=5.0):
-            now = time.time()
-            doc = _read(cfg)
-            live = _live_entries(doc, cfg, now)
-            if any(e["holder"] != self._holder for e in live):
-                return False
-            mine = [e for e in live if e["holder"] == self._holder]
-            mine.append({"holder": self._holder, "label": cfg.label, "pid": self._pid,
-                         "create_time": self._create_time, "since": now, "renewed": now})
-            doc["entries"] = mine
-            atomic_json(cfg.path, doc)
-            return True
 
     def release(self) -> None:
         """Drop this process's own entry. Harmless when it holds none (never acquired, already released, or no
@@ -273,6 +253,37 @@ def holder_label(layout: Layout, name: str) -> str | None:
     me = _holder_id(layout)
     others = [e for e in _live_entries(_read(cfg), cfg, time.time()) if e["holder"] != me]
     return others[0]["label"] if others else None
+
+
+def _reclaim(layout: Layout, name: str) -> bool:
+    """Re-establish this process's own entry for a resource this project is still actually holding — a job
+    that never stopped, only the bookkeeping entry `ResourceLease.renew()` could not refresh (F19: a restarted
+    loop's first tick finds the entry `launch()` wrote under a process that is gone). Internal to the core (the
+    same reasoning as `_record_waiting_from_peek` above): not part of the plugin-facing `ResourceLease` handle,
+    because unlike `acquire()` a pending hand-over request from another project (`release_requested_by`) never
+    refuses this, and a plugin should never be handed an operation that silently skips the fairness window
+    `docs/PLUGIN_API.md` documents for `acquire()`. That request is this project being asked to let go of the
+    job it is *already* holding, not a brand-new launch taking a free slot out from under a waiter —
+    `_try_take()`'s fairness window exists for the latter, and applying it here would read a loop restart as
+    the end of the hold itself, for a job that never ended. `_reclaim()` therefore never writes
+    `release_requested_by`/`_at` either way, so a standing request is left exactly as it was. True once this
+    process's own entry is re-established (immediately when no lease is configured); False only when another
+    project's own entry is live there right now — the job has already lost the cards to someone else, or is
+    about to."""
+    cfg = _lease_config(layout, name)
+    if cfg is None:
+        return True
+    holder = _holder_id(layout)
+    pid = os.getpid()
+    with FileLock(_lock_path(cfg), owner="resource-lease", timeout=5.0):
+        now = time.time()
+        doc = _read(cfg)
+        live = _live_entries(doc, cfg, now)
+        if any(e["holder"] != holder for e in live):
+            return False
+        _write_my_entry(doc, cfg, holder, pid, _create_time(pid), live, now)
+        atomic_json(cfg.path, doc)
+        return True
 
 
 def _record_waiting_from_peek(layout: Layout, name: str) -> None:
