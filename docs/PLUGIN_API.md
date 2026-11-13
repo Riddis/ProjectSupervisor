@@ -318,9 +318,12 @@ that already has the resource — the behaviour of every project that configures
 
 **The hand-over window.** A project that cannot take a held lease records its own id as `release_requested_by`
 (`acquire` does this automatically) so the holder's `release_requested()` sees it. Once the lease is free, the
-*previous* holder's own next `acquire()` still yields to a fresh, unanswered request from another project for up
-to `hand_over_timeout_s`, so a chain of short jobs from one project cannot starve a quiet one forever; past that
-window the request is still recorded but no longer holds anyone back.
+*previous* holder's own next `acquire()` still yields to a fresh, unanswered request from another project — and
+that request stays fresh for as long as the waiter keeps asking, since every refused `acquire()` renews it, not
+just its first. A waiter still asking on every pass holds the previous holder back with no bound of its own, so
+a chain of short jobs from one project cannot starve a quiet one that is still there asking; only once the
+waiter has stopped asking — its loop gone, its task cancelled — does the request expire, `hand_over_timeout_s`
+after its last ask, and the next `acquire()`, the original requester's own or another project's, clears it.
 
 **Configuration**, under `resources.<name>.lease` in `config/routing.yaml`: `path` (required; a file outside
 every repository, so the lease is visible to every project on the machine), `label` (this project's own name for
