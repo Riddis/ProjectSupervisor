@@ -49,6 +49,21 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each has its own record
   under `docs/releases/local-lane/`.
 
+- **Hardened once more before release: the round-2 review's five remaining findings on the lease hand-over
+  protocol and the bundled package (`docs/reviews/RELEASE_REVIEW_local-lane_round2.md` F18-F22).** The package's
+  watchdog now finishes an in-flight request before it yields a release request, honouring one only once the
+  worker's own activity file has sat quiet for a new `Settings` key, `hand_over_grace_s` (default 3.0 seconds),
+  itself bounded by `hand_over_timeout_s` so a wedged generation still cannot hold the cards past the window
+  (F18); a loop that restarts while its own GPU job still runs now re-takes that job's lease entry rather than
+  losing visibility of a job the cards still belong to, logging a refused re-take rather than wedging the record
+  (F19); the hand-over window itself now expires from a waiter's latest ask rather than its first, so a holder
+  whose job outlives the window is not told nobody is waiting while a waiter is still asking, with the no-restart
+  guarantee (F2) unchanged (F20); the bundled package's README now documents every `Settings` key, including
+  `defer_budget_s` and `hand_over_grace_s`, and the check that enforces it runs in both directions (F21); and a
+  failed Windows Job Object assignment is now logged with its own error code, with the doctor's healthy line
+  saying plainly whether the running server is tied (F22, advisory). Each has its own record under
+  `docs/releases/local-lane/`.
+
 ## 2.5.1 — 2026-11-10
 
 - **Changed: the Overview's task card and Phase & gates panel.** The task card is now the last metric card and
