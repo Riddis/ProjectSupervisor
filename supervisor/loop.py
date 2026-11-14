@@ -136,9 +136,13 @@ class Supervisor:
         self.ingest(rec, Result(status="FAILED", error=error))
 
     def dispatch(self, task: Task, adapter_name: str, deferred_until: float | None = None, note: str = "dispatch",
-                kind: str = "delivery", extra: dict | None = None) -> dict:
+                kind: str = "delivery", extra: dict | None = None, reason: str | None = None) -> dict:
         self._require_plugins()
         ad = REGISTRY[adapter_name]
+        # `reason` (scheduler.resolve_lane, R-16) is the one line naming why this lane and model: durable on the
+        # job record and the task's own attempt entry alike, so a model change (a senior revision, the return to
+        # the base model, a fallback) is never silent again.
+        job_extra = {**(extra or {}), "reason": reason}
         if kind == "conversation":          # no Task document backs a conversation thread; nothing to count on
             n = len(jobs_mod.for_task(self.layout, task.id)) + 1
             attempt_id = f"{task.id}.a{n}"
@@ -148,7 +152,7 @@ class Supervisor:
             # task with no counter yet is seeded from the highest number already on disk, filenames only, so a
             # record this call cannot read still keeps its number retired.
             seed = jobs_mod.highest_attempt_no(self.layout, task.id)
-            _, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed)
+            _, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed, reason=reason)
         run_dir = self.layout.runs / task.id / attempt_id
         try:
             if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
@@ -157,7 +161,7 @@ class Supervisor:
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **(extra or {}))
+                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **job_extra)
             self._adapter_failed(rec, "prepare", exc)
             return jobs_mod.read(self.layout, attempt_id)
         spec["kind"] = kind
@@ -169,7 +173,7 @@ class Supervisor:
         # second record write used to leave a review job without its role and discard the finished verdict.
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
                                gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
-                               **(extra or {}))                                   # durable BEFORE launch
+                               **job_extra)                                   # durable BEFORE launch
         if kind != "conversation":            # the attempt itself was already recorded when the number was allocated
             tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
@@ -189,20 +193,22 @@ class Supervisor:
         `home` (scheduler.adapter_name(task), ignoring the unattended switch) can disagree with `name` (what
         plan() actually picked, e.g. claude_api, whose own lane_for() call saw no `engine` and so no capacity
         check at all): the overrides and the same-vendor flag are only ever this job's own if the lane they
-        were resolved for is the lane it is actually dispatching on."""
+        were resolved for is the lane it is actually dispatching on.
+
+        `scheduler.resolve_lane` (R-16) is the one answer this, an automatic revision, a continuation and a
+        fallback all ask the same way; its `reason` is stored on the job record and shown where the job is
+        listed."""
         role = scheduler.job_spec(task).get("role") or task.owner_role
-        home = scheduler.adapter_name(task, self.layout)
-        try:
-            lane, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
-        except CapacityDeferred:
-            lane, overrides, same_vendor = home, {}, False
-        if not overrides or lane != name:
-            return self.dispatch(task, name)
+        resolved = scheduler.resolve_lane(self.layout, task, role=role)
+        if not (resolved.model or resolved.effort) or resolved.adapter != name:
+            reason = resolved.reason if resolved.adapter == name else f"scheduled on {name}"
+            return self.dispatch(task, name, reason=reason)
+        overrides = {k: v for k, v in (("model", resolved.model), ("effort", resolved.effort)) if v}
         doc = task.model_dump(mode="json")
         doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}
         view = Task.model_validate(doc)
-        note = f"dispatch:{role}" + (" (same-vendor fallback)" if same_vendor else "")
-        return self.dispatch(view, name, note=note, extra={"same_vendor": same_vendor})
+        note = f"dispatch:{role}" + (" (same-vendor fallback)" if resolved.same_vendor else "")
+        return self.dispatch(view, name, note=note, reason=resolved.reason, extra={"same_vendor": resolved.same_vendor})
 
     MAX_CONTINUATIONS = 3
 
@@ -271,11 +277,13 @@ class Supervisor:
                 task = Task.model_validate(doc)
             extra = {"continuation_grant": grant}
             note = f"continuation after {reason}"
+            lane_reason = f"role {task.owner_role}'s own attempt, continued on its lane ({rec['adapter']})"
             if "same_vendor" in rec:
                 extra["same_vendor"] = rec["same_vendor"]
                 if rec["same_vendor"]:
                     note += " (same-vendor fallback)"
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra)
+                    lane_reason += "; same-vendor fallback, carried over from the attempt being continued"
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra, reason=lane_reason)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
         # The continuation is queued either way (crash-safe, same as before F11): a held task's queued record simply
@@ -334,7 +342,8 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
             return jobs_mod.read(self.layout, rec["attempt_id"])
         self.dispatch(task, lane, note=f"rerouted from {rec['adapter']}", kind=kind,
-                      extra={"rerouted_from": rec["attempt_id"], **kind_extra})
+                      extra={"rerouted_from": rec["attempt_id"], **kind_extra},
+                      reason=f"fallback: {rec['adapter']} unavailable ({reason}); rerouted to {lane}")
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
         return jobs_mod.read(self.layout, rec["attempt_id"])
 

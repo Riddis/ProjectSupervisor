@@ -175,7 +175,13 @@ def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: 
     """Queue the next delivery attempt with a revision brief; `_ensure_in_progress` (inside launch()) handles the
     FAILED/IN_PROGRESS transition, so no status change is needed here. The record goes through supervisor.dispatch →
     launch(), i.e. the same gate (decision, capacity, limits, ownership) as a scheduled job: under PAUSE/DRAIN it
-    simply waits as PREPARED."""
+    simply waits as PREPARED.
+
+    The lane and model come from `scheduler.resolve_lane` (R-16): a role routed to another lane used to lose
+    that routing here, because the lookup ran with no layout and silently fell back to the cost-lane default,
+    so only the role's first, scheduled delivery ever reached its own lane. The resolver also names why, so a
+    senior-model revision and the plain return to the base model both leave a reason on the job record instead
+    of a model change nobody can trace."""
     layout = supervisor.layout
     open_attempts = [r["attempt_id"] for r in jobs_mod.open_records(layout)
                      if r["task_id"] == task.id and (r.get("spec") or {}).get("kind", "delivery") == "delivery"
@@ -184,23 +190,20 @@ def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: 
         tasks_mod.log(layout, "revision_skipped", "escalation", task=task.id, reason=f"attempt(s) already open: {open_attempts}",
                       source=source)                  # not spawn two editors of the same files
         return {"skipped": "attempt already open", "open": open_attempts}
-    adapter_name = scheduler.adapter_name(task)
+    role = scheduler.job_spec(task).get("role") or task.owner_role
+    resolved = scheduler.resolve_lane(layout, task, role=role, revision=True, senior=senior)
+    adapter_name = resolved.adapter
     job = dict(scheduler.job_spec(task))
-    role = job.get("role") or task.owner_role
-    overrides = {}
-    if senior:
-        from .adapters.claude_cli import role_profile
-        senior_model = role_profile(layout, role).get("senior_model")
-        if senior_model:
-            overrides["model"] = senior_model
-    if adapter_name in ("claude_cli", "codex_cli", "claude_api"):
+    overrides = {k: v for k, v in (("model", resolved.model), ("effort", resolved.effort)) if v}
+    if adapter_name in scheduler.MODEL_LANES:
         prior_brief = job.get("prompt") or packets_mod.delivery_brief(layout, task)
         job = {**job, **overrides, "prompt": packets_mod.revision_brief(task, prior_brief, source, detail)}
     doc = task.model_dump(mode="json")
     doc["job"] = job
     revision_task = Task.model_validate(doc)
     note = f"revision after {source} failure" + (" (senior model)" if senior else "")
-    rec = supervisor.dispatch(revision_task, adapter_name, note=note)
+    extra = {"same_vendor": resolved.same_vendor} if resolved.same_vendor else None
+    rec = supervisor.dispatch(revision_task, adapter_name, note=note, reason=resolved.reason, extra=extra)
     dep = tasks_mod.unmet_dependency(layout, task)
     if dep and rec.get("attempt_id"):
         # G6, 2.4.0: the record is queued either way (crash-safe, same spirit as a continuation's own note) - the

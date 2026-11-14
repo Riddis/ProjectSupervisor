@@ -67,7 +67,6 @@ files = [
   "supervisor/conversations.py",
   "supervisor/diagnosis.py",
   "supervisor/doctor.py",
-  "supervisor/escalation.py",
   "supervisor/gate.py",
   "supervisor/loop.py",
   "supervisor/models/task.py",
