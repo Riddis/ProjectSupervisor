@@ -168,20 +168,17 @@ def unblocked_next(layout: Layout, tasks: dict, gate_data: dict) -> list[dict]:
 
 
 def overview_context(layout: Layout) -> dict:
-    tasks = tasks_mod.load_all(layout)
+    """Extends `overview_live_context()`'s own result with the slower, page-only parts: project panels, disk and
+    capacity, the event-log views, the unblocked-next list and the update banner — the ones C-1 took off the 5s
+    poll. Every key `partials/overview_live.html` reads is inherited unchanged from that call (not re-derived
+    here), so the full page and the live fragment cannot drift apart: dropping a key from
+    `overview_live_context()` breaks this page's own render too, not just the fragment's."""
+    live_ctx = overview_live_context(layout)
+    tasks = tasks_mod.load_all(layout)              # served from the shared parse cache (C-1): not a second parse
     gate_data = gates_mod.load(layout)
     elig = tasks_mod.eligible(layout, tasks)
-    phases_total = len(gate_data.get("phases") or {})
-    phases_passed = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
-    current_phase = tasks_mod.current_phase(tasks)
-    rt = runtime.read(layout)
-    live = runtime.is_live(layout)
-    open_inbox = inbox_mod.open_items(layout)
-    waiting = [t for t in tasks.values() if t.status == TaskStatus.WAITING_FOR_HUMAN]
-    needs_you = len(open_inbox) + len(waiting)
-    cap = capacity.windows(layout)
+    rt, open_jobs = live_ctx["runtime"], live_ctx["open_jobs"]
     now = time.time()
-    open_jobs = jobs_mod.open_records(layout)
     busy_attempt = rt.get("busy")
     active_job = next((job for job in open_jobs if job.get("attempt_id") == busy_attempt), None)
     active_job = active_job or next(iter(open_jobs), {})
@@ -191,46 +188,23 @@ def overview_context(layout: Layout) -> dict:
     for e in today_events:
         if e.get("event") in ("job_submitted", "job_done"):
             job_counts[e.get("adapter") or "?"] = job_counts.get(e.get("adapter") or "?", 0) + 1
-    heartbeat_age = max(0, int(now - rt["heartbeat_epoch"])) if rt.get("heartbeat_epoch") else None
-    uptime_seconds, started_local = None, None
-    if live and rt.get("started"):
-        try:
-            started_at = datetime.fromisoformat(rt["started"])
-            uptime_seconds = max(0, int(now - started_at.timestamp()))
-            started_local = started_at.astimezone().strftime("%H:%M" if uptime_seconds < 86400 else "%d %b %H:%M")
-        except (ValueError, TypeError):
-            pass
     labels = project_mod.phase_labels(layout)
     all_gates = [dict(row, id=key, label=labels.get(row.get("phase"), "Phase gate"))
                  for key, row in (gate_data.get("gates") or {}).items()]
     all_gates.sort(key=lambda g: g.get("phase", 0))
-    phase_tasks = [t for t in tasks_mod.active(tasks) if t.phase == current_phase]
-    active_jobs = [j for j in open_jobs if j.get("phase") in gate_mod.ACTIVE_PHASES and j.get("adapter") != "human"]
-    draining = live and rt.get("decision") == "DRAIN"
     try:
         update = updates_mod.check(layout, fetch=False)       # cached by the background checker; cheap otherwise
     except Exception:                                       # noqa: BLE001
         update = None
-    running_rows = now_running(open_jobs, tasks, now)
-    running_ids = {r["task_id"] for r in running_rows}
-    waiting_to_start = [t for t in elig if t.id not in running_ids]
     return {
-        "now_running": running_rows, "up_next": waiting_to_start[:3], "eligible_count": len(waiting_to_start),
-        "human_jobs": sum(1 for j in open_jobs if j.get("adapter") == "human"),
-        "controls": controls(live, rt), "paused": live and (rt.get("status") == "PAUSED" or rt.get("decision") == "PAUSE"),
+        **live_ctx,
         "update": update, "update_lines": updates_mod.describe(update) if update else [],
-        "draining": draining, "active_jobs": active_jobs, "shutdown_armed": bool(rt.get("shutdown_on_drain")),
-        "shutdown_pending_s": shutdown_mod.pending(layout),
-        "phase": current_phase, "phase_label": labels.get(current_phase, "Project progress"),
+        "phase_label": labels.get(live_ctx["phase"], "Project progress"),
         "project_name": project_mod.name(layout), "panels": _panels(layout),
-        "phases_total": phases_total, "phases_passed": phases_passed,
-        "eligible": elig, "unblocked_next": unblocked_next(layout, tasks, gate_data), "gates": all_gates, "heartbeat_age": heartbeat_age,
-        "uptime_seconds": uptime_seconds, "started_local": started_local, "busy_task": busy_task, "runtime": rt, "live": live, "needs_you": needs_you,
-        "open_inbox_count": len(open_inbox), "waiting_count": len(waiting),
-        "capacity": cap, "now": now, "disk": _disk(layout),
-        "open_jobs": open_jobs, "job_counts": job_counts, "last_events": logtail.tail(layout, 10),
-        "phase_task_count": len(phase_tasks),
-        "phase_done_count": sum(1 for t in phase_tasks if t.status == TaskStatus.COMPLETE),
+        "eligible": elig, "unblocked_next": unblocked_next(layout, tasks, gate_data), "gates": all_gates,
+        "busy_task": busy_task,
+        "capacity": capacity.windows(layout), "now": now, "disk": _disk(layout),
+        "job_counts": job_counts, "last_events": logtail.tail(layout, 10),
         "broken_tasks": tasks_mod.unreadable(layout),
     }
 

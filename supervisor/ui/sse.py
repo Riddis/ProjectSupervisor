@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import Request
 
+from .logtail import tail_bytes
 from .timefmt import local_stamp
 
 
@@ -35,7 +36,10 @@ async def tail_file(request: Request, path: Path, poll_s: float = 0.5, from_end:
         if from_end:
             offset = size
         else:
-            existing = path.read_text(encoding="utf-8", errors="replace").split("\n")
+            # Seeks backward in chunks (same as logtail's event-log tail) rather than reading the whole file:
+            # a long-running job's stdout.jsonl is the largest file the Control Center opens, and every load of
+            # its stream must not pull all of it into memory just to show the last `max_initial_lines`.
+            existing = tail_bytes(path, max_initial_lines).decode("utf-8", errors="replace").split("\n")
             buffer = existing.pop()                  # the file's own last line may itself still be mid-write
             for line in existing[-max_initial_lines:]:
                 if line:

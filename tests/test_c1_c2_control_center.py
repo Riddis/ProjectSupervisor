@@ -74,6 +74,22 @@ def test_control_center_pages_are_bounded_on_a_warm_cache(scale_layout, monkeypa
     assert elapsed < WARM_BUDGET_S, f"{urls} took {elapsed:.2f}s warm, expected under {WARM_BUDGET_S}s"
 
 
+def test_overview_context_inherits_the_live_fragments_own_values(scale_layout):
+    """overview_context() must build the full page by extending overview_live_context()'s own result, not by
+    re-deriving the same values a second way: every key partials/overview_live.html reads has to be the exact
+    value the live fragment computed, so the two can never quietly drift apart (a dropped or recomputed key here
+    would otherwise only show up as a stale or wrong panel, not a failing request)."""
+    from supervisor.ui.routes.overview import overview_context, overview_live_context
+
+    layout = scale_layout
+    live_ctx = overview_live_context(layout)
+    full_ctx = overview_context(layout)
+    assert live_ctx, "the live fragment's own context must not be empty"
+    for key, value in live_ctx.items():
+        assert key in full_ctx, f"overview_context() dropped {key!r}, which partials/overview_live.html reads"
+        assert full_ctx[key] == value, f"overview_context() computed a different value for {key!r} than the live fragment"
+
+
 def test_a_changed_task_file_is_seen_on_the_next_request(scale_layout):
     layout = scale_layout
     client = TestClient(create_app(layout, update_check=False), base_url="http://127.0.0.1")
@@ -185,6 +201,18 @@ def test_page_refresh_applies_while_only_the_pages_own_poll_is_in_flight():
     and a new fingerprint is waiting. The refresh must still apply (C-2); before the fix any ".htmx-request"
     anywhere, including the page's own poll, counted as "the owner is busy" and the page stayed on "waiting"."""
     script = Path(__file__).parent / "js" / "live_poll_refresh_test.js"
+    static_live_js = Path(__file__).resolve().parents[1] / "supervisor" / "ui" / "static" / "live.js"
+    result = subprocess.run(["node", str(script), str(static_live_js)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not on PATH (no JS runtime to execute live.js)")
+def test_a_pending_reload_is_held_back_while_a_field_is_dirty():
+    """Same harness as the scenario above, for the other half of the same decision: a reload (the Control Center
+    restarted) must not fire while the owner has an unsent edit on the page, exactly as a morph already holds
+    back for a dirty field. Before the fix, busy() never looked at dirty fields at all, so this reload path ran
+    unconditionally and the typed text was lost with no prompt."""
+    script = Path(__file__).parent / "js" / "live_reload_dirty_field_test.js"
     static_live_js = Path(__file__).resolve().parents[1] / "supervisor" / "ui" / "static" / "live.js"
     result = subprocess.run(["node", str(script), str(static_live_js)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
