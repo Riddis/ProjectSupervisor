@@ -395,3 +395,98 @@ def test_dispatch_refuses_a_run_directory_that_already_exists(layout):
     assert rec["result"] == "FAILED"
     assert "already exists" in rec.get("error", "")
     assert (stray / "marker.txt").exists()     # the stray directory was not touched
+
+
+# ------------------------------------------------------------------ R-04: cancel retires jobs
+
+def test_cancelled_tasks_queued_job_never_launches_on_resume(layout):
+    """R-04: `tasks.set_status` changes only the status; `reconcile` launches every PREPARED record regardless;
+    `gate.check` has no terminal-status test. A job queued while paused must not run once the task is
+    cancelled and the loop resumes."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    assert rec["phase"] == "PREPARED"
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+    runtime.set_decision(layout, "RUN", "test")
+    sup.once()
+    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert not (layout.root / "A.txt").exists(), "a job of a cancelled task wrote its artifact"
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+
+
+def test_cancel_terminates_a_running_job_and_its_late_result_changes_nothing(layout):
+    """R-04: a running job is not stopped by cancelling its task, and a late result for a terminal task must not
+    record a delivery or a verification."""
+    proc_task(layout, "P", seconds=20)
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "P"), "process")
+    assert rec["phase"] == "SUBMITTED"
+    from supervisor.adapters import REGISTRY
+    assert REGISTRY["process"].alive(rec["handle"]), "the process never started"
+    commands.submit(layout, "task.set_status", {"task_id": "P", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert jobs.read(layout, rec["attempt_id"])["phase"] == "DONE"
+    assert jobs.read(layout, rec["attempt_id"])["result"] == "CANCELLED"
+    time.sleep(0.5)
+    assert not REGISTRY["process"].alive(rec["handle"]), "the running job kept running after its task was cancelled"
+    sup.once()                       # the dead process, if ever collected again, must change nothing
+    assert not (layout.root / "P.txt").exists()
+    t = tasks.load(layout, "P")
+    assert t.status == TaskStatus.CANCELLED
+    assert t.delivery.digest is None
+
+
+def test_cancel_through_an_inbox_decision_also_retires_jobs(layout):
+    """R-04: `inbox.apply_decision` cancels a task the same way `task.set_status` does; its CANCEL answer must
+    retire jobs too."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    item = testing.make_inbox_item(layout, kind="decision", task_id="A", subject="stopped",
+                                   summary="A is stopped", allowed_responses=list(inbox.DECISION_RESPONSES))
+    tasks.set_status(layout, "A", "BLOCKED", actor="loop", note="stopped for the owner")
+    testing.answer(layout, item["id"], "CANCEL", by="owner")
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+    runtime.set_decision(layout, "RUN", "test")
+    sup.once()
+    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert not (layout.root / "A.txt").exists()
+
+
+def test_cancel_then_reopen_then_dispatch_gives_the_new_job_its_own_id(layout):
+    """R-04: cancelling and reopening a task must leave its old job closed, and the next dispatch must get a
+    distinct id rather than reuse or revive the cancelled one."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    old = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "NOT_STARTED", "note": "owner reopen"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert tasks.load(layout, "A").status == TaskStatus.NOT_STARTED
+    new = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert new != old
+    assert jobs.read(layout, old)["phase"] == "DONE"
+    assert jobs.read(layout, old)["result"] == "CANCELLED"
+
+
+def test_gate_refuses_every_job_kind_for_a_terminal_task(layout):
+    """R-04: `gate.check` has no terminal-status test today; a late-arriving record of any kind must never
+    launch against a task that is already CANCELLED or COMPLETE."""
+    from supervisor import gate
+    ptask(layout, "A")
+    tasks.set_status(layout, "A", "CANCELLED", actor="owner", note="owner cancel")
+    task = tasks.load(layout, "A")
+    for kind in ("delivery", "verify", "review", "diagnosis"):
+        reason = gate.check(layout, task, "python", kind, running=[])
+        assert reason is not None and "CANCELLED" in reason, kind
