@@ -575,6 +575,14 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
     except _NoChange:
         return load(layout, task_id)
     log(layout, "task_status", actor, task=task_id, **{"from": before.get("status"), "to": status.value}, note=note, forced=force)
+    if status == TaskStatus.CANCELLED or (status == TaskStatus.COMPLETE and force):
+        # R-04: a move to CANCELLED, or an owner-forced COMPLETE, must retire the task's own jobs in the same
+        # breath — a queued one never launches, a running one is terminated — or a job dispatched before this
+        # call still writes into the tree and spends a session on work the owner just stopped.
+        from . import jobs as jobs_mod
+        closed = jobs_mod.retire(layout, task_id, reason=f"task moved to {status.value}", actor=actor)
+        if closed:
+            log(layout, "jobs_retired", actor, task=task_id, jobs=closed, to=status.value)
     return t
 
 

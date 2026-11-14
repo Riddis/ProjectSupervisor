@@ -16,7 +16,7 @@ import yaml
 from . import capacity, leases, runtime, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, overlaps
 from .adapters import REGISTRY
-from .models.task import EXCLUSIVE, Task
+from .models.task import EXCLUSIVE, TERMINAL, Task
 from .paths import Layout
 
 MODEL_LANES = ("claude_cli", "codex_cli", "claude_api")
@@ -143,7 +143,12 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     `extra_*` let the scheduler account for picks made earlier in the same plan. `role` is the agent role the job
     runs as (a review's reviewer role, say); for a delivery it defaults to the task's owner role. A role configured
     `active: false` is refused here, so a record queued before the owner disabled the role never launches either.
-    A `delivery` whose task is `held` is refused here too (F11), whatever queued it or which lane it is on."""
+    A `delivery` whose task is `held` is refused here too (F11), whatever queued it or which lane it is on.
+    A job of any kind whose task already reached a terminal status (COMPLETE, CANCELLED) is refused outright
+    (R-04): `tasks.set_status` retires every job it knows about in the same breath as the move, so reaching
+    this refusal at all means a record it missed, or one dispatched in the gap before that write landed."""
+    if task is not None and task.status in TERMINAL:
+        return f"task is {task.status.value}"
     decision = decision or runtime.read(layout).get("decision", "RUN")
     if decision != "RUN" and not (decision == "DRAIN" and kind == "verify"):
         # a verify job finishes work already delivered: a drain lets it run so what was delivered is verified

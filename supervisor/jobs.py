@@ -118,6 +118,32 @@ def highest_attempt_no(layout: Layout, task_id: str) -> int:
     return best
 
 
+CLOSED_RESULT = "CANCELLED"
+
+
+def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> list[str]:
+    """Close every open record (PREPARED/SUBMITTED/RUNNING) of `task_id`: a queued one is marked closed before it
+    can ever launch, a running one is terminated through its own adapter first (R-04). Every closed record is
+    given `result: "CANCELLED"`, so a late result that still arrives for it (`loop.ingest`'s own terminal-task
+    check) is never mistaken for one this call missed. Returns the attempt ids closed."""
+    from .adapters import REGISTRY
+    closed = []
+    for rec in for_task(layout, task_id):
+        if rec.get("phase") not in ("PREPARED", "SUBMITTED", "RUNNING"):
+            continue
+        if rec["phase"] in ("SUBMITTED", "RUNNING") and rec.get("handle"):
+            ad = REGISTRY.get(rec.get("adapter"))
+            if ad is not None:
+                try:
+                    ad.terminate(rec["handle"])
+                except Exception:                              # noqa: BLE001 - the task retires either way
+                    pass
+        set_phase(layout, rec["attempt_id"], "DONE", result=CLOSED_RESULT, error=reason, finished=now_iso(),
+                 closed_by=actor)
+        closed.append(rec["attempt_id"])
+    return closed
+
+
 def for_task(layout: Layout, task_id: str) -> list[dict]:
     """The task's job records, oldest attempt first by attempt NUMBER: file names sort `T.a10` before `T.a9`, and
     callers take `[-1]` as the newest. Read-only (R-03): an unreadable record is reported once and represented

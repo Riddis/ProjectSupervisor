@@ -22,7 +22,7 @@ from .locks import LockHeld as _LockHeld  # noqa: F401
 from ._vendor import handoff
 from .adapters import REGISTRY, Result
 from .locks import FileLock, LockHeld
-from .models.task import HumanApproval, Task, TaskStatus
+from .models.task import HumanApproval, TERMINAL, Task, TaskStatus
 from .paths import Layout
 from .store import now_iso
 
@@ -740,6 +740,19 @@ class Supervisor:
             conversations_mod.ingest(self.layout, rec, result)
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
+            return
+        try:
+            terminal = tasks_mod.load(self.layout, task_id).status in TERMINAL
+        except tasks_mod.TaskError:
+            terminal = False
+        if terminal:
+            # R-04: the task was cancelled (or owner-force-completed) after this job was dispatched - tasks.set_status
+            # already tried to retire it; reaching a result here means the race window between that write and this
+            # one. Record the result on the job alone: no delivery, verification, review or diagnosis for a task
+            # that is already done.
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+            tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
+                          error=result.error, terminal_task=True)
             return
         if kind != diagnosis_mod.KIND:
             self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
