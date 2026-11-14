@@ -86,11 +86,28 @@ def _report_unreadable(layout: Layout, path: Path, exc: Exception) -> None:
         pass
 
 
-def load_all(layout: Layout) -> dict[str, Task]:
-    """Every task that parses and validates. A file that does not is skipped, not raised (R-02): it is reported
-    once (`_report_unreadable`) and left out of the graph, so a dependent's `unmet_dependency` falls through to
-    `load()` and reports it as "<id> (unreadable)" rather than treating it as done. Use `unreadable()` for a view
-    that must show the skipped file, not merely work around it."""
+# The current loop turn's own in-memory copy of the store (R-09): while active, load_all() returns a snapshot of
+# this dict instead of re-parsing every task file, and _update() keeps it in step with every write this turn makes,
+# so a step that reads a task an earlier step of the SAME turn changed sees the change. None outside a turn (the
+# CLI, a UI request, a test that never opens one): every caller there still gets a real, fresh scan.
+_TURN_SNAPSHOT: contextvars.ContextVar[dict[str, Task] | None] = contextvars.ContextVar("supervisor_turn_tasks", default=None)
+
+
+@contextlib.contextmanager
+def turn_snapshot(tasks: dict[str, Task]):
+    """Hold `tasks` (already loaded) as the store for every `load_all()` call made inside the block, in this
+    thread, kept current by `_update()`. One loop turn opens this once, after its own single real load (`once()`);
+    nothing inside the block pays for a second one."""
+    token = _TURN_SNAPSHOT.set(tasks)
+    try:
+        yield
+    finally:
+        _TURN_SNAPSHOT.reset(token)
+
+
+def _scan_disk(layout: Layout) -> dict[str, Task]:
+    """The real glob and parse: every task file read and validated once. The only place `load_all()` actually
+    touches the store (R-09) — called once per turn_snapshot() block, never from inside one."""
     out = {}
     for p in sorted(layout.tasks.glob("*.yaml")):
         try:
@@ -100,6 +117,19 @@ def load_all(layout: Layout) -> dict[str, Task]:
             continue
         out[t.id] = t
     return out
+
+
+def load_all(layout: Layout) -> dict[str, Task]:
+    """Every task that parses and validates. A file that does not is skipped, not raised (R-02): it is reported
+    once (`_report_unreadable`) and left out of the graph, so a dependent's `unmet_dependency` falls through to
+    `load()` and reports it as "<id> (unreadable)" rather than treating it as done. Use `unreadable()` for a view
+    that must show the skipped file, not merely work around it.
+
+    Inside an active `turn_snapshot()`, this returns a fresh dict copy of the shared snapshot instead of
+    re-scanning the store (R-09): one loop turn calls nine functions that each used to load_all() on their own,
+    parsing 365 files nine times over."""
+    snap = _TURN_SNAPSHOT.get()
+    return dict(snap) if snap is not None else _scan_disk(layout)
 
 
 def unreadable(layout: Layout) -> dict[str, str]:
@@ -525,7 +555,11 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
         Task.model_validate(doc)      # never persist an invalid task
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")
-    return Task.model_validate(doc)
+    t = Task.model_validate(doc)
+    snap = _TURN_SNAPSHOT.get()
+    if snap is not None:              # this turn's snapshot, if one is open: later steps must see this write (R-09)
+        snap[t.id] = t
+    return t
 
 
 def _record_history(doc: dict, to: TaskStatus, by: str, note: str, forced: bool = False):

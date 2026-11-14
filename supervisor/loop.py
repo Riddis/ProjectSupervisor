@@ -1001,11 +1001,10 @@ class Supervisor:
         tasks), so _repair_capped_escalation() finishes it here: the task being stuck IN_PROGRESS behind its own
         last, capped record is exactly the symptom of that missing call, whichever cap branch left it, and
         record_failure() is itself replay-safe, so finishing it again when it already succeeded is a no-op."""
-        seen = set()
-        for rec in sorted(jobs_mod.all_records(self.layout), key=lambda r: r["attempt_id"]):
-            seen.add(rec["task_id"])
-        for task_id in seen:
-            recs = jobs_mod.for_task(self.layout, task_id)
+        # One pass over the job directory, grouped by task (R-09): this used to call jobs_mod.for_task() once per
+        # task seen, each call re-globbing the whole directory — 352 globs of 1,380 files on a store this task's
+        # own evidence sized, for work this one grouped scan already did.
+        for task_id, recs in jobs_mod.all_grouped(self.layout).items():
             last = recs[-1]
             if self._repair_reroutes(task_id, recs):
                 continue
@@ -1375,42 +1374,56 @@ class Supervisor:
     def once(self) -> str:
         """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD). Raises PluginError (before
         touching anything) while a required plugin is missing: `run()` reports that as BLOCKED instead."""
+        start = time.perf_counter()
+
+        def turn_s() -> float:
+            return round(time.perf_counter() - start, 3)
+
         self._require_plugins()
         self.iteration += 1
         commands_mod.apply_all(self.layout)
         decision = runtime.read(self.layout).get("decision", "RUN")
         if decision in ("STOP", "RELOAD"):
-            runtime.heartbeat(self.layout, "STOPPED" if decision == "STOP" else "RUNNING", iteration=self.iteration)
+            runtime.heartbeat(self.layout, "STOPPED" if decision == "STOP" else "RUNNING", iteration=self.iteration,
+                              turn_s=turn_s())
             return decision
-        self.reconcile()                 # collects finished work under every decision; launches only when the gate allows
-        self.poll_capacity()
-        if decision in ("PAUSE", "DRAIN"):
-            if decision == "PAUSE":
-                runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
+        # One real load of the store and one real scan of the open jobs for the whole turn (R-09): every step
+        # below that used to call tasks_mod.load_all()/jobs_mod.open_records() on its own now works from this
+        # same snapshot, and a write any step makes is visible to every step after it (tasks._update(),
+        # jobs.write()) — never a second parse of 365 task files or a second scan of 1,380 job files per turn.
+        tasks_snapshot = tasks_mod.load_all(self.layout)
+        jobs_snapshot = jobs_mod.open_records(self.layout)
+        with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
+            self.reconcile()             # collects finished work under every decision; launches only when the gate allows
+            self.poll_capacity()
+            if decision in ("PAUSE", "DRAIN"):
+                if decision == "PAUSE":
+                    runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration, turn_s=turn_s())
+                else:
+                    decision = self.drain()
+                # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and
+                # the work reconcile() collected are records too, and a completed drain commits its last ones at once.
+                done = checkpoint_mod.run(self.layout)
+                self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
             else:
-                decision = self.drain()
-            # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and the
-            # work reconcile() collected are records too, and a completed drain commits its last ones at once.
-            done = checkpoint_mod.run(self.layout)
-            self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
-        else:
-            for task, name in scheduler.plan(self.layout, unattended=self.unattended):
-                self.dispatch_delivery(task, name)
-            self.dispatch_reviews()
-            self.dispatch_conversations()
-            self.settle()                                             # synchronous adapters finish at once
-            self.request_approvals()
-            self.request_owner_decisions()
-            self.sweep_stalled()                                      # nothing stops silently
-            self.alert_if_idle()
-            done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
-            self.commit_state(after_checkpoint=bool(done))           # the loop's own records → git (1.12.1)
-            runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
-                              open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)])
-        if getattr(self, "_lock", None):
-            self._lock.touch()                                    # cross-host liveness of the lock (locks.foreign_holder)
-        if self.iteration % self.render_every == 0:
-            render.render_all(self.layout, runtime=runtime.read(self.layout))
+                for task, name in scheduler.plan(self.layout, unattended=self.unattended):
+                    self.dispatch_delivery(task, name)
+                self.dispatch_reviews()
+                self.dispatch_conversations()
+                self.settle()                                             # synchronous adapters finish at once
+                self.request_approvals()
+                self.request_owner_decisions()
+                self.sweep_stalled()                                      # nothing stops silently
+                self.alert_if_idle()
+                done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
+                self.commit_state(after_checkpoint=bool(done))           # the loop's own records → git (1.12.1)
+                runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
+                                  open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)],
+                                  turn_s=turn_s())
+            if getattr(self, "_lock", None):
+                self._lock.touch()                                # cross-host liveness of the lock (locks.foreign_holder)
+            if self.iteration % self.render_every == 0:
+                render.render_all(self.layout, runtime=runtime.read(self.layout))
         return decision
 
     def drain(self) -> str:

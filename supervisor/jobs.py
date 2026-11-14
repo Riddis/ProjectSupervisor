@@ -6,6 +6,8 @@ any point safe: PREPARED → re-dispatch same attempt; SUBMITTED/RUNNING → ado
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from pathlib import Path
 
 from ._vendor.contract import atomic_json, read_json
@@ -13,15 +15,52 @@ from .paths import Layout
 from .store import now_iso
 
 PHASES = ("PREPARED", "SUBMITTED", "RUNNING", "DONE", "FAILED")
+OPEN_PHASES = ("PREPARED", "SUBMITTED", "RUNNING")
 
 
 def path(layout: Layout, attempt_id: str) -> Path:
     return layout.jobs / f"{attempt_id}.json"
 
 
+# The current loop turn's own in-memory copy of the open-job list (R-09): while active, open_records() returns a
+# copy of this list instead of re-scanning state/runtime/jobs/, and write() keeps it in step with every job record
+# this turn writes (a launch, a settle, a retire, ...), so a step that reads job state an earlier step of the SAME
+# turn changed sees the change. None outside a turn: every other caller still gets a real, fresh scan.
+_TURN_OPEN: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar("supervisor_turn_jobs", default=None)
+
+
+@contextlib.contextmanager
+def turn_snapshot(open_records_list: list[dict]):
+    """Hold `open_records_list` (already loaded) as the open-job list for every `open_records()` call made inside
+    the block, in this thread, kept current by `write()`. One loop turn opens this once, after its own single real
+    scan (`once()`); nothing inside the block pays for a second one."""
+    token = _TURN_OPEN.set(open_records_list)
+    try:
+        yield
+    finally:
+        _TURN_OPEN.reset(token)
+
+
+def _sync_turn_snapshot(record: dict) -> None:
+    snap = _TURN_OPEN.get()
+    if snap is None:
+        return
+    attempt_id = record.get("attempt_id")
+    for i, r in enumerate(snap):
+        if r.get("attempt_id") == attempt_id:
+            if record.get("phase") in OPEN_PHASES:
+                snap[i] = record
+            else:
+                del snap[i]
+            return
+    if record.get("phase") in OPEN_PHASES:
+        snap.append(record)
+
+
 def write(layout: Layout, record: dict) -> dict:
     record["updated"] = now_iso()
     atomic_json(path(layout, record["attempt_id"]), record)
+    _sync_turn_snapshot(record)
     return record
 
 
@@ -70,10 +109,11 @@ def all_records(layout: Layout) -> list[dict]:
     return out
 
 
-def open_records(layout: Layout) -> list[dict]:
-    """Every job still in flight. Read-only (R-03): a record that does not parse is reported once and left
-    exactly as it is — never rewritten, quarantined or deleted. Enumeration must never be the reason a job's
-    bytes are lost."""
+def _scan_open(layout: Layout) -> list[dict]:
+    """The real glob and parse: every job file read once, filtered to the ones still in flight. The only place
+    `open_records()` actually touches the store (R-09) — called once per turn_snapshot() block, never from inside
+    one. Read-only (R-03): a record that does not parse is reported once and left exactly as it is — never
+    rewritten, quarantined or deleted. Enumeration must never be the reason a job's bytes are lost."""
     out = []
     for p in sorted(layout.jobs.glob("*.json")):
         try:
@@ -81,9 +121,17 @@ def open_records(layout: Layout) -> list[dict]:
         except (OSError, ValueError) as exc:
             _report_unreadable(layout, p, exc)
             continue
-        if rec.get("phase") in ("PREPARED", "SUBMITTED", "RUNNING"):
+        if rec.get("phase") in OPEN_PHASES:
             out.append(rec)
     return out
+
+
+def open_records(layout: Layout) -> list[dict]:
+    """Every job still in flight. Inside an active `turn_snapshot()`, this returns a fresh list copy of the
+    shared snapshot instead of re-scanning state/runtime/jobs/ (R-09): one loop turn calls this from thirteen
+    places that each used to scan 1,380 files on their own."""
+    snap = _TURN_OPEN.get()
+    return [dict(r) for r in snap] if snap is not None else _scan_open(layout)
 
 
 def unreadable(layout: Layout, task_id: str | None = None) -> dict[str, str]:
@@ -144,6 +192,10 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
     return closed
 
 
+def _oldest_first(records: list[dict]) -> list[dict]:
+    return sorted(records, key=lambda r: (attempt_no(r.get("attempt_id", "")), str(r.get("attempt_id", ""))))
+
+
 def for_task(layout: Layout, task_id: str) -> list[dict]:
     """The task's job records, oldest attempt first by attempt NUMBER: file names sort `T.a10` before `T.a9`, and
     callers take `[-1]` as the newest. Read-only (R-03): an unreadable record is reported once and represented
@@ -157,4 +209,21 @@ def for_task(layout: Layout, task_id: str) -> list[dict]:
             r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
         if r.get("task_id") == task_id:
             out.append(r)
-    return sorted(out, key=lambda r: (attempt_no(r.get("attempt_id", "")), str(r.get("attempt_id", ""))))
+    return _oldest_first(out)
+
+
+def all_grouped(layout: Layout) -> dict[str, list[dict]]:
+    """Every job record, read once (one glob, one read per file) and grouped by task id, each group ordered
+    exactly as `for_task()` orders it — for a caller (`repair_continuations`) that would otherwise call
+    `for_task()` once per task, re-globbing the whole directory every time (R-09). An unreadable record is
+    reported once and represented by a stub, grouped under the task id its own file name names, same as
+    `for_task()`."""
+    groups: dict[str, list[dict]] = {}
+    for p in sorted(layout.jobs.glob("*.json")):
+        try:
+            r = read_json(p)
+        except (OSError, ValueError) as exc:
+            msg = _report_unreadable(layout, p, exc)
+            r = {"attempt_id": p.stem, "task_id": p.stem.rsplit(".a", 1)[0], "phase": "FAILED", "error": msg}
+        groups.setdefault(r.get("task_id", p.stem), []).append(r)
+    return {task_id: _oldest_first(recs) for task_id, recs in groups.items()}

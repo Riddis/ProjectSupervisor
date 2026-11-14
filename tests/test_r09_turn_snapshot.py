@@ -15,6 +15,7 @@ import pytest
 
 from supervisor import jobs as jobs_mod, store
 from supervisor.loop import Supervisor
+from tests.conftest import make_task
 
 N_TASKS = 350
 JOBS_PER_TASK = 4
@@ -91,3 +92,55 @@ def test_idle_turn_loads_the_store_once_and_scans_jobs_a_bounded_number_of_times
     assert counts["jobs"] <= MAX_JOB_DIR_SCANS, (
         f"the job directory was scanned {counts['jobs']}x in one idle turn, expected at most {MAX_JOB_DIR_SCANS}")
     assert elapsed < TURN_BUDGET_S, f"one idle turn took {elapsed:.1f}s, expected under {TURN_BUDGET_S}s"
+
+
+# ---- the fix: a write earlier in a turn is visible to a step later in the same turn, and the turn's duration
+# reaches the heartbeat. These need supervisor.tasks.turn_snapshot() / supervisor.jobs.turn_snapshot(), which do
+# not exist before the fix commit — the budget test above is the regression; these are the fix's own proof.
+
+
+def test_a_write_made_early_in_the_turn_is_visible_to_a_later_step(layout):
+    """tasks._update() and jobs.write() keep an open turn snapshot current: a step that writes a task or a job
+    record is seen by every step still to come in the same turn, with no second real scan to make it so."""
+    from supervisor import tasks as tasks_mod
+    make_task(layout, "A", status="IN_PROGRESS")
+    tasks_snapshot = tasks_mod.load_all(layout)
+    jobs_snapshot = jobs_mod.open_records(layout)
+    with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
+        tasks_mod.add_attempt(layout, "A", "fake_lane", note="dispatch")      # an early step's write
+        jobs_mod.prepare(layout, "A", "A.a1", "fake_lane", {"adapter": "fake_lane"})
+        later_tasks = tasks_mod.load_all(layout)              # a later step's own call — must see the write above
+        later_jobs = jobs_mod.open_records(layout)
+    assert [a.id for a in later_tasks["A"].attempts] == ["A.a1"]
+    assert [r["attempt_id"] for r in later_jobs] == ["A.a1"]
+
+
+def test_a_dispatch_is_visible_to_every_step_later_in_the_same_turn(layout, monkeypatch):
+    """The scenario once() actually produces: a dispatch (Supervisor.dispatch, exactly what dispatch_delivery()
+    calls) writes the attempt and the job record; dispatch_reviews(), request_approvals(), sweep_stalled() and
+    the rest, called right after in the same turn, must see it — without re-scanning either directory to do so."""
+    from supervisor import tasks as tasks_mod, testing
+    from supervisor.loop import Supervisor
+    make_task(layout, "A", status="IN_PROGRESS", job={"adapter": "fake_lane"})
+    with testing.lane(testing.FakeLane("fake_lane")):
+        sup = Supervisor(layout, sleep_s=0)
+        tasks_snapshot = tasks_mod.load_all(layout)
+        jobs_snapshot = jobs_mod.open_records(layout)
+        with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
+            sup.dispatch(tasks_snapshot["A"], "fake_lane")
+            counts = _glob_counts(monkeypatch, layout)         # only the two calls below are being measured
+            later_tasks = tasks_mod.load_all(layout)
+            later_jobs = jobs_mod.open_records(layout)
+    assert counts == {"tasks": 0, "jobs": 0}, f"a later step re-scanned the store: {counts}"
+    attempt_id = later_tasks["A"].attempts[0].id
+    assert any(r["attempt_id"] == attempt_id for r in later_jobs)
+
+
+def test_heartbeat_carries_the_last_turns_duration(layout):
+    from supervisor import runtime
+    from supervisor.loop import Supervisor
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()
+    doc = runtime.read(layout)
+    assert isinstance(doc.get("turn_s"), (int, float)), doc.get("turn_s")
+    assert doc["turn_s"] >= 0

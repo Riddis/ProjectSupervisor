@@ -72,8 +72,18 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def _default_loader(yaml_module=yaml):
+    """libyaml's loader when the interpreter has it (about 10x faster on the task store, R-09; same documents —
+    `tests/test_store_loader.py` proves it over the fixtures) — the pure-Python one otherwise, so a machine
+    without libyaml still runs, just slower."""
+    return getattr(yaml_module, "CSafeLoader", yaml_module.SafeLoader)
+
+
+_LOADER = _default_loader()
+
+
 def read(path: Path) -> dict:
-    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    return yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_LOADER) or {}
 
 
 def dump(doc: dict) -> str:
