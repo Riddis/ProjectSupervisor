@@ -1,7 +1,7 @@
 import json, os, subprocess, sys, time
 import pytest
 
-from supervisor import commands, jobs, runtime, store, tasks
+from supervisor import commands, inbox, jobs, runtime, store, tasks, testing
 from supervisor.adapters import python as pyad
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
@@ -269,3 +269,57 @@ def test_recover_does_not_relaunch_a_child_that_finished_during_the_scan(layout,
     handle = REGISTRY["process"].recover(spec)
     assert launches == ["P2.a1"]
     assert handle is not None and handle["pid"] is None and handle["deadline"] == float("inf")   # adopted as finished
+
+
+def test_one_unreadable_task_file_does_not_stop_the_loop(layout):
+    """R-02: a task file that does not parse must not raise on every turn. A healthy task next to it keeps
+    running, the task pages render instead of 500ing, the broken file shows as such, and exactly one owner item
+    names it — it is not re-opened on every later load."""
+    ptask(layout, "A"); ptask(layout, "B", deps=["A"])
+    (layout.tasks / "BROKEN.yaml").write_text("id: BROKEN\nphase: [unclosed\n", encoding="utf-8")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    items = [i for i in inbox.open_items(layout, "owner") if i.get("dedup_key") == "unreadable_task:BROKEN.yaml"]
+    assert len(items) == 1
+    tasks.load_all(layout)                                        # a second load must not open a second item
+    assert len(inbox.open_items(layout, "owner")) == 1
+    c = testing.ui_client(layout)
+    for url in ("/overview", "/tasks", "/roadmap"):
+        r = c.get(url)
+        assert r.status_code == 200, url
+        assert "BROKEN" in r.text and "unreadable" in r.text, url
+
+
+def test_a_task_depending_on_an_unreadable_one_is_not_dispatched(layout):
+    ptask(layout, "C", deps=["BROKEN"])
+    (layout.tasks / "BROKEN.yaml").write_text("id: BROKEN\nphase: [unclosed\n", encoding="utf-8")
+    sup = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        sup.once()
+    c = tasks.load(layout, "C")
+    assert c.status in (TaskStatus.NOT_STARTED, TaskStatus.READY)
+    assert tasks.unmet_dependency(layout, c) == "BROKEN (unreadable)"
+
+
+def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(layout):
+    """R-02: a command file whose JSON parses but is not an object must not stop every command queued behind it
+    in the same turn, `loop.pause` included."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    (layout.commands / "0000000000001-bad.json").write_text("[]", encoding="utf-8")
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert list(commands.pending(layout)) == []
+    quarantined = list((layout.commands / "quarantine").glob("*.json"))
+    assert [p.name for p in quarantined] == ["0000000000001-bad.json"]
+    assert quarantined[0].read_text(encoding="utf-8") == "[]"
+    outcome = json.loads((layout.commands_applied / "0000000000001-bad.json").read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
