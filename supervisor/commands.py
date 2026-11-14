@@ -95,7 +95,11 @@ def _approve(layout, payload, actor):
     t = tasks_mod.load(layout, payload["task_id"])
     if cid and any(a.command_id == cid for a in t.delivery.approvals):
         return {"skipped": "already applied", "status": t.status.value}
-    tasks_mod.record_approval(layout, payload["task_id"], payload["digest"], payload.get("response", "ACCEPT"), actor,
+    digest = payload["digest"]
+    if t.delivery.digest != digest:
+        raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
+                                  f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
+    tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
                               payload.get("note", ""), command_id=cid)
     t = tasks_mod.advance(layout, payload["task_id"])
     return {"status": t.status.value}
@@ -105,7 +109,7 @@ def _approve(layout, payload, actor):
 def _inbox_answer(layout, payload, actor):
     cid = payload.get("_id")
     item = inbox_mod.answer(layout, payload["item_id"], payload["response"], payload.get("note", ""), actor,
-                            command_id=cid)
+                            command_id=cid, digest=payload.get("digest"))
     out = {"status": item.get("status")}
     try:
         t = tasks_mod.load(layout, item["task_id"]) if item.get("task_id") else None

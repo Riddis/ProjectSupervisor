@@ -177,13 +177,17 @@ def owned_by_plugin(layout: Layout | None, doc: dict) -> str | None:
 
 
 def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str = "owner",
-          command_id: str | None = None, internal: bool = False) -> dict:
+          command_id: str | None = None, internal: bool = False, digest: str | None = None) -> dict:
     """Validate and record an answer; idempotent by command_id (a retried command must not raise "already answered").
 
     `internal=True` is for the code of the plugin that owns the item's kind (registry.inbox_kind with
     `answerable=False`): it carries per-option verdicts only that plugin knows how to finalise, so the generic path
     — this function as called by the command handler and the Control Center form — refuses to close one out from
-    under it."""
+    under it.
+
+    `digest`, when given, must be the item's own `approval_digest`: the approval card's hidden field carries back
+    what it showed, so an item left open through a newer delivery is refused here, under the same lock, before the
+    item is spent — not left to fail later inside record_approval() with the item already marked answered (R-05)."""
     response = (response or "").strip()
     if not response:
         raise InboxError(f"{item_id}: empty response")
@@ -197,6 +201,14 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
                 outcome["skipped"] = True
                 return doc
             raise InboxError(f"{item_id}: already {doc.get('status')}")
+        if digest and doc.get("task_id"):
+            try:
+                current = tasks_mod.load(layout, doc["task_id"]).delivery.digest
+            except tasks_mod.TaskError:
+                current = None
+            if current != digest:
+                raise InboxError(f"{item_id}: the delivery changed since this item was shown "
+                                 f"(shown {digest[:12]}, now {(current or 'none')[:12]}); reload and review it again")
         if not internal:
             refusal = owned_by_plugin(layout, doc)
             if refusal:

@@ -123,18 +123,18 @@ def requeue(task_id: str, request: Request, csrf_token: str = Form(...), layout:
 
 
 @router.post("/tasks/{task_id}/approve")
-def approve(task_id: str, request: Request, response: str = Form("ACCEPT"), note: str = Form(""),
-            csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
-    """Owner approval of the CURRENT delivery digest (human_approval=required tasks parked in WAITING_FOR_HUMAN).
-    The digest is read server-side from the task, never from the client, so an approval can only ever bind to what
-    is on disk now; a stale page approving a superseded digest is refused by tasks.record_approval()."""
+def approve(task_id: str, request: Request, digest: str = Form(...), response: str = Form("ACCEPT"),
+            note: str = Form(""), csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
+    """Owner approval of the digest the form was rendered for, not whatever is current when it arrives: the page
+    carries its own digest back (R-05), and task.approve refuses when that no longer matches the task's current
+    delivery, so a page left open through a newer delivery cannot approve bytes nobody looked at."""
     require_csrf(request, csrf_token)
     t = _get_task(layout, task_id)
     if not t.delivery.digest:
         raise HTTPException(status_code=409, detail=f"{task_id} has no delivery to approve")
     if response not in ("ACCEPT", "REJECT", "MODIFY"):
         raise HTTPException(status_code=422, detail="response must be ACCEPT, REJECT or MODIFY")
-    return act(request, layout, "task.approve", {"task_id": task_id, "digest": t.delivery.digest, "response": response,
+    return act(request, layout, "task.approve", {"task_id": task_id, "digest": digest, "response": response,
                                                 "note": note}, f"/tasks/{task_id}")
 
 
