@@ -323,3 +323,43 @@ def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(la
     assert quarantined[0].read_text(encoding="utf-8") == "[]"
     outcome = json.loads((layout.commands_applied / "0000000000001-bad.json").read_text(encoding="utf-8"))
     assert outcome["ok"] is False
+
+
+def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
+    """R-03: `dispatch` allocates `len(jobs.for_task(...)) + 1`. `jobs.open_records` — called by every Overview
+    and Agents GET — replaces a record it cannot read with a `.corrupt.json` stub and deletes the original, so
+    `for_task` undercounts by one and the next dispatch reuses an existing id and run directory instead of
+    getting a new one."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")              # records stay PREPARED: nothing runs
+    ids = [sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"] for _ in range(3)]
+    assert ids == ["A.a1", "A.a2", "A.a3"]
+    (layout.runs / "A" / "A.a3" / "marker.txt").write_text("belongs to the first A.a3", encoding="utf-8")
+    broken = "{broken"
+    jobs.path(layout, "A.a2").write_text(broken, encoding="utf-8")
+    jobs.open_records(layout)                                  # what any Overview/Agents GET calls
+    assert jobs.path(layout, "A.a2").read_text(encoding="utf-8") == broken, "the unreadable record was rewritten"
+    assert not jobs.path(layout, "A.a2").with_suffix(".corrupt.json").exists(), "the record was quarantined"
+    again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert again not in ids, "the new job reused an id already on disk"
+    assert not (layout.runs / "A" / again / "marker.txt").exists(), "the new job ran in an old run directory"
+    assert sorted(a.id for a in tasks.load(layout, "A").attempts) == ["A.a1", "A.a2", "A.a3", again]
+
+
+def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
+    """R-03: `open_records` (every Overview and Agents GET) must only read the jobs folder, never write or
+    delete under it, however broken a record is."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+    broken = "{broken"
+    jobs.path(layout, "A.a1").write_text(broken, encoding="utf-8")
+    c = testing.ui_client(layout)
+    for url in ("/overview", "/agents"):
+        r = c.get(url)
+        assert r.status_code == 200, url
+    assert jobs.path(layout, "A.a1").read_text(encoding="utf-8") == broken
+    assert not jobs.path(layout, "A.a1").with_suffix(".corrupt.json").exists()
+    assert list(layout.jobs.glob("A.*.json")) == [jobs.path(layout, "A.a1")]
