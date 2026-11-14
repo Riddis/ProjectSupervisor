@@ -18,6 +18,31 @@
   var POLL_MS = 2000, FALLBACK_MS = 30000, PAUSE_KEY = "cc-live-paused";
   var IGNORED_TYPES = { hidden: 1, submit: 1, button: 1, reset: 1, image: 1 };
 
+  // htmx would otherwise evaluate a <script> tag swapped in from a stream or a morphed page; nothing here needs that.
+  if (window.htmx) window.htmx.config.allowScriptTags = false;
+
+  // Confirmation dialogs and post-request refresh triggers used to be inline onsubmit/onclick/hx-on attributes;
+  // a strict script-src forbids those, so they are delegated here from data-* attributes instead.
+  document.addEventListener("submit", function (e) {
+    var msg = e.target.getAttribute && e.target.getAttribute("data-confirm");
+    if (msg && !window.confirm(msg)) e.preventDefault();
+  });
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest && e.target.closest("[data-confirm-click]");
+    if (el && !window.confirm(el.getAttribute("data-confirm-click"))) e.preventDefault();
+  });
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (el && el.hasAttribute && el.hasAttribute("data-submit-on-change") && el.form) el.form.submit();
+  });
+  document.body.addEventListener("htmx:afterRequest", function (e) {
+    var sel = e.target && e.target.getAttribute && e.target.getAttribute("data-refresh-after");
+    if (sel) {
+      var target = document.querySelector(sel);
+      if (target && window.htmx) window.htmx.trigger(target, "refresh");
+    }
+  });
+
   var version = metaContent(document, "live-version");
   var boot = metaContent(document, "live-boot");
   var lastRefresh = Date.now();

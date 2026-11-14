@@ -35,7 +35,7 @@
     <input type="text" name="note" placeholder="reason">
     <button type="submit">Hold</button>
   </form>
-  <form method="post" action="/tasks/{{ t.id }}/cancel" class="inline-form" onsubmit="return confirm('Cancel {{ t.id }}?')">
+  <form method="post" action="/tasks/{{ t.id }}/cancel" class="inline-form" data-confirm="Cancel {{ t.id }}?">
     {% include "partials/csrf.html" %}
     <input type="text" name="note" placeholder="reason">
     <button type="submit">Cancel</button>
@@ -62,7 +62,7 @@
     <input type="text" name="note" placeholder="note (optional)">
     <button type="submit" name="response" value="ACCEPT">Approve</button>
     <button type="submit" name="response" value="MODIFY">Request changes</button>
-    <button type="submit" name="response" value="REJECT" onclick="return confirm('Reject the delivery of {{ t.id }}?')">Reject</button>
+    <button type="submit" name="response" value="REJECT" data-confirm-click="Reject the delivery of {{ t.id }}?">Reject</button>
   </form>
   {% endif %}
   {% else %}<p>No delivery yet.</p>{% endif %}

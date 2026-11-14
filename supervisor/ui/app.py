@@ -19,6 +19,14 @@ from .routes import router as routes_router
 
 DEFAULT_PORT = 8790
 
+# No inline script runs anywhere in the templates (live.js carries what used to be onsubmit/onclick/hx-on handlers),
+# so script-src omits 'unsafe-inline' and 'unsafe-eval'; style-src keeps 'unsafe-inline' for the few inline style=
+# attributes left in templates, which carry no executable content.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+)
+
 
 UPDATE_CHECK_EVERY_S = 1800
 
@@ -63,6 +71,7 @@ def create_app(layout: Layout | None = None, update_check: bool | None = None) -
         response = await call_next(request)
         if "text/html" in response.headers.get("content-type", ""):
             response.headers["Cache-Control"] = "no-store"
+            response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
         if not request.cookies.get(CSRF_COOKIE):
             response.set_cookie(CSRF_COOKIE, request.state.csrf_token, httponly=True, samesite="strict", path="/")
         return response

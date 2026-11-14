@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,7 +13,10 @@ from .timefmt import local_stamp
 
 
 def _format(data: str, event: str | None = None) -> str:
-    lines = "".join(f"data: {line}\n" for line in data.splitlines() or [""])
+    """Escape before framing: the browser swaps `data:` lines straight into the DOM (see static/live.js), so a log
+    or transcript line that carries markup must reach it as literal text, not parsed as HTML."""
+    escaped = html.escape(data)
+    lines = "".join(f"data: {line}\n" for line in escaped.splitlines() or [""])
     prefix = f"event: {event}\n" if event else ""
     return f"{prefix}{lines}\n"
 

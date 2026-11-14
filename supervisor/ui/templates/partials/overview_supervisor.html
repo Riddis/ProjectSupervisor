@@ -14,14 +14,14 @@
   {% set shutdown_cancel = (draining and shutdown_armed) or shutdown_pending_s %}
   {% set shutdown_confirm = ('Shut the PC down once the ' ~ (active_jobs | length) ~ ' running job(s) finish? Nothing new will start.') if live else 'Nothing is running. Shut the PC down in 60 seconds?' %}
   {% for c in controls %}
-    <form method="post" action="/overview/{{ c.action }}" hx-post="/overview/{{ c.action }}" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')"{% if c.action == 'stop' %} onsubmit="return confirm('Stop the supervisor?')"{% endif %}>
+    <form method="post" action="/overview/{{ c.action }}" hx-post="/overview/{{ c.action }}" hx-target="#ctrl-result" hx-swap="innerHTML" data-refresh-after="#now-running"{% if c.action == 'stop' %} data-confirm="Stop the supervisor?"{% endif %}>
       {% include "partials/csrf.html" %}<button type="submit" id="ctl-{{ c.action }}" title="{{ c.title }}"{% if not c.enabled %} disabled{% endif %}>{{ icon(c.icon) }}{{ c.label }}</button>
     </form>
   {% endfor %}
   {% if shutdown_cancel %}
-    <form method="post" action="/overview/shutdown-cancel" hx-post="/overview/shutdown-cancel" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown-cancel" class="warn">{{ icon('power') }}Cancel shutdown</button></form>
+    <form method="post" action="/overview/shutdown-cancel" hx-post="/overview/shutdown-cancel" hx-target="#ctrl-result" hx-swap="innerHTML" data-refresh-after="#now-running">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown-cancel" class="warn">{{ icon('power') }}Cancel shutdown</button></form>
   {% else %}
-    <form method="post" action="/overview/shutdown" hx-post="/overview/shutdown" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')" onsubmit="return confirm('{{ shutdown_confirm }}')">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown" title="Let running work finish, then power the workstation off">{{ icon('power') }}Shut down PC when idle</button></form>
+    <form method="post" action="/overview/shutdown" hx-post="/overview/shutdown" hx-target="#ctrl-result" hx-swap="innerHTML" data-refresh-after="#now-running" data-confirm="{{ shutdown_confirm }}">{% include "partials/csrf.html" %}<button type="submit" id="ctl-shutdown" title="Let running work finish, then power the workstation off">{{ icon('power') }}Shut down PC when idle</button></form>
   {% endif %}
   </div>
 </div>
