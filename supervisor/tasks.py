@@ -600,12 +600,35 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
     return t
 
 
-def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", **extra) -> Task:
-    """A dispatch attempt (resource/model/session/run_dir) — used by the loop and retry budgets."""
+def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", seed: int = 0, **extra) -> tuple[Task, str]:
+    """Allocate the task's next job number from its own counter and record the attempt, in the same locked
+    update, so the job record and the task's own attempt list can never disagree (R-03). `seed` covers a task
+    with no counter yet (one written before this field existed): pass the highest attempt number already on
+    disk (`jobs.highest_attempt_no`, filenames only, so this works even with an unreadable record among them) so
+    the number allocated here is never one already used. Returns the updated task and the id it chose; `note`
+    gets that id appended."""
+    allocated: dict[str, str] = {}
+
     def fn(doc):
-        n = len(doc.get("attempts", [])) + 1
-        doc.setdefault("attempts", []).append(Attempt(id=f"{task_id}.a{n}", resource=resource, at=store.now_iso(),
-                                                      note=note, **extra).model_dump(exclude_none=True))
+        n = max(int(doc.get("job_seq") or 0), len(doc.get("attempts", [])), seed) + 1
+        doc["job_seq"] = n
+        attempt_id = f"{task_id}.a{n}"
+        allocated["id"] = attempt_id
+        doc.setdefault("attempts", []).append(Attempt(id=attempt_id, resource=resource, at=store.now_iso(),
+                                                      note=f"{note} {attempt_id}".strip(), **extra)
+                                              .model_dump(exclude_none=True))
+    t = _update(layout, task_id, fn)
+    return t, allocated["id"]
+
+
+def annotate_attempt(layout: Layout, task_id: str, attempt_id: str, **fields) -> Task:
+    """Fill in fields (`run_dir`, once it is known) on an attempt already recorded by `add_attempt` — never
+    reallocates its number or id."""
+    def fn(doc):
+        for a in doc.get("attempts", []):
+            if a.get("id") == attempt_id:
+                a.update(fields)
+                break
     return _update(layout, task_id, fn)
 
 

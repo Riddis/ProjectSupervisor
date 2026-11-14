@@ -363,3 +363,35 @@ def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
     assert jobs.path(layout, "A.a1").read_text(encoding="utf-8") == broken
     assert not jobs.path(layout, "A.a1").with_suffix(".corrupt.json").exists()
     assert list(layout.jobs.glob("A.*.json")) == [jobs.path(layout, "A.a1")]
+
+
+def test_a_task_written_before_the_counter_existed_still_gets_the_right_next_number(layout):
+    """R-03: a task document from before `job_seq` existed has no such field. The next dispatch must still pick
+    up where its own job files and attempt list left off — no migration step."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+
+    def fn(doc):
+        doc.pop("job_seq", None)               # a document written before this field was added
+    tasks._update(layout, "A", fn)
+    again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert again == "A.a3"
+
+
+def test_dispatch_refuses_a_run_directory_that_already_exists(layout):
+    """R-03: a job number must never be used a second time while its old run directory is still there."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")       # A.a1
+    stray = layout.runs / "A" / "A.a2"
+    stray.mkdir(parents=True)
+    (stray / "marker.txt").write_text("left behind", encoding="utf-8")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")  # would naturally be A.a2
+    assert rec["attempt_id"] == "A.a2"
+    assert rec["result"] == "FAILED"
+    assert "already exists" in rec.get("error", "")
+    assert (stray / "marker.txt").exists()     # the stray directory was not touched

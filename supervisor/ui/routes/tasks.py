@@ -44,6 +44,7 @@ def task_detail(task_id: str, request: Request, layout: Layout = Depends(require
     attempts = [{"attempt": a, "job": jobs_by_id.get(a.id)} for a in t.attempts]
     dv = delivery_view.view(layout, t) if t.delivery.digest else None
     return render(request, "task_detail.html", {"t": t, "attempts": attempts, "dv": dv,
+                                                "broken_jobs": jobs_mod.unreadable(layout, task_id),
                                                 "flash": decode_flash(request)})
 
 

@@ -167,6 +167,9 @@ class Task(BaseModel):
     cost_category: CostCategory = CostCategory.claude
     status: TaskStatus = TaskStatus.NOT_STARTED
     attempts: list[Attempt] = Field(default_factory=list)      # dispatch attempts only (retry budgets, §2.6)
+    job_seq: int = 0                                           # highest job number allocated (R-03); 0 on a task
+                                                                 # written before this field existed
+
     history: list[dict[str, Any]] = Field(default_factory=list)  # status changes {at, by, from, to, note, forced?}
     forced: Optional[dict[str, Any]] = None                     # set when the owner forced a status; rendered
     held: Optional[dict[str, Any]] = None                       # an owner Hold's durable identity ({by, at, note});

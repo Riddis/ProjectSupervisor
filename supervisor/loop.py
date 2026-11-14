@@ -139,16 +139,25 @@ class Supervisor:
                 kind: str = "delivery", extra: dict | None = None) -> dict:
         self._require_plugins()
         ad = REGISTRY[adapter_name]
-        n = len(jobs_mod.for_task(self.layout, task.id)) + 1
-        attempt_id = f"{task.id}.a{n}"
+        if kind == "conversation":          # no Task document backs a conversation thread; nothing to count on
+            n = len(jobs_mod.for_task(self.layout, task.id)) + 1
+            attempt_id = f"{task.id}.a{n}"
+        else:
+            # The number comes from the task's own counter, allocated and recorded in one locked update
+            # (tasks.add_attempt), so the job record and the task's attempt list can never disagree (R-03). A
+            # task with no counter yet is seeded from the highest number already on disk, filenames only, so a
+            # record this call cannot read still keeps its number retired.
+            seed = jobs_mod.highest_attempt_no(self.layout, task.id)
+            _, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed)
+        run_dir = self.layout.runs / task.id / attempt_id
         try:
+            if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
+                raise FileExistsError(f"run directory already exists: {run_dir}")
             spec = ad.prepare(self.layout, task, attempt_id)
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
                                    gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **(extra or {}))
-            if kind != "conversation":
-                tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}: prepare failed")
             self._adapter_failed(rec, "prepare", exc)
             return jobs_mod.read(self.layout, attempt_id)
         spec["kind"] = kind
@@ -161,8 +170,8 @@ class Supervisor:
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
                                gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
                                **(extra or {}))                                   # durable BEFORE launch
-        if kind != "conversation":            # no Task backs a conversation thread (supervisor.conversations)
-            tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}", run_dir=spec.get("run_dir"))
+        if kind != "conversation":            # the attempt itself was already recorded when the number was allocated
+            tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
             return jobs_mod.set_phase(self.layout, attempt_id, "PREPARED", deferred_until=deferred_until, deferred_reason=note)
         return self.launch(rec)

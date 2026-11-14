@@ -75,6 +75,9 @@
 
 <section class="panel">
   <h2>Attempts</h2>
+  {% if broken_jobs %}
+  <p class="muted">Unreadable job record(s), left as they are: {% for id, err in broken_jobs.items() %}<strong>{{ id }} (unreadable)</strong> — {{ err }}{{ "; " if not loop.last }}{% endfor %}</p>
+  {% endif %}
   <table class="tasks-table">
     <thead><tr><th>Attempt</th><th>Resource</th><th>Model</th><th>At</th><th>Outcome</th><th></th></tr></thead>
     <tbody>
