@@ -26,6 +26,7 @@ def task_list(request: Request, status: str = "", phase: str = "", layout: Layou
         tasks = [t for t in tasks if t.phase == int(phase)]
     return render(request, "tasks_list.html", {"tasks": tasks, "elig_ids": elig_ids, "filter_status": status,
                                                "filter_phase": phase if phase.isdigit() else "",
+                                               "broken_tasks": tasks_mod.unreadable(layout),
                                                "statuses": [s.value for s in TaskStatus], "flash": decode_flash(request)})
 
 

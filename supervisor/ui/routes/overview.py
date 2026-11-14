@@ -231,6 +231,7 @@ def overview_context(layout: Layout) -> dict:
         "open_jobs": open_jobs, "job_counts": job_counts, "last_events": logtail.tail(layout, 10),
         "phase_task_count": len(phase_tasks),
         "phase_done_count": sum(1 for t in phase_tasks if t.status == TaskStatus.COMPLETE),
+        "broken_tasks": tasks_mod.unreadable(layout),
     }
 
 

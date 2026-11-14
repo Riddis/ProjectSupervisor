@@ -57,16 +57,60 @@ def load(layout: Layout, task_id: str) -> Task:
     if not p.exists():
         raise TaskError(f"no such task {task_id}")
     try:
-        return Task.model_validate(store.read(p))
+        doc = store.read(p)
+    except Exception as exc:  # noqa: BLE001 - a broken file is "unreadable", not a crash (R-02)
+        raise TaskError(f"{task_id}: unreadable: {exc}") from exc
+    try:
+        return Task.model_validate(doc)
     except ValidationError as exc:
         raise TaskError(f"{task_id}: {exc}") from exc
 
 
+# Last error per (project root, file name), so a file that keeps failing is logged once, not on every load (R-02;
+# the same dedup render.py's _guarded already uses for a failing view).
+_last_task_error: dict[tuple[str, str], str] = {}
+
+
+def _report_unreadable(layout: Layout, path: Path, exc: Exception) -> None:
+    msg = f"{type(exc).__name__}: {exc}"[:300]
+    key = (str(layout.root), path.name)
+    if _last_task_error.get(key) != msg:
+        _last_task_error[key] = msg
+        log(layout, "task_unreadable", "loop", path=path.name, error=msg)
+    from . import inbox as inbox_mod          # local: inbox imports this module
+    try:
+        inbox_mod.create(layout, for_role="owner", subject=f"Task file unreadable: {path.name}",
+                         summary=f"{path.name} could not be loaded and is skipped: {msg}", kind="question",
+                         from_="loop", dedup_key=f"unreadable_task:{path.name}")
+    except inbox_mod.InboxFull:
+        pass
+
+
 def load_all(layout: Layout) -> dict[str, Task]:
+    """Every task that parses and validates. A file that does not is skipped, not raised (R-02): it is reported
+    once (`_report_unreadable`) and left out of the graph, so a dependent's `unmet_dependency` falls through to
+    `load()` and reports it as "<id> (unreadable)" rather than treating it as done. Use `unreadable()` for a view
+    that must show the skipped file, not merely work around it."""
     out = {}
     for p in sorted(layout.tasks.glob("*.yaml")):
-        t = Task.model_validate(store.read(p))
+        try:
+            t = Task.model_validate(store.read(p))
+        except Exception as exc:                 # noqa: BLE001 - one bad file must never stop the loop
+            _report_unreadable(layout, p, exc)
+            continue
         out[t.id] = t
+    return out
+
+
+def unreadable(layout: Layout) -> dict[str, str]:
+    """The task files `load_all` is currently skipping, as {file stem: short error} — for a page that must show a
+    broken file as such."""
+    out = {}
+    for p in sorted(layout.tasks.glob("*.yaml")):
+        try:
+            Task.model_validate(store.read(p))
+        except Exception as exc:                 # noqa: BLE001 - matches load_all's own tolerance
+            out[p.stem] = f"{type(exc).__name__}: {exc}"[:300]
     return out
 
 
@@ -232,15 +276,17 @@ def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
 
 def unmet_dependency(layout: Layout, task: Task, tasks: dict[str, Task] | None = None) -> str | None:
     """The first entry of `task.depends_on` that is not COMPLETE, as "<id> (<status>)" (G6, 2.4.0) — a dependency
-    this project has no task for is reported as "<id> (missing)". `tasks` is an optional preloaded graph
-    (`eligible()`'s own cache); without it each dependency is loaded from disk."""
+    this project has no task for is reported as "<id> (missing)", and one whose file exists but `load_all` skipped
+    (R-02) as "<id> (unreadable)", so a task waiting on a broken file stays waiting rather than being released as
+    though the dependency did not exist. `tasks` is an optional preloaded graph (`eligible()`'s own cache); without
+    it each dependency is loaded from disk."""
     for dep_id in task.depends_on:
         dep = (tasks or {}).get(dep_id)
         if dep is None:
             try:
                 dep = load(layout, dep_id)
             except TaskError:
-                return f"{dep_id} (missing)"
+                return f"{dep_id} (unreadable)" if path_for(layout, dep_id).exists() else f"{dep_id} (missing)"
         if dep.status != TaskStatus.COMPLETE:
             return f"{dep_id} ({dep.status.value})"
     return None

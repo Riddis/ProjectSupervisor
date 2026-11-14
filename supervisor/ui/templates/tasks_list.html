@@ -10,6 +10,9 @@
       {% for s in statuses %}<option value="{{ s }}" {{ "selected" if s == filter_status }}>{{ s }}</option>{% endfor %}
     </select>
   </form>
+  {% if broken_tasks %}
+  <p class="muted">Unreadable task file(s), skipped: {% for id, err in broken_tasks.items() %}<strong>{{ id }} (unreadable)</strong> — {{ err }}{{ "; " if not loop.last }}{% endfor %}</p>
+  {% endif %}
   <table class="tasks-table">
     <thead><tr><th>ID</th><th>Phase</th><th>Title</th><th>Owner</th><th>Status</th><th>Priority</th></tr></thead>
     <tbody>

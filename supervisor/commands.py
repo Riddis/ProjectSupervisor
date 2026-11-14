@@ -2,7 +2,11 @@
 state/commands/<ulid>.json and the lock holder applies them, moving them to commands/applied/.
 
 Exactly-once: handlers must be idempotent by command id (payload["_id"]) because a crash between the handler and the
-applied-file write would re-run them; the applied-file check closes the second window (applied → unlink)."""
+applied-file write would re-run them; the applied-file check closes the second window (applied → unlink).
+
+A file that is not readable JSON, or whose JSON is not an object, is not a handler failure: it is rejected before
+any handler runs, with its bytes moved to commands/quarantine/ and a failed outcome in applied/, and every command
+queued behind it in the same turn still applies (R-02)."""
 from __future__ import annotations
 
 import json
@@ -452,15 +456,26 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     """Apply every pending command exactly once (caller must hold the state lock). Returns outcomes."""
     outcomes = []
     layout.commands_applied.mkdir(parents=True, exist_ok=True)
+    quarantine_dir = layout.commands / "quarantine"
     for p in pending(layout):
         done = layout.commands_applied / p.name
         if done.exists():                          # crash after applied-file write, before unlink
             p.unlink(missing_ok=True)
             continue
+        raw = None
         try:
-            cmd = json.loads(p.read_text(encoding="utf-8"))
+            raw = p.read_text(encoding="utf-8")
+            cmd = json.loads(raw)
+            if not isinstance(cmd, dict):
+                raise ValueError(f"a command envelope must be an object, not {type(cmd).__name__}")
         except (OSError, ValueError) as exc:
-            atomic_json(done, {"id": p.stem, "ok": False, "error": f"unreadable command: {exc}", "applied": now_iso()})
+            # The envelope itself is rejected, not one handler's work inside it (R-02): quarantine the file with
+            # its bytes intact, so the owner can see what a plugin or a hand-edit actually wrote, and move on —
+            # one bad file must not stop every command queued behind it, loop.pause among them.
+            if raw is not None:
+                quarantine_dir.mkdir(parents=True, exist_ok=True)
+                (quarantine_dir / p.name).write_text(raw, encoding="utf-8")
+            atomic_json(done, {"id": p.stem, "ok": False, "error": f"rejected command envelope: {exc}", "applied": now_iso()})
             p.unlink(missing_ok=True)
             continue
         fn = HANDLERS.get(cmd.get("kind"))

@@ -12,6 +12,11 @@
 {% if update and update.newer_release %}<section class="panel update-panel"><div class="section-heading"><h2>Framework release available</h2><span class="section-note">{{ update.pinned_tag }} &rarr; {{ update.newer_release }}</span></div>
   <p class="section-note">This project runs a framework checkout pinned at a release tag. Take {{ update.newer_release }} in a maintenance window: drain, stop, in the framework checkout <code>git fetch origin tag {{ update.newer_release }}</code> and <code>git checkout {{ update.newer_release }}</code>, migrate, doctor, start (docs/UPDATING.md, &ldquo;Pinned checkouts&rdquo;).{% if update.migration_hint %} The changelog mentions a migration.{% endif %} Origin last checked {{ update.checked_iso | localtime }}{% if update.refresh_error %}; the latest refresh failed ({{ update.refresh_error }}){% endif %}.</p>
 </section>{% endif %}
+{% if broken_tasks %}
+<section class="panel"><div class="section-heading"><h2>Unreadable task files</h2><span class="section-note">Skipped at load; see the owner inbox</span></div>
+  <ul>{% for id, err in broken_tasks.items() %}<li><strong>{{ id }} (unreadable)</strong> &mdash; {{ err }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
 {% include "partials/overview_metrics.html" %}
 {% include "partials/overview_now.html" %}
 <div class="dashboard-grid">

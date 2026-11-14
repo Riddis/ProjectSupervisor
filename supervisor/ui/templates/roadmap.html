@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Roadmap — Control Center{% endblock %}
 {% block content %}
+{% if broken_tasks %}
+<section class="panel">
+  <p class="muted">Unreadable task file(s), skipped: {% for id, err in broken_tasks.items() %}<strong>{{ id }} (unreadable)</strong> — {{ err }}{{ "; " if not loop.last }}{% endfor %}</p>
+</section>
+{% endif %}
 {% for p in phases %}
 <section class="panel">
   <h2>Phase {{ p.phase }} {% if p.open %}<span class="badge badge-open">open</span>{% else %}<span class="badge badge-closed">closed</span>{% endif %}</h2>

@@ -26,7 +26,9 @@ def roadmap(request: Request, layout: Layout = Depends(require_auth)):
         gates = [dict(gate_data.get("gates", {}).get(g, {}), id=g) for g in requires]
         phases.append({"phase": phase, "tasks": rows, "gates": gates,
                        "open": gates_mod.phase_open(layout, phase, gate_data)})
-    return render(request, "roadmap.html", {"phases": phases, "elig_ids": elig_ids, "flash": decode_flash(request)})
+    return render(request, "roadmap.html", {"phases": phases, "elig_ids": elig_ids,
+                                            "broken_tasks": tasks_mod.unreadable(layout),
+                                            "flash": decode_flash(request)})
 
 
 @router.post("/roadmap/gate/{gate_id}/ack")
