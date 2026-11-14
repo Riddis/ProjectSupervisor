@@ -242,11 +242,60 @@ def overview(request: Request, layout: Layout = Depends(require_auth)):
     return render(request, "overview.html", ctx)
 
 
+def overview_live_context(layout: Layout) -> dict:
+    """Only what `partials/overview_live.html` renders: "Now running"/"Up next", the Supervisor card, and the
+    metric cards (C-1). `overview_context()` also builds the project panels, disk usage, capacity windows, the
+    event-log views and the unblocked-next list — none of which this partial shows; building them on every 5s
+    poll was most of the Overview's own cost."""
+    tasks = tasks_mod.load_all(layout)
+    gate_data = gates_mod.load(layout)
+    elig = tasks_mod.eligible(layout, tasks)
+    phases_total = len(gate_data.get("phases") or {})
+    phases_passed = sorted({g.get("phase", -1) for g in (gate_data.get("gates") or {}).values() if g.get("status") == "PASSED"})
+    current_phase = tasks_mod.current_phase(tasks)
+    rt = runtime.read(layout)
+    live = runtime.is_live(layout)
+    open_inbox = inbox_mod.open_items(layout)
+    waiting = [t for t in tasks.values() if t.status == TaskStatus.WAITING_FOR_HUMAN]
+    needs_you = len(open_inbox) + len(waiting)
+    now = time.time()
+    open_jobs = jobs_mod.open_records(layout)
+    heartbeat_age = max(0, int(now - rt["heartbeat_epoch"])) if rt.get("heartbeat_epoch") else None
+    uptime_seconds, started_local = None, None
+    if live and rt.get("started"):
+        try:
+            started_at = datetime.fromisoformat(rt["started"])
+            uptime_seconds = max(0, int(now - started_at.timestamp()))
+            started_local = started_at.astimezone().strftime("%H:%M" if uptime_seconds < 86400 else "%d %b %H:%M")
+        except (ValueError, TypeError):
+            pass
+    phase_tasks = [t for t in tasks_mod.active(tasks) if t.phase == current_phase]
+    active_jobs = [j for j in open_jobs if j.get("phase") in gate_mod.ACTIVE_PHASES and j.get("adapter") != "human"]
+    draining = live and rt.get("decision") == "DRAIN"
+    running_rows = now_running(open_jobs, tasks, now)
+    running_ids = {r["task_id"] for r in running_rows}
+    waiting_to_start = [t for t in elig if t.id not in running_ids]
+    return {
+        "now_running": running_rows, "up_next": waiting_to_start[:3], "eligible_count": len(waiting_to_start),
+        "human_jobs": sum(1 for j in open_jobs if j.get("adapter") == "human"),
+        "controls": controls(live, rt), "paused": live and (rt.get("status") == "PAUSED" or rt.get("decision") == "PAUSE"),
+        "draining": draining, "active_jobs": active_jobs, "shutdown_armed": bool(rt.get("shutdown_on_drain")),
+        "shutdown_pending_s": shutdown_mod.pending(layout),
+        "phase": current_phase, "phases_total": phases_total, "phases_passed": phases_passed,
+        "heartbeat_age": heartbeat_age, "uptime_seconds": uptime_seconds, "started_local": started_local,
+        "runtime": rt, "live": live, "needs_you": needs_you,
+        "open_inbox_count": len(open_inbox), "waiting_count": len(waiting),
+        "open_jobs": open_jobs,
+        "phase_task_count": len(phase_tasks),
+        "phase_done_count": sum(1 for t in phase_tasks if t.status == TaskStatus.COMPLETE),
+    }
+
+
 @router.get("/overview/live")
 def overview_live(request: Request, layout: Layout = Depends(require_auth)):
     """The Overview's self-refreshing parts (polled every few seconds): the "Now running" panel, plus the
     Supervisor card's status, details and control row swapped out-of-band."""
-    return render(request, "partials/overview_live.html", overview_context(layout))
+    return render(request, "partials/overview_live.html", overview_live_context(layout))
 
 
 def _control(kind: str):

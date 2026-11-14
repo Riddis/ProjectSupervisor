@@ -24,16 +24,22 @@ def _format(data: str, event: str | None = None) -> str:
 async def tail_file(request: Request, path: Path, poll_s: float = 0.5, from_end: bool = True,
                     max_initial_lines: int = 200) -> AsyncIterator[str]:
     """Yield SSE frames for lines appended to `path`. Starts at the end of the file by default (live tail); pass
-    from_end=False to replay the last `max_initial_lines` first (used for the initial page load of a finished run)."""
+    from_end=False to replay the last `max_initial_lines` first (used for the initial page load of a finished run,
+    and for a still-running one: its element must not start empty either). A write that lands in two chunks (a
+    long line flushed partway) never reaches the browser as two lines: a trailing fragment with no newline yet is
+    held in `buffer` and joined to whatever arrives next."""
     offset = 0
+    buffer = ""
     if path.exists():
         size = path.stat().st_size
         if from_end:
             offset = size
         else:
-            existing = path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_initial_lines:]
-            for line in existing:
-                yield _format(line)
+            existing = path.read_text(encoding="utf-8", errors="replace").split("\n")
+            buffer = existing.pop()                  # the file's own last line may itself still be mid-write
+            for line in existing[-max_initial_lines:]:
+                if line:
+                    yield _format(line)
             offset = size
     yield _format("", event="ready")
     while True:
@@ -46,11 +52,15 @@ async def tail_file(request: Request, path: Path, poll_s: float = 0.5, from_end:
                     fh.seek(offset)
                     chunk = fh.read(size - offset)
                 offset = size
-                for line in chunk.decode("utf-8", errors="replace").splitlines():
+                text = buffer + chunk.decode("utf-8", errors="replace")
+                lines = text.split("\n")
+                buffer = lines.pop()                  # the tail after the last '\n' (whole line, or a partial one)
+                for line in lines:
                     if line:
                         yield _format(line)
             elif size < offset:
-                offset = 0  # file was truncated/replaced
+                offset = 0                            # file was truncated/replaced
+                buffer = ""
         await asyncio.sleep(poll_s)
 
 

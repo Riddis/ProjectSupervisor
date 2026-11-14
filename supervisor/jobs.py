@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import threading
 from pathlib import Path
 
 from ._vendor.contract import atomic_json, read_json
@@ -84,6 +85,31 @@ def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
     return write(layout, rec)
 
 
+# A read shared by every caller in the process, not only one turn's own snapshot (C-1): keyed by path, kept only
+# while a file's size and mtime match the stamp it was read at, same shape as tasks.py's `_PARSE_CACHE`. A finished
+# job's record never changes again, so a Control Center request that scans the whole job directory (`/agents`,
+# the Overview) pays for a stat per file, not a JSON parse, once the cache is warm.
+_RECORD_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+_RECORD_CACHE_LOCK = threading.Lock()
+
+
+def _cached_read(p: Path) -> dict:
+    """`read_json(p)`, reusing `_RECORD_CACHE` while the file's stamp (mtime, size) has not moved. Raises
+    OSError/ValueError straight through — every caller already wraps its own glob loop in `except (OSError,
+    ValueError)` for exactly this file."""
+    st = p.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    key = str(p)
+    with _RECORD_CACHE_LOCK:
+        hit = _RECORD_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    rec = read_json(p)
+    with _RECORD_CACHE_LOCK:
+        _RECORD_CACHE[key] = (stamp, rec)
+    return rec
+
+
 # Last error per (project root, file name), so a record that keeps failing to read is logged once, not on every
 # scan (R-03; the same dedup tasks.py's `_report_unreadable` already uses for an unreadable task file).
 _last_job_error: dict[tuple[str, str], str] = {}
@@ -103,7 +129,7 @@ def all_records(layout: Layout) -> list[dict]:
     out = []
     for p in sorted(layout.jobs.glob("*.json")):
         try:
-            out.append(read_json(p))
+            out.append(_cached_read(p))
         except (OSError, ValueError):
             continue
     return out
@@ -117,7 +143,7 @@ def _scan_open(layout: Layout) -> list[dict]:
     out = []
     for p in sorted(layout.jobs.glob("*.json")):
         try:
-            rec = read_json(p)
+            rec = _cached_read(p)
         except (OSError, ValueError) as exc:
             _report_unreadable(layout, p, exc)
             continue
@@ -141,7 +167,7 @@ def unreadable(layout: Layout, task_id: str | None = None) -> dict[str, str]:
     out = {}
     for p in sorted(layout.jobs.glob(pattern)):
         try:
-            read_json(p)
+            _cached_read(p)
         except (OSError, ValueError) as exc:
             out[p.stem] = f"{type(exc).__name__}: {exc}"[:300]
     return out
@@ -203,7 +229,7 @@ def for_task(layout: Layout, task_id: str) -> list[dict]:
     out = []
     for p in layout.jobs.glob(f"{task_id}.*.json"):
         try:
-            r = read_json(p)
+            r = _cached_read(p)
         except (OSError, ValueError) as exc:
             msg = _report_unreadable(layout, p, exc)
             r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
@@ -221,7 +247,7 @@ def all_grouped(layout: Layout) -> dict[str, list[dict]]:
     groups: dict[str, list[dict]] = {}
     for p in sorted(layout.jobs.glob("*.json")):
         try:
-            r = read_json(p)
+            r = _cached_read(p)
         except (OSError, ValueError) as exc:
             msg = _report_unreadable(layout, p, exc)
             r = {"attempt_id": p.stem, "task_id": p.stem.rsplit(".a", 1)[0], "phase": "FAILED", "error": msg}

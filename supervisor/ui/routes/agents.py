@@ -50,10 +50,18 @@ def _enrich(layout: Layout, rec: dict) -> dict:
            "is_agent": rec.get("adapter") in AGENT_ADAPTERS, "owner_note_status": note_status}
 
 
+def _finished_key(rec: dict) -> str:
+    """When a closed job's record was last touched, for ordering "Recent" — never the file name: two attempts of
+    the same task sort `.a10` before `.a9` (R-03's own numbering), and an imported or repaired record can carry
+    any name at all."""
+    return str(rec.get("finished") or rec.get("updated") or "")
+
+
 @router.get("/agents")
 def agents_list(request: Request, layout: Layout = Depends(require_auth)):
     running = [_enrich(layout, r) for r in jobs_mod.open_records(layout)]
-    recent = [r for r in jobs_mod.all_records(layout) if r.get("phase") in ("DONE", "FAILED")][-15:]
+    closed = [r for r in jobs_mod.all_records(layout) if r.get("phase") in ("DONE", "FAILED")]
+    recent = sorted(closed, key=_finished_key)[-15:]
     recent = [_enrich(layout, r) for r in reversed(recent)]
     return render(request, "agents.html", {"running": running, "recent": recent, "flash": decode_flash(request)})
 
@@ -83,8 +91,9 @@ async def agent_stream(attempt_id: str, request: Request, layout: Layout = Depen
     if run_dir is None:
         raise HTTPException(status_code=404, detail="no run directory for this attempt")
     path = run_dir / "stdout.jsonl"
-    live = rec.get("phase") in ("SUBMITTED", "RUNNING")
-    return StreamingResponse(tail_file(request, path, from_end=live), media_type="text/event-stream",
+    # Replay the last lines whether the job is still running or already finished (C-2): a running transcript used
+    # to start empty, showing nothing until the next line arrived.
+    return StreamingResponse(tail_file(request, path, from_end=False), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

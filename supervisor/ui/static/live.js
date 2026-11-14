@@ -94,14 +94,18 @@
     return f ? f.getAttribute("action") || "" : "";
   }
 
-  // True while an update would get in the owner's way.
+  // True while an update would get in the owner's way. A dirty field does NOT count: apply() below already keeps
+  // the exact field (and only it, by matching form action + name) untouched when it morphs in new content, so
+  // holding back the whole page for one edited field elsewhere would stale every other panel for nothing.
   function busy() {
+    var requests = document.querySelectorAll(".htmx-request");
+    for (var i = 0; i < requests.length; i++) {
+      if (!requests[i].hasAttribute("data-live-poll")) return true;   // a real request, not the page's own poll
+    }
     var main = document.getElementById("main");
-    if (!main) return true;
-    if (dirtyFields(main).length) return true;
     var sel = window.getSelection && window.getSelection();
-    if (sel && !sel.isCollapsed && sel.anchorNode && main.contains(sel.anchorNode)) return true;
-    return !!document.querySelector(".htmx-request");
+    if (main && sel && !sel.isCollapsed && sel.anchorNode && main.contains(sel.anchorNode)) return true;
+    return false;
   }
 
   function kept(node) {

@@ -14,6 +14,7 @@ import contextvars
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -105,15 +106,49 @@ def turn_snapshot(tasks: dict[str, Task]):
         _TURN_SNAPSHOT.reset(token)
 
 
+# A parse shared by every caller in the process, not only one turn's own snapshot (C-1): keyed by path, kept only
+# while a file's size and mtime match the stamp it was parsed at. A Control Center request that follows an
+# unchanged file pays for a stat, not a re-parse; the loop's own once-per-turn scan benefits the same way.
+# Unbounded for the life of the process, same tradeoff `ui.live`'s own fingerprint cache already makes — a finished
+# task's file stops changing, so this never grows faster than the store itself. An index that forgets a task once
+# it is COMPLETE (R-09's "Step 2") is a separate, larger change.
+_PARSE_CACHE: dict[str, tuple[tuple[int, int], Task]] = {}
+_PARSE_CACHE_LOCK = threading.Lock()
+
+
+def _cached_task(p: Path) -> tuple[Task | None, Exception | None]:
+    """(the parsed Task, None) or (None, the exception) for `p`, reusing `_PARSE_CACHE` while its stamp (mtime,
+    size) has not moved. Raises OSError straight through (a vanished file mid-scan: the caller already handles
+    that for its own glob)."""
+    st = p.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    key = str(p)
+    with _PARSE_CACHE_LOCK:
+        hit = _PARSE_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1], None
+    try:
+        t = Task.model_validate(store.read(p))
+    except Exception as exc:                     # noqa: BLE001 - one bad file must never stop the loop
+        return None, exc
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE[key] = (stamp, t)
+    return t, None
+
+
 def _scan_disk(layout: Layout) -> dict[str, Task]:
-    """The real glob and parse: every task file read and validated once. The only place `load_all()` actually
-    touches the store (R-09) — called once per turn_snapshot() block, never from inside one."""
+    """The real glob and parse: every task file read and validated once (reusing `_PARSE_CACHE` for one that has
+    not changed). The only place `load_all()` actually touches the store (R-09) — called once per turn_snapshot()
+    block, never from inside one."""
     out = {}
     for p in sorted(layout.tasks.glob("*.yaml")):
         try:
-            t = Task.model_validate(store.read(p))
-        except Exception as exc:                 # noqa: BLE001 - one bad file must never stop the loop
-            _report_unreadable(layout, p, exc)
+            t, parse_exc = _cached_task(p)
+        except OSError as stat_exc:
+            _report_unreadable(layout, p, stat_exc)
+            continue
+        if parse_exc is not None:
+            _report_unreadable(layout, p, parse_exc)
             continue
         out[t.id] = t
     return out
@@ -134,13 +169,17 @@ def load_all(layout: Layout) -> dict[str, Task]:
 
 def unreadable(layout: Layout) -> dict[str, str]:
     """The task files `load_all` is currently skipping, as {file stem: short error} — for a page that must show a
-    broken file as such."""
+    broken file as such. Shares `_PARSE_CACHE` with `load_all`/`_scan_disk`: called right after it (as
+    `overview_context` does), this costs a stat per file, not a second parse of all 365."""
     out = {}
     for p in sorted(layout.tasks.glob("*.yaml")):
         try:
-            Task.model_validate(store.read(p))
-        except Exception as exc:                 # noqa: BLE001 - matches load_all's own tolerance
-            out[p.stem] = f"{type(exc).__name__}: {exc}"[:300]
+            _, parse_exc = _cached_task(p)
+        except OSError as stat_exc:
+            out[p.stem] = f"{type(stat_exc).__name__}: {stat_exc}"[:300]
+            continue
+        if parse_exc is not None:
+            out[p.stem] = f"{type(parse_exc).__name__}: {parse_exc}"[:300]
     return out
 
 
