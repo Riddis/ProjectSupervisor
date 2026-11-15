@@ -47,7 +47,11 @@ def test_a_requeue_job_fix_changes_nothing_about_the_job_and_logs_nothing(layout
     assert tasks.load(layout, "T").status == TaskStatus.READY   # the ordinary requeue still happens
 
 
-def test_result_contract_names_no_job_fix_and_sends_a_wrong_process_command_to_the_owner():
+def test_result_contract_names_no_job_fix_and_sends_a_wrong_process_command_to_the_architect():
+    """A manager still cannot change a job; since the architect `revise` (tests/test_diagnosis_revise.py) it sends
+    a wrong command to the architect with guidance, and with `escalation.revise: false` to the owner as before."""
     contract = diagnosis.RESULT_CONTRACT
     assert "job_fix" not in contract
-    assert "task.set_job" in contract and "owner" in contract
+    assert "You cannot change the contract; the architect can" in contract
+    off = diagnosis.result_contract("manager", revise=False)
+    assert "task.set_job" in off and "owner" in off and "job_fix" not in off

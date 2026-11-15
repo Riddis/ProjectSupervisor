@@ -1,7 +1,8 @@
 """Stand-in manager/architect CLI (claude_cli stream-json shape): emits one `result` event carrying a `diagnosis`
-JSON. FAKE_DIAGNOSIS_ACTION selects requeue | defer | architect | owner | GARBAGE (no structured result);
+JSON. FAKE_DIAGNOSIS_ACTION selects requeue | defer | architect | revise | owner | GARBAGE (no structured result);
 FAKE_DIAGNOSIS_ACTION_<ROLE> (from the injected --fake-role flag) overrides it per role, so a manager → architect
-hand-off is expressible. FAKE_DIAGNOSIS_NEW_TASK=<json> adds a defer's `new_task` proposal. FAKE_DIAGNOSIS_HOLD=<path> keeps the "session" running until that file exists (60 s at
+hand-off is expressible. FAKE_DIAGNOSIS_NEW_TASK=<json> adds a defer's `new_task` proposal, FAKE_DIAGNOSIS_CHANGES=<json>
+a revise's `changes`, FAKE_DIAGNOSIS_GUIDANCE the `guidance` text. FAKE_DIAGNOSIS_HOLD=<path> keeps the "session" running until that file exists (60 s at
 most), so a test can look at a diagnosis while it is certainly still in flight."""
 import json
 import os
@@ -22,10 +23,14 @@ if action == "GARBAGE":
     text = "I looked at it and I am not sure."
 else:
     obj = {"kind": "diagnosis", "schema_version": 1, "action": action, "summary": f"{role} says {action}",
-           "guidance": "write the artifact to the declared path before reporting COMPLETE",
+           "guidance": os.environ.get("FAKE_DIAGNOSIS_GUIDANCE",
+                                      "write the artifact to the declared path before reporting COMPLETE"),
            "blocked_on": "the owner must install the missing runtime", "question": "spend on the GPU or accept SDXL?"}
     if os.environ.get("FAKE_DIAGNOSIS_NEW_TASK"):
         obj["new_task"] = json.loads(os.environ["FAKE_DIAGNOSIS_NEW_TASK"])
+    if os.environ.get("FAKE_DIAGNOSIS_CHANGES"):
+        obj["changes"] = json.loads(os.environ["FAKE_DIAGNOSIS_CHANGES"])
+        obj["reason"] = "the job's argument names a value the task's own guard refuses"
     text = "Read the run directories.\n\n```json\n" + json.dumps(obj) + "\n```"
 sys.stdout.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
                             "session_id": sid, "duration_ms": 5, "modelUsage": {}, "permission_denials": []}) + "\n")
