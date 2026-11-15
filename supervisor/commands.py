@@ -2,7 +2,11 @@
 state/commands/<ulid>.json and the lock holder applies them, moving them to commands/applied/.
 
 Exactly-once: handlers must be idempotent by command id (payload["_id"]) because a crash between the handler and the
-applied-file write would re-run them; the applied-file check closes the second window (applied → unlink)."""
+applied-file write would re-run them; the applied-file check closes the second window (applied → unlink).
+
+A file that is not readable JSON, or whose JSON is not an object, is not a handler failure: it is rejected before
+any handler runs, with its bytes moved to commands/quarantine/ and a failed outcome in applied/, and every command
+queued behind it in the same turn still applies (R-02)."""
 from __future__ import annotations
 
 import json
@@ -91,7 +95,11 @@ def _approve(layout, payload, actor):
     t = tasks_mod.load(layout, payload["task_id"])
     if cid and any(a.command_id == cid for a in t.delivery.approvals):
         return {"skipped": "already applied", "status": t.status.value}
-    tasks_mod.record_approval(layout, payload["task_id"], payload["digest"], payload.get("response", "ACCEPT"), actor,
+    digest = payload["digest"]
+    if t.delivery.digest != digest:
+        raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
+                                  f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
+    tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
                               payload.get("note", ""), command_id=cid)
     t = tasks_mod.advance(layout, payload["task_id"])
     return {"status": t.status.value}
@@ -101,7 +109,7 @@ def _approve(layout, payload, actor):
 def _inbox_answer(layout, payload, actor):
     cid = payload.get("_id")
     item = inbox_mod.answer(layout, payload["item_id"], payload["response"], payload.get("note", ""), actor,
-                            command_id=cid)
+                            command_id=cid, digest=payload.get("digest"))
     out = {"status": item.get("status")}
     try:
         t = tasks_mod.load(layout, item["task_id"]) if item.get("task_id") else None
@@ -452,15 +460,30 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     """Apply every pending command exactly once (caller must hold the state lock). Returns outcomes."""
     outcomes = []
     layout.commands_applied.mkdir(parents=True, exist_ok=True)
+    quarantine_dir = layout.commands / "quarantine"
     for p in pending(layout):
         done = layout.commands_applied / p.name
         if done.exists():                          # crash after applied-file write, before unlink
             p.unlink(missing_ok=True)
             continue
+        raw = None
         try:
-            cmd = json.loads(p.read_text(encoding="utf-8"))
+            raw = p.read_text(encoding="utf-8")
+            cmd = json.loads(raw)
+            if not isinstance(cmd, dict):
+                raise ValueError(f"a command envelope must be an object, not {type(cmd).__name__}")
+            if not isinstance(cmd.get("kind"), str):
+                raise ValueError(f"a command envelope's kind must be a string, not {type(cmd.get('kind')).__name__}")
+            if not isinstance(cmd.get("payload") or {}, dict):
+                raise ValueError(f"a command envelope's payload must be an object, not {type(cmd.get('payload')).__name__}")
         except (OSError, ValueError) as exc:
-            atomic_json(done, {"id": p.stem, "ok": False, "error": f"unreadable command: {exc}", "applied": now_iso()})
+            # The envelope itself is rejected, not one handler's work inside it (R-02): quarantine the file with
+            # its bytes intact, so the owner can see what a plugin or a hand-edit actually wrote, and move on —
+            # one bad file must not stop every command queued behind it, loop.pause among them.
+            if raw is not None:
+                quarantine_dir.mkdir(parents=True, exist_ok=True)
+                (quarantine_dir / p.name).write_text(raw, encoding="utf-8")
+            atomic_json(done, {"id": p.stem, "ok": False, "error": f"rejected command envelope: {exc}", "applied": now_iso()})
             p.unlink(missing_ok=True)
             continue
         fn = HANDLERS.get(cmd.get("kind"))

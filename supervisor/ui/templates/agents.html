@@ -14,7 +14,7 @@
         <td>{{ r.phase }}</td>
         <td>{{ (r.elapsed_s | round | int) ~ 's' if r.elapsed_s is not none else '?' }}</td>
         <td>
-          <form method="post" action="/agents/{{ r.attempt_id }}/terminate" onsubmit="return confirm('Terminate {{ r.attempt_id }}?')">
+          <form method="post" action="/agents/{{ r.attempt_id }}/terminate" data-confirm="Terminate {{ r.attempt_id }}?">
             {% include "partials/csrf.html" %}
             <button type="submit">Terminate</button>
           </form>

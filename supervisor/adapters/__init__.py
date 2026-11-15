@@ -12,7 +12,7 @@ verify/review — collect() just waits for it.
 Built-in lanes: python (deterministic in-process jobs), process (any subprocess), claude_cli, claude_api, codex_cli,
 human. A project adds its own lanes through plugins (supervisor.plugins.Registry.adapter).
 """
-from .base import Adapter, Result, REGISTRY, get  # noqa: F401
+from .base import Adapter, Result, REGISTRY  # noqa: F401
 from . import python as _python  # noqa: F401  (registers "python")
 from . import process as _process  # noqa: F401  (registers "process")
 from . import claude_cli as _claude  # noqa: F401  (registers "claude_cli")

@@ -1,5 +1,5 @@
 {% from "partials/icons.html" import icon %}{% from "partials/fmt.html" import duration %}
-<section id="now-running" class="panel now-panel" hx-get="/overview/live" hx-trigger="every 5s [document.visibilityState === 'visible'], refresh" hx-swap="outerHTML" aria-live="off">
+<section id="now-running" class="panel now-panel" hx-get="/overview/live" hx-trigger="every 5s [document.visibilityState === 'visible'], refresh" hx-swap="outerHTML" aria-live="off" data-live-poll>
   <div class="section-heading"><h2>Now running</h2><span class="section-note">{% if now_running %}{{ now_running | length }} job{{ '' if now_running | length == 1 else 's' }}{% else %}Idle{% endif %}{% if human_jobs %} &middot; <a href="/inbox">{{ human_jobs }} waiting for you</a>{% endif %} &middot; updates every 5s</span></div>
   <div class="now-columns">
   <div class="now-list">
@@ -28,7 +28,7 @@
       </div>
       <div class="now-actions">
         <a class="now-log" href="/agents/{{ j.attempt_id }}" title="Live output of {{ j.attempt_id }}">Live log {{ icon('arrow') }}</a>
-        {% if j.can_extend %}<form method="post" action="/agents/{{ j.attempt_id }}/extend" hx-post="/agents/{{ j.attempt_id }}/extend" hx-target="#ctrl-result" hx-swap="innerHTML" hx-on::after-request="htmx.trigger('#now-running','refresh')">{% include "partials/csrf.html" %}<button type="submit" class="now-extend" title="Raise this job's hard cap by one hour (it is still stopped if it goes quiet)">+1h</button></form>{% endif %}
+        {% if j.can_extend %}<form method="post" action="/agents/{{ j.attempt_id }}/extend" hx-post="/agents/{{ j.attempt_id }}/extend" hx-target="#ctrl-result" hx-swap="innerHTML" data-refresh-after="#now-running">{% include "partials/csrf.html" %}<button type="submit" class="now-extend" title="Raise this job's hard cap by one hour (it is still stopped if it goes quiet)">+1h</button></form>{% endif %}
       </div>
     </article>
   {% else %}

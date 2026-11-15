@@ -5,11 +5,14 @@
   <h2>Tasks{% if filter_phase %} &middot; phase {{ filter_phase }} <small><a href="/tasks{{ '?status=' ~ filter_status if filter_status }}">all phases</a></small>{% endif %}</h2>
   <form method="get" action="/tasks">
     {% if filter_phase %}<input type="hidden" name="phase" value="{{ filter_phase }}">{% endif %}
-    <select name="status" onchange="this.form.submit()">
+    <select name="status" data-submit-on-change>
       <option value="">all statuses</option>
       {% for s in statuses %}<option value="{{ s }}" {{ "selected" if s == filter_status }}>{{ s }}</option>{% endfor %}
     </select>
   </form>
+  {% if broken_tasks %}
+  <p class="muted">Unreadable task file(s), skipped: {% for id, err in broken_tasks.items() %}<strong>{{ id }} (unreadable)</strong> — {{ err }}{{ "; " if not loop.last }}{% endfor %}</p>
+  {% endif %}
   <table class="tasks-table">
     <thead><tr><th>ID</th><th>Phase</th><th>Title</th><th>Owner</th><th>Status</th><th>Priority</th></tr></thead>
     <tbody>

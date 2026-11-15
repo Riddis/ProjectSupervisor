@@ -16,7 +16,7 @@
   </form>
   {% endif %}
   {% if rec.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}
-  <form method="post" action="/agents/{{ rec.attempt_id }}/terminate" onsubmit="return confirm('Terminate {{ rec.attempt_id }}?')">
+  <form method="post" action="/agents/{{ rec.attempt_id }}/terminate" data-confirm="Terminate {{ rec.attempt_id }}?">
     {% include "partials/csrf.html" %}
     <button type="submit">Terminate</button>
   </form>

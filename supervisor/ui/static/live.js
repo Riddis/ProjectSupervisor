@@ -18,6 +18,31 @@
   var POLL_MS = 2000, FALLBACK_MS = 30000, PAUSE_KEY = "cc-live-paused";
   var IGNORED_TYPES = { hidden: 1, submit: 1, button: 1, reset: 1, image: 1 };
 
+  // htmx would otherwise evaluate a <script> tag swapped in from a stream or a morphed page; nothing here needs that.
+  if (window.htmx) window.htmx.config.allowScriptTags = false;
+
+  // Confirmation dialogs and post-request refresh triggers used to be inline onsubmit/onclick/hx-on attributes;
+  // a strict script-src forbids those, so they are delegated here from data-* attributes instead.
+  document.addEventListener("submit", function (e) {
+    var msg = e.target.getAttribute && e.target.getAttribute("data-confirm");
+    if (msg && !window.confirm(msg)) e.preventDefault();
+  });
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest && e.target.closest("[data-confirm-click]");
+    if (el && !window.confirm(el.getAttribute("data-confirm-click"))) e.preventDefault();
+  });
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (el && el.hasAttribute && el.hasAttribute("data-submit-on-change") && el.form) el.form.submit();
+  });
+  document.body.addEventListener("htmx:afterRequest", function (e) {
+    var sel = e.target && e.target.getAttribute && e.target.getAttribute("data-refresh-after");
+    if (sel) {
+      var target = document.querySelector(sel);
+      if (target && window.htmx) window.htmx.trigger(target, "refresh");
+    }
+  });
+
   var version = metaContent(document, "live-version");
   var boot = metaContent(document, "live-boot");
   var lastRefresh = Date.now();
@@ -69,14 +94,25 @@
     return f ? f.getAttribute("action") || "" : "";
   }
 
-  // True while an update would get in the owner's way.
+  // True while an update would get in the owner's way. A dirty field does NOT count here: apply() below already
+  // keeps the exact field (and only it, by matching form action + name) untouched when it morphs in new content, so
+  // holding back the whole page for one edited field elsewhere would stale every other panel for nothing. A reload
+  // is a different case (willLoseInput() below): it replaces the page outright, so every dirty field on it is lost.
   function busy() {
+    var requests = document.querySelectorAll(".htmx-request");
+    for (var i = 0; i < requests.length; i++) {
+      if (!requests[i].hasAttribute("data-live-poll")) return true;   // a real request, not the page's own poll
+    }
     var main = document.getElementById("main");
-    if (!main) return true;
-    if (dirtyFields(main).length) return true;
     var sel = window.getSelection && window.getSelection();
-    if (sel && !sel.isCollapsed && sel.anchorNode && main.contains(sel.anchorNode)) return true;
-    return !!document.querySelector(".htmx-request");
+    if (main && sel && !sel.isCollapsed && sel.anchorNode && main.contains(sel.anchorNode)) return true;
+    return false;
+  }
+
+  // True when a reload right now would silently drop text the owner typed (a morph would not; see busy() above).
+  function willLoseInput() {
+    var main = document.getElementById("main");
+    return !!(main && dirtyFields(main).length);
   }
 
   function kept(node) {
@@ -131,12 +167,16 @@
         var nextBoot = metaContent(doc, "live-boot"), nextCss = stylesheet(doc), css = stylesheet(document);
         if ((nextBoot && boot && nextBoot !== boot) || (nextCss && css && nextCss !== css)) reloadNeeded = true;
         if (reloadNeeded) {
-          if (force || !busy()) { window.location.reload(); return; }
+          if (force || (!busy() && !willLoseInput())) { window.location.reload(); return; }
           waiting = true;
           return;
         }
         if (!force && busy()) { waiting = true; return; }
-        if (!window.Idiomorph) { window.location.reload(); return; }
+        if (!window.Idiomorph) {
+          if (!force && willLoseInput()) { waiting = true; return; }
+          window.location.reload();
+          return;
+        }
         apply(doc);
         version = metaContent(doc, "live-version") || version;   // stamped before that page read any state
         waiting = false;
@@ -163,7 +203,7 @@
         offline = false;
         if (d.boot && boot && d.boot !== boot) reloadNeeded = true;
         if (reloadNeeded) {
-          if (!busy()) { window.location.reload(); return; }
+          if (!busy() && !willLoseInput()) { window.location.reload(); return; }
           waiting = true;
           return;
         }

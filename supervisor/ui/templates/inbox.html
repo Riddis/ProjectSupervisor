@@ -71,6 +71,7 @@
     {% if item.ext_answerable %}
     <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form">
       {% include "partials/csrf.html" %}
+      {% if item.approval_digest %}<input type="hidden" name="digest" value="{{ item.approval_digest }}">{% endif %}
       {% for r in item.allowed_responses %}
       <button type="submit" name="response" value="{{ r }}">{{ r }}</button>
       {% endfor %}

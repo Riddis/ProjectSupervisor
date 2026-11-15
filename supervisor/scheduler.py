@@ -2,6 +2,8 @@
 decision, capacity, one resource-lock holder, N CLI-agent jobs, no overlapping ownership."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from . import gate, jobs as jobs_mod, tasks as tasks_mod
 from . import review as review_mod
 from ._vendor.contract import CapacityDeferred
@@ -9,7 +11,6 @@ from .adapters import REGISTRY
 from .models.task import TERMINAL, CostCategory, Task
 from .paths import Layout
 
-DEFAULT_LIMITS = gate.DEFAULT_LIMITS
 MODEL_LANES = gate.MODEL_LANES
 # Default adapter per cost category; config/routing.yaml `cost_lanes` overrides any entry (a plugin lane for
 # `local`, say). Selection order (`adapter_name`): the task's own `job.adapter`; else, when the cost lane is a model
@@ -77,6 +78,54 @@ def adapter_name(task: Task, layout: Layout | None = None) -> str:
     if role_adapter and lane in MODEL_LANES:
         return str(role_adapter)           # the role says which provider its agent work runs on
     return lane                            # deterministic / local / human work is not agent work for the role
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """Where a delivery job runs, what it carries, and why (R-16): the one return shape for the first dispatch,
+    an automatic revision, a continuation and a fallback alike, so a role's own routing never has to be
+    re-derived (or forgotten) by each of those separately. `model`/`effort` are the job overrides to apply, if
+    any — the adapter's own `prepare()` still supplies the role's default model when neither is set. `reason`
+    is the one line to store on the job record and show where the job is listed."""
+    adapter: str
+    model: str | None
+    effort: str | None
+    reason: str
+    same_vendor: bool = False
+
+
+def resolve_lane(layout: Layout, task: Task, *, role: str | None = None, home: str | None = None,
+                 revision: bool = False, senior: bool = False) -> Resolved:
+    """The role's configured lane (`adapter_name`, reading routing.yaml — calling it with no layout is the R-16
+    bug: a role's own adapter is silently forgotten and every caller falls back to the cost-lane default), moved
+    to the role's configured fallback only when `review.lane_for` finds the primary unavailable. `home`, given,
+    is asked about instead of re-deriving the role's current config — a continuation or a fallback keeping the
+    attempt's own lane rather than whatever routing.yaml says now. `senior` substitutes the role's
+    `senior_model` for the second automatic revision (model lanes only); a non-senior revision, or one with no
+    `senior_model` configured, says plainly that it stays on the base model instead of leaving the choice
+    unrecorded."""
+    role = role or job_spec(task).get("role") or task.owner_role
+    base = home or adapter_name(task, layout)
+    try:
+        lane, overrides, same_vendor = review_mod.lane_for(layout, role, primary=base)
+    except CapacityDeferred:
+        lane, overrides, same_vendor = base, {}, False
+    model, effort = overrides.get("model"), overrides.get("effort")
+    if lane == base:
+        bits = [f"role {role}'s configured lane ({lane})"]
+    else:
+        bits = [f"role {role}'s fallback lane ({lane}); {base} unavailable" + (", same vendor" if same_vendor else "")]
+    if lane in MODEL_LANES and revision:
+        if senior:
+            senior_model = gate.role_config(layout, role).get("senior_model")
+            if senior_model:
+                model = model or senior_model
+                bits.append("senior model (second automatic revision)")
+            else:
+                bits.append("base model (no senior_model configured for this role)")
+        else:
+            bits.append("base model (first automatic revision)")
+    return Resolved(adapter=lane, model=model, effort=effort, reason="; ".join(bits), same_vendor=same_vendor)
 
 
 def lane_in_use(layout: Layout, lane: str) -> bool:

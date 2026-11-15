@@ -1060,10 +1060,6 @@ def _report_optional_failure(layout: Layout, name: str, why: str) -> None:
     print(f"plugin {name!r} (required: false) did not load: {why}", file=sys.stderr)
 
 
-def registry(layout: Layout) -> Registry:
-    return load(layout)
-
-
 def _owning_plugin(module: str | None, file: str | None, names: list[str], ext_dir: Path) -> str | None:
     """The configured plugin a module belongs to: by file under the project's plugins/ (as the loader imports
     it, or as a project's tests import it), else by dotted module name (an installed plugin); None for a helper

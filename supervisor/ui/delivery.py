@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import fnmatch
 import html
-import json
 from pathlib import Path
 
 from .. import tasks as tasks_mod

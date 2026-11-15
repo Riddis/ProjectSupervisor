@@ -19,8 +19,6 @@ class TaskStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-ACTIVE = {TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN,
-          TaskStatus.BLOCKED}
 TERMINAL = {TaskStatus.COMPLETE, TaskStatus.CANCELLED}
 
 # Manual/loop transitions (advance() handles delivery-driven ones separately).
@@ -167,6 +165,9 @@ class Task(BaseModel):
     cost_category: CostCategory = CostCategory.claude
     status: TaskStatus = TaskStatus.NOT_STARTED
     attempts: list[Attempt] = Field(default_factory=list)      # dispatch attempts only (retry budgets, §2.6)
+    job_seq: int = 0                                           # highest job number allocated (R-03); 0 on a task
+                                                                 # written before this field existed
+
     history: list[dict[str, Any]] = Field(default_factory=list)  # status changes {at, by, from, to, note, forced?}
     forced: Optional[dict[str, Any]] = None                     # set when the owner forced a status; rendered
     held: Optional[dict[str, Any]] = None                       # an owner Hold's durable identity ({by, at, note});
@@ -220,12 +221,6 @@ class Task(BaseModel):
     def scoped_paths(self) -> list[str]:
         """owned_paths narrower than the tree — the roots containment is checked against; [] in exclusive mode."""
         return [] if self.exclusive() else list(self.owned_paths)
-
-    def needs_review(self) -> bool:
-        return bool(self.reviewer)
-
-    def needs_approval(self) -> bool:
-        return self.human_approval != HumanApproval.none
 
     def requires_commands(self, model_lane: bool) -> bool:
         """Whether this delivery must report at least one re-run command (G1, 2.4.0)."""

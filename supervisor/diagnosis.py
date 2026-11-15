@@ -257,7 +257,13 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
 
 def rebuild(layout: Layout, rec: dict) -> Task | None:
     """Task view for a capacity continuation of a diagnosis job."""
-    task = tasks_mod.load(layout, rec["task_id"])
+    try:
+        task = tasks_mod.load(layout, rec["task_id"])
+    except tasks_mod.TaskError:
+        # F7: an unreadable task file ends a continuation or a reroute the same way a task that has moved past
+        # diagnosis does (below) - both requeue() and _reroute_rebuild() already close the refused/continued
+        # record with no successor when this returns None.
+        return None
     role, level = rec.get("diag_role"), rec.get("diag_level")
     if not role or task.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
         return None
@@ -302,12 +308,22 @@ def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question
         return {"action": "owner", "inbox": None}
 
 
-def ingest(supervisor, rec: dict, result) -> dict:
+def ingest(supervisor, rec: dict, result) -> dict | None:
     """Apply a diagnosis result. Writes the decision on the job record (`diag_action`) first, so a crash between the
-    record and the task store replays the same branch and never grants a second requeue."""
+    record and the task store replays the same branch and never grants a second requeue. Returns None only when
+    the task file turned unreadable (F7): `loop.ingest()` skips its own `_ensure_in_progress()` guard for this
+    kind (both `launch()` and `ingest()`), so this load is the only place that catch would otherwise have run;
+    the caller must close the record on None rather than fall through to its own, since this already did."""
     from . import escalation
     layout = supervisor.layout
-    task = tasks_mod.load(layout, rec["task_id"])
+    try:
+        task = tasks_mod.load(layout, rec["task_id"])
+    except tasks_mod.TaskError:
+        jobs_mod.set_phase(layout, rec["attempt_id"], "DONE", result=result.status, finished=store.now_iso(),
+                           error=result.error)
+        tasks_mod.log(layout, "job_done", "loop", task=rec["task_id"], attempt=rec["attempt_id"], result=result.status,
+                      error=result.error, task_unreadable=True)
+        return None
     obj = (result.raw or {}) if isinstance(result.raw, dict) else {}
     action = str(obj.get("action") or "").lower()
     summary = str(obj.get("summary") or "")[:4000]     # the owner route keeps all of it (inbox `detail`)

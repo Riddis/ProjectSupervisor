@@ -1,7 +1,7 @@
 import json, os, subprocess, sys, time
 import pytest
 
-from supervisor import commands, jobs, runtime, store, tasks
+from supervisor import commands, diagnosis, inbox, jobs, runtime, store, tasks, testing
 from supervisor.adapters import python as pyad
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
@@ -12,6 +12,28 @@ from tests.conftest import make_task
 def _write_artifact(root, run_dir, name="out.txt", content="x", **_):
     (root / name).write_text(content)
     return {"status": "COMPLETE", "artifacts": [name], "notes": "wrote " + name}
+
+
+@pyad.job("corrupt_own_task")
+def _corrupt_own_task(root, run_dir, name="out.txt", **_):
+    (root / name).write_text("x")
+    (root / "state" / "tasks" / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    return {"status": "COMPLETE", "artifacts": [name], "notes": "corrupted its own task file"}
+
+
+@pyad.job("diagnose_and_corrupt_own_task")
+def _diagnose_and_corrupt_own_task(root, run_dir, **_):
+    (root / "state" / "tasks" / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    return {"status": "COMPLETE", "artifacts": [], "notes": "diagnosis result", "action": "owner", "summary": "needs the owner"}
+
+
+@pyad.job("diagnose_owner")
+def _diagnose_owner(root, run_dir, **_):
+    return {"status": "COMPLETE", "artifacts": [], "notes": "diagnosis result", "action": "owner", "summary": "needs the owner"}
+
+
+DIAG_EXTRA = {"diag_signature": "sig-1", "diag_level": "manager", "diag_issue": None, "diag_source": "test",
+              "diag_detail": "test detail", "diag_role": "senior_pm", "diag_grant": 0}
 
 
 def ptask(layout, tid, deps=(), name=None, owned=()):
@@ -269,3 +291,359 @@ def test_recover_does_not_relaunch_a_child_that_finished_during_the_scan(layout,
     handle = REGISTRY["process"].recover(spec)
     assert launches == ["P2.a1"]
     assert handle is not None and handle["pid"] is None and handle["deadline"] == float("inf")   # adopted as finished
+
+
+def test_one_unreadable_task_file_does_not_stop_the_loop(layout):
+    """R-02: a task file that does not parse must not raise on every turn. A healthy task next to it keeps
+    running, the task pages render instead of 500ing, the broken file shows as such, and exactly one owner item
+    names it — it is not re-opened on every later load."""
+    ptask(layout, "A"); ptask(layout, "B", deps=["A"])
+    (layout.tasks / "BROKEN.yaml").write_text("id: BROKEN\nphase: [unclosed\n", encoding="utf-8")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    items = [i for i in inbox.open_items(layout, "owner") if i.get("dedup_key") == "unreadable_task:BROKEN.yaml"]
+    assert len(items) == 1
+    tasks.load_all(layout)                                        # a second load must not open a second item
+    assert len(inbox.open_items(layout, "owner")) == 1
+    c = testing.ui_client(layout)
+    for url in ("/overview", "/tasks", "/roadmap"):
+        r = c.get(url)
+        assert r.status_code == 200, url
+        assert "BROKEN" in r.text and "unreadable" in r.text, url
+
+
+def test_a_task_depending_on_an_unreadable_one_is_not_dispatched(layout):
+    ptask(layout, "C", deps=["BROKEN"])
+    (layout.tasks / "BROKEN.yaml").write_text("id: BROKEN\nphase: [unclosed\n", encoding="utf-8")
+    sup = Supervisor(layout, sleep_s=0)
+    for _ in range(3):
+        sup.once()
+    c = tasks.load(layout, "C")
+    assert c.status in (TaskStatus.NOT_STARTED, TaskStatus.READY)
+    assert tasks.unmet_dependency(layout, c) == "BROKEN (unreadable)"
+
+
+def test_unreadable_task_file_with_a_prepared_job_record_holds_rather_than_blocks(layout):
+    """F1: `_ensure_in_progress`'s `TaskError` must not reach `launch()`'s caller. A task already holding a
+    PREPARED record whose file then turns unreadable must have that record held, not raise on every later turn -
+    one deduped owner item names the file, and a healthy task beside it still dispatches and completes."""
+    ptask(layout, "A"); ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    (layout.tasks / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    held = jobs.read(layout, rec["attempt_id"])
+    assert held["phase"] == "PREPARED"
+    assert held.get("held")
+    items = [i for i in inbox.open_items(layout, "owner") if i.get("dedup_key") == "unreadable_task:A.yaml"]
+    assert len(items) == 1
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
+
+
+def test_result_for_a_task_whose_file_turned_unreadable_while_its_job_ran_closes_the_record(layout):
+    """F1: the same `TaskError` reaches `ingest()` through its own call to `_ensure_in_progress`. A result
+    arriving for a task whose file became unreadable while the job ran must close that record with the result,
+    not raise - the turn goes on and a healthy task beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "corrupt_own_task", "params": {"name": "A.txt"}}
+        doc["artifacts"] = ["A.txt"]
+    tasks._update(layout, "A", fn)
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    recs = jobs.for_task(layout, "A")
+    assert recs and recs[-1]["phase"] == "DONE"
+    assert recs[-1].get("result") == "COMPLETE"
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+
+
+def test_diagnosis_result_for_a_task_whose_file_turned_unreadable_closes_the_record(layout):
+    """F7 (round 2 of 2.6.1's review): `launch()` and `ingest()` both skip `_ensure_in_progress()` for a
+    diagnosis-kind record, so F1's two catches never run for it; `diagnosis.ingest()` then loaded the task
+    itself with no guard. A diagnosis job that corrupts its own task file before returning its result must
+    still close the record with that result, not raise past once() - the turn goes on and a healthy task
+    beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "diagnose_and_corrupt_own_task", "params": {}}
+        doc["artifacts"] = []
+    tasks._update(layout, "A", fn)
+    tasks.set_status(layout, "A", "BLOCKED", actor="test", note="blocked, awaiting diagnosis")
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python", note="diagnosis:senior_pm", kind=diagnosis.KIND,
+                       extra=dict(DIAG_EXTRA))
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    j = jobs.read(layout, rec["attempt_id"])
+    assert j["phase"] == "DONE"
+    assert j.get("result") == "COMPLETE"
+    done = [json.loads(e) for e in layout.log.read_text().splitlines()
+           if '"job_done"' in e and rec["attempt_id"] in e]
+    assert done and done[-1].get("task_unreadable") is True
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
+
+
+def test_prepared_diagnosis_record_then_the_task_file_breaks_before_launch_does_not_block(layout):
+    """F7: a diagnosis record dispatched under PAUSE (PREPARED), the task file then made unreadable, the loop
+    resumed. `launch()`'s own gate already tolerates an unreadable task (the record still launches), so the
+    result reaches `ingest()` the same way as the sibling case above; the turn must not raise, the record
+    must not be left SUBMITTED to be re-ingested forever, and a healthy task beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "diagnose_owner", "params": {}}
+        doc["artifacts"] = []
+    tasks._update(layout, "A", fn)
+    tasks.set_status(layout, "A", "BLOCKED", actor="test", note="blocked, awaiting diagnosis")
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python", note="diagnosis:senior_pm", kind=diagnosis.KIND,
+                       extra=dict(DIAG_EXTRA))
+    (layout.tasks / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    j = jobs.read(layout, rec["attempt_id"])
+    assert j["phase"] != "SUBMITTED"
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
+
+
+def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(layout):
+    """R-02: a command file whose JSON parses but is not an object must not stop every command queued behind it
+    in the same turn, `loop.pause` included."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    (layout.commands / "0000000000001-bad.json").write_text("[]", encoding="utf-8")
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert list(commands.pending(layout)) == []
+    quarantined = list((layout.commands / "quarantine").glob("*.json"))
+    assert [p.name for p in quarantined] == ["0000000000001-bad.json"]
+    assert quarantined[0].read_text(encoding="utf-8") == "[]"
+    outcome = json.loads((layout.commands_applied / "0000000000001-bad.json").read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
+
+
+@pytest.mark.parametrize("name, raw", [
+    ("string_payload", '{"kind":"loop.pause","payload":"x"}'),
+    ("list_payload", '{"payload":["a","b"]}'),
+    ("list_kind", '{"kind":["loop.pause"]}'),
+])
+def test_command_envelope_with_wrong_typed_kind_or_payload_is_quarantined_and_later_commands_still_apply(layout, name, raw):
+    """F2 (round-1 review of 2.6.1, finding F2): a command file that *is* a JSON object but whose `kind` or
+    `payload` has the wrong type raises past the per-file guard R-02 added (`isinstance(cmd, dict)` only) -
+    `payload="x"` and `payload=["a","b"]` raise `ValueError` in `dict(payload, ...)`, `kind=["loop.pause"]` raises
+    `TypeError` in `HANDLERS.get([...])` - so the file is never quarantined and a `loop.pause` queued behind it
+    never applies."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    (layout.commands / "0000000000001-bad.json").write_text(raw, encoding="utf-8")
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert sup.errors == []
+    assert list(commands.pending(layout)) == []
+    quarantined = list((layout.commands / "quarantine").glob("*.json"))
+    assert [p.name for p in quarantined] == ["0000000000001-bad.json"]
+    assert quarantined[0].read_text(encoding="utf-8") == raw
+    applied_outcomes = list(layout.commands_applied.glob("0000000000001-bad*.json"))
+    assert len(applied_outcomes) == 1
+    outcome = json.loads(applied_outcomes[0].read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
+
+
+def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
+    """R-03: `dispatch` allocates `len(jobs.for_task(...)) + 1`. `jobs.open_records` — called by every Overview
+    and Agents GET — replaces a record it cannot read with a `.corrupt.json` stub and deletes the original, so
+    `for_task` undercounts by one and the next dispatch reuses an existing id and run directory instead of
+    getting a new one."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")              # records stay PREPARED: nothing runs
+    ids = [sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"] for _ in range(3)]
+    assert ids == ["A.a1", "A.a2", "A.a3"]
+    (layout.runs / "A" / "A.a3" / "marker.txt").write_text("belongs to the first A.a3", encoding="utf-8")
+    broken = "{broken"
+    jobs.path(layout, "A.a2").write_text(broken, encoding="utf-8")
+    jobs.open_records(layout)                                  # what any Overview/Agents GET calls
+    assert jobs.path(layout, "A.a2").read_text(encoding="utf-8") == broken, "the unreadable record was rewritten"
+    assert not jobs.path(layout, "A.a2").with_suffix(".corrupt.json").exists(), "the record was quarantined"
+    again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert again not in ids, "the new job reused an id already on disk"
+    assert not (layout.runs / "A" / again / "marker.txt").exists(), "the new job ran in an old run directory"
+    assert sorted(a.id for a in tasks.load(layout, "A").attempts) == ["A.a1", "A.a2", "A.a3", again]
+
+
+def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
+    """R-03: `open_records` (every Overview and Agents GET) must only read the jobs folder, never write or
+    delete under it, however broken a record is."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+    broken = "{broken"
+    jobs.path(layout, "A.a1").write_text(broken, encoding="utf-8")
+    c = testing.ui_client(layout)
+    for url in ("/overview", "/agents"):
+        r = c.get(url)
+        assert r.status_code == 200, url
+    assert jobs.path(layout, "A.a1").read_text(encoding="utf-8") == broken
+    assert not jobs.path(layout, "A.a1").with_suffix(".corrupt.json").exists()
+    assert list(layout.jobs.glob("A.*.json")) == [jobs.path(layout, "A.a1")]
+
+
+def test_a_task_written_before_the_counter_existed_still_gets_the_right_next_number(layout):
+    """R-03: a task document from before `job_seq` existed has no such field. The next dispatch must still pick
+    up where its own job files and attempt list left off — no migration step."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+    sup.dispatch(tasks.load(layout, "A"), "python")
+
+    def fn(doc):
+        doc.pop("job_seq", None)               # a document written before this field was added
+    tasks._update(layout, "A", fn)
+    again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert again == "A.a3"
+
+
+def test_dispatch_refuses_a_run_directory_that_already_exists(layout):
+    """R-03: a job number must never be used a second time while its old run directory is still there."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    sup.dispatch(tasks.load(layout, "A"), "python")       # A.a1
+    stray = layout.runs / "A" / "A.a2"
+    stray.mkdir(parents=True)
+    (stray / "marker.txt").write_text("left behind", encoding="utf-8")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")  # would naturally be A.a2
+    assert rec["attempt_id"] == "A.a2"
+    assert rec["result"] == "FAILED"
+    assert "already exists" in rec.get("error", "")
+    assert (stray / "marker.txt").exists()     # the stray directory was not touched
+
+
+# ------------------------------------------------------------------ R-04: cancel retires jobs
+
+def test_cancelled_tasks_queued_job_never_launches_on_resume(layout):
+    """R-04: `tasks.set_status` changes only the status; `reconcile` launches every PREPARED record regardless;
+    `gate.check` has no terminal-status test. A job queued while paused must not run once the task is
+    cancelled and the loop resumes."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    assert rec["phase"] == "PREPARED"
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+    runtime.set_decision(layout, "RUN", "test")
+    sup.once()
+    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert not (layout.root / "A.txt").exists(), "a job of a cancelled task wrote its artifact"
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+
+
+def test_cancel_terminates_a_running_job_and_its_late_result_changes_nothing(layout):
+    """R-04: a running job is not stopped by cancelling its task, and a late result for a terminal task must not
+    record a delivery or a verification."""
+    proc_task(layout, "P", seconds=20)
+    sup = Supervisor(layout, sleep_s=0)
+    rec = sup.dispatch(tasks.load(layout, "P"), "process")
+    assert rec["phase"] == "SUBMITTED"
+    from supervisor.adapters import REGISTRY
+    assert REGISTRY["process"].alive(rec["handle"]), "the process never started"
+    commands.submit(layout, "task.set_status", {"task_id": "P", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert jobs.read(layout, rec["attempt_id"])["phase"] == "DONE"
+    assert jobs.read(layout, rec["attempt_id"])["result"] == "CANCELLED"
+    time.sleep(0.5)
+    assert not REGISTRY["process"].alive(rec["handle"]), "the running job kept running after its task was cancelled"
+    sup.once()                       # the dead process, if ever collected again, must change nothing
+    assert not (layout.root / "P.txt").exists()
+    t = tasks.load(layout, "P")
+    assert t.status == TaskStatus.CANCELLED
+    assert t.delivery.digest is None
+
+
+def test_cancel_through_an_inbox_decision_also_retires_jobs(layout):
+    """R-04: `inbox.apply_decision` cancels a task the same way `task.set_status` does; its CANCEL answer must
+    retire jobs too."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    item = testing.make_inbox_item(layout, kind="decision", task_id="A", subject="stopped",
+                                   summary="A is stopped", allowed_responses=list(inbox.DECISION_RESPONSES))
+    tasks.set_status(layout, "A", "BLOCKED", actor="loop", note="stopped for the owner")
+    testing.answer(layout, item["id"], "CANCEL", by="owner")
+    assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
+    runtime.set_decision(layout, "RUN", "test")
+    sup.once()
+    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert not (layout.root / "A.txt").exists()
+
+
+def test_cancel_then_reopen_then_dispatch_gives_the_new_job_its_own_id(layout):
+    """R-04: cancelling and reopening a task must leave its old job closed, and the next dispatch must get a
+    distinct id rather than reuse or revive the cancelled one."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    old = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "CANCELLED", "note": "owner cancel"},
+                    actor="owner")
+    commands.apply_all(layout)
+    commands.submit(layout, "task.set_status", {"task_id": "A", "status": "NOT_STARTED", "note": "owner reopen"},
+                    actor="owner")
+    commands.apply_all(layout)
+    assert tasks.load(layout, "A").status == TaskStatus.NOT_STARTED
+    new = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
+    assert new != old
+    assert jobs.read(layout, old)["phase"] == "DONE"
+    assert jobs.read(layout, old)["result"] == "CANCELLED"
+
+
+def test_gate_refuses_every_job_kind_for_a_terminal_task(layout):
+    """R-04: `gate.check` has no terminal-status test today; a late-arriving record of any kind must never
+    launch against a task that is already CANCELLED or COMPLETE."""
+    from supervisor import gate
+    ptask(layout, "A")
+    tasks.set_status(layout, "A", "CANCELLED", actor="owner", note="owner cancel")
+    task = tasks.load(layout, "A")
+    for kind in ("delivery", "verify", "review", "diagnosis"):
+        reason = gate.check(layout, task, "python", kind, running=[])
+        assert reason is not None and "CANCELLED" in reason, kind

@@ -33,7 +33,6 @@ KIND_LABELS = {
     "policy": "Policy escalations",
     "question": "Agent questions",
 }
-KIND_ORDER = list(KIND_LABELS)
 SCORE_KEYS = {"score", "scores", "decision", "reason", "verdict"}
 TEXT_EVIDENCE_LIMIT = 4000
 
@@ -161,10 +160,6 @@ def _delivery(layout: Layout, item: dict) -> dict | None:
     return delivery_view.view(layout, task, item["approval_digest"])
 
 
-def inbox_badge_count(layout: Layout) -> int:
-    return len(inbox_mod.open_items(layout))
-
-
 @router.get("/inbox")
 def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(require_auth)):
     items = inbox_mod.all_items(layout)
@@ -186,7 +181,11 @@ def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(req
 
 @router.post("/inbox/{item_id}/answer")
 def answer_item(item_id: str, request: Request, response: str = Form(""), text: str = Form(""),
-                note: str = Form(""), csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
+                note: str = Form(""), digest: str = Form(""), csrf_token: str = Form(...),
+                layout: Layout = Depends(require_auth)):
+    """`digest` is the approval card's own digest, carried by its hidden field when the item is one (empty for any
+    other kind of item): bound to what the card showed, so a newer delivery landing while the page was open makes
+    this answer refused rather than approving it unseen (R-05, the same rule as the task page's approve form)."""
     require_csrf(request, csrf_token)
     item = _get_item(layout, item_id)
     refusal = inbox_mod.owned_by_plugin(layout, item)
@@ -201,7 +200,8 @@ def answer_item(item_id: str, request: Request, response: str = Form(""), text: 
         final = text
     if not final:
         raise HTTPException(status_code=400, detail="empty response")
-    return act(request, layout, "inbox.answer", {"item_id": item_id, "response": final, "note": note}, "/inbox")
+    return act(request, layout, "inbox.answer", {"item_id": item_id, "response": final, "note": note,
+                                                "digest": digest or None}, "/inbox")
 
 
 @router.post("/inbox/{item_id}/snooze")

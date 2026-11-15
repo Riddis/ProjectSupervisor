@@ -3,6 +3,66 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.6.1 — 2026-11-15
+
+- **Fixed: a streamed log or transcript line reached the browser unescaped, and the Control Center allowed inline
+  script execution.** `supervisor/ui/sse.py`'s `_format()` now escapes every streamed line before framing it;
+  htmx's `allowScriptTags` is disabled; every route serving `text/html` now carries a `Content-Security-Policy`
+  with no `unsafe-inline`/`unsafe-eval` in `script-src`, and every inline event handler in `supervisor/ui/templates`
+  moved to a delegated listener in `static/live.js`.
+
+- **Fixed: one unreadable task file or malformed command file stopped the whole loop, including when the task
+  already had a job dispatched or a result arriving for it.** `tasks.load_all()` skips a file that fails to parse
+  (reported once, through a deduped owner inbox item) instead of raising past it; a task whose file turns
+  unreadable while it already has a job record open now has that job held, if it has not yet launched, or closed
+  with whatever result did arrive, if it has, instead of leaving the loop blocked a few turns later.
+  `commands.apply_all()` rejects and quarantines a command file that is not a JSON object, or whose `kind` or
+  `payload` is the wrong type, instead of raising on it, so a `loop.pause` queued behind a bad file still applies
+  in the same turn. `/overview`, `/tasks` and `/roadmap` now show a broken task file as "(unreadable)" instead of
+  500ing.
+
+- **Fixed: a lost or unreadable job record could have its id reused, overwriting a finished job's record.** Job
+  numbers are now allocated from a counter held on the task document itself (`job_seq`), not by counting job
+  files; `jobs.open_records()`/`for_task()` are now read-only and never delete or rewrite a record that fails to
+  parse, reporting it once instead. The task page now shows an unreadable job record as such.
+
+- **Fixed: cancelling a task did not stop its jobs.** A cancelled task's queued job no longer launches on the next
+  turn, and a running one is terminated at once (`jobs.retire()`); `gate.check()` now refuses any job kind for a
+  task that has already reached a terminal status, and a result that arrives for an already-terminal task is
+  closed without recording a delivery, verification, review or diagnosis.
+
+- **Fixed: an approval could bind to a delivery newer than the one the page showed.** The task page's and the
+  inbox's approval forms now carry the delivery digest they rendered; an approval posted with a stale digest is
+  refused instead of silently binding to whatever delivery is current.
+
+- **Performance: one idle loop turn parsed the whole task store and scanned the job directory many times over.**
+  A turn now loads the task store and the open job list once each (a turn-scoped snapshot that still sees a write
+  made earlier in the same turn), cutting one measured idle turn on a 350-task, 1,400-job project from 44.8s to
+  about 11s; `supervisor/store.py` also parses with the C YAML loader when available.
+
+- **Performance/Fixed: every Control Center page re-parsed the whole task store and job directory from scratch,
+  and the page-wide refresh stalled while the Overview's 5-second poll was in flight.** Parsed task and job
+  records are now cached across requests (invalidated by each file's own mtime/size); the Overview's own
+  live-fragment poll no longer counts as "busy" for the rest of the page; the Agents page's "Recent" list is
+  sorted by when a job finished rather than by file name; and a running job's transcript stream now replays what
+  is already on disk instead of starting empty. A page reload triggered by a restart or a changed stylesheet is
+  now held back while a field is dirty, so an owner typing is never silently reloaded out from under their own
+  input.
+
+- **Fixed: an automatic revision ignored a role's own configured adapter lane.** `dispatch_revision` resolved the
+  adapter with no layout, so a role routed to a non-default lane had its revision silently fall back to the cost
+  category's default one; a revision (and the role's own senior-model substitution) now resolves the lane the
+  same way the first dispatch does, and every automatic revision, continuation and fallback redispatch now
+  records a `reason` naming which lane and model it picked and why, shown on the task page's Attempts table.
+
+- **Changed: three unused runtime dependencies dropped, two moved to the extras that actually need them.**
+  `portalocker`, `python-ulid` and `sse-starlette` are no longer declared (nothing imports them); `jsonschema`
+  moves to the `dev` extra and `pillow` to the `ui` extra, matching which code actually imports each;
+  `packages/supervisor-plugin-llm-endpoint` now declares the `psutil` dependency its own server process already
+  imports. A repository-wide re-check also removed one dead module (`supervisor/models/records.py`), a dozen
+  unreferenced symbols/imports, two permanently-skipped test files, one broken helper script, and two unused
+  pytest marker registrations; nothing in the public plugin API changed.
+
 ## 2.6.0 — 2026-11-11
 
 - **Added: a machine-wide, re-entrant, project-held resource lease, `supervisor.leases`.** Two projects' own

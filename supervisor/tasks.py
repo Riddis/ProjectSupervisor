@@ -14,6 +14,7 @@ import contextvars
 import hashlib
 import json
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -57,16 +58,128 @@ def load(layout: Layout, task_id: str) -> Task:
     if not p.exists():
         raise TaskError(f"no such task {task_id}")
     try:
-        return Task.model_validate(store.read(p))
+        doc = store.read(p)
+    except Exception as exc:
+        raise TaskError(f"{task_id}: unreadable: {exc}") from exc
+    try:
+        return Task.model_validate(doc)
     except ValidationError as exc:
         raise TaskError(f"{task_id}: {exc}") from exc
 
 
-def load_all(layout: Layout) -> dict[str, Task]:
+# Last error per (project root, file name), so a file that keeps failing is logged once, not on every load (R-02;
+# the same dedup render.py's _guarded already uses for a failing view).
+_last_task_error: dict[tuple[str, str], str] = {}
+
+
+def _report_unreadable(layout: Layout, path: Path, exc: Exception) -> None:
+    msg = f"{type(exc).__name__}: {exc}"[:300]
+    key = (str(layout.root), path.name)
+    if _last_task_error.get(key) != msg:
+        _last_task_error[key] = msg
+        log(layout, "task_unreadable", "loop", path=path.name, error=msg)
+    from . import inbox as inbox_mod  # local: inbox imports this module
+    try:
+        inbox_mod.create(layout, for_role="owner", subject=f"Task file unreadable: {path.name}",
+                         summary=f"{path.name} could not be loaded and is skipped: {msg}", kind="question",
+                         from_="loop", dedup_key=f"unreadable_task:{path.name}")
+    except inbox_mod.InboxFull:
+        pass
+
+
+# The current loop turn's own in-memory copy of the store (R-09): while active, load_all() returns a snapshot of
+# this dict instead of re-parsing every task file, and _update() keeps it in step with every write this turn makes,
+# so a step that reads a task an earlier step of the SAME turn changed sees the change. None outside a turn (the
+# CLI, a UI request, a test that never opens one): every caller there still gets a real, fresh scan.
+_TURN_SNAPSHOT: contextvars.ContextVar[dict[str, Task] | None] = contextvars.ContextVar("supervisor_turn_tasks", default=None)
+
+
+@contextlib.contextmanager
+def turn_snapshot(tasks: dict[str, Task]):
+    """Hold `tasks` (already loaded) as the store for every `load_all()` call made inside the block, in this
+    thread, kept current by `_update()`. One loop turn opens this once, after its own single real load (`once()`);
+    nothing inside the block pays for a second one."""
+    token = _TURN_SNAPSHOT.set(tasks)
+    try:
+        yield
+    finally:
+        _TURN_SNAPSHOT.reset(token)
+
+
+# A parse shared by every caller in the process, not only one turn's own snapshot (C-1): keyed by path, kept only
+# while a file's size and mtime match the stamp it was parsed at. A Control Center request that follows an
+# unchanged file pays for a stat, not a re-parse; the loop's own once-per-turn scan benefits the same way.
+# Unbounded for the life of the process, same tradeoff `ui.live`'s own fingerprint cache already makes — a finished
+# task's file stops changing, so this never grows faster than the store itself. An index that forgets a task once
+# it is COMPLETE (R-09's "Step 2") is a separate, larger change.
+_PARSE_CACHE: dict[str, tuple[tuple[int, int], Task]] = {}
+_PARSE_CACHE_LOCK = threading.Lock()
+
+
+def _cached_task(p: Path) -> tuple[Task | None, Exception | None]:
+    """(the parsed Task, None) or (None, the exception) for `p`, reusing `_PARSE_CACHE` while its stamp (mtime,
+    size) has not moved. Raises OSError straight through (a vanished file mid-scan: the caller already handles
+    that for its own glob)."""
+    st = p.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    key = str(p)
+    with _PARSE_CACHE_LOCK:
+        hit = _PARSE_CACHE.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1], None
+    try:
+        t = Task.model_validate(store.read(p))
+    except Exception as exc:                     # noqa: BLE001 - one bad file must never stop the loop
+        return None, exc
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE[key] = (stamp, t)
+    return t, None
+
+
+def _scan_disk(layout: Layout) -> dict[str, Task]:
+    """The real glob and parse: every task file read and validated once (reusing `_PARSE_CACHE` for one that has
+    not changed). The only place `load_all()` actually touches the store (R-09) — called once per turn_snapshot()
+    block, never from inside one."""
     out = {}
     for p in sorted(layout.tasks.glob("*.yaml")):
-        t = Task.model_validate(store.read(p))
+        try:
+            t, parse_exc = _cached_task(p)
+        except OSError as stat_exc:
+            _report_unreadable(layout, p, stat_exc)
+            continue
+        if parse_exc is not None:
+            _report_unreadable(layout, p, parse_exc)
+            continue
         out[t.id] = t
+    return out
+
+
+def load_all(layout: Layout) -> dict[str, Task]:
+    """Every task that parses and validates. A file that does not is skipped, not raised (R-02): it is reported
+    once (`_report_unreadable`) and left out of the graph, so a dependent's `unmet_dependency` falls through to
+    `load()` and reports it as "<id> (unreadable)" rather than treating it as done. Use `unreadable()` for a view
+    that must show the skipped file, not merely work around it.
+
+    Inside an active `turn_snapshot()`, this returns a fresh dict copy of the shared snapshot instead of
+    re-scanning the store (R-09): one loop turn calls nine functions that each used to load_all() on their own,
+    parsing 365 files nine times over."""
+    snap = _TURN_SNAPSHOT.get()
+    return dict(snap) if snap is not None else _scan_disk(layout)
+
+
+def unreadable(layout: Layout) -> dict[str, str]:
+    """The task files `load_all` is currently skipping, as {file stem: short error} — for a page that must show a
+    broken file as such. Shares `_PARSE_CACHE` with `load_all`/`_scan_disk`: called right after it (as
+    `overview_context` does), this costs a stat per file, not a second parse of all 365."""
+    out = {}
+    for p in sorted(layout.tasks.glob("*.yaml")):
+        try:
+            _, parse_exc = _cached_task(p)
+        except OSError as stat_exc:
+            out[p.stem] = f"{type(stat_exc).__name__}: {stat_exc}"[:300]
+            continue
+        if parse_exc is not None:
+            out[p.stem] = f"{type(parse_exc).__name__}: {parse_exc}"[:300]
     return out
 
 
@@ -161,11 +274,6 @@ def artifact_errors(tasks: Iterable[Task], root: Path | None = None) -> list[str
     return artifact_problems(tasks, root)[0]
 
 
-def artifact_warnings(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
-    """Artifact entries that look like prose or a placeholder but are legal file names (artifact_problems warnings)."""
-    return artifact_problems(tasks, root)[1]
-
-
 def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
@@ -232,15 +340,17 @@ def _registered_lanes(layout: Layout) -> tuple[set[str], set[str], str]:
 
 def unmet_dependency(layout: Layout, task: Task, tasks: dict[str, Task] | None = None) -> str | None:
     """The first entry of `task.depends_on` that is not COMPLETE, as "<id> (<status>)" (G6, 2.4.0) — a dependency
-    this project has no task for is reported as "<id> (missing)". `tasks` is an optional preloaded graph
-    (`eligible()`'s own cache); without it each dependency is loaded from disk."""
+    this project has no task for is reported as "<id> (missing)", and one whose file exists but `load_all` skipped
+    (R-02) as "<id> (unreadable)", so a task waiting on a broken file stays waiting rather than being released as
+    though the dependency did not exist. `tasks` is an optional preloaded graph (`eligible()`'s own cache); without
+    it each dependency is loaded from disk."""
     for dep_id in task.depends_on:
         dep = (tasks or {}).get(dep_id)
         if dep is None:
             try:
                 dep = load(layout, dep_id)
             except TaskError:
-                return f"{dep_id} (missing)"
+                return f"{dep_id} (unreadable)" if path_for(layout, dep_id).exists() else f"{dep_id} (missing)"
         if dep.status != TaskStatus.COMPLETE:
             return f"{dep_id} ({dep.status.value})"
     return None
@@ -479,7 +589,11 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
         Task.model_validate(doc)      # never persist an invalid task
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")
-    return Task.model_validate(doc)
+    t = Task.model_validate(doc)
+    snap = _TURN_SNAPSHOT.get()
+    if snap is not None:              # this turn's snapshot, if one is open: later steps must see this write (R-09)
+        snap[t.id] = t
+    return t
 
 
 def _record_history(doc: dict, to: TaskStatus, by: str, note: str, forced: bool = False):
@@ -529,6 +643,14 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
     except _NoChange:
         return load(layout, task_id)
     log(layout, "task_status", actor, task=task_id, **{"from": before.get("status"), "to": status.value}, note=note, forced=force)
+    if status == TaskStatus.CANCELLED or (status == TaskStatus.COMPLETE and force):
+        # R-04: a move to CANCELLED, or an owner-forced COMPLETE, must retire the task's own jobs in the same
+        # breath — a queued one never launches, a running one is terminated — or a job dispatched before this
+        # call still writes into the tree and spends a session on work the owner just stopped.
+        from . import jobs as jobs_mod
+        closed = jobs_mod.retire(layout, task_id, reason=f"task moved to {status.value}", actor=actor)
+        if closed:
+            log(layout, "jobs_retired", actor, task=task_id, jobs=closed, to=status.value)
     return t
 
 
@@ -554,12 +676,35 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
     return t
 
 
-def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", **extra) -> Task:
-    """A dispatch attempt (resource/model/session/run_dir) — used by the loop and retry budgets."""
+def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", seed: int = 0, **extra) -> tuple[Task, str]:
+    """Allocate the task's next job number from its own counter and record the attempt, in the same locked
+    update, so the job record and the task's own attempt list can never disagree (R-03). `seed` covers a task
+    with no counter yet (one written before this field existed): pass the highest attempt number already on
+    disk (`jobs.highest_attempt_no`, filenames only, so this works even with an unreadable record among them) so
+    the number allocated here is never one already used. Returns the updated task and the id it chose; `note`
+    gets that id appended."""
+    allocated: dict[str, str] = {}
+
     def fn(doc):
-        n = len(doc.get("attempts", [])) + 1
-        doc.setdefault("attempts", []).append(Attempt(id=f"{task_id}.a{n}", resource=resource, at=store.now_iso(),
-                                                      note=note, **extra).model_dump(exclude_none=True))
+        n = max(int(doc.get("job_seq") or 0), len(doc.get("attempts", [])), seed) + 1
+        doc["job_seq"] = n
+        attempt_id = f"{task_id}.a{n}"
+        allocated["id"] = attempt_id
+        doc.setdefault("attempts", []).append(Attempt(id=attempt_id, resource=resource, at=store.now_iso(),
+                                                      note=f"{note} {attempt_id}".strip(), **extra)
+                                              .model_dump(exclude_none=True))
+    t = _update(layout, task_id, fn)
+    return t, allocated["id"]
+
+
+def annotate_attempt(layout: Layout, task_id: str, attempt_id: str, **fields) -> Task:
+    """Fill in fields (`run_dir`, once it is known) on an attempt already recorded by `add_attempt` — never
+    reallocates its number or id."""
+    def fn(doc):
+        for a in doc.get("attempts", []):
+            if a.get("id") == attempt_id:
+                a.update(fields)
+                break
     return _update(layout, task_id, fn)
 
 

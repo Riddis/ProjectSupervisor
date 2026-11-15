@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "supervisor-framework"
-version = "2.6.0"
+version = "2.6.1"
 description = "Run a project with AI agents under a deterministic Python supervisor and an owner-facing Control Center"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -15,17 +15,13 @@ dependencies = [
   "ruamel.yaml>=0.18",
   "pyyaml>=6.0",
   "psutil>=5.9",
-  "portalocker>=2.8",
-  "python-ulid>=2.2",
-  "pillow>=10.3",
   "requests>=2.31",
-  "jsonschema>=4.21",
   "packaging>=23.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2", "pytest-timeout>=2.3", "ruff>=0.5", "httpx>=0.27"]
-ui = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "sse-starlette>=2.1"]
+dev = ["pytest>=8.2", "pytest-timeout>=2.3", "ruff>=0.5", "httpx>=0.27", "jsonschema>=4.21"]
+ui = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "pillow>=10.3"]
 
 [project.scripts]
 supervisor = "supervisor.cli:main"
@@ -42,8 +38,6 @@ supervisor = ["template/**/*", "template/**/.*", "template/**/_dot_*", "plugin_t
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider --basetemp=runs/pytest_tmp"
 pythonpath = ["."]
-markers = ["capacity_integration: may call the real Codex CLI usage RPC (off by default; see tests/conftest.py)",
-           "model_integration: may launch the real Claude/Codex CLI (off by default; see tests/conftest.py)"]
 
 [tool.ruff]
 line-length = 120

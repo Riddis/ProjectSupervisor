@@ -18,11 +18,10 @@ from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
-from .locks import LockHeld as _LockHeld  # noqa: F401
 from ._vendor import handoff
 from .adapters import REGISTRY, Result
 from .locks import FileLock, LockHeld
-from .models.task import HumanApproval, Task, TaskStatus
+from .models.task import HumanApproval, TERMINAL, Task, TaskStatus
 from .paths import Layout
 from .store import now_iso
 
@@ -136,19 +135,34 @@ class Supervisor:
         self.ingest(rec, Result(status="FAILED", error=error))
 
     def dispatch(self, task: Task, adapter_name: str, deferred_until: float | None = None, note: str = "dispatch",
-                kind: str = "delivery", extra: dict | None = None) -> dict:
+                kind: str = "delivery", extra: dict | None = None, reason: str | None = None) -> dict:
         self._require_plugins()
         ad = REGISTRY[adapter_name]
-        n = len(jobs_mod.for_task(self.layout, task.id)) + 1
-        attempt_id = f"{task.id}.a{n}"
+        # `reason` (scheduler.resolve_lane, R-16) is the one line naming why this lane and model: durable on the
+        # job record and the task's own attempt entry alike, so a model change (a senior revision, the return to
+        # the base model, a fallback) is never silent again. Omitted, not written as a null, when a caller (a
+        # review, a verify, a diagnosis, a conversation) has none to give — those records stay exactly as narrow
+        # as before this.
+        job_extra = {**(extra or {}), "reason": reason} if reason else dict(extra or {})
+        if kind == "conversation":          # no Task document backs a conversation thread; nothing to count on
+            n = len(jobs_mod.for_task(self.layout, task.id)) + 1
+            attempt_id = f"{task.id}.a{n}"
+        else:
+            # The number comes from the task's own counter, allocated and recorded in one locked update
+            # (tasks.add_attempt), so the job record and the task's attempt list can never disagree (R-03). A
+            # task with no counter yet is seeded from the highest number already on disk, filenames only, so a
+            # record this call cannot read still keeps its number retired.
+            seed = jobs_mod.highest_attempt_no(self.layout, task.id)
+            _, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed, reason=reason)
+        run_dir = self.layout.runs / task.id / attempt_id
         try:
+            if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
+                raise FileExistsError(f"run directory already exists: {run_dir}")
             spec = ad.prepare(self.layout, task, attempt_id)
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **(extra or {}))
-            if kind != "conversation":
-                tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}: prepare failed")
+                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), **job_extra)
             self._adapter_failed(rec, "prepare", exc)
             return jobs_mod.read(self.layout, attempt_id)
         spec["kind"] = kind
@@ -160,9 +174,9 @@ class Supervisor:
         # second record write used to leave a review job without its role and discard the finished verdict.
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
                                gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
-                               **(extra or {}))                                   # durable BEFORE launch
-        if kind != "conversation":            # no Task backs a conversation thread (supervisor.conversations)
-            tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=f"{note} {attempt_id}", run_dir=spec.get("run_dir"))
+                               **job_extra)                                   # durable BEFORE launch
+        if kind != "conversation":            # the attempt itself was already recorded when the number was allocated
+            tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
             return jobs_mod.set_phase(self.layout, attempt_id, "PREPARED", deferred_until=deferred_until, deferred_reason=note)
         return self.launch(rec)
@@ -180,20 +194,22 @@ class Supervisor:
         `home` (scheduler.adapter_name(task), ignoring the unattended switch) can disagree with `name` (what
         plan() actually picked, e.g. claude_api, whose own lane_for() call saw no `engine` and so no capacity
         check at all): the overrides and the same-vendor flag are only ever this job's own if the lane they
-        were resolved for is the lane it is actually dispatching on."""
+        were resolved for is the lane it is actually dispatching on.
+
+        `scheduler.resolve_lane` (R-16) is the one answer this, an automatic revision, a continuation and a
+        fallback all ask the same way; its `reason` is stored on the job record and shown where the job is
+        listed."""
         role = scheduler.job_spec(task).get("role") or task.owner_role
-        home = scheduler.adapter_name(task, self.layout)
-        try:
-            lane, overrides, same_vendor = review_mod.lane_for(self.layout, role, primary=home)
-        except CapacityDeferred:
-            lane, overrides, same_vendor = home, {}, False
-        if not overrides or lane != name:
-            return self.dispatch(task, name)
+        resolved = scheduler.resolve_lane(self.layout, task, role=role)
+        if not (resolved.model or resolved.effort) or resolved.adapter != name:
+            reason = resolved.reason if resolved.adapter == name else f"scheduled on {name}"
+            return self.dispatch(task, name, reason=reason)
+        overrides = {k: v for k, v in (("model", resolved.model), ("effort", resolved.effort)) if v}
         doc = task.model_dump(mode="json")
         doc["job"] = {**scheduler.job_spec(task), "adapter": name, **overrides}
         view = Task.model_validate(doc)
-        note = f"dispatch:{role}" + (" (same-vendor fallback)" if same_vendor else "")
-        return self.dispatch(view, name, note=note, extra={"same_vendor": same_vendor})
+        note = f"dispatch:{role}" + (" (same-vendor fallback)" if resolved.same_vendor else "")
+        return self.dispatch(view, name, note=note, reason=resolved.reason, extra={"same_vendor": resolved.same_vendor})
 
     MAX_CONTINUATIONS = 3
 
@@ -262,11 +278,13 @@ class Supervisor:
                 task = Task.model_validate(doc)
             extra = {"continuation_grant": grant}
             note = f"continuation after {reason}"
+            lane_reason = f"role {task.owner_role}'s own attempt, continued on its lane ({rec['adapter']})"
             if "same_vendor" in rec:
                 extra["same_vendor"] = rec["same_vendor"]
                 if rec["same_vendor"]:
                     note += " (same-vendor fallback)"
-            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra)
+                    lane_reason += "; same-vendor fallback, carried over from the attempt being continued"
+            self.dispatch(task, rec["adapter"], deferred_until=until, note=note, extra=extra, reason=lane_reason)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error,
                            continued=True)
         # The continuation is queued either way (crash-safe, same as before F11): a held task's queued record simply
@@ -325,7 +343,8 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
             return jobs_mod.read(self.layout, rec["attempt_id"])
         self.dispatch(task, lane, note=f"rerouted from {rec['adapter']}", kind=kind,
-                      extra={"rerouted_from": rec["attempt_id"], **kind_extra})
+                      extra={"rerouted_from": rec["attempt_id"], **kind_extra},
+                      reason=f"fallback: {rec['adapter']} unavailable ({reason}); rerouted to {lane}")
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
         return jobs_mod.read(self.layout, rec["attempt_id"])
 
@@ -382,7 +401,17 @@ class Supervisor:
         job_kind = (rec.get("spec") or {}).get("kind", "delivery")
         conversation = job_kind == "conversation"
         if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
-            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
+            try:
+                self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
+            except tasks_mod.TaskError as exc:
+                # F1: the task file itself is unreadable (an editor's mid-write save, most likely on an active
+                # task - exactly this one). load_all()'s own turn scan already reports and dedupes the owner
+                # item; this record is simply held until the file is readable again, the same shape gate.check's
+                # own held branch below uses, rather than spending the loop's error budget on a bad input file.
+                reason = f"task file unreadable: {exc}"
+                if rec.get("held") != reason:
+                    tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+                return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         try:
             handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
         except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
@@ -732,8 +761,30 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
             return
+        try:
+            terminal = tasks_mod.load(self.layout, task_id).status in TERMINAL
+        except tasks_mod.TaskError:
+            terminal = False
+        if terminal:
+            # R-04: the task was cancelled (or owner-force-completed) after this job was dispatched - tasks.set_status
+            # already tried to retire it; reaching a result here means the race window between that write and this
+            # one. Record the result on the job alone: no delivery, verification, review or diagnosis for a task
+            # that is already done.
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+            tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
+                          error=result.error, terminal_task=True)
+            return
         if kind != diagnosis_mod.KIND:
-            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
+            try:
+                self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
+            except tasks_mod.TaskError:
+                # F1: the task file turned unreadable while this job ran (e.g. the job itself wrote a broken
+                # document before returning). Close the record with the result that did arrive, the same shape
+                # the terminal-task branch above already uses, rather than raising past once().
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
+                              error=result.error, task_unreadable=True)
+                return
         if result.status == "FAILED" and str(result.error or "").startswith("login_required:"):
             return self._lane_login_failed(rec, result, kind)
         run_dir = (rec.get("spec") or {}).get("run_dir")
@@ -749,7 +800,8 @@ class Supervisor:
         if kind == "review":
             review_mod.ingest(self, rec, result)
         elif kind == diagnosis_mod.KIND:
-            diagnosis_mod.ingest(self, rec, result)
+            if diagnosis_mod.ingest(self, rec, result) is None:
+                return      # F7: diagnosis.ingest() already closed the record itself (task file unreadable)
         elif kind == self.VERIFY_KIND:
             self.ingest_verify(rec, result)
         else:
@@ -979,11 +1031,10 @@ class Supervisor:
         tasks), so _repair_capped_escalation() finishes it here: the task being stuck IN_PROGRESS behind its own
         last, capped record is exactly the symptom of that missing call, whichever cap branch left it, and
         record_failure() is itself replay-safe, so finishing it again when it already succeeded is a no-op."""
-        seen = set()
-        for rec in sorted(jobs_mod.all_records(self.layout), key=lambda r: r["attempt_id"]):
-            seen.add(rec["task_id"])
-        for task_id in seen:
-            recs = jobs_mod.for_task(self.layout, task_id)
+        # One pass over the job directory, grouped by task (R-09): this used to call jobs_mod.for_task() once per
+        # task seen, each call re-globbing the whole directory — 352 globs of 1,380 files on a store this task's
+        # own evidence sized, for work this one grouped scan already did.
+        for task_id, recs in jobs_mod.all_grouped(self.layout).items():
             last = recs[-1]
             if self._repair_reroutes(task_id, recs):
                 continue
@@ -1016,11 +1067,13 @@ class Supervisor:
                     task = Task.model_validate(doc)
                 extra = {"continuation_grant": escalation_mod.current_grant(self.layout, task_id)}
                 note = "continuation after capacity limit"
+                lane_reason = f"role {task.owner_role}'s own attempt, continued on its lane ({last['adapter']})"
                 if "same_vendor" in last:
                     extra["same_vendor"] = last["same_vendor"]
                     if last["same_vendor"]:
                         note += " (same-vendor fallback)"
-                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra)
+                        lane_reason += "; same-vendor fallback, carried over from the attempt being continued"
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra, reason=lane_reason)
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
@@ -1096,7 +1149,8 @@ class Supervisor:
                 task, kind_extra = self._reroute_rebuild(r, kind)
                 if task is not None:
                     self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", kind=kind,
-                                  extra={"rerouted_from": r["attempt_id"], **kind_extra})
+                                  extra={"rerouted_from": r["attempt_id"], **kind_extra},
+                                  reason=f"fallback: {r['adapter']} unavailable ({r.get('error')}); rerouted to {lane}")
             jobs_mod.set_phase(self.layout, r["attempt_id"], "DONE", continued=True)
         return last.get("result") == "REROUTED"
 
@@ -1353,42 +1407,56 @@ class Supervisor:
     def once(self) -> str:
         """One iteration; returns the decision in force (RUN/PAUSE/STOP/RELOAD). Raises PluginError (before
         touching anything) while a required plugin is missing: `run()` reports that as BLOCKED instead."""
+        start = time.perf_counter()
+
+        def turn_s() -> float:
+            return round(time.perf_counter() - start, 3)
+
         self._require_plugins()
         self.iteration += 1
         commands_mod.apply_all(self.layout)
         decision = runtime.read(self.layout).get("decision", "RUN")
         if decision in ("STOP", "RELOAD"):
-            runtime.heartbeat(self.layout, "STOPPED" if decision == "STOP" else "RUNNING", iteration=self.iteration)
+            runtime.heartbeat(self.layout, "STOPPED" if decision == "STOP" else "RUNNING", iteration=self.iteration,
+                              turn_s=turn_s())
             return decision
-        self.reconcile()                 # collects finished work under every decision; launches only when the gate allows
-        self.poll_capacity()
-        if decision in ("PAUSE", "DRAIN"):
-            if decision == "PAUSE":
-                runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration)
+        # One real load of the store and one real scan of the open jobs for the whole turn (R-09): every step
+        # below that used to call tasks_mod.load_all()/jobs_mod.open_records() on its own now works from this
+        # same snapshot, and a write any step makes is visible to every step after it (tasks._update(),
+        # jobs.write()) — never a second parse of 365 task files or a second scan of 1,380 job files per turn.
+        tasks_snapshot = tasks_mod.load_all(self.layout)
+        jobs_snapshot = jobs_mod.open_records(self.layout)
+        with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
+            self.reconcile()             # collects finished work under every decision; launches only when the gate allows
+            self.poll_capacity()
+            if decision in ("PAUSE", "DRAIN"):
+                if decision == "PAUSE":
+                    runtime.heartbeat(self.layout, "PAUSED", iteration=self.iteration, turn_s=turn_s())
+                else:
+                    decision = self.drain()
+                # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and
+                # the work reconcile() collected are records too, and a completed drain commits its last ones at once.
+                done = checkpoint_mod.run(self.layout)
+                self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
             else:
-                decision = self.drain()
-            # Commits launch nothing, so they go on while paused or draining (1.13.0): the owner's commands and the
-            # work reconcile() collected are records too, and a completed drain commits its last ones at once.
-            done = checkpoint_mod.run(self.layout)
-            self.commit_state(after_checkpoint=bool(done) or decision == "STOP")
-        else:
-            for task, name in scheduler.plan(self.layout, unattended=self.unattended):
-                self.dispatch_delivery(task, name)
-            self.dispatch_reviews()
-            self.dispatch_conversations()
-            self.settle()                                             # synchronous adapters finish at once
-            self.request_approvals()
-            self.request_owner_decisions()
-            self.sweep_stalled()                                      # nothing stops silently
-            self.alert_if_idle()
-            done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
-            self.commit_state(after_checkpoint=bool(done))           # the loop's own records → git (1.12.1)
-            runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
-                              open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)])
-        if getattr(self, "_lock", None):
-            self._lock.touch()                                    # cross-host liveness of the lock (locks.foreign_holder)
-        if self.iteration % self.render_every == 0:
-            render.render_all(self.layout, runtime=runtime.read(self.layout))
+                for task, name in scheduler.plan(self.layout, unattended=self.unattended):
+                    self.dispatch_delivery(task, name)
+                self.dispatch_reviews()
+                self.dispatch_conversations()
+                self.settle()                                             # synchronous adapters finish at once
+                self.request_approvals()
+                self.request_owner_decisions()
+                self.sweep_stalled()                                      # nothing stops silently
+                self.alert_if_idle()
+                done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
+                self.commit_state(after_checkpoint=bool(done))           # the loop's own records → git (1.12.1)
+                runtime.heartbeat(self.layout, "RUNNING", iteration=self.iteration, busy=None,
+                                  open_jobs=[r["attempt_id"] for r in jobs_mod.open_records(self.layout)],
+                                  turn_s=turn_s())
+            if getattr(self, "_lock", None):
+                self._lock.touch()                                # cross-host liveness of the lock (locks.foreign_holder)
+            if self.iteration % self.render_every == 0:
+                render.render_all(self.layout, runtime=runtime.read(self.layout))
         return decision
 
     def drain(self) -> str:

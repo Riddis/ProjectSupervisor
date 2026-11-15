@@ -126,11 +126,20 @@ def test_task_page_approve_button(layout, auth_client):  # noqa: F811
     _approved_delivery(layout)
     r = auth_client.get("/tasks/A")
     assert "Needs your approval" in r.text and "/tasks/A/approve" in r.text
-    r2 = post(auth_client, "/tasks/A/approve", response="ACCEPT", note="fine")
+    assert 'name="digest" value="d1"' in r.text                  # the form carries the digest it showed (R-05)
+    r2 = post(auth_client, "/tasks/A/approve", response="ACCEPT", note="fine", digest="d1")
     assert r2.status_code == 303 and "flash=applied" in r2.headers["location"]
     assert tasks_mod.load(layout, "A").status == TaskStatus.COMPLETE
     r3 = auth_client.get("/tasks/A")
     assert "Needs your approval" not in r3.text and "Owner: ACCEPT" in r3.text
+
+
+def test_task_page_approve_button_refuses_a_stale_digest(layout, auth_client):  # noqa: F811
+    _approved_delivery(layout)
+    tasks_mod.record_delivery(layout, "A", "d2")                 # a newer delivery lands after the page was shown
+    r2 = post(auth_client, "/tasks/A/approve", response="ACCEPT", note="fine", digest="d1")
+    assert r2.status_code == 303 and "flash=error" in r2.headers["location"]
+    assert tasks_mod.load(layout, "A").delivery.approvals == []
 
 
 # ------------------------------------------------------------------ owner task blocks
