@@ -472,6 +472,10 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
             cmd = json.loads(raw)
             if not isinstance(cmd, dict):
                 raise ValueError(f"a command envelope must be an object, not {type(cmd).__name__}")
+            if not isinstance(cmd.get("kind"), str):
+                raise ValueError(f"a command envelope's kind must be a string, not {type(cmd.get('kind')).__name__}")
+            if not isinstance(cmd.get("payload") or {}, dict):
+                raise ValueError(f"a command envelope's payload must be an object, not {type(cmd.get('payload')).__name__}")
         except (OSError, ValueError) as exc:
             # The envelope itself is rejected, not one handler's work inside it (R-02): quarantine the file with
             # its bytes intact, so the owner can see what a plugin or a hand-edit actually wrote, and move on —
