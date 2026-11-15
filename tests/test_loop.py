@@ -1,7 +1,7 @@
 import json, os, subprocess, sys, time
 import pytest
 
-from supervisor import commands, inbox, jobs, runtime, store, tasks, testing
+from supervisor import commands, diagnosis, inbox, jobs, runtime, store, tasks, testing
 from supervisor.adapters import python as pyad
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
@@ -19,6 +19,21 @@ def _corrupt_own_task(root, run_dir, name="out.txt", **_):
     (root / name).write_text("x")
     (root / "state" / "tasks" / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
     return {"status": "COMPLETE", "artifacts": [name], "notes": "corrupted its own task file"}
+
+
+@pyad.job("diagnose_and_corrupt_own_task")
+def _diagnose_and_corrupt_own_task(root, run_dir, **_):
+    (root / "state" / "tasks" / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    return {"status": "COMPLETE", "artifacts": [], "notes": "diagnosis result", "action": "owner", "summary": "needs the owner"}
+
+
+@pyad.job("diagnose_owner")
+def _diagnose_owner(root, run_dir, **_):
+    return {"status": "COMPLETE", "artifacts": [], "notes": "diagnosis result", "action": "owner", "summary": "needs the owner"}
+
+
+DIAG_EXTRA = {"diag_signature": "sig-1", "diag_level": "manager", "diag_issue": None, "diag_source": "test",
+              "diag_detail": "test detail", "diag_role": "senior_pm", "diag_grant": 0}
 
 
 def ptask(layout, tid, deps=(), name=None, owned=()):
@@ -354,6 +369,66 @@ def test_result_for_a_task_whose_file_turned_unreadable_while_its_job_ran_closes
     assert recs and recs[-1]["phase"] == "DONE"
     assert recs[-1].get("result") == "COMPLETE"
     assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+
+
+def test_diagnosis_result_for_a_task_whose_file_turned_unreadable_closes_the_record(layout):
+    """F7 (round 2 of 2.6.1's review): `launch()` and `ingest()` both skip `_ensure_in_progress()` for a
+    diagnosis-kind record, so F1's two catches never run for it; `diagnosis.ingest()` then loaded the task
+    itself with no guard. A diagnosis job that corrupts its own task file before returning its result must
+    still close the record with that result, not raise past once() - the turn goes on and a healthy task
+    beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "diagnose_and_corrupt_own_task", "params": {}}
+        doc["artifacts"] = []
+    tasks._update(layout, "A", fn)
+    tasks.set_status(layout, "A", "BLOCKED", actor="test", note="blocked, awaiting diagnosis")
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python", note="diagnosis:senior_pm", kind=diagnosis.KIND,
+                       extra=dict(DIAG_EXTRA))
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    j = jobs.read(layout, rec["attempt_id"])
+    assert j["phase"] == "DONE"
+    assert j.get("result") == "COMPLETE"
+    done = [json.loads(e) for e in layout.log.read_text().splitlines()
+           if '"job_done"' in e and rec["attempt_id"] in e]
+    assert done and done[-1].get("task_unreadable") is True
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
+
+
+def test_prepared_diagnosis_record_then_the_task_file_breaks_before_launch_does_not_block(layout):
+    """F7: a diagnosis record dispatched under PAUSE (PREPARED), the task file then made unreadable, the loop
+    resumed. `launch()`'s own gate already tolerates an unreadable task (the record still launches), so the
+    result reaches `ingest()` the same way as the sibling case above; the turn must not raise, the record
+    must not be left SUBMITTED to be re-ingested forever, and a healthy task beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "diagnose_owner", "params": {}}
+        doc["artifacts"] = []
+    tasks._update(layout, "A", fn)
+    tasks.set_status(layout, "A", "BLOCKED", actor="test", note="blocked, awaiting diagnosis")
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python", note="diagnosis:senior_pm", kind=diagnosis.KIND,
+                       extra=dict(DIAG_EXTRA))
+    (layout.tasks / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    j = jobs.read(layout, rec["attempt_id"])
+    assert j["phase"] != "SUBMITTED"
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
 
 
 def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(layout):
