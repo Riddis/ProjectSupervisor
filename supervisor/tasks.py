@@ -31,7 +31,9 @@ from .paths import Layout
 ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED}
 CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "actions", "artifacts", "tests",
                    "checks", "owned_paths", "reviewer", "review_note", "acceptance", "escalation", "human_approval",
-                   "approval_note", "cost_category"]
+                   "approval_note", "cost_category", "evidence", "test_roots"]
+# `job` is a contract field too (what a task runs), but it keeps its own writer (apply_job/task.set_job, D-018):
+# never copied by a refresh or a patch. A seed or patch row that carries one is reported, not silently dropped.
 
 
 class TaskError(ValueError):
@@ -416,49 +418,66 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
                 actor: str = "cli", dry_run: bool = False) -> dict:
     """Create tasks that do not exist yet (unless `create` is False); refresh only the named tasks' contract fields.
     Idempotent. Runs in-process for the CLI when no supervisor is live, and as the `task.import` command otherwise.
-    `dry_run` runs the same validation (seed contracts, graph, ownership, artifacts, each refreshed contract) and
-    reports what would be created and updated, writing and logging nothing — safe while a supervisor runs."""
+
+    Validates the graph exactly as it will read once this call returns (R-07a/b): a row this call does not create
+    or refresh keeps its STORED contract for validation, never the seed's version of it — a seed cannot pass only
+    because of a row it will not actually write. Current contract rules (artifacts, ownership, routing warnings)
+    apply only to rows this call creates or changes, so an old row that predates a rule added since it was written
+    is neither refused nor warned about just for being named in the seed. All or nothing: every row is validated
+    before any row is written. `job` has its own writer (`task.set_job`, D-018) and is never copied by a refresh;
+    a seed row that carries one for a row being updated is named in `job_not_applied`, not silently dropped.
+
+    `dry_run` runs the same validation and reports what would be created and updated, writing and logging
+    nothing — safe while a supervisor runs."""
     seed = yaml.safe_load(Path(seed_path).read_text(encoding="utf-8"))["tasks"]
-    created, updated, untouched = [], [], []
     update_ids = set(update_ids)
-    combined = load_all(layout)
-    existing = set(combined)
+    existing = load_all(layout)
+    resulting = dict(existing)            # the real graph this call will leave on disk, built up below
+    changed: list[Task] = []              # rows being created or refreshed: only these take current contract rules
+    new_docs: dict[str, dict] = {}        # id -> the document a create() would write
+    created, updated, untouched, ignored, job_not_applied = [], [], [], [], []
+
     for t in seed:
-        combined[t["id"]] = Task.model_validate(t)   # seed must be a valid contract
-    art_errors, warnings = artifact_problems([combined[t["id"]] for t in seed], root=layout.root)
-    warnings += contract_warnings([combined[t["id"]] for t in seed], layout)
-    errors = (validate_graph(combined) + ownership_errors([combined[t["id"]] for t in seed if t["id"] not in existing], layout)
-              + art_errors)
-    if errors:
-        raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
-    for t in seed:
-        path = path_for(layout, t["id"])
-        if dry_run:
-            if not path.exists():
-                if create:
-                    created.append(t["id"])
-            elif t["id"] in update_ids:
-                _refresh_contract(store.read(path), t)               # validates the refreshed contract, in memory
-                updated.append(t["id"])
-            else:
-                untouched.append(t["id"])
-            continue
-        if not path.exists():
+        tid = t["id"]
+        if tid not in existing:
             if not create:
+                ignored.append(tid)
                 continue
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
-            store.write_new(path, doc)
-            created.append(t["id"])
-        elif t["id"] in update_ids:
-            store.update(path, lambda doc, t=t: _refresh_contract(doc, t), lock_path=layout.state / ".tasks.lock")
-            updated.append(t["id"])
+            task = Task.model_validate(doc)                              # fail before touching the graph or the disk
+            resulting[tid], new_docs[tid] = task, doc
+            changed.append(task)
+            created.append(tid)
+        elif tid in update_ids:
+            merged = _refresh_contract(dict(store.read(path_for(layout, tid))), t)   # validates in memory
+            resulting[tid] = Task.model_validate(merged)
+            changed.append(resulting[tid])
+            updated.append(tid)
+            if "job" in t:
+                job_not_applied.append(tid)
         else:
-            untouched.append(t["id"])
+            untouched.append(tid)
+
+    art_errors, warnings = artifact_problems(changed, root=layout.root)
+    warnings += contract_warnings(changed, layout)
+    errors = validate_graph(resulting) + ownership_errors(changed, layout) + art_errors
+    if errors:
+        raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
+
     if not dry_run:
+        for tid in created:
+            store.write_new(path_for(layout, tid), new_docs[tid])
+        for t in seed:
+            if t["id"] in updated:
+                store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
+                            lock_path=layout.state / ".tasks.lock")
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
-    out = {"created": created, "updated": updated, "untouched": untouched}
+
+    out = {"created": created, "updated": updated, "untouched": untouched, "ignored": ignored}
+    if job_not_applied:
+        out["job_not_applied"] = job_not_applied
     if dry_run:
         out["dry_run"] = True
     if warnings:
@@ -475,6 +494,60 @@ def _refresh_contract(doc: dict, t: dict) -> dict:
             doc.pop(k, None)
     Task.model_validate(doc)
     return doc
+
+
+PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency"}
+
+
+def _apply_patch(doc: dict, fields: dict) -> dict:
+    """Apply one patch's fields onto a stored task document (mutates and returns it, validated): a direct
+    CONTRACT_FIELDS assignment, or `add_dependency`/`remove_dependency` (an id, or a list) against the document's
+    OWN current `depends_on` — never a caller's possibly-stale copy of it, so two concurrent dependency edits
+    cannot race each other."""
+    deps = list(doc.get("depends_on") or [])
+    for dep in ([fields["add_dependency"]] if isinstance(fields.get("add_dependency"), str)
+                else list(fields.get("add_dependency") or [])):
+        if dep not in deps:
+            deps.append(dep)
+    for dep in ([fields["remove_dependency"]] if isinstance(fields.get("remove_dependency"), str)
+                else list(fields.get("remove_dependency") or [])):
+        if dep in deps:
+            deps.remove(dep)
+    if "add_dependency" in fields or "remove_dependency" in fields:
+        doc["depends_on"] = deps
+    for k, v in fields.items():
+        if k in CONTRACT_FIELDS:
+            doc[k] = v
+    Task.model_validate(doc)
+    return doc
+
+
+def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -> dict:
+    """Change named contract fields of one existing task without resending the whole contract (R-07d). Validated
+    exactly like a refresh (R-07a/b): the graph as it will actually be once this call returns, with current
+    contract rules applied only to this one task."""
+    bad = set(fields) - PATCH_FIELDS
+    if bad:
+        raise TaskError(f"{task_id}: patch may set only a contract field, add_dependency or remove_dependency, "
+                        f"not {', '.join(sorted(bad))}")
+    existing = load_all(layout)
+    if task_id not in existing:
+        raise TaskError(f"no such task {task_id}")
+    merged = _apply_patch(dict(store.read(path_for(layout, task_id))), fields)
+    task = Task.model_validate(merged)
+    combined = dict(existing)
+    combined[task_id] = task
+    art_errors, warnings = artifact_problems([task], root=layout.root)
+    warnings += contract_warnings([task], layout)
+    errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
+    if errors:
+        raise TaskError("patch invalid: " + "; ".join(errors))
+    store.update(path_for(layout, task_id), lambda doc: _apply_patch(doc, fields), lock_path=layout.state / ".tasks.lock")
+    log(layout, "task_patch", actor, task=task_id, fields=sorted(fields))
+    out = {"id": task_id}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:

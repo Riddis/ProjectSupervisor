@@ -138,6 +138,13 @@ def _create(layout, payload, actor):
     return tasks_mod.create(layout, dict(payload["task"]), actor)
 
 
+@handler("task.patch")
+def _task_patch(layout, payload, actor):
+    """Change named contract fields of one existing task (add/remove a dependency, retitle, ...) without resending
+    the whole contract (R-07d)."""
+    return tasks_mod.patch_task(layout, payload["task_id"], payload.get("fields") or {}, actor)
+
+
 def seed_path(layout, seed: str | None) -> Path:
     """The seed file a `task.import` names, resolved against the project root; ValueError unless it is a file
     inside the project."""
@@ -156,7 +163,7 @@ def _task_import(layout, payload, actor):
     seed = seed_path(layout, payload.get("seed"))
     ids = [str(i) for i in (payload.get("update_contracts") or [])]
     r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
-    return {k: r[k] for k in ("created", "updated", "warnings") if k in r}
+    return {k: r[k] for k in ("created", "updated", "ignored", "job_not_applied", "warnings") if k in r}
 
 
 def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):

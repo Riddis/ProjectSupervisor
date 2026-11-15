@@ -123,7 +123,7 @@ def test_task_import_reaches_a_live_supervisor_through_the_queue(layout):
         assert r.get("queued")
         out = commands.apply_all(layout)                     # what the loop does on its next iteration
     assert out[0]["ok"], out[0].get("error")
-    assert out[0]["result"] == {"created": [], "updated": ["T"]}
+    assert out[0]["result"] == {"created": [], "updated": ["T"], "ignored": ["NEW"]}
     assert tasks.load(layout, "T").artifacts == ["out/sheet*.png"]
     assert not (layout.tasks / "NEW.yaml").exists()          # create=False touches only the named contract
 
