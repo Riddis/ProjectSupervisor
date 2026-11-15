@@ -85,6 +85,16 @@ def _minutes(seconds: float) -> int:
 class ProcessAdapter(Adapter):
     name = "process"
 
+    def __init__(self):
+        # This session's own children (R-12): a real exit code, when the child reported none of its own, is
+        # trustworthy only while the Popen that spawned it is still in hand (gone across a loop restart, same as
+        # a handle with no result.json at all) and only when the loop itself did not kill it — a timeout or an
+        # explicit terminate() (`_killed_pids`, by pid: `terminate()` gets only the handle, never the attempt id)
+        # proves nothing about why the child would have exited on its own, so that case stays "lost", not a
+        # verdict on the job's own determinism.
+        self._procs: dict[str, subprocess.Popen] = {}
+        self._killed_pids: set[int] = set()
+
     def command(self, spec) -> list[str]:
         return spec["argv"]
 
@@ -95,6 +105,7 @@ class ProcessAdapter(Adapter):
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),
                 "timeout_s": jobspec.get("timeout_s", timeouts.PROCESS_CAP_S), "idle_s": jobspec.get("idle_timeout_s"),
+                "retry_on": list(jobspec.get("retry_on") or []),
                 "root": str(layout.root), "stdin_file": jobspec.get("stdin_file")}
 
     def submit(self, spec):
@@ -110,6 +121,8 @@ class ProcessAdapter(Adapter):
             finally:
                 if stdin_ctx:
                     stdin_ctx.close()
+        if spec.get("attempt_id"):
+            self._procs[spec["attempt_id"]] = proc
         create_time = None
         for _ in range(20):                                   # a just-spawned process can be AccessDenied briefly on Windows
             try:
@@ -179,14 +192,26 @@ class ProcessAdapter(Adapter):
                 p.kill()
             except psutil.Error:
                 pass
+        if handle.get("pid") is not None:
+            self._killed_pids.add(handle["pid"])
 
     def parse_result(self, spec, handle) -> Result:
         run_dir = Path(spec["run_dir"])
         rp = run_dir / "result.json"
+        proc = self._procs.pop(spec.get("attempt_id"), None)
+        killed = handle.get("pid") in self._killed_pids
+        self._killed_pids.discard(handle.get("pid"))
         if rp.exists():
             payload = json.loads(rp.read_text(encoding="utf-8"))
             return Result(status=payload.get("status", "FAILED"), artifacts=payload.get("artifacts", []),
                           notes=payload.get("notes", ""), error=payload.get("error"), raw=payload)
+        # R-12: a child that exited on its own, with no result.json of its own, still reports a real exit code -
+        # this session's own Popen, never the loop's own termination (killed, or adopted after a restart, where
+        # `proc` is None): those stay the generic "lost" message, exactly as before, because nothing here can
+        # tell whether they would have exited this way on their own.
+        code = proc.poll() if (proc is not None and not killed) else None
+        if code:
+            return Result(status="FAILED", error=f"process exited {code} without result.json", raw={"exit_code": code})
         return Result(status="FAILED", error="process exited without result.json")
 
     handoff_before_cap = False   # model lanes: ask the session for its handoff shortly before the hard cap

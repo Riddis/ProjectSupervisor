@@ -94,6 +94,25 @@ def _save(layout: Layout, task_id: str, state: dict) -> None:
     atomic_json(_state_path(layout, task_id), state)
 
 
+def note_process_outcome(layout: Layout, task_id: str, attempt_id: str, retryable: bool) -> None:
+    """A deterministic lane's (process/python/plugin) FAILED result, classified by `loop.record_outcome` while
+    the worker's own report is still in hand — the stall sweep decides WHEN to act (its grace period is the
+    back-off), this decides what it does once it does (R-12): a timeout, a lost process or an exit code the job's
+    own `retry_on` names is worth one retry; any other reported exit would only repeat it, so the sweep is told to
+    go straight to the exception route instead. Keyed by the delivery attempt, so a later attempt of the same
+    task gets its own, independent classification."""
+    state = _load(layout, task_id)
+    state.setdefault("process_outcomes", {})[attempt_id] = bool(retryable)
+    _save(layout, task_id, state)
+
+
+def process_outcome_retryable(layout: Layout, task_id: str, attempt_id: str) -> bool:
+    """Whether `attempt_id`'s deterministic failure (`note_process_outcome`) was transient. True — retry as
+    before — for an attempt no one ever classified this way: a model-lane failure (handled on its own path), or
+    one from before this fix shipped."""
+    return bool(_load(layout, task_id).get("process_outcomes", {}).get(attempt_id, True))
+
+
 def _next_issue_id(layout: Layout) -> str:
     n = 0
     for p in layout.issues.glob("I-*.yaml"):
