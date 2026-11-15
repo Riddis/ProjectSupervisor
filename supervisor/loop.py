@@ -800,7 +800,8 @@ class Supervisor:
         if kind == "review":
             review_mod.ingest(self, rec, result)
         elif kind == diagnosis_mod.KIND:
-            diagnosis_mod.ingest(self, rec, result)
+            if diagnosis_mod.ingest(self, rec, result) is None:
+                return      # F7: diagnosis.ingest() already closed the record itself (task file unreadable)
         elif kind == self.VERIFY_KIND:
             self.ingest_verify(rec, result)
         else:
