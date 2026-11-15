@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -56,6 +57,18 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 # JSON line each under state/runtime/. The owner changes settings while agents run; before 2.1.1 the next
 # verification counted that edit as the running delivery's undeclared write, and the retry reverted it.
 OWN_WRITES = "own_writes.jsonl"
+# A dispatched job (or the loop process itself, via supervisor.launcher) carries these on its own os.environ:
+# SUPERVISOR_ATTEMPT/SUPERVISOR_RUN_DIR name *this* verification's own job (adapters/process.py),
+# SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE points at this job's own
+# PROGRESS.json (progress.py). None of them are a declared command's business (R-13, T3-06.a9: a tool's self-tests
+# wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had leaked into it).
+JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_RUN_DIR", "SUPERVISOR_ROOT", "SUPERVISOR_PROGRESS_FILE")
+
+
+def declared_test_env() -> dict[str, str]:
+    """The environment a declared command runs under: this process's own, minus JOB_CONTROL_ENV_VARS."""
+    return {**{k: v for k, v in os.environ.items() if k not in JOB_CONTROL_ENV_VARS},
+            "PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes | None, actor: str,
@@ -254,17 +267,37 @@ def _basename(path: str) -> str:
     return re.split(r"[\\/]", path)[-1]
 
 
-def permitted(command: str, allowed: list[str]) -> bool:
-    """True when the command's argv matches an allow-listed prefix, with the interpreter compared by basename so
-    `.venv/Scripts/python.exe -m pytest tests` and `python -m pytest tests` are the same lane."""
-    argv = test_argv(command)
-    if not argv or any(re.search(r"[;&|<>`$]", a) for a in argv):   # no shell operators, even though no shell runs it
-        return False
+def _module_form(argv: list[str]) -> list[str]:
+    """Drop a leading interpreter's own `-m`: `python -m ruff check` and `ruff check` are the same tool for
+    matching, whichever spelling the allow-list names (R-13). This never widens what may run — the remaining
+    argv (the tool name and its own arguments) still has to match some allowed entry exactly; a different module
+    (`python -m pip ...` against an allow-list that only names `pytest`/`ruff`) still mismatches."""
+    if len(argv) >= 3 and argv[0] in ("python", "python3", "py") and argv[1] == "-m":
+        return argv[2:]
+    return argv
+
+
+def _normalised(argv: list[str]) -> list[str]:
+    """Lowercase, basename the first token (an interpreter or tool invoked by its full path reads the same as one
+    found on PATH) and strip a `python -m` prefix, in that order."""
     norm = [_basename(argv[0]).lower()] + [a.lower() for a in argv[1:]]
     if norm[0].endswith(".exe"):
         norm[0] = norm[0][:-4]
+    return _module_form(norm)
+
+
+def permitted(command: str, allowed: list[str]) -> bool:
+    """True when the command's argv matches an allow-listed prefix, with the interpreter compared by basename so
+    `.venv/Scripts/python.exe -m pytest tests` and `python -m pytest tests` are the same lane, and the module-
+    invocation spelling normalised on both sides so a command and an allow-list entry naming the same tool match
+    whichever of `python -m ruff check` / `ruff check` each one spells (R-13)."""
+    argv = test_argv(command)
+    if not argv or any(re.search(r"[;&|<>`$]", a) for a in argv):   # no shell operators, even though no shell runs it
+        return False
+    norm = _normalised(argv)
     for entry in allowed:
-        want = [w.lower() for w in test_argv(entry)]
+        entry_argv = test_argv(entry)
+        want = _normalised(entry_argv) if entry_argv else []
         if want and norm[:len(want)] == want:
             return True
     return False
@@ -330,10 +363,15 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
     per command and `budget_s` overall (G3, 2.4.0 — defaults are the pre-2.4.0 constants). Each entry's own `cwd`,
     when given, must resolve inside `roots` (the task's own `test_roots`, G2, 2.4.0) or the project root itself;
     otherwise the command is refused and never run. The supervisor is single-threaded and the owner's PAUSE/STOP
-    cannot be applied while this runs."""
+    cannot be applied while this runs. Every command runs under `declared_test_env()` (never this process's own
+    job-control variables) and its own observation names the interpreter, cwd and PATH it ran with (R-13). A
+    pytest command's own `--basetemp` scratch directory is removed once every command has passed; a failing
+    verification keeps each command's directory, named by its own `obs["basetemp"]`."""
     allowed = allowed if allowed is not None else list(ALLOWED_TEST_COMMANDS)
     root = Path(root).resolve()
     ok, results = True, []
+    scratch_dirs: list[Path] = []
+    env = declared_test_env()
     deadline = time.monotonic() + budget_s
     for entry in declared[:max_commands]:
         command = str((entry or {}).get("command", "")).strip() if isinstance(entry, dict) else ""
@@ -379,18 +417,21 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
         elif _basename(argv[0]).lower().removesuffix(".exe") in ("pytest", "ruff"):
             argv = [interpreter, "-m", _basename(argv[0]).lower().removesuffix(".exe")] + argv[1:]
         argv = _isolate_pytest(argv, root, f"{tag}_{int(time.time())}")
+        basetemp = next((a[len("--basetemp="):] for a in argv if a.startswith("--basetemp=")), None)
+        if basetemp:
+            scratch_dirs.append(Path(basetemp))
         per_command = int(entry.get("timeout_s") or timeout_s) if isinstance(entry, dict) else timeout_s
         try:
             proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=min(per_command, remaining),
-                                  env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+                                  env=env)
             code = proc.returncode
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             results.append({"command": command, "exit_code": None, "error": str(exc)[:300]})
             ok = False
             continue
-        obs = {"command": command, "exit_code": code}
-        if declared_cwd:
-            obs["cwd"] = str(declared_cwd)
+        obs = {"command": command, "exit_code": code, "interpreter": argv[0], "cwd": str(cwd), "path": env.get("PATH", "")}
+        if basetemp:
+            obs["basetemp"] = basetemp
         if code != 0:
             obs["output_tail"] = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-1500:]
         results.append(obs)
@@ -400,6 +441,9 @@ def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | No
         results.append({"command": f"[{len(declared) - max_commands} further command(s)]", "exit_code": None,
                         "error": f"more than {max_commands} commands declared (verification.max_commands); not run"})
         ok = False
+    if ok:                           # a passing verification leaves no scratch directory behind (R-13); a
+        for d in scratch_dirs:        # failing one keeps every command's own, already named by obs["basetemp"]
+            shutil.rmtree(d, ignore_errors=True)
     return ok, results
 
 
