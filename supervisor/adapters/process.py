@@ -210,7 +210,7 @@ class ProcessAdapter(Adapter):
         # `proc` is None): those stay the generic "lost" message, exactly as before, because nothing here can
         # tell whether they would have exited this way on their own.
         code = proc.poll() if (proc is not None and not killed) else None
-        if code:
+        if code is not None:
             return Result(status="FAILED", error=f"process exited {code} without result.json", raw={"exit_code": code})
         return Result(status="FAILED", error="process exited without result.json")
 

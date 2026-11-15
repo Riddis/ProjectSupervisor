@@ -1016,7 +1016,16 @@ class Supervisor:
         spend no retry budget on it (R-12). Called before `reconcile()` so a now-stale PREPARED record is never
         launched and a RUNNING one is stopped before this turn collects it. Every other open record (no
         `job_fingerprint`: a review, a verify, a diagnosis, a conversation, or a delivery from before this fix)
-        is left alone. Returns the attempt ids closed."""
+        is left alone.
+
+        Closing the task's only open attempt must never park it IN_PROGRESS with nothing routing it — neither
+        `tasks.eligible()` (NOT_STARTED/READY only) nor `sweep_stalled()` (FAILED/BLOCKED only) ever revisits an
+        IN_PROGRESS task on its own. So, exactly when no other open record is left for the task, this releases
+        it the same way a diagnosis `defer` already does (`escalation._release`): IN_PROGRESS -> BLOCKED ->
+        READY, the only legal route (`models.task.ALLOWED` has no direct IN_PROGRESS -> READY edge). `eligible()`
+        then holds the task behind whatever dependency just changed, same as any other READY task, or — if the
+        change was to `job` alone — dispatches it again next turn with the new contract. Returns the attempt ids
+        closed."""
         acted = []
         for rec in jobs_mod.open_records(self.layout):
             fp = rec.get("job_fingerprint")
@@ -1038,10 +1047,14 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result="SUPERSEDED", finished=now_iso(),
                                error="superseded: the task's job or dependencies changed while this attempt was open")
             tasks_mod.log(self.layout, "attempt_superseded", "loop", task=rec["task_id"], attempt=rec["attempt_id"])
-            tasks_mod.add_note(self.layout, rec["task_id"],
-                               f"{rec['attempt_id']}: superseded — its job or dependencies changed while it was open",
-                               actor="loop")
+            note = f"{rec['attempt_id']}: superseded — its job or dependencies changed while it was open"
+            tasks_mod.add_note(self.layout, rec["task_id"], note, actor="loop")
             acted.append(rec["attempt_id"])
+            still_open = [r for r in jobs_mod.for_task(self.layout, rec["task_id"]) if r["phase"] in jobs_mod.OPEN_PHASES]
+            if still_open or task.status != TaskStatus.IN_PROGRESS:
+                continue
+            tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.BLOCKED, actor="loop", note=note)
+            tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.READY, actor="loop", note=note)
         return acted
 
     def reconcile(self) -> None:
