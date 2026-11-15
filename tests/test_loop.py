@@ -14,6 +14,13 @@ def _write_artifact(root, run_dir, name="out.txt", content="x", **_):
     return {"status": "COMPLETE", "artifacts": [name], "notes": "wrote " + name}
 
 
+@pyad.job("corrupt_own_task")
+def _corrupt_own_task(root, run_dir, name="out.txt", **_):
+    (root / name).write_text("x")
+    (root / "state" / "tasks" / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    return {"status": "COMPLETE", "artifacts": [name], "notes": "corrupted its own task file"}
+
+
 def ptask(layout, tid, deps=(), name=None, owned=()):
     make_task(layout, tid, deps=deps)
     def fn(doc):
@@ -303,6 +310,50 @@ def test_a_task_depending_on_an_unreadable_one_is_not_dispatched(layout):
     c = tasks.load(layout, "C")
     assert c.status in (TaskStatus.NOT_STARTED, TaskStatus.READY)
     assert tasks.unmet_dependency(layout, c) == "BROKEN (unreadable)"
+
+
+def test_unreadable_task_file_with_a_prepared_job_record_holds_rather_than_blocks(layout):
+    """F1: `_ensure_in_progress`'s `TaskError` must not reach `launch()`'s caller. A task already holding a
+    PREPARED record whose file then turns unreadable must have that record held, not raise on every later turn -
+    one deduped owner item names the file, and a healthy task beside it still dispatches and completes."""
+    ptask(layout, "A"); ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    (layout.tasks / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    runtime.set_decision(layout, "RUN", "test")
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    held = jobs.read(layout, rec["attempt_id"])
+    assert held["phase"] == "PREPARED"
+    assert held.get("held")
+    items = [i for i in inbox.open_items(layout, "owner") if i.get("dedup_key") == "unreadable_task:A.yaml"]
+    assert len(items) == 1
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
+    assert (layout.root / "B.txt").exists()
+
+
+def test_result_for_a_task_whose_file_turned_unreadable_while_its_job_ran_closes_the_record(layout):
+    """F1: the same `TaskError` reaches `ingest()` through its own call to `_ensure_in_progress`. A result
+    arriving for a task whose file became unreadable while the job ran must close that record with the result,
+    not raise - the turn goes on and a healthy task beside it still completes."""
+    make_task(layout, "A")
+    def fn(doc):
+        doc["job"] = {"adapter": "python", "fn": "corrupt_own_task", "params": {"name": "A.txt"}}
+        doc["artifacts"] = ["A.txt"]
+    tasks._update(layout, "A", fn)
+    ptask(layout, "B")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=8)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert sup.errors == []
+    recs = jobs.for_task(layout, "A")
+    assert recs and recs[-1]["phase"] == "DONE"
+    assert recs[-1].get("result") == "COMPLETE"
+    assert tasks.load(layout, "B").status == TaskStatus.COMPLETE
 
 
 def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(layout):
