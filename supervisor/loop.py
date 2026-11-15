@@ -57,10 +57,13 @@ def _output_tail(run_dir: Path, lines: int = 40) -> str:
     return "\n\n".join(parts)
 
 
-def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
+def worker_report(result, run_dir: str | None, limit: int = 2500, lane_adapter: str | None = None) -> str:
     """What the worker said about why it stopped — its notes, the head of its HANDOFF.md, or (R-12) the tail of
     its own stdout/stderr when it left neither — so the failure detail (revision brief, diagnosis brief, task
-    record, owner item) carries the reason, not just "status BLOCKED"."""
+    record, owner item) carries the reason, not just "status BLOCKED". The output-tail fallback is scoped to a
+    deterministic lane (`lane_adapter` not a model lane): a model lane's own raw transcript is not a plain
+    process's stdout/stderr, and leaking it (e.g. an incidental "run /login" line) is exactly what R-12's own
+    finding was never about."""
     parts = []
     if getattr(result, "notes", None):
         parts.append(str(result.notes).strip())
@@ -71,7 +74,7 @@ def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
                 parts.append(hp.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             pass
-        if not parts:
+        if not parts and lane_adapter is not None and lane_adapter not in gate.MODEL_LANES:
             tail = _output_tail(Path(run_dir))
             if tail:
                 parts.append(tail)
@@ -896,7 +899,7 @@ class Supervisor:
                     return
             else:
                 head = result.error or f"status {result.status}" + (f"; missing: {', '.join(missing)}" if missing else "")
-                report = worker_report(result, run_dir) if result.status != "COMPLETE" else ""
+                report = worker_report(result, run_dir, lane_adapter=rec["adapter"]) if result.status != "COMPLETE" else ""
                 outcome = verify_mod.Outcome(False, head + (f"\n\nWorker report:\n{report}" if report else ""))
             self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE",
                                 worker_status=result.status, worker_raw=result.raw)
@@ -1378,7 +1381,8 @@ class Supervisor:
             state = escalation_mod._load(self.layout, task.id)
             last_note = str((stop or {}).get("note") or "")
             run_dir = next((a.run_dir for a in reversed(task.attempts) if a.run_dir), None)
-            report = worker_report(Result(status=task.status.value), run_dir)
+            report = worker_report(Result(status=task.status.value), run_dir,
+                                   lane_adapter=latest_delivery.get("adapter") if latest_delivery else None)
             detail = (f"{task.id} has been {task.status.value} since {at} with nothing in flight and no owner item. "
                       f"Last status note: {last_note or '(none)'}" + (f"\n\nLatest run report:\n{report}" if report else ""))
             if key not in state["events"] and escalation_mod.last_decision_at(self.layout, task.id) < at:
