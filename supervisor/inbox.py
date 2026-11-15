@@ -107,7 +107,11 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
     already names an existing item (open or answered) returns that item unchanged instead of writing another or
     counting against the cap. This is the atomic form `plugin.open_owned_item` needs for its own idempotence —
     scanning for a match outside this lock and then re-entering it to create one is not an option, since
-    `locks.FileLock` is not re-entrant (a second acquire by the same thread raises `LockHeld` immediately)."""
+    `locks.FileLock` is not re-entrant (a second acquire by the same thread raises `LockHeld` immediately).
+
+    `allowed_responses=[]`, given explicitly (not the default None), means the item takes no structured keyword at
+    all — only free text (an alert naming problems nobody can fix with ACCEPT/REJECT/MODIFY/REDO, R-06/R-17). `None`
+    still means "the four defaults"; only an explicit empty list opts out of them."""
     if len(summary) > MAX_SUMMARY_CHARS:
         raise InboxError(f"summary is {len(summary)} characters; limit is {MAX_SUMMARY_CHARS}")
     if detail is not None and len(detail) > MAX_DETAIL_CHARS:
@@ -121,7 +125,8 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
             raise InboxFull(for_role)
         item_id = _next_id(layout)
         doc = {"id": item_id, "kind": kind, "for": for_role, "from": from_, "status": "open", "subject": subject,
-               "summary": summary, "allowed_responses": list(allowed_responses or DEFAULT_RESPONSES),
+               "summary": summary,
+               "allowed_responses": list(DEFAULT_RESPONSES if allowed_responses is None else allowed_responses),
                "free_text": free_text, "task_id": task_id, "attempt_id": attempt_id}
         if approval_digest:
             doc["approval_digest"] = approval_digest
@@ -213,7 +218,8 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
             refusal = owned_by_plugin(layout, doc)
             if refusal:
                 raise InboxError(refusal)
-        allowed = doc.get("allowed_responses") or DEFAULT_RESPONSES
+        stored = doc.get("allowed_responses")
+        allowed = DEFAULT_RESPONSES if stored is None else stored
         token = response.split(None, 1)[0].upper()
         structured = token in {a.upper() for a in allowed}
         if not structured and not doc.get("free_text", True):
@@ -414,6 +420,24 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
             if note:
                 tasks_mod.add_note(layout, task_id, f"{item['id']} ({out['response']}): {note}", actor="owner")
             out["skipped"] = "deferred"
+            out["message"] = "recorded as a comment; the task is still stopped"
+            # Neither DEFER nor free text resumes the task - it is still BLOCKED/FAILED and must stay visibly
+            # waiting on the owner, not fall silent the moment this item answers and the stall sweep sees "the
+            # owner already answered this stop" (R-06). A fresh decision item, naming what just happened, keeps
+            # it in the owner's list with a way to act (REQUEUE/CANCEL/DEFER again); an owner who keeps writing
+            # free text keeps getting a fresh one, same as before this item was answered.
+            try:
+                reopened = create(layout, for_role="owner", subject=item.get("subject") or f"Decision needed: {task_id}",
+                                  summary=f"{item['id']} was answered ({out['response']}): recorded as a comment; "
+                                          f"{task_id} has not moved and is still stopped. REQUEUE = re-run it; "
+                                          "CANCEL = cancel it; DEFER = leave it stopped.",
+                                  kind=DECISION_KIND, allowed_responses=list(DECISION_RESPONSES), free_text=True,
+                                  from_="loop", task_id=task_id,
+                                  extra={"resume": item.get("resume") or "task", "blocked_at": item.get("blocked_at"),
+                                         "reopened_from": item["id"]})
+                out["reopened"] = reopened["id"]
+            except InboxFull:
+                pass                                         # the cap stands; the owner's other open items still show it
     except tasks_mod.TaskError as exc:
         out["error"] = str(exc)[:200]
 

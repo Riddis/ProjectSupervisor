@@ -138,13 +138,15 @@ def _skip_once(layout, task: Task, role: str) -> None:
 
 def dispatch(supervisor, task: Task, role: str) -> dict | None:
     """Dispatch one review attempt, or None if the lane's capacity is out and there is no fallback (token-free
-    wait, exactly like a primary dispatch deferral — nothing is consumed)."""
+    wait, exactly like a primary dispatch deferral — nothing is consumed). Logged once per (task, role) so the
+    reason shows on the Overview's event list instead of a dispatch that silently never happened (R-06/R-17)."""
     layout = supervisor.layout
     from . import packets as packets_mod
     prof = _role_profile(layout, role)
     try:
         adapter_name, overrides, same_vendor = lane_for(layout, role)
-    except CapacityDeferred:
+    except CapacityDeferred as exc:
+        tasks_mod.log(layout, "review_deferred", "loop", task=task.id, role=role, reason=str(exc)[:200])
         return None
     # A fallback actually ran only when the resolved lane differs from the role's own primary, or it carried
     # overrides of its own (the "unattended switch" case, no `engine` at all, can only ever match the primary

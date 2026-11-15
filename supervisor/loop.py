@@ -1299,17 +1299,32 @@ class Supervisor:
             tasks_mod.log(self.layout, "state_commit_error", "state_commit", error=str(exc)[:300])
             return None
 
+    IDLE_WAIT_REASON = {
+        TaskStatus.NOT_STARTED: "waiting on a phase gate or an unfinished dependency",
+        TaskStatus.READY: "eligible, but nothing has dispatched it",
+        TaskStatus.IN_PROGRESS: "in progress, with nothing currently running for it",
+        TaskStatus.WAITING_FOR_REVIEW: "waiting for a review to be dispatched",
+        TaskStatus.WAITING_FOR_HUMAN: "waiting on your approval",
+        TaskStatus.BLOCKED: "blocked, waiting on a decision",
+        TaskStatus.FAILED: "failed, waiting on a decision",
+    }
+
     def alert_if_idle(self, now: float | None = None) -> dict | None:
         """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
         work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
-        per-task sweep gets its chance first. It lists what each stuck task is waiting for."""
+        per-task sweep gets its chance first. It lists every non-terminal task that is not an owner hold (R-17: the
+        pre-1.7.0 version counted only FAILED/BLOCKED/WAITING_FOR_HUMAN, so an IN_PROGRESS or WAITING_FOR_REVIEW task
+        with nothing actually running for it never appeared; and a task the owner is deliberately holding is the
+        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list).
+        The item carries no ACCEPT/REJECT/MODIFY/REDO buttons: none of them does anything for "nothing can run"."""
         now = time.time() if now is None else now
         path = self.layout.runtime / "idle_alert.json"
         state = read_json(path) if path.exists() else {}
         tasks = tasks_mod.load_all(self.layout)
-        remaining = [t for t in tasks.values() if t.status not in (TaskStatus.COMPLETE, TaskStatus.CANCELLED)]
+        remaining = [t for t in tasks.values() if t.status not in TERMINAL]
+        waiting = [t for t in remaining if not t.held]
         idle = (not jobs_mod.open_records(self.layout) and not tasks_mod.eligible(self.layout, tasks)
-                and not inbox_mod.open_items(self.layout, "owner") and remaining)
+                and not inbox_mod.open_items(self.layout, "owner") and waiting)
         if not idle:
             if state.get("idle_since"):
                 atomic_json(path, {k: v for k, v in state.items() if k != "idle_since"})
@@ -1320,8 +1335,7 @@ class Supervisor:
             return None
         if now - float(state["idle_since"]) < 2 * self._stall_grace():
             return None
-        stuck = sorted((t for t in remaining if t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.WAITING_FOR_HUMAN)),
-                       key=lambda t: t.id)
+        stuck = sorted(waiting, key=lambda t: t.id)
         fingerprint = "|".join(f"{t.id}:{t.status.value}:{t.updated}" for t in stuck) or "deps-or-gates"
         if state.get("fingerprint") == fingerprint:
             return None
@@ -1330,16 +1344,15 @@ class Supervisor:
             notes = (t.model_extra or {}).get("notes") or []
             last = (notes[-1].get("note") if notes else "") or next(
                 (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
-            lines.append(f"{t.id} {t.status.value}: {str(last)[:220]}")
-        if not stuck:
-            lines.append("No task is failed or blocked: the remaining work waits on a phase gate or unfinished dependencies.")
+            reason = str(last) or self.IDLE_WAIT_REASON.get(t.status, "waiting")
+            lines.append(f"{t.id} {t.status.value}: {reason[:220]}")
         summary, detail = inbox_mod.fit(
             f"Nothing can run: {len(remaining)} task(s) remain, none is eligible, nothing is in flight. "
             + " · ".join(lines))
         try:
             item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
                                     summary=summary, detail=detail, kind="question", from_="loop",
-                                    extra={"idle_fingerprint": fingerprint})
+                                    allowed_responses=[], extra={"idle_fingerprint": fingerprint})
         except inbox_mod.InboxFull:
             return None
         state.update(fingerprint=fingerprint, item=item["id"], raised=now_iso())

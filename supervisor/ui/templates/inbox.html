@@ -105,6 +105,9 @@
     {% elif item.answer %}
     <p class="answer">Answered {{ item.answered_at | localtime }} by {{ item.answer.by }}: <strong>{{ item.answer.response }}</strong>
        {% if item.answer.note %}— {{ item.answer.note }}{% endif %}</p>
+    {% if item.applied and item.applied.message %}
+    <p class="muted">{{ item.applied.message }}{% if item.applied.reopened %} — see <a href="/inbox#inbox-item-{{ item.applied.reopened }}">{{ item.applied.reopened }}</a>{% endif %}</p>
+    {% endif %}
     {% endif %}
   </article>
   {% endfor %}
