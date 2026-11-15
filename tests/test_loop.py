@@ -376,6 +376,37 @@ def test_malformed_command_file_is_quarantined_and_later_commands_still_apply(la
     assert outcome["ok"] is False
 
 
+@pytest.mark.parametrize("name, raw", [
+    ("string_payload", '{"kind":"loop.pause","payload":"x"}'),
+    ("list_payload", '{"payload":["a","b"]}'),
+    ("list_kind", '{"kind":["loop.pause"]}'),
+])
+def test_command_envelope_with_wrong_typed_kind_or_payload_is_quarantined_and_later_commands_still_apply(layout, name, raw):
+    """F2 (round-1 review of 2.6.1, finding F2): a command file that *is* a JSON object but whose `kind` or
+    `payload` has the wrong type raises past the per-file guard R-02 added (`isinstance(cmd, dict)` only) -
+    `payload="x"` and `payload=["a","b"]` raise `ValueError` in `dict(payload, ...)`, `kind=["loop.pause"]` raises
+    `TypeError` in `HANDLERS.get([...])` - so the file is never quarantined and a `loop.pause` queued behind it
+    never applies."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    (layout.commands / "0000000000001-bad.json").write_text(raw, encoding="utf-8")
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert sup.errors == []
+    assert list(commands.pending(layout)) == []
+    quarantined = list((layout.commands / "quarantine").glob("*.json"))
+    assert [p.name for p in quarantined] == ["0000000000001-bad.json"]
+    assert quarantined[0].read_text(encoding="utf-8") == raw
+    applied_outcomes = list(layout.commands_applied.glob("0000000000001-bad*.json"))
+    assert len(applied_outcomes) == 1
+    outcome = json.loads(applied_outcomes[0].read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
+
+
 def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
     """R-03: `dispatch` allocates `len(jobs.for_task(...)) + 1`. `jobs.open_records` — called by every Overview
     and Agents GET — replaces a record it cannot read with a `.corrupt.json` stub and deletes the original, so
