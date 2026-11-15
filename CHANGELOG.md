@@ -11,11 +11,15 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   with no `unsafe-inline`/`unsafe-eval` in `script-src`, and every inline event handler in `supervisor/ui/templates`
   moved to a delegated listener in `static/live.js`.
 
-- **Fixed: one unreadable task file or malformed command file stopped the whole loop.** `tasks.load_all()` now
-  skips a file that fails to parse (reported once, through a deduped owner inbox item) instead of raising past it;
-  `commands.apply_all()` rejects and quarantines a command file that is not a JSON object instead of raising
-  `AttributeError` on it, so a `loop.pause` queued behind a bad file still applies in the same turn. `/overview`,
-  `/tasks` and `/roadmap` now show a broken task file as "(unreadable)" instead of 500ing.
+- **Fixed: one unreadable task file or malformed command file stopped the whole loop, including when the task
+  already had a job dispatched or a result arriving for it.** `tasks.load_all()` skips a file that fails to parse
+  (reported once, through a deduped owner inbox item) instead of raising past it; a task whose file turns
+  unreadable while it already has a job record open now has that job held, if it has not yet launched, or closed
+  with whatever result did arrive, if it has, instead of leaving the loop blocked a few turns later.
+  `commands.apply_all()` rejects and quarantines a command file that is not a JSON object, or whose `kind` or
+  `payload` is the wrong type, instead of raising on it, so a `loop.pause` queued behind a bad file still applies
+  in the same turn. `/overview`, `/tasks` and `/roadmap` now show a broken task file as "(unreadable)" instead of
+  500ing.
 
 - **Fixed: a lost or unreadable job record could have its id reused, overwriting a finished job's record.** Job
   numbers are now allocated from a counter held on the task document itself (`job_seq`), not by counting job
