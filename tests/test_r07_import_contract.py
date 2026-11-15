@@ -65,6 +65,24 @@ def test_refresh_stores_evidence_and_test_roots_and_notes_the_unapplied_job(layo
     assert r.get("job_not_applied") == ["A"]       # but the seed carried one, and the import says so
 
 
+def test_refresh_omitting_evidence_and_test_roots_keeps_them(layout):
+    # R-07(d): a refresh entry's omitted fields must not erase what an EARLIER refresh (or the store) already
+    # set. A seed row touching only `title` must not reset `evidence`/`test_roots` to their defaults, the same
+    # way it already leaves `owned_paths`/`checks` alone.
+    make_task(layout, "A", tests=["prose"], evidence="review", test_roots=["sub"], cost_category="deterministic")
+    seed = {"tasks": [_row("A", title="t2")]}
+    p = layout.root / "seed.yaml"
+    p.write_text(yaml.safe_dump(seed), encoding="utf-8")
+
+    r = tasks.import_seed(layout, p, update_ids=["A"])
+
+    doc = store.read(layout.tasks / "A.yaml")
+    assert r["updated"] == ["A"]
+    assert doc["title"] == "t2"
+    assert doc.get("evidence") == "review"
+    assert doc.get("test_roots") == ["sub"]
+
+
 def test_patch_can_add_one_dependency_without_resending_the_contract(layout):
     make_task(layout, "A", cost_category="deterministic")
     make_task(layout, "B", cost_category="deterministic")
