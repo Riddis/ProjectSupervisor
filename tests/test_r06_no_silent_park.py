@@ -12,6 +12,8 @@ from supervisor._vendor.contract import CapacityDeferred
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
+from tests.test_exception_route_and_checkpoints import fake_claude  # noqa: F401  (fixture)
+from tests.test_no_silent_failures import Recorder
 
 
 def events(layout, name: str) -> list[dict]:
@@ -51,6 +53,33 @@ def test_free_text_or_defer_answer_leaves_the_task_visibly_waiting_on_the_owner(
         "(an open or re-opened item), never silent")
     assert set(inbox.DECISION_RESPONSES) <= set(still_waiting[0].get("allowed_responses") or []), (
         "the task must still be reachable with a real way to act (REQUEUE/CANCEL/DEFER)"
+    )
+
+
+@pytest.mark.usefixtures("fake_claude")
+def test_free_text_answer_parks_the_task_with_nothing_watching_when_the_reopen_cannot_be(layout, monkeypatch):
+    """The fresh decision item a free-text/DEFER answer tries to open can itself fail (the owner's inbox is at its
+    per-role cap): the guarantee that the task stays watched must not depend on that create() succeeding."""
+    tid = "T-cap"
+    stop_at = _stopped_task(layout, tid, "BLOCKED", minutes_ago=15)
+    item = inbox.create(layout, for_role="owner", subject="s", summary="s", kind=inbox.DECISION_KIND,
+                        allowed_responses=list(inbox.DECISION_RESPONSES), task_id=tid)
+    with monkeypatch.context() as m:
+        m.setattr(inbox, "MAX_OPEN_PER_ROLE", 0)      # simulate the owner's inbox already at its cap
+        inbox.answer(layout, item["id"], "a")
+    assert tasks.load(layout, tid).status == TaskStatus.BLOCKED           # the free-text answer did not resume it
+    answered = inbox.all_items(layout)
+    [answered_item] = [i for i in answered if i["id"] == item["id"]]
+    assert not answered_item.get("applied", {}).get("reopened"), "the reopen must have failed (cap simulated as 0)"
+    assert events(layout, "decision_reopen_full"), (
+        "a reopen that cannot happen for want of room in the inbox must be logged, not swallowed silently"
+    )
+
+    sup = Recorder(layout)
+    acted = sup.sweep_stalled(now=stop_at + 7 * 24 * 3600)                # a week later, cap no longer simulated
+    assert tid in acted, (
+        f"{tid}: a free-text answer whose reopen could not happen must still leave the stall sweep treating the "
+        "task as unresolved, never silently skipped for good"
     )
 
 
