@@ -59,7 +59,7 @@ def load(layout: Layout, task_id: str) -> Task:
         raise TaskError(f"no such task {task_id}")
     try:
         doc = store.read(p)
-    except Exception as exc:  # noqa: BLE001 - a broken file is "unreadable", not a crash (R-02)
+    except Exception as exc:
         raise TaskError(f"{task_id}: unreadable: {exc}") from exc
     try:
         return Task.model_validate(doc)
@@ -78,7 +78,7 @@ def _report_unreadable(layout: Layout, path: Path, exc: Exception) -> None:
     if _last_task_error.get(key) != msg:
         _last_task_error[key] = msg
         log(layout, "task_unreadable", "loop", path=path.name, error=msg)
-    from . import inbox as inbox_mod          # local: inbox imports this module
+    from . import inbox as inbox_mod  # local: inbox imports this module
     try:
         inbox_mod.create(layout, for_role="owner", subject=f"Task file unreadable: {path.name}",
                          summary=f"{path.name} could not be loaded and is skipped: {msg}", kind="question",

@@ -120,7 +120,7 @@ def _report_unreadable(layout: Layout, p: Path, exc: Exception) -> str:
     key = (str(layout.root), p.name)
     if _last_job_error.get(key) != msg:
         _last_job_error[key] = msg
-        from . import tasks as tasks_mod            # local: tasks.py does not import jobs.py
+        from . import tasks as tasks_mod  # local: tasks.py does not import jobs.py
         tasks_mod.log(layout, "job_unreadable", "loop", path=p.name, error=msg)
     return msg
 
@@ -208,10 +208,8 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
         if rec["phase"] in ("SUBMITTED", "RUNNING") and rec.get("handle"):
             ad = REGISTRY.get(rec.get("adapter"))
             if ad is not None:
-                try:
+                with contextlib.suppress(Exception):  # the task retires either way
                     ad.terminate(rec["handle"])
-                except Exception:                              # noqa: BLE001 - the task retires either way
-                    pass
         set_phase(layout, rec["attempt_id"], "DONE", result=CLOSED_RESULT, error=reason, finished=now_iso(),
                  closed_by=actor)
         closed.append(rec["attempt_id"])
