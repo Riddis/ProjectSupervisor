@@ -401,7 +401,17 @@ class Supervisor:
         job_kind = (rec.get("spec") or {}).get("kind", "delivery")
         conversation = job_kind == "conversation"
         if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
-            self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
+            try:
+                self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
+            except tasks_mod.TaskError as exc:
+                # F1: the task file itself is unreadable (an editor's mid-write save, most likely on an active
+                # task - exactly this one). load_all()'s own turn scan already reports and dedupes the owner
+                # item; this record is simply held until the file is readable again, the same shape gate.check's
+                # own held branch below uses, rather than spending the loop's error budget on a bad input file.
+                reason = f"task file unreadable: {exc}"
+                if rec.get("held") != reason:
+                    tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+                return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         try:
             handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
         except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
@@ -765,7 +775,16 @@ class Supervisor:
                           error=result.error, terminal_task=True)
             return
         if kind != diagnosis_mod.KIND:
-            self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
+            try:
+                self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
+            except tasks_mod.TaskError:
+                # F1: the task file turned unreadable while this job ran (e.g. the job itself wrote a broken
+                # document before returning). Close the record with the result that did arrive, the same shape
+                # the terminal-task branch above already uses, rather than raising past once().
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
+                              error=result.error, task_unreadable=True)
+                return
         if result.status == "FAILED" and str(result.error or "").startswith("login_required:"):
             return self._lane_login_failed(rec, result, kind)
         run_dir = (rec.get("spec") or {}).get("run_dir")
