@@ -63,8 +63,3 @@ def register(adapter: Adapter) -> Adapter:
     return adapter
 
 
-def get(name: str) -> Adapter:
-    try:
-        return REGISTRY[name]
-    except KeyError as exc:
-        raise KeyError(f"unknown adapter {name!r}; known: {sorted(REGISTRY)}") from exc

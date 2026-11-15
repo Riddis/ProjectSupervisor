@@ -274,11 +274,6 @@ def artifact_errors(tasks: Iterable[Task], root: Path | None = None) -> list[str
     return artifact_problems(tasks, root)[0]
 
 
-def artifact_warnings(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
-    """Artifact entries that look like prose or a placeholder but are legal file names (artifact_problems warnings)."""
-    return artifact_problems(tasks, root)[1]
-
-
 def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);

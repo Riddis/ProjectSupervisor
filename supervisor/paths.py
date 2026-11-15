@@ -32,14 +32,6 @@ def root() -> Path:
     return find_root() or Path.cwd().resolve()
 
 
-def require_root() -> Path:
-    found = find_root()
-    if found is None:
-        raise NoProject(f"no {PROJECT_FILE} found in {Path.cwd()} or any parent; run `supervisor init <dir>` "
-                        "or set SUPERVISOR_ROOT")
-    return found
-
-
 class Layout:
     # Declared so the public plugin API's contract (supervisor.plugin, G2) records every path a Layout carries.
     root: Path

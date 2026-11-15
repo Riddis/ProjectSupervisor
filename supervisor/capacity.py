@@ -77,11 +77,6 @@ def ingest_claude_stream(layout: Layout, path, offset=0) -> int:
     return up.ingest_claude_stream(path, offset)
 
 
-def lines(layout: Layout) -> list[str]:
-    ensure(layout)
-    return up.capacity_lines()
-
-
 def windows(layout: Layout) -> dict:
     """Per engine, the measured windows; each says whether it holds dispatch (`gating`), its `floor` and the
     routing.yaml key that sets the floor (`floor_setting`, e.g. capacity.<engine>.weekly_gate_percent, or None)."""

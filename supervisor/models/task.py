@@ -19,8 +19,6 @@ class TaskStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-ACTIVE = {TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN,
-          TaskStatus.BLOCKED}
 TERMINAL = {TaskStatus.COMPLETE, TaskStatus.CANCELLED}
 
 # Manual/loop transitions (advance() handles delivery-driven ones separately).
@@ -223,12 +221,6 @@ class Task(BaseModel):
     def scoped_paths(self) -> list[str]:
         """owned_paths narrower than the tree — the roots containment is checked against; [] in exclusive mode."""
         return [] if self.exclusive() else list(self.owned_paths)
-
-    def needs_review(self) -> bool:
-        return bool(self.reviewer)
-
-    def needs_approval(self) -> bool:
-        return self.human_approval != HumanApproval.none
 
     def requires_commands(self, model_lane: bool) -> bool:
         """Whether this delivery must report at least one re-run command (G1, 2.4.0)."""

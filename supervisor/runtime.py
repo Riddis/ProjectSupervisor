@@ -8,7 +8,6 @@ from ._vendor.contract import atomic_json, read_json
 from .paths import Layout
 from .store import now_iso
 
-STATUSES = ("RUNNING", "PAUSED", "DRAINING", "STOPPED", "BLOCKED", "CRASHED")
 # DRAIN: launch nothing more, let running jobs finish and be ingested, then STOP — and shut the
 # workstation down when `shutdown_on_drain` is set on the runtime document (the Control Center's "Shut down PC
 # when idle" button). RUN cancels it at any point before the loop has stopped.

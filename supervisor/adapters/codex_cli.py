@@ -22,7 +22,6 @@ from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_catego
                          role_profile, routing)
 from .process import ProcessAdapter, job_spec, scrub_env
 
-CODEX_AUTH_RE = AUTH_FAILURE_RE
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 
 

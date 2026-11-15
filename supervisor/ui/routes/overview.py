@@ -198,7 +198,7 @@ def overview_context(layout: Layout) -> dict:
         update = None
     return {
         **live_ctx,
-        "update": update, "update_lines": updates_mod.describe(update) if update else [],
+        "update": update,
         "phase_label": labels.get(live_ctx["phase"], "Project progress"),
         "project_name": project_mod.name(layout), "panels": _panels(layout),
         "eligible": elig, "unblocked_next": unblocked_next(layout, tasks, gate_data), "gates": all_gates,

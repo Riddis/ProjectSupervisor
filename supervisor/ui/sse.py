@@ -3,14 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import html
-import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import Request
 
 from .logtail import tail_bytes
-from .timefmt import local_stamp
 
 
 def _format(data: str, event: str | None = None) -> str:
@@ -66,15 +64,3 @@ async def tail_file(request: Request, path: Path, poll_s: float = 0.5, from_end:
                 offset = 0                            # file was truncated/replaced
                 buffer = ""
         await asyncio.sleep(poll_s)
-
-
-def log_line_text(raw: str) -> str:
-    try:
-        ev = json.loads(raw)
-    except ValueError:
-        return raw
-    bits = [local_stamp(ev.get("ts", "")), ev.get("actor", ""), ev.get("event", "")]
-    extra = {k: v for k, v in ev.items() if k not in ("ts", "actor", "event") and v not in (None, "")}
-    if extra:
-        bits.append(json.dumps(extra, ensure_ascii=False))
-    return " ".join(str(b) for b in bits if b)

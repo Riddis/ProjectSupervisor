@@ -11,7 +11,6 @@ from .adapters import REGISTRY
 from .models.task import TERMINAL, CostCategory, Task
 from .paths import Layout
 
-DEFAULT_LIMITS = gate.DEFAULT_LIMITS
 MODEL_LANES = gate.MODEL_LANES
 # Default adapter per cost category; config/routing.yaml `cost_lanes` overrides any entry (a plugin lane for
 # `local`, say). Selection order (`adapter_name`): the task's own `job.adapter`; else, when the cost lane is a model

@@ -33,7 +33,6 @@ KIND_LABELS = {
     "policy": "Policy escalations",
     "question": "Agent questions",
 }
-KIND_ORDER = list(KIND_LABELS)
 SCORE_KEYS = {"score", "scores", "decision", "reason", "verdict"}
 TEXT_EVIDENCE_LIMIT = 4000
 
@@ -159,10 +158,6 @@ def _delivery(layout: Layout, item: dict) -> dict | None:
     except tasks_mod.TaskError:
         return None
     return delivery_view.view(layout, task, item["approval_digest"])
-
-
-def inbox_badge_count(layout: Layout) -> int:
-    return len(inbox_mod.open_items(layout))
 
 
 @router.get("/inbox")

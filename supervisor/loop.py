@@ -18,7 +18,6 @@ from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
-from .locks import LockHeld as _LockHeld  # noqa: F401
 from ._vendor import handoff
 from .adapters import REGISTRY, Result
 from .locks import FileLock, LockHeld

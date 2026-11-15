@@ -176,7 +176,7 @@ def phase_and_gates_passed(layout: Layout, tasks: dict) -> tuple[int, list[str]]
     return tasks_mod.current_phase(tasks), [f"G{p}" for p in phases_done]
 
 
-def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: list[str] | None = None) -> list[str]:
+def state_lines(layout: Layout, runtime: dict | None = None) -> list[str]:
     """The lines `render_state` writes to STATE.md, computed but not written: `supervisor status` prints exactly
     this (with the live runtime record) without the write — see `render_state` and `cli.status`."""
     tasks = tasks_mod.load_all(layout)
@@ -203,8 +203,6 @@ def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: lis
              f"- **Owner inbox:** {len(open_inbox)} open item(s)" + (": " + ", ".join(i.get('id') for i in open_inbox) if open_inbox else ""),
              f"- **Decisions:** {len(list(layout.decisions.glob('*.md')))} (DECISIONS.md) · **Issues open:** "
              f"{sum(1 for p in layout.issues.glob('*.yaml') if store.read(p).get('status') == 'open')} (ISSUES.md)", ""]
-    if capacity_lines:
-        lines += ["## Capacity", ""] + [f"- {l}" for l in capacity_lines] + [""]
     lines += ["## Last events", ""] + [f"- {e.get('ts')} {e.get('actor')} {e.get('event')} {e.get('task', '')} {e.get('to', '') or ''}"
                                         + (" FORCED" if e.get('forced') else "") + f" {e.get('note', '') or ''}".rstrip()
                                         for e in _tail_log(layout)] + [""]
@@ -216,9 +214,9 @@ def state_lines(layout: Layout, runtime: dict | None = None, capacity_lines: lis
     return lines
 
 
-def render_state(layout: Layout, runtime: dict | None = None, capacity_lines: list[str] | None = None) -> Path:
+def render_state(layout: Layout, runtime: dict | None = None) -> Path:
     return _render_write(layout, layout.root / "STATE.md",
-                         lambda: state_lines(layout, runtime=runtime, capacity_lines=capacity_lines))
+                         lambda: state_lines(layout, runtime=runtime))
 
 
 # Last error per (project root, view), so a view that keeps failing is logged once, not on every loop iteration.
