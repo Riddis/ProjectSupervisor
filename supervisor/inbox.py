@@ -421,11 +421,14 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
                 tasks_mod.add_note(layout, task_id, f"{item['id']} ({out['response']}): {note}", actor="owner")
             out["skipped"] = "deferred"
             out["message"] = "recorded as a comment; the task is still stopped"
-            # Neither DEFER nor free text resumes the task - it is still BLOCKED/FAILED and must stay visibly
-            # waiting on the owner, not fall silent the moment this item answers and the stall sweep sees "the
-            # owner already answered this stop" (R-06). A fresh decision item, naming what just happened, keeps
-            # it in the owner's list with a way to act (REQUEUE/CANCEL/DEFER again); an owner who keeps writing
-            # free text keeps getting a fresh one, same as before this item was answered.
+            # Neither DEFER nor free text resumes the task - it is still BLOCKED/FAILED. Opening a fresh decision
+            # item here, naming what just happened, is the common case that keeps it in the owner's list with a
+            # way to act (REQUEUE/CANCEL/DEFER again); an owner who keeps writing free text keeps getting a fresh
+            # one, same as before this item was answered. But this create() can fail for want of room in the
+            # owner's inbox, so the guarantee that the task stays watched must not live here alone: loop.py's
+            # sweep_stalled never treats `skipped: "deferred"` (set just above, whether or not the reopen below
+            # succeeds) as a resolved stop, so a stall still escalated on its own schedule even when the cap
+            # leaves this reopen with nowhere to go (R-06).
             try:
                 reopened = create(layout, for_role="owner", subject=item.get("subject") or f"Decision needed: {task_id}",
                                   summary=f"{item['id']} was answered ({out['response']}): recorded as a comment; "
@@ -437,7 +440,7 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
                                          "reopened_from": item["id"]})
                 out["reopened"] = reopened["id"]
             except InboxFull:
-                pass                                         # the cap stands; the owner's other open items still show it
+                tasks_mod.log(layout, "decision_reopen_full", by, item=item["id"], task=task_id)
     except tasks_mod.TaskError as exc:
         out["error"] = str(exc)[:200]
 

@@ -1231,12 +1231,17 @@ class Supervisor:
           2. escalated since it stopped and still nothing routing it → one owner decision item.
 
         Deliberate holds are left alone: a stop the owner made themselves (Hold / set-status), an open or snoozed owner
-        item for the task, an owner answer (DEFER / note) given after the stop, a failure of the task's `human`
-        attempt (the owner's REJECT/MORE_LIKE — linked through the attempt, not by comparing timestamps, because the
-        loop collects the answer after it was given). A diagnosis `defer` is not a hold: it either releases the task
-        to READY behind the dependencies it named or goes to the owner (supervisor.diagnosis), so a task still
-        stopped after one — a defer recorded before that rule, parked on prose that nothing acts on — is a stall
-        like any other. Returns the task ids acted on."""
+        item for the task, a failure of the task's `human` attempt (the owner's REJECT/MORE_LIKE — linked through
+        the attempt, not by comparing timestamps, because the loop collects the answer after it was given). A
+        REQUEUE or CANCEL answer moves the task off FAILED/BLOCKED at once (inbox.apply_decision), so it is never
+        seen here at all — this sweep only ever loads tasks still FAILED/BLOCKED. A DEFER or free-text answer is
+        the opposite: it is recorded as a comment and the task does not move, so it is never treated as a resolved
+        stop here, whether or not the fresh decision item that answer tries to open could itself be opened — that
+        create() can fail for want of room in the owner's inbox, and this sweep's guarantee must not depend on it
+        succeeding (R-06). A diagnosis `defer` is not a hold either: it either releases the task to READY behind
+        the dependencies it named or goes to the owner (supervisor.diagnosis), so a task still stopped after one —
+        a defer recorded before that rule, parked on prose that nothing acts on — is a stall like any other.
+        Returns the task ids acted on."""
         now = time.time() if now is None else now
         grace = self._stall_grace()
         busy = {r["task_id"] for r in jobs_mod.open_records(self.layout)}
@@ -1257,8 +1262,9 @@ class Supervisor:
             mine = [i for i in items if i.get("task_id") == task.id]
             if any(i.get("status") in ("open", "snoozed") for i in mine):
                 continue                                          # waiting on the owner (a snooze defers, it is not a stall)
-            if any(max(str((i.get("applied") or {}).get("at") or ""), str(i.get("answered_at") or "")) >= at for i in mine):
-                continue                                          # the owner already answered this stop
+            if any(max(str((i.get("applied") or {}).get("at") or ""), str(i.get("answered_at") or "")) >= at
+                   and (i.get("applied") or {}).get("skipped") != "deferred" for i in mine):
+                continue          # a REQUEUE/CANCEL answered this stop; a DEFER/free-text one is a comment, not one
             records = jobs_mod.for_task(self.layout, task.id)
             deliveries = [r for r in records if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
             if deliveries and max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])).get("adapter") == "human":
@@ -1346,8 +1352,10 @@ class Supervisor:
                 (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
             reason = str(last) or self.IDLE_WAIT_REASON.get(t.status, "waiting")
             lines.append(f"{t.id} {t.status.value}: {reason[:220]}")
+        held_ct = len(remaining) - len(waiting)
+        held_note = f" ({held_ct} held by you, not listed)" if held_ct else ""
         summary, detail = inbox_mod.fit(
-            f"Nothing can run: {len(remaining)} task(s) remain, none is eligible, nothing is in flight. "
+            f"Nothing can run: {len(waiting)} task(s) remain{held_note}, none is eligible, nothing is in flight. "
             + " · ".join(lines))
         try:
             item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
