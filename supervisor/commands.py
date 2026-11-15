@@ -143,18 +143,22 @@ def _note(layout, payload, actor):
 
 @handler("task.approve")
 def _approve(layout, payload, actor):
+    """Idempotent by command id, and a replay always finishes the transition (R-08): a crash between the durable
+    approval write and advance() must not strand the task WAITING_FOR_HUMAN forever with evidence that already
+    says it is done — deduping the record is not enough on its own, so advance() runs whether or not this call
+    wrote anything."""
     cid = payload.get("_id")
     t = tasks_mod.load(layout, payload["task_id"])
-    if cid and any(a.command_id == cid for a in t.delivery.approvals):
-        return {"skipped": "already applied", "status": t.status.value}
-    digest = payload["digest"]
-    if t.delivery.digest != digest:
-        raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
-                                  f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
-    tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
-                              payload.get("note", ""), command_id=cid)
+    already = bool(cid) and any(a.command_id == cid for a in t.delivery.approvals)
+    if not already:
+        digest = payload["digest"]
+        if t.delivery.digest != digest:
+            raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
+                                      f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
+        tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
+                                  payload.get("note", ""), command_id=cid)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already applied"} if already else {}) | {"status": t.status.value}
 
 
 @handler("inbox.answer")
@@ -238,6 +242,18 @@ def _set_job(layout, payload, actor):
     return {"status": t.status.value}
 
 
+@handler("checkpoint.retry")
+def _checkpoint_retry(layout, payload, actor):
+    """Force one checkpoint attempt for a COMPLETE task right now, bypassing the retry bound (R-08): for a `failed`
+    record that has already spent its automatic retries, once the owner has dealt with whatever git problem caused
+    them. `checkpoint()` itself still decides refused/failed/committed/unchanged — this only gets it called again."""
+    from . import checkpoint as checkpoint_mod
+    t = tasks_mod.load(layout, payload["task_id"])
+    if t.status.value != "COMPLETE" or not (t.delivery and t.delivery.digest):
+        raise ValueError(f"{payload['task_id']}: not a completed delivery, nothing to checkpoint")
+    return checkpoint_mod.checkpoint(layout, t)
+
+
 @handler("issue.resolve")
 def _issue_resolve(layout, payload, actor):
     """The only writer that closes an issue record: nothing else touches state/issues/ (escalation.open_issue and
@@ -267,29 +283,33 @@ def _deliver(layout, payload, actor):
 
 @handler("task.verify")
 def _verify(layout, payload, actor):
+    """Idempotent by digest+outcome, and a replay always finishes the transition (R-08, same shape as task.approve)."""
     t = tasks_mod.load(layout, payload["task_id"])
     v = t.delivery.verification if t.delivery else None
-    if v and v.digest == payload["digest"] and v.ok == bool(payload.get("ok", True)):
-        return {"skipped": "already verified", "status": t.status.value}
-    tasks_mod.record_verification(layout, payload["task_id"], payload["digest"], bool(payload.get("ok", True)),
-                                  payload.get("report"), payload.get("detail", ""), actor=actor)
+    already = bool(v and v.digest == payload["digest"] and v.ok == bool(payload.get("ok", True)))
+    if not already:
+        tasks_mod.record_verification(layout, payload["task_id"], payload["digest"], bool(payload.get("ok", True)),
+                                      payload.get("report"), payload.get("detail", ""), actor=actor)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already verified"} if already else {}) | {"status": t.status.value}
 
 
 @handler("task.review")
 def _review(layout, payload, actor):
+    """Idempotent by digest+role+verdict, and a replay always finishes the transition (R-08, same shape as
+    task.approve)."""
     t = tasks_mod.load(layout, payload["task_id"])
-    if t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"] and r.verdict.value == payload["verdict"]
-                          for r in t.delivery.reviews):
-        return {"skipped": "already reviewed", "status": t.status.value}
-    # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report that
-    # could not be hashed when it was submitted is never authenticated by whatever the file holds when this applies.
-    provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
-    tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
-                            payload.get("vendor"), payload.get("report"), **provenance)
+    already = bool(t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"]
+                                      and r.verdict.value == payload["verdict"] for r in t.delivery.reviews))
+    if not already:
+        # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report
+        # that could not be hashed when it was submitted is never authenticated by whatever the file holds when
+        # this applies.
+        provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
+        tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
+                                payload.get("vendor"), payload.get("report"), **provenance)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already reviewed"} if already else {}) | {"status": t.status.value}
 
 
 @handler("gate.ack")

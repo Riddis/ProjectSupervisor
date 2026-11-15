@@ -1464,6 +1464,7 @@ class Supervisor:
         jobs_snapshot = jobs_mod.open_records(self.layout)
         with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
             self.reconcile()             # collects finished work under every decision; launches only when the gate allows
+            tasks_mod.reconcile_advance(self.layout, tasks_snapshot)  # evidence-complete tasks never wait on a replay (R-08)
             self.poll_capacity()
             if decision in ("PAUSE", "DRAIN"):
                 if decision == "PAUSE":

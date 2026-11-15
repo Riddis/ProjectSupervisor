@@ -1032,3 +1032,22 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
         from . import escalation as escalation_mod
         escalation_mod.recover_issues_for_task(layout, task_id, attempt_id, t.delivery.digest or "")
     return t
+
+
+def reconcile_advance(layout: Layout, tasks: dict[str, Task] | None = None) -> list[str]:
+    """Advance every task whose current records already satisfy the completion rule but whose status has not
+    caught up (R-08): a crash, or any other missed call to advance() after a durable evidence write, leaves exactly
+    this gap, and closing it must not depend on a replay ever arriving. Checked here from the in-memory snapshot
+    (`_evaluate` is pure, no disk read) so a normal turn with nothing stuck pays for one pass over already-loaded
+    tasks, not a second lock and read per task; `advance()` itself re-reads and re-decides, only for the few that
+    actually need it. Returns the ids it advanced."""
+    tasks = tasks if tasks is not None else load_all(layout)
+    out = []
+    for t in tasks.values():
+        if t.status not in ADVANCEABLE:
+            continue
+        target, _note = _evaluate(t)
+        if target != t.status:
+            advance(layout, t.id)
+            out.append(t.id)
+    return out
