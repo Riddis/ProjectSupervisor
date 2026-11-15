@@ -3,6 +3,67 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.7.0 — 2026-11-15
+
+- **Added: a one-field contract patch, so adding a dependency no longer means resending a task's whole contract.**
+  `tasks.patch_task(layout, task_id, fields, actor)` changes named fields of one existing task directly —
+  `add_dependency`/`remove_dependency` (one id or a list) edit `depends_on` against the task's own stored list —
+  validated against the graph as it will actually read, current rules applied only to the one task touched.
+  `supervisor/commands.py` adds the `task.patch` handler. A seed import also now validates the graph it will
+  actually write (not every row the seed happens to carry) and `CONTRACT_FIELDS` gained `evidence`/`test_roots`,
+  both newly exempt from a refresh's clear-on-omission alongside the existing `owned_paths`/`checks`, so a refresh
+  entry that omits them no longer silently resets a task's evidence mode or test roots.
+
+- **Added: a `checkpoint.retry` command, for a checkpoint that has spent its automatic attempts.**
+  `checkpoint.pending()` now retries a transient `failed` checkpoint automatically, up to a bound, and a crash-
+  interrupted `committing` record the same way; once that bound is spent, a new deduped owner issue names
+  `checkpoint.retry` as the way forward. Acceptance (`task.approve`/`task.verify`/`task.review`) now calls
+  `advance()` unconditionally, even on a replay, closing the window where a crash between the durable write and
+  the transition stranded a task with nothing watching it; a new `reconcile_advance()` runs every turn as a
+  safety net for the same window. A checkpoint record that reads `refused` (a digest mismatch) now keeps a task's
+  delivered paths protected from a later state commit, where before any checkpoint record released them.
+
+- **Added: a `supervisor issue resolve` CLI verb and an `/issues` Control Center page.** A task reaching COMPLETE
+  through `advance()` now recovers (not silently closes) every open issue naming it, carrying the completing
+  attempt and digest; an explicit resolve still moves a recovered issue to `resolved`. The new CLI verb and page
+  both queue the same `issue.resolve` command the raw `supervisor cmd issue.resolve` already could, giving it a
+  real entry point for the first time.
+
+- **Fixed: a queued command's failure never reached the job or loop that queued it.** A command now carries
+  `submitted_by` (a job's attempt id, or an interactive actor); a job's own result is held pending until every
+  command it queued has resolved, failing the task and naming the command's own error on a failed one, with
+  exactly one deduped owner issue for a job-submitted failure and none for an interactive one. The Control
+  Center's action result now polls `/commands/{id}/status` until a queued command resolves, instead of showing
+  "queued" forever.
+
+- **Fixed: a free-text or DEFER answer could park a task with nothing watching it, and the idle alert named only
+  three of seven non-terminal statuses.** The stall sweep itself, not a reopened inbox item, now carries the
+  guarantee that a stopped task stays visibly watched after any answer that is not REQUEUE/CANCEL — whether or
+  not a fresh item meant to show that can itself be opened against a full inbox. The idle alert now names every
+  non-terminal, non-held task with its status and reason, never fires for an owner hold alone, and drops the
+  ACCEPT/REJECT/MODIFY/REDO buttons that did nothing for it.
+
+- **Fixed: Hold refused a failed task, and the task page offered actions the command would refuse.**
+  `ALLOWED[FAILED]` gains `BLOCKED`, so the owner can hold a task right after it fails, before an automatic retry
+  races whatever they are about to repair; a queued retry record stays parked while the hold is on and proceeds
+  within the same budget once released. The task page now greys Hold, Cancel and Re-queue, with a reason, whenever
+  the underlying command would refuse them.
+
+- **Fixed: a failed deterministic job was always relaunched unchanged, and a contract change did not stop a
+  running attempt.** A deterministic lane's FAILED result is now classified once, by its own real exit code or a
+  declared `retry_on` list, and the stall sweep only retries a transient one — a plain deterministic exit goes to
+  diagnosis instead, carrying the job's own output. A running attempt whose `job` or dependencies change
+  underneath it is terminated and its task released to READY at once, instead of left to run on stale inputs or
+  parked indefinitely once terminated; a zero exit with no `result.json` of its own is now captured as a failure,
+  not misread as a lost process.
+
+- **Fixed: the verifier refused a declared command the worker itself could run, leaked job-control environment
+  variables into it, and left every verification's scratch directory behind.** `permitted()` now normalises both
+  spellings of an allow-listed tool (`python -m ruff check` / `ruff check`) before matching, without widening what
+  may run; a declared command's environment drops `SUPERVISOR_ATTEMPT`, `SUPERVISOR_RUN_DIR`, `SUPERVISOR_ROOT`
+  and `SUPERVISOR_PROGRESS_FILE`, and each observation now names the interpreter, working directory and `PATH` it
+  ran with; a passing verification's `--basetemp` scratch directory is removed, a failing one's is kept and named.
+
 ## 2.6.1 — 2026-11-15
 
 - **Fixed: a streamed log or transcript line reached the browser unescaped, and the Control Center allowed inline
