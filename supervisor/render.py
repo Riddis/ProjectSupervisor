@@ -99,15 +99,24 @@ def render_tasks(layout: Layout) -> Path:
     return _render_write(layout, layout.root / "TASKS.md", build)
 
 
+def issue_counts(layout: Layout) -> dict[str, int]:
+    """Open, recovered and resolved counted separately (R-21): a recovered issue — its task completed, but nobody
+    has made the explicit resolved decision yet — is neither open work nor a closed matter."""
+    rows = [store.read(p) for p in layout.issues.glob("*.yaml")]
+    return {s: sum(1 for r in rows if r.get("status") == s) for s in ("open", "recovered", "resolved")}
+
+
 def render_issues(layout: Layout) -> Path:
     def build() -> list[str]:
         rows = [store.read(p) for p in sorted(layout.issues.glob("*.yaml"))]
+        counts = issue_counts(layout)
         lines = ["# ISSUES (rendered — records live in state/issues/)", "",
+                 f"{counts['open']} open · {counts['recovered']} recovered · {counts['resolved']} resolved", "",
                  "| ID | Status | Severity | Title | Owner | Resolution | Resolved by | Resolving task |",
                  "|---|---|---|---|---|---|---|---|"]
         for r in rows:
             lines.append(f"| {r.get('id')} | {r.get('status')} | {r.get('severity')} | {r.get('title')} | "
-                         f"{r.get('owner_role')} | {r.get('resolution') or r.get('resolution_task') or '—'} | "
+                         f"{r.get('owner_role')} | {r.get('resolution') or r.get('recovered_attempt') or r.get('resolution_task') or '—'} | "
                          f"{r.get('resolved_by') or '—'} | {r.get('resolved_by_task') or '—'} |")
         return lines
     return _render_write(layout, layout.root / "ISSUES.md", build)
@@ -190,6 +199,7 @@ def state_lines(layout: Layout, runtime: dict | None = None) -> list[str]:
     current_phase, gates_passed = phase_and_gates_passed(layout, tasks)
     open_inbox = [store.read(p) for p in sorted(layout.inbox.glob("*.yaml"))]
     open_inbox = [i for i in open_inbox if i.get("status") == "open"]
+    issues = issue_counts(layout)
     runtime = runtime or {}
     last = _tail_log(layout, 1)
     stamp = last[0].get("ts") if last else max((t.updated or "" for t in tasks.values()), default="")
@@ -201,8 +211,8 @@ def state_lines(layout: Layout, runtime: dict | None = None) -> list[str]:
              f"- **Eligible next:** {', '.join(t.id for t in elig) or 'none'}",
              f"- **Supervisor:** {runtime.get('status', 'not running')}" + (f" (pid {runtime.get('pid')}, heartbeat {runtime.get('heartbeat')})" if runtime.get('pid') else ""),
              f"- **Owner inbox:** {len(open_inbox)} open item(s)" + (": " + ", ".join(i.get('id') for i in open_inbox) if open_inbox else ""),
-             f"- **Decisions:** {len(list(layout.decisions.glob('*.md')))} (DECISIONS.md) · **Issues open:** "
-             f"{sum(1 for p in layout.issues.glob('*.yaml') if store.read(p).get('status') == 'open')} (ISSUES.md)", ""]
+             f"- **Decisions:** {len(list(layout.decisions.glob('*.md')))} (DECISIONS.md) · **Issues:** "
+             f"{issues['open']} open, {issues['recovered']} recovered, {issues['resolved']} resolved (ISSUES.md)", ""]
     lines += ["## Last events", ""] + [f"- {e.get('ts')} {e.get('actor')} {e.get('event')} {e.get('task', '')} {e.get('to', '') or ''}"
                                         + (" FORCED" if e.get('forced') else "") + f" {e.get('note', '') or ''}".rstrip()
                                         for e in _tail_log(layout)] + [""]

@@ -124,8 +124,9 @@ _ISSUE_ID_RE = re.compile(r"^I-\d+$")                 # the exact shape _next_is
 
 def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task: str | None, actor: str) -> dict:
     """The only way state/issues/ is closed: the `issue.resolve` command (supervisor.commands), queued like every
-    other command. Idempotent: an already-resolved issue is a no-op, not a second write — a status open issue
-    records are never anything but open until this runs.
+    other command. Idempotent: an already-resolved issue is a no-op, not a second write. Runs from `open` or from
+    `recovered` (R-21: a task completing marks an issue `recovered`, never `resolved` — that stays this function's
+    own, explicit decision) alike; only a terminal `resolved` short-circuits.
 
     `issue_id` is attacker-reachable text (R3): rejecting the format up front (`I-<digits>`, nothing else) already
     refuses every separator, `..` traversal and absolute id, because none of those match it. The containment check
@@ -140,7 +141,7 @@ def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task
     if not p.exists():
         raise ValueError(f"no such issue {issue_id!r}")
     doc = store.read(p)
-    if doc.get("id") != issue_id or "severity" not in doc or doc.get("status") not in ("open", "resolved"):
+    if doc.get("id") != issue_id or "severity" not in doc or doc.get("status") not in ("open", "recovered", "resolved"):
         raise ValueError(f"not an issue record: {issue_id!r}")
     if doc.get("status") == "resolved":
         return {"skipped": "already resolved", "id": issue_id}
@@ -151,6 +152,27 @@ def resolve_issue(layout: Layout, issue_id: str, resolution: str, resolving_task
     store.update(p, fn, lock_path=layout.state / ".issues.lock")
     tasks_mod.log(layout, "issue_resolved", actor, id=issue_id, resolution=resolution[:200], task=resolving_task)
     return {"id": issue_id, "status": "resolved"}
+
+
+def recover_issues_for_task(layout: Layout, task_id: str, attempt_id: str | None, digest: str) -> None:
+    """A task reaching COMPLETE (`tasks.advance`) recovers every OPEN issue that names it as `resolution_task`
+    (R-21): marked `recovered`, with the attempt and digest that did it, instead of sitting open forever or being
+    silently closed as `resolved` — that stays a separate, explicit decision (`issue.resolve`), since the owner
+    may still want to see what caused it. A `recovered` issue is excluded from every "open" count the same way a
+    `resolved` one already is (render.state_lines, render.render_issues)."""
+    for p in sorted(layout.issues.glob("I-*.yaml")):
+        try:
+            doc = store.read(p)
+        except (OSError, ValueError):
+            continue
+        if doc.get("resolution_task") != task_id or doc.get("status") != "open":
+            continue
+        def fn(d, attempt_id=attempt_id, digest=digest):
+            d.update(status="recovered", recovered_attempt=attempt_id, recovered_digest=digest,
+                     recovered_at=store.now_iso())
+            return d
+        store.update(p, fn, lock_path=layout.state / ".issues.lock")
+        tasks_mod.log(layout, "issue_recovered", "escalation", id=doc.get("id"), task=task_id, attempt=attempt_id)
 
 
 def find_issue(layout: Layout, task_id: str, signature: str, grant: int = 0) -> dict | None:

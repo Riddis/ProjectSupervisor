@@ -39,12 +39,14 @@ app = typer.Typer(help="Supervisor: run a project with AI agents under a determi
 task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
+issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in the Control Center)")
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
+app.add_typer(issue_app, name="issue")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
@@ -335,6 +337,14 @@ def inbox_answer(item_id: str, response: str, note: str = "", by: str = "owner")
     item = inbox_mod.answer(_writer(), item_id, response, note, by)
     render.render_all(_layout())
     typer.echo(f"{item_id}: {item.get('status')}")
+
+
+@issue_app.command("resolve")
+def issue_resolve(issue_id: str, resolution: str = "", resolving_task: str = "", by: str = "owner"):
+    """Close an issue record (R-21): the only CLI verb that writes state/issues/, queued like every other command."""
+    _echo_cmd(commands_mod.submit_or_apply(_layout(), "issue.resolve",
+                                           {"issue_id": issue_id, "resolution": resolution,
+                                            "resolving_task": resolving_task or None}, by), issue_id)
 
 
 @gate_app.command("show")

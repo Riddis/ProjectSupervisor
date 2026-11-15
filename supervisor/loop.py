@@ -889,26 +889,28 @@ class Supervisor:
             rp = Path(rec["spec"]["run_dir"]) / "verification.json"
             atomic_json(rp, {"ok": outcome.ok, "detail": outcome.detail, **outcome.report})
             report_path = rp.relative_to(self.layout.root).as_posix() if rp.is_relative_to(self.layout.root) else str(rp)
-        tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail, actor="loop")
-        tasks_mod.advance(self.layout, task_id, actor="advance")
+        delivering_attempt = event or rec["attempt_id"]       # the delivery attempt this digest belongs to, whether
+        tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail,
+                                      actor="loop")           # `rec` is that job itself or its separate verify job
+        tasks_mod.advance(self.layout, task_id, actor="advance", attempt_id=delivering_attempt)
         if outcome.ok:
             return
         lane = rec.get("adapter", "")
         if substantive:
             # the agent believed it was done and deterministic verification disagreed
-            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=event or rec["attempt_id"])
+            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=delivering_attempt)
         elif lane == "human":
             # the owner answered REJECT / MORE_LIKE: that is the owner's decision, never auto-retried
             return
         elif worker_status == "BLOCKED":
             # the worker says it cannot proceed: no blind retry, straight to the exception route (diagnosis → owner)
-            escalation_mod.record_failure(self, task_id, "worker_blocked", outcome.detail, event=event or rec["attempt_id"],
+            escalation_mod.record_failure(self, task_id, "worker_blocked", outcome.detail, event=delivering_attempt,
                                           retry=False)
         elif lane in self.IMMEDIATE_RETRY_LANES:
             # an agent run that ended FAILED/PARTIAL, crashed, timed out or was lost: retried within the revision
             # budget, then the exception route. (Capacity limits never get here — DEFERRED and handoff-incomplete runs
             # are continuations, see requeue().)
-            escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=event or rec["attempt_id"])
+            escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=delivering_attempt)
         # a deterministic lane (process/python/plugin adapters) that FAILED is left to sweep_stalled(): its grace
         # period is the back-off — a timeout or a busy resource usually clears by itself — and it then retries within the same
         # budget and escalates the same way

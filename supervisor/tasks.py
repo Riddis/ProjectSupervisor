@@ -1008,8 +1008,10 @@ def record_approval(layout: Layout, task_id: str, digest: str, response: str, by
     return t
 
 
-def advance(layout: Layout, task_id: str, actor: str = "advance") -> Task:
-    """The only path to COMPLETE. Decides from the locked, freshly read document."""
+def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: str | None = None) -> Task:
+    """The only path to COMPLETE. Decides from the locked, freshly read document. `attempt_id`, when the caller
+    knows which delivery attempt produced the digest now completing (loop.record_outcome does), is recorded on
+    any issue this task's completion recovers (R-21, escalation.recover_issues_for_task)."""
     outcome = {}
 
     def fn(doc):
@@ -1026,4 +1028,7 @@ def advance(layout: Layout, task_id: str, actor: str = "advance") -> Task:
     except _NoChange:
         return load(layout, task_id)
     log(layout, "task_status", actor, task=task_id, **outcome)
+    if outcome.get("to") == TaskStatus.COMPLETE.value:
+        from . import escalation as escalation_mod
+        escalation_mod.recover_issues_for_task(layout, task_id, attempt_id, t.delivery.digest or "")
     return t
