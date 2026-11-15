@@ -43,6 +43,29 @@
     }
   });
 
+  // An action result swapped in with data-pending (its command queued for a running loop, not yet applied) polls
+  // /commands/<id>/status until the loop has processed it, then shows applied or failed in place of "queued" (R-19).
+  function watchCommand(root) {
+    var el = (root || document).querySelector("[data-command-id][data-pending]");
+    if (!el) return;
+    var id = el.getAttribute("data-command-id");
+    function poll() {
+      if (!document.body.contains(el) || el.getAttribute("data-command-id") !== id) return;   // superseded
+      fetch("/commands/" + encodeURIComponent(id) + "/status", { credentials: "same-origin", cache: "no-store" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!document.body.contains(el) || el.getAttribute("data-command-id") !== id) return;
+          if (!d || d.pending) { window.setTimeout(poll, 2000); return; }
+          el.removeAttribute("data-pending");
+          el.className = "flash flash-" + (d.ok ? "applied" : "error");
+          el.textContent = d.ok ? (d.kind || "command") + " applied" : (d.error || (d.kind || "command") + " failed");
+        })
+        .catch(function () { window.setTimeout(poll, 2000); });
+    }
+    poll();
+  }
+  document.body.addEventListener("htmx:afterSwap", function () { watchCommand(document); });
+
   var version = metaContent(document, "live-version");
   var boot = metaContent(document, "live-boot");
   var lastRefresh = Date.now();
@@ -269,6 +292,7 @@
     document.addEventListener("visibilitychange", function () {
       if (!document.hidden && !timer) tick();
     });
+    watchCommand(document);
     render();
     schedule();
   }

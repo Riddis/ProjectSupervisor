@@ -29,20 +29,72 @@ def new_id() -> str:
     return f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
 
 
-def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> Path:
+def _submitted_by(actor: str, job_id: str | None) -> dict:
+    """Who to notify about this command's outcome (R-19): the job attempt that queued it (explicit `job_id` only —
+    never inferred from the calling process's own environment, which a job's `SUPERVISOR_ATTEMPT` can leak into
+    unrelated work, R-24), else the interactive actor that submitted it. A job's result is not ingested as complete
+    while one of its own commands is still unresolved (supervisor.loop.ingest); an interactive submission is simply
+    reported back to whoever is watching the page. The one caller that genuinely runs as a job's own command —
+    `supervisor cmd`, the CLI a process job's own argv invokes — reads `SUPERVISOR_ATTEMPT` itself and passes it
+    on, deliberately, as `job_id`."""
+    return {"kind": "job", "id": job_id} if job_id else {"kind": "interactive", "actor": actor}
+
+
+def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None,
+          job_id: str | None = None) -> Path:
     """Queue a command. `command_id` (default: a new id) names the command file and becomes `payload["_id"]`: a
     caller that resubmits with the same id gets the command applied once, because apply_all() skips a pending file
-    whose applied record already exists."""
+    whose applied record already exists. `job_id` names the job attempt this command is part of (default: the
+    `SUPERVISOR_ATTEMPT` of the calling process, if any) — see `_submitted_by`."""
     layout.commands.mkdir(parents=True, exist_ok=True)
     cid = command_id or new_id()
     p = layout.commands / f"{cid}.json"
-    atomic_json(p, {"id": cid, "kind": kind, "payload": payload, "actor": actor, "submitted": now_iso()})
+    atomic_json(p, {"id": cid, "kind": kind, "payload": payload, "actor": actor, "submitted": now_iso(),
+                    "submitted_by": _submitted_by(actor, job_id)})
     try:
         layout.wake.parent.mkdir(parents=True, exist_ok=True)
         layout.wake.write_text(now_iso(), encoding="utf-8")
     except OSError:
         pass
     return p
+
+
+def _read_json(p: Path) -> dict | None:
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def for_job(layout: Layout, job_id: str) -> list[dict]:
+    """Every command job `job_id` submitted, pending or applied, oldest first (R-19): a pending entry carries
+    `pending: True`; an applied one carries `ok` and, on failure, `error`."""
+    out = []
+    for p in sorted(layout.commands.glob("*.json")):
+        cmd = _read_json(p)
+        if cmd and (cmd.get("submitted_by") or {}).get("id") == job_id:
+            out.append({**cmd, "pending": True})
+    if layout.commands_applied.exists():
+        for p in sorted(layout.commands_applied.glob("*.json")):
+            cmd = _read_json(p)
+            if cmd and (cmd.get("submitted_by") or {}).get("id") == job_id:
+                out.append(cmd)
+    return out
+
+
+def outcome_for_job(layout: Layout, job_id: str) -> str | dict | None:
+    """`None` when `job_id` queued no command; `"pending"` while any of them has not been applied yet; the first
+    failed one's applied record (`ok: False`, with `kind`/`error`) once any has failed; `"ok"` when every one of
+    them applied cleanly. A job's result must not be treated as complete on `"pending"`, and must be failed with
+    the named command's error on anything but `None`/`"ok"` (R-19)."""
+    cmds = for_job(layout, job_id)
+    if not cmds:
+        return None
+    if any(c.get("pending") for c in cmds):
+        return "pending"
+    failed = [c for c in cmds if not c.get("ok", True)]
+    return failed[0] if failed else "ok"
 
 
 HANDLERS = {}
@@ -459,6 +511,21 @@ def _system_shutdown_cancel(layout, payload, actor):
     return shutdown_mod.cancel(layout, actor)
 
 
+def _open_job_command_issue(layout: Layout, cmd: dict) -> None:
+    """A failed command with no interactive submitter (R-19): the job that queued it has already finished and
+    moved on to its own result, so nothing short of an owner item names the command and its error. Deduped like
+    every other escalation issue, by the task (or, with none, the command kind) and a signature of the error."""
+    from . import escalation
+    key = str((cmd.get("payload") or {}).get("task_id") or f"command:{cmd.get('kind')}")
+    sig = escalation.signature(f"job_command_failed:{cmd.get('kind')}:{cmd.get('error')}")
+    if escalation.find_issue(layout, key, sig) is not None:
+        return
+    job_id = (cmd.get("submitted_by") or {}).get("id")
+    detail = f"{cmd.get('kind')} ({cmd.get('id')}), queued by job {job_id}, failed: {cmd.get('error')}"
+    escalation.open_issue(layout, title=f"a queued command failed: {cmd.get('kind')}", severity="medium",
+                          owner_role="owner", detail=detail, resolution_task=key, signature=sig)
+
+
 def pending(layout: Layout) -> list[Path]:
     return sorted(p for p in layout.commands.glob("*.json"))
 
@@ -508,6 +575,9 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
         if not cmd["ok"] or not scope["logged"]:
             tasks_mod.log(layout, "command", cmd.get("actor", "cli"), kind=cmd.get("kind"), id=cmd.get("id"),
                           ok=cmd["ok"], error=cmd.get("error"))
+        if not cmd["ok"] and (cmd.get("submitted_by") or {}).get("kind") == "job":
+            # The job that queued this is already gone - nobody but an owner item is watching the result (R-19).
+            _open_job_command_issue(layout, cmd)
         atomic_json(layout.commands_applied / p.name, cmd)
         try:
             p.unlink()
@@ -517,9 +587,10 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     return outcomes
 
 
-def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> dict:
+def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None,
+                    job_id: str | None = None) -> dict:
     """CLI/UI entry point: queue the command; if no loop holds the lock, take it and apply immediately."""
-    p = submit(layout, kind, payload, actor, command_id=command_id)
+    p = submit(layout, kind, payload, actor, command_id=command_id, job_id=job_id)
     try:
         with FileLock(layout.lock, owner=f"{actor}-direct"):
             outcomes = apply_all(layout)

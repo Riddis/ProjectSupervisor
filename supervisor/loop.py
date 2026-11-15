@@ -774,6 +774,19 @@ class Supervisor:
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                           error=result.error, terminal_task=True)
             return
+        job_outcome = commands_mod.outcome_for_job(self.layout, rec["attempt_id"])
+        if job_outcome == "pending":
+            # The job itself finished, but a command it queued (SUPERVISOR_ATTEMPT at submit time) has not been
+            # applied yet: declaring this result done now would complete the task before its own queued work is
+            # known to have worked (R-19). Leave the record open; collect() is idempotent and tries again next turn.
+            return
+        if isinstance(job_outcome, dict):
+            # One of the job's own queued commands failed after the job itself returned; nothing else saw that
+            # (the owner item an interactive-less failure needs is opened in commands.apply_all). The job's result
+            # fails with the command's own error instead of whatever the job otherwise reported.
+            tasks_mod.log(self.layout, "job_command_failed", "loop", task=task_id, attempt=rec["attempt_id"],
+                          command=job_outcome.get("kind"), error=job_outcome.get("error"))
+            result = Result(status="FAILED", error=f"{job_outcome.get('kind')} failed: {job_outcome.get('error')}")
         if kind != diagnosis_mod.KIND:
             try:
                 self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)

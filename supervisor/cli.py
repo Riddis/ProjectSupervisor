@@ -545,8 +545,12 @@ def drain(shutdown: bool = False, actor: str = "owner"):
 
 @app.command()
 def cmd(kind: str, payload: str = "{}", actor: str = "owner"):
-    """Submit any command (JSON payload) — applied by the running supervisor, or directly if none runs."""
-    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), kind, json.loads(payload), actor)))
+    """Submit any command (JSON payload) — applied by the running supervisor, or directly if none runs. Run from
+    inside a job's own argv (its process inherits `SUPERVISOR_ATTEMPT`), the command is tagged as that job's own
+    (R-19): the job's result then waits on it, and a failure with no interactive submitter opens an owner item."""
+    import os
+    job_id = os.environ.get("SUPERVISOR_ATTEMPT") or None
+    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), kind, json.loads(payload), actor, job_id=job_id)))
 
 
 @app.command()
