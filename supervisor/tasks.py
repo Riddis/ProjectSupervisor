@@ -32,6 +32,12 @@ ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus
 CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "actions", "artifacts", "tests",
                    "checks", "owned_paths", "reviewer", "review_note", "acceptance", "escalation", "human_approval",
                    "approval_note", "cost_category", "evidence", "test_roots"]
+# A refresh is a whole-contract replace: a seed row that omits a CONTRACT_FIELDS key clears it (R-07d, by design —
+# use patch_task for a change to one field without resending the rest). These four are the exception: once set,
+# they outlive a seed row that does not mention them, the same way the store itself (migrate_ownership) may set
+# owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
+# refresh touching only an unrelated field would have silently reset them to their defaults.
+REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
 # `job` is a contract field too (what a task runs), but it keeps its own writer (apply_job/task.set_job, D-018):
 # never copied by a refresh or a patch. A seed or patch row that carries one is reported, not silently dropped.
 
@@ -486,11 +492,13 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
 
 
 def _refresh_contract(doc: dict, t: dict) -> dict:
-    """Copy the seed's contract fields onto a stored task document and validate the result."""
+    """Copy the seed's contract fields onto a stored task document and validate the result. Whole-contract
+    replace except REFRESH_STICKY_FIELDS (R-07d): an omitted key elsewhere is cleared, an omitted sticky one is
+    left at whatever the document already had."""
     for k in CONTRACT_FIELDS:
         if k in t:
             doc[k] = t[k]
-        elif k not in ("owned_paths", "checks"):   # ownership/checks set in the store outlive a seed that lacks them
+        elif k not in REFRESH_STICKY_FIELDS:
             doc.pop(k, None)
     Task.model_validate(doc)
     return doc
