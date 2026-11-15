@@ -214,6 +214,27 @@ def test_task_detail_renders_a_fixture_task_with_attempts(layout, auth_client):
     assert "claude_cli" in r.text
 
 
+def test_task_detail_greys_out_actions_the_status_refuses(layout, auth_client):
+    """R-18: the page must not offer Hold/Cancel/Re-queue where the command itself would refuse them."""
+    from supervisor import tasks as tasks_mod
+    make_task(layout, "T0-03")
+    tasks_mod.set_status(layout, "T0-03", "COMPLETE", actor="owner", note="done", force=True)
+
+    text = auth_client.get("/tasks/T0-03").text
+
+    hold_button = re.search(r'<button type="submit"[^>]*>Hold</button>', text).group()
+    cancel_button = re.search(r'<button type="submit"[^>]*>Cancel</button>', text).group()
+    requeue_button = re.search(r'<button type="submit"[^>]*>Re-queue</button>', text).group()
+    assert "disabled" in hold_button and "disabled" in cancel_button and "disabled" in requeue_button
+
+    make_task(layout, "T0-04")
+    tasks_mod.set_status(layout, "T0-04", "IN_PROGRESS")
+    tasks_mod.set_status(layout, "T0-04", "FAILED")
+    text2 = auth_client.get("/tasks/T0-04").text
+    hold_button2 = re.search(r'<button type="submit"[^>]*>Hold</button>', text2).group()
+    assert "disabled" not in hold_button2       # Hold is legal from FAILED (R-18)
+
+
 def test_no_route_accepts_a_filesystem_path_from_the_client(layout, auth_client):
     # path traversal through the one route that takes an opaque "key" must not resolve outside the cache dir
     r = auth_client.get("/thumb/" + "..%2F..%2F..%2Fetc%2Fpasswd")

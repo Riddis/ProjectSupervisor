@@ -16,7 +16,7 @@ import json
 import re
 import threading
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Optional
 
 import yaml
 from pydantic import ValidationError
@@ -755,6 +755,26 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
     t = _update(layout, task_id, fn)
     log(layout, "task_held", actor, task=task_id, note=note)
     return t
+
+
+PAGE_ACTIONS = ("hold", "cancel", "requeue")
+
+
+def action_blocked_reason(action: str, status: TaskStatus) -> Optional[str]:
+    """None when the named task-page action would succeed for a task in `status` - i.e. hold()/set_status()
+    would not raise an illegal-transition error - else the reason to show, greyed, instead of letting the page
+    offer an action its status refuses (R-18: five of eight failed owner commands in the records were exactly
+    that). `action` is one of PAGE_ACTIONS; `requeue`'s target mirrors the real route's own choice."""
+    if action == "hold":
+        ok = status == TaskStatus.BLOCKED or TaskStatus.BLOCKED in ALLOWED[status]
+    elif action == "cancel":
+        ok = status == TaskStatus.CANCELLED or TaskStatus.CANCELLED in ALLOWED[status]
+    elif action == "requeue":
+        target = TaskStatus.NOT_STARTED if status == TaskStatus.CANCELLED else TaskStatus.READY
+        ok = status == target or target in ALLOWED[status]
+    else:
+        raise ValueError(action)
+    return None if ok else f"not available while the task is {status.value}"
 
 
 def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", seed: int = 0, **extra) -> tuple[Task, str]:

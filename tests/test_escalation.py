@@ -108,8 +108,9 @@ def test_replay_ignores_a_sibling_review_attempt_when_checking_whether_the_revis
 
 
 def test_escalate_on_a_failed_task_adds_a_note_instead_of_an_illegal_transition(layout):
-    """verification failures leave the task FAILED (tasks.advance()); FAILED -> BLOCKED is not an allowed manual
-    transition, so escalation must not attempt it — a note is enough, since FAILED already stops automatic work."""
+    """verification failures leave the task FAILED (tasks.advance()); `_apply`'s escalate branch only moves a
+    task off IN_PROGRESS, never a FAILED one (that is for the owner's own Hold to do, R-18) — a note is enough,
+    since FAILED already stops automatic work."""
     make_task(layout, "T")
     tasks.set_status(layout, "T", "IN_PROGRESS")
     tasks.set_status(layout, "T", "FAILED")

@@ -28,17 +28,20 @@
   </form>
   <form method="post" action="/tasks/{{ t.id }}/requeue" class="inline-form">
     {% include "partials/csrf.html" %}
-    <button type="submit">Re-queue</button>
+    <button type="submit"{% if action_reasons.requeue %} disabled title="{{ action_reasons.requeue }}"{% endif %}>Re-queue</button>
+    {% if action_reasons.requeue %}<span class="muted">{{ action_reasons.requeue }}</span>{% endif %}
   </form>
   <form method="post" action="/tasks/{{ t.id }}/hold" class="inline-form">
     {% include "partials/csrf.html" %}
     <input type="text" name="note" placeholder="reason">
-    <button type="submit">Hold</button>
+    <button type="submit"{% if action_reasons.hold %} disabled title="{{ action_reasons.hold }}"{% endif %}>Hold</button>
+    {% if action_reasons.hold %}<span class="muted">{{ action_reasons.hold }}</span>{% endif %}
   </form>
   <form method="post" action="/tasks/{{ t.id }}/cancel" class="inline-form" data-confirm="Cancel {{ t.id }}?">
     {% include "partials/csrf.html" %}
     <input type="text" name="note" placeholder="reason">
-    <button type="submit">Cancel</button>
+    <button type="submit"{% if action_reasons.cancel %} disabled title="{{ action_reasons.cancel }}"{% endif %}>Cancel</button>
+    {% if action_reasons.cancel %}<span class="muted">{{ action_reasons.cancel }}</span>{% endif %}
   </form>
 </section>
 
