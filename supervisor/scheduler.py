@@ -118,8 +118,7 @@ def resolve_lane(layout: Layout, task: Task, *, role: str | None = None, home: s
         bits = [f"role {role}'s fallback lane ({lane}); {base} unavailable" + (", same vendor" if same_vendor else "")]
     if lane in MODEL_LANES and revision:
         if senior:
-            from .adapters.claude_cli import role_profile
-            senior_model = role_profile(layout, role).get("senior_model")
+            senior_model = gate.role_config(layout, role).get("senior_model")
             if senior_model:
                 model = model or senior_model
                 bits.append("senior model (second automatic revision)")

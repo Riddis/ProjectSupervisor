@@ -141,8 +141,10 @@ class Supervisor:
         ad = REGISTRY[adapter_name]
         # `reason` (scheduler.resolve_lane, R-16) is the one line naming why this lane and model: durable on the
         # job record and the task's own attempt entry alike, so a model change (a senior revision, the return to
-        # the base model, a fallback) is never silent again.
-        job_extra = {**(extra or {}), "reason": reason}
+        # the base model, a fallback) is never silent again. Omitted, not written as a null, when a caller (a
+        # review, a verify, a diagnosis, a conversation) has none to give — those records stay exactly as narrow
+        # as before this.
+        job_extra = {**(extra or {}), "reason": reason} if reason else dict(extra or {})
         if kind == "conversation":          # no Task document backs a conversation thread; nothing to count on
             n = len(jobs_mod.for_task(self.layout, task.id)) + 1
             attempt_id = f"{task.id}.a{n}"
@@ -1046,11 +1048,13 @@ class Supervisor:
                     task = Task.model_validate(doc)
                 extra = {"continuation_grant": escalation_mod.current_grant(self.layout, task_id)}
                 note = "continuation after capacity limit"
+                lane_reason = f"role {task.owner_role}'s own attempt, continued on its lane ({last['adapter']})"
                 if "same_vendor" in last:
                     extra["same_vendor"] = last["same_vendor"]
                     if last["same_vendor"]:
                         note += " (same-vendor fallback)"
-                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra)
+                        lane_reason += "; same-vendor fallback, carried over from the attempt being continued"
+                self.dispatch(task, last["adapter"], deferred_until=time.time(), note=note, extra=extra, reason=lane_reason)
                 jobs_mod.set_phase(self.layout, last["attempt_id"], "DONE", continued=True)
 
     def _repair_capped_escalation(self, task_id: str, last: dict, recs: list[dict]) -> None:
@@ -1126,7 +1130,8 @@ class Supervisor:
                 task, kind_extra = self._reroute_rebuild(r, kind)
                 if task is not None:
                     self.dispatch(task, lane, note=f"rerouted from {r['adapter']}", kind=kind,
-                                  extra={"rerouted_from": r["attempt_id"], **kind_extra})
+                                  extra={"rerouted_from": r["attempt_id"], **kind_extra},
+                                  reason=f"fallback: {r['adapter']} unavailable ({r.get('error')}); rerouted to {lane}")
             jobs_mod.set_phase(self.layout, r["attempt_id"], "DONE", continued=True)
         return last.get("result") == "REROUTED"
 

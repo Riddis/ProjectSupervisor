@@ -81,6 +81,7 @@ def test_a_torn_continuation_repair_keeps_the_fallback_s_keys_and_note(layout, m
     assert not lost(recs[1]), f"repaired continuation lost the fallback's keys/flag: {lost(recs[1])}"
     note = tasks.load(layout, "A").attempts[-1].note
     assert "same-vendor fallback" in note, f"repaired attempt note does not say same-vendor fallback: {note!r}"
+    assert recs[1].get("reason") and "same-vendor fallback" in recs[1]["reason"]   # R-16: never silent
 
 
 def test_a_rebuilt_fallback_review_keeps_the_fallback_s_keys_and_note(layout, monkeypatch):

@@ -165,6 +165,7 @@ def test_a_torn_continuation_write_below_the_cap_is_still_repaired(layout):
     assert len(recs) == before + 1                        # the missed continuation is queued now
     assert recs[-1]["spec"]["kind"] == "delivery"
     assert jobs.read(layout, "T.a1").get("continued") is True
+    assert recs[-1].get("reason") and "continued on its lane" in recs[-1]["reason"]   # R-16: never silent
 
 
 def test_repair_continuations_enforces_the_same_cap_as_requeue(layout, fake_claude):
@@ -604,7 +605,8 @@ def fake_dispatch_recording(layout, tid, created):
     def fn(task, adapter_name, **kwargs):
         n = len(jobs.for_task(layout, tid)) + 1
         new = jobs.write(layout, dict(attempt_id=f"{tid}.a{n}", task_id=tid, adapter=adapter_name, phase="RUNNING",
-                                      spec={"kind": kwargs.get("kind", "delivery")}, handle={}, **kwargs.get("extra", {})))
+                                      spec={"kind": kwargs.get("kind", "delivery")}, handle={},
+                                      reason=kwargs.get("reason"), **kwargs.get("extra", {})))
         created.append(new)
         return new
     return fn
@@ -681,6 +683,7 @@ def test_a_torn_delivery_reroute_is_repaired_with_the_fallback_s_own_job_and_fla
     assert new.get("same_vendor") is True                                 # flagged exactly like a fallback review
     assert new.get("rerouted_from") == "F.a1"
     assert jobs.read(layout, "F.a1").get("continued") is True
+    assert new.get("reason") and "fallback:" in new["reason"] and "claude_cli" in new["reason"]   # R-16: never silent
 
 
 def test_a_torn_diagnosis_reroute_is_repaired_with_the_same_vendor_flag_too(layout):
