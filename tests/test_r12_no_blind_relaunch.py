@@ -11,7 +11,6 @@ import time
 
 from supervisor import commands, jobs, store, tasks
 from supervisor.adapters import REGISTRY
-from supervisor.escalation import process_outcome_retryable
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
@@ -54,6 +53,7 @@ class Recorder(Supervisor):
 
 
 def test_a_deterministic_exit_is_not_relaunched_and_diagnosis_carries_the_output(layout):
+    from supervisor.escalation import process_outcome_retryable
     process_task(layout, "T", [sys.executable, "-c", "import sys; sys.stderr.write('boom\\n'); sys.exit(3)"])
     run_to_failed(layout, "T")
     assert len(delivery_records(layout, "T")) == 1
@@ -66,7 +66,19 @@ def test_a_deterministic_exit_is_not_relaunched_and_diagnosis_carries_the_output
     assert "boom" in issue["detail"]                                     # the worker's own output travels with it
 
 
+def test_a_zero_exit_without_result_json_is_captured_not_lost(layout):
+    """`parse_result` tested `if code:` — a child that exits 0 with no `result.json` of its own (a deterministic
+    contract violation, since this adapter always needs one) read back as "lost" (no `exit_code` in `raw`),
+    which `_process_failure_retryable` always retries. `code is not None` captures the real 0 and lets it be
+    classified like any other deterministic exit."""
+    from supervisor.escalation import process_outcome_retryable
+    process_task(layout, "T", [sys.executable, "-c", "pass"])      # exits 0, writes no result.json
+    run_to_failed(layout, "T")
+    assert process_outcome_retryable(layout, "T", "T.a1") is False
+
+
 def test_a_declared_retryable_exit_still_gets_one_retry_after_the_grace_period(layout):
+    from supervisor.escalation import process_outcome_retryable
     process_task(layout, "T", [sys.executable, "-c", "import sys; sys.exit(7)"], retry_on=[7])
     run_to_failed(layout, "T")
     assert process_outcome_retryable(layout, "T", "T.a1") is True
@@ -78,6 +90,7 @@ def test_a_declared_retryable_exit_still_gets_one_retry_after_the_grace_period(l
 def test_a_lost_process_is_still_retried_not_diagnosed(layout):
     """A process the adapter never got a result from (killed, crashed, adopted after a restart) is unknown, not
     ruled out: the same back-off as today, never an immediate exception route."""
+    from supervisor.escalation import process_outcome_retryable
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(30)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
@@ -90,6 +103,10 @@ def test_a_lost_process_is_still_retried_not_diagnosed(layout):
 
 
 def test_a_running_attempt_is_superseded_when_its_job_changes(layout):
+    """Superseding must not park the task: closing its only open attempt is the SAME route a diagnosis `defer`
+    already uses to release an IN_PROGRESS task (IN_PROGRESS -> BLOCKED -> READY), so `eligible()` can see it as
+    soon as it is released — same turn, since nothing else holds it — and dispatches it again under the new job,
+    never left IN_PROGRESS with nothing routing it."""
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(5)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
@@ -102,10 +119,16 @@ def test_a_running_attempt_is_superseded_when_its_job_changes(layout):
     assert rec["phase"] == "DONE" and rec.get("result") == "SUPERSEDED"
     assert not REGISTRY["process"].alive(handle)                         # actually terminated, not just marked
     assert not (layout.runtime / "escalation" / "T.json").exists()       # no retry budget spent
+    rec2 = jobs.read(layout, "T.a2")                                     # released and dispatched, not parked
+    assert rec2["spec"]["argv"][-1] == "pass"                            # ...under the NEW job, not the old one
+    assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS
 
 
 def test_a_running_attempt_is_superseded_when_a_dependency_is_added(layout):
-    make_task(layout, "DEP", status="COMPLETE")       # terminal: never itself dispatched, only named as a dependency
+    """The released task is READY, not re-dispatched blind: `eligible()` holds it behind the dependency the
+    supersede was for, exactly the case the finding named ('a fresh dependency only ever held the next launch,
+    never the one already running') — now it holds this one too."""
+    make_task(layout, "DEP", status="BLOCKED")        # not COMPLETE, and never itself dispatched or swept here
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(5)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
@@ -114,3 +137,9 @@ def test_a_running_attempt_is_superseded_when_a_dependency_is_added(layout):
     sup.once()
     rec = jobs.read(layout, "T.a1")
     assert rec["phase"] == "DONE" and rec.get("result") == "SUPERSEDED"
+    assert tasks.load(layout, "T").status == TaskStatus.READY            # released, not parked IN_PROGRESS
+    sup.once()
+    assert len(delivery_records(layout, "T")) == 1                       # still held behind DEP: no blind relaunch
+    tasks.set_status(layout, "DEP", TaskStatus.COMPLETE, actor="owner", note="test: clear the dependency", force=True)
+    sup.once()
+    assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS      # released the moment DEP clears
