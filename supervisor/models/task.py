@@ -67,7 +67,9 @@ class CostCategory(str, Enum):
 
 
 class Attempt(BaseModel):
-    id: str
+    id: Optional[str] = None            # a job id today; removed in step 15 (§2.7 of the attempt-identity design)
+                                          # — kept, optional and never written by the new allocator, only so an
+                                          # un-migrated document still parses
     resource: str
     at: str
     outcome: str = ""
@@ -76,6 +78,13 @@ class Attempt(BaseModel):
     session_id: Optional[str] = None
     run_dir: Optional[str] = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    # the delivery-attempt shape the migration writes (§2.7): additive here, unused until the writer switch
+    n: Optional[int] = None
+    opened: Optional[str] = None
+    closed: Optional[str] = None
+    cause: Optional[str] = None
+    jobs: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
 
@@ -169,6 +178,9 @@ class Task(BaseModel):
     attempts: list[Attempt] = Field(default_factory=list)      # dispatch attempts only (retry budgets, §2.6)
     job_seq: int = 0                                           # highest job number allocated (R-03); 0 on a task
                                                                  # written before this field existed
+    counters: dict[str, Any] = Field(default_factory=dict)     # §2.3: {attempt, jobs: {<n>: {s,v,r,d}},
+                                                                 # task_jobs: {<k>: n}} — tasks.allocate_job's own
+                                                                 # block, monotonic, {} on a task with none yet
 
     history: list[dict[str, Any]] = Field(default_factory=list)  # status changes {at, by, from, to, note, forced?}
     forced: Optional[dict[str, Any]] = None                     # set when the owner forced a status; rendered

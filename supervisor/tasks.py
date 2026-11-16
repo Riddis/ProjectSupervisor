@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -796,6 +797,62 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
                                               .model_dump(exclude_none=True))
     t = _update(layout, task_id, fn)
     return t, allocated["id"]
+
+
+# ---- the attempt-identity allocator (§2.2, §2.3 of the attempt-identity design) — not yet called from the loop.
+# A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
+# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job (today
+# only a diagnosis raised before any delivery ever exists, §2.5).
+_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d"}
+
+
+@dataclass(frozen=True)
+class JobId:
+    """A job's identity exactly as `allocate_job` minted it. `id` is derived for a file name, a URL, a log line
+    and a human — never parsed back into these fields; every reader takes them from the job record instead."""
+    task_id: str
+    kind: str
+    seq: int
+    attempt: Optional[int] = None
+    scope: Optional[str] = None
+    cause: Optional[str] = None
+
+    @property
+    def id(self) -> str:
+        k = _JOB_KIND_LETTERS[self.kind]
+        if self.attempt is None:
+            return f"{self.task_id}.{k}{self.seq}"
+        return f"{self.task_id}.a{self.attempt}.{k}{self.seq}"
+
+
+def allocate_job(layout: Layout, task_id: str, kind: str, *, attempt: int | None = None,
+                 cause: str | None = None) -> JobId:
+    """The one function that may invent a job id (§2.3): a seq drawn from the task's own `counters` block,
+    allocated under the task lock in the same update that advances it. Counters are monotonic — nothing ever
+    decrements them — so a job record lost between two allocations (a torn write, an antivirus lock, a manual
+    cleanup, R-03) can never cause the next one to reuse an id. `attempt` names the delivery attempt this job
+    belongs to; omitted, the job is task-scoped (`scope="task"`), which today only a diagnosis raised before any
+    delivery uses (§2.5). Nothing calls this yet — `loop.dispatch` still counts files (step 9 switches it)."""
+    if kind not in _JOB_KIND_LETTERS:
+        raise ValueError(f"unknown job kind: {kind!r}")
+    allocated: dict[str, int] = {}
+
+    def fn(doc):
+        counters = doc.setdefault("counters", {})
+        if attempt is None:
+            task_jobs = counters.setdefault("task_jobs", {})
+            seq = int(task_jobs.get(kind, 0)) + 1
+            task_jobs[kind] = seq
+        else:
+            counters["attempt"] = max(int(counters.get("attempt") or 0), int(attempt))
+            per_attempt = counters.setdefault("jobs", {}).setdefault(attempt, {})
+            seq = int(per_attempt.get(kind, 0)) + 1
+            per_attempt[kind] = seq
+        allocated["seq"] = seq
+
+    _update(layout, task_id, fn)
+    return JobId(task_id=task_id, kind=kind, seq=allocated["seq"], attempt=attempt,
+                scope=None if attempt is not None else "task", cause=cause)
 
 
 def annotate_attempt(layout: Layout, task_id: str, attempt_id: str, **fields) -> Task:

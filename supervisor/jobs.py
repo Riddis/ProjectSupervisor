@@ -69,11 +69,29 @@ def read(layout: Layout, attempt_id: str) -> dict:
     return read_json(path(layout, attempt_id))
 
 
-def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, **extra) -> dict:
+def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, *,
+           kind: str | None = None, attempt: int | None = None, seq: int | None = None, parent: str | None = None,
+           cause: str | None = None, scope: str | None = None, env_digest: str | None = None, **extra) -> dict:
     """One durable record before the job is launched; `extra` (review_role, review_digest, ...) belongs in the same
-    write, never in a second one a crash could lose."""
+    write, never in a second one a crash could lose. `kind`/`attempt`/`seq`/`parent`/`cause`/`scope`/`env_digest`
+    are the identity fields the attempt model adds (§2.6); each is omitted (not written as null) when not given,
+    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet."""
+    identity = {"kind": kind, "attempt": attempt, "seq": seq, "parent": parent, "cause": cause, "scope": scope,
+               "env_digest": env_digest}
+    extra = {**{k: v for k, v in identity.items() if v is not None}, **extra}
     return write(layout, {"attempt_id": attempt_id, "task_id": task_id, "adapter": adapter, "phase": "PREPARED",
                           "spec": spec, "handle": None, "gpu": gpu, "created": now_iso(), **extra})
+
+
+def resolve(layout: Layout, job_id: str) -> dict | None:
+    """The job record named `job_id`, or `None` when it does not exist, instead of raising — the one place a
+    later fallback to the archive (§4.5, not built yet) will add itself, and the one way a caller that merely
+    wants to know whether a job exists avoids catching an exception to find out."""
+    p = path(layout, job_id)
+    try:
+        return _cached_read(p)
+    except (OSError, ValueError):
+        return None
 
 
 def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
