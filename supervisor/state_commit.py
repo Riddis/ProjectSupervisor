@@ -92,13 +92,17 @@ def _canonical(root: Path, path: str) -> str:
 
 
 def _not_yet_accepted(layout: Layout) -> list[str]:
-    """Delivered paths of tasks without a checkpoint yet, as given: their own checkpoint commits them, as accepted. A
-    path may be a directory, and then everything under it waits (review 1.12.1 R1)."""
+    """Delivered paths of tasks not yet durably checkpointed, as given: their own checkpoint commits them, as
+    accepted. A path may be a directory, and then everything under it waits (review 1.12.1 R1). Protection is
+    released only for `committed`/`unchanged` (R-08): a `refused`, `failed` or still-`committing` checkpoint record
+    exists, but none of them means the bytes on disk are what was accepted, so a generic state commit must never
+    sweep them in regardless — otherwise the bookkeeping commit launders exactly the change the checkpoint refused."""
     out = set()
     for t in tasks_mod.load_all(layout).values():
         if t.status == TaskStatus.CANCELLED:
             continue
-        if t.status == TaskStatus.COMPLETE and (t.model_extra or {}).get("checkpoint"):
+        cp = (t.model_extra or {}).get("checkpoint") or {}
+        if t.status == TaskStatus.COMPLETE and cp.get("status") in ("committed", "unchanged"):
             continue
         out |= set(t.paths)
     return sorted(out)

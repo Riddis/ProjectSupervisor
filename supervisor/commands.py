@@ -29,20 +29,72 @@ def new_id() -> str:
     return f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
 
 
-def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> Path:
+def _submitted_by(actor: str, job_id: str | None) -> dict:
+    """Who to notify about this command's outcome (R-19): the job attempt that queued it (explicit `job_id` only —
+    never inferred from the calling process's own environment, which a job's `SUPERVISOR_ATTEMPT` can leak into
+    unrelated work, R-24), else the interactive actor that submitted it. A job's result is not ingested as complete
+    while one of its own commands is still unresolved (supervisor.loop.ingest); an interactive submission is simply
+    reported back to whoever is watching the page. The one caller that genuinely runs as a job's own command —
+    `supervisor cmd`, the CLI a process job's own argv invokes — reads `SUPERVISOR_ATTEMPT` itself and passes it
+    on, deliberately, as `job_id`."""
+    return {"kind": "job", "id": job_id} if job_id else {"kind": "interactive", "actor": actor}
+
+
+def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None,
+          job_id: str | None = None) -> Path:
     """Queue a command. `command_id` (default: a new id) names the command file and becomes `payload["_id"]`: a
     caller that resubmits with the same id gets the command applied once, because apply_all() skips a pending file
-    whose applied record already exists."""
+    whose applied record already exists. `job_id` names the job attempt this command is part of (default: the
+    `SUPERVISOR_ATTEMPT` of the calling process, if any) — see `_submitted_by`."""
     layout.commands.mkdir(parents=True, exist_ok=True)
     cid = command_id or new_id()
     p = layout.commands / f"{cid}.json"
-    atomic_json(p, {"id": cid, "kind": kind, "payload": payload, "actor": actor, "submitted": now_iso()})
+    atomic_json(p, {"id": cid, "kind": kind, "payload": payload, "actor": actor, "submitted": now_iso(),
+                    "submitted_by": _submitted_by(actor, job_id)})
     try:
         layout.wake.parent.mkdir(parents=True, exist_ok=True)
         layout.wake.write_text(now_iso(), encoding="utf-8")
     except OSError:
         pass
     return p
+
+
+def _read_json(p: Path) -> dict | None:
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def for_job(layout: Layout, job_id: str) -> list[dict]:
+    """Every command job `job_id` submitted, pending or applied, oldest first (R-19): a pending entry carries
+    `pending: True`; an applied one carries `ok` and, on failure, `error`."""
+    out = []
+    for p in sorted(layout.commands.glob("*.json")):
+        cmd = _read_json(p)
+        if cmd and (cmd.get("submitted_by") or {}).get("id") == job_id:
+            out.append({**cmd, "pending": True})
+    if layout.commands_applied.exists():
+        for p in sorted(layout.commands_applied.glob("*.json")):
+            cmd = _read_json(p)
+            if cmd and (cmd.get("submitted_by") or {}).get("id") == job_id:
+                out.append(cmd)
+    return out
+
+
+def outcome_for_job(layout: Layout, job_id: str) -> str | dict | None:
+    """`None` when `job_id` queued no command; `"pending"` while any of them has not been applied yet; the first
+    failed one's applied record (`ok: False`, with `kind`/`error`) once any has failed; `"ok"` when every one of
+    them applied cleanly. A job's result must not be treated as complete on `"pending"`, and must be failed with
+    the named command's error on anything but `None`/`"ok"` (R-19)."""
+    cmds = for_job(layout, job_id)
+    if not cmds:
+        return None
+    if any(c.get("pending") for c in cmds):
+        return "pending"
+    failed = [c for c in cmds if not c.get("ok", True)]
+    return failed[0] if failed else "ok"
 
 
 HANDLERS = {}
@@ -91,18 +143,22 @@ def _note(layout, payload, actor):
 
 @handler("task.approve")
 def _approve(layout, payload, actor):
+    """Idempotent by command id, and a replay always finishes the transition (R-08): a crash between the durable
+    approval write and advance() must not strand the task WAITING_FOR_HUMAN forever with evidence that already
+    says it is done — deduping the record is not enough on its own, so advance() runs whether or not this call
+    wrote anything."""
     cid = payload.get("_id")
     t = tasks_mod.load(layout, payload["task_id"])
-    if cid and any(a.command_id == cid for a in t.delivery.approvals):
-        return {"skipped": "already applied", "status": t.status.value}
-    digest = payload["digest"]
-    if t.delivery.digest != digest:
-        raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
-                                  f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
-    tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
-                              payload.get("note", ""), command_id=cid)
+    already = bool(cid) and any(a.command_id == cid for a in t.delivery.approvals)
+    if not already:
+        digest = payload["digest"]
+        if t.delivery.digest != digest:
+            raise tasks_mod.TaskError(f"{payload['task_id']}: the delivery changed since this approval was shown "
+                                      f"(shown {digest[:12]}, now {(t.delivery.digest or 'none')[:12]}); reload and review it again")
+        tasks_mod.record_approval(layout, payload["task_id"], digest, payload.get("response", "ACCEPT"), actor,
+                                  payload.get("note", ""), command_id=cid)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already applied"} if already else {}) | {"status": t.status.value}
 
 
 @handler("inbox.answer")
@@ -138,6 +194,13 @@ def _create(layout, payload, actor):
     return tasks_mod.create(layout, dict(payload["task"]), actor)
 
 
+@handler("task.patch")
+def _task_patch(layout, payload, actor):
+    """Change named contract fields of one existing task (add/remove a dependency, retitle, ...) without resending
+    the whole contract (R-07d)."""
+    return tasks_mod.patch_task(layout, payload["task_id"], payload.get("fields") or {}, actor)
+
+
 def seed_path(layout, seed: str | None) -> Path:
     """The seed file a `task.import` names, resolved against the project root; ValueError unless it is a file
     inside the project."""
@@ -156,7 +219,7 @@ def _task_import(layout, payload, actor):
     seed = seed_path(layout, payload.get("seed"))
     ids = [str(i) for i in (payload.get("update_contracts") or [])]
     r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
-    return {k: r[k] for k in ("created", "updated", "warnings") if k in r}
+    return {k: r[k] for k in ("created", "updated", "ignored", "job_not_applied", "warnings") if k in r}
 
 
 def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
@@ -177,6 +240,18 @@ def _set_job(layout, payload, actor):
     """Replace a task's `job` block (adapter/fn/params/model/...): how the Control Center re-routes a task."""
     t = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
     return {"status": t.status.value}
+
+
+@handler("checkpoint.retry")
+def _checkpoint_retry(layout, payload, actor):
+    """Force one checkpoint attempt for a COMPLETE task right now, bypassing the retry bound (R-08): for a `failed`
+    record that has already spent its automatic retries, once the owner has dealt with whatever git problem caused
+    them. `checkpoint()` itself still decides refused/failed/committed/unchanged — this only gets it called again."""
+    from . import checkpoint as checkpoint_mod
+    t = tasks_mod.load(layout, payload["task_id"])
+    if t.status.value != "COMPLETE" or not (t.delivery and t.delivery.digest):
+        raise ValueError(f"{payload['task_id']}: not a completed delivery, nothing to checkpoint")
+    return checkpoint_mod.checkpoint(layout, t)
 
 
 @handler("issue.resolve")
@@ -208,29 +283,33 @@ def _deliver(layout, payload, actor):
 
 @handler("task.verify")
 def _verify(layout, payload, actor):
+    """Idempotent by digest+outcome, and a replay always finishes the transition (R-08, same shape as task.approve)."""
     t = tasks_mod.load(layout, payload["task_id"])
     v = t.delivery.verification if t.delivery else None
-    if v and v.digest == payload["digest"] and v.ok == bool(payload.get("ok", True)):
-        return {"skipped": "already verified", "status": t.status.value}
-    tasks_mod.record_verification(layout, payload["task_id"], payload["digest"], bool(payload.get("ok", True)),
-                                  payload.get("report"), payload.get("detail", ""), actor=actor)
+    already = bool(v and v.digest == payload["digest"] and v.ok == bool(payload.get("ok", True)))
+    if not already:
+        tasks_mod.record_verification(layout, payload["task_id"], payload["digest"], bool(payload.get("ok", True)),
+                                      payload.get("report"), payload.get("detail", ""), actor=actor)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already verified"} if already else {}) | {"status": t.status.value}
 
 
 @handler("task.review")
 def _review(layout, payload, actor):
+    """Idempotent by digest+role+verdict, and a replay always finishes the transition (R-08, same shape as
+    task.approve)."""
     t = tasks_mod.load(layout, payload["task_id"])
-    if t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"] and r.verdict.value == payload["verdict"]
-                          for r in t.delivery.reviews):
-        return {"skipped": "already reviewed", "status": t.status.value}
-    # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report that
-    # could not be hashed when it was submitted is never authenticated by whatever the file holds when this applies.
-    provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
-    tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
-                            payload.get("vendor"), payload.get("report"), **provenance)
+    already = bool(t.delivery and any(r.digest == payload["digest"] and r.role == payload["role"]
+                                      and r.verdict.value == payload["verdict"] for r in t.delivery.reviews))
+    if not already:
+        # A payload that carries `report_sha256` (the CLI hashes at submission) keeps it, None included: a report
+        # that could not be hashed when it was submitted is never authenticated by whatever the file holds when
+        # this applies.
+        provenance = {"report_sha256": payload["report_sha256"]} if "report_sha256" in payload else {}
+        tasks_mod.record_review(layout, payload["task_id"], payload["digest"], payload["role"], payload["verdict"],
+                                payload.get("vendor"), payload.get("report"), **provenance)
     t = tasks_mod.advance(layout, payload["task_id"])
-    return {"status": t.status.value}
+    return ({"skipped": "already reviewed"} if already else {}) | {"status": t.status.value}
 
 
 @handler("gate.ack")
@@ -452,6 +531,21 @@ def _system_shutdown_cancel(layout, payload, actor):
     return shutdown_mod.cancel(layout, actor)
 
 
+def _open_job_command_issue(layout: Layout, cmd: dict) -> None:
+    """A failed command with no interactive submitter (R-19): the job that queued it has already finished and
+    moved on to its own result, so nothing short of an owner item names the command and its error. Deduped like
+    every other escalation issue, by the task (or, with none, the command kind) and a signature of the error."""
+    from . import escalation
+    key = str((cmd.get("payload") or {}).get("task_id") or f"command:{cmd.get('kind')}")
+    sig = escalation.signature(f"job_command_failed:{cmd.get('kind')}:{cmd.get('error')}")
+    if escalation.find_issue(layout, key, sig) is not None:
+        return
+    job_id = (cmd.get("submitted_by") or {}).get("id")
+    detail = f"{cmd.get('kind')} ({cmd.get('id')}), queued by job {job_id}, failed: {cmd.get('error')}"
+    escalation.open_issue(layout, title=f"a queued command failed: {cmd.get('kind')}", severity="medium",
+                          owner_role="owner", detail=detail, resolution_task=key, signature=sig)
+
+
 def pending(layout: Layout) -> list[Path]:
     return sorted(p for p in layout.commands.glob("*.json"))
 
@@ -501,6 +595,9 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
         if not cmd["ok"] or not scope["logged"]:
             tasks_mod.log(layout, "command", cmd.get("actor", "cli"), kind=cmd.get("kind"), id=cmd.get("id"),
                           ok=cmd["ok"], error=cmd.get("error"))
+        if not cmd["ok"] and (cmd.get("submitted_by") or {}).get("kind") == "job":
+            # The job that queued this is already gone - nobody but an owner item is watching the result (R-19).
+            _open_job_command_issue(layout, cmd)
         atomic_json(layout.commands_applied / p.name, cmd)
         try:
             p.unlink()
@@ -510,9 +607,10 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     return outcomes
 
 
-def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None) -> dict:
+def submit_or_apply(layout: Layout, kind: str, payload: dict, actor: str = "cli", command_id: str | None = None,
+                    job_id: str | None = None) -> dict:
     """CLI/UI entry point: queue the command; if no loop holds the lock, take it and apply immediately."""
-    p = submit(layout, kind, payload, actor, command_id=command_id)
+    p = submit(layout, kind, payload, actor, command_id=command_id, job_id=job_id)
     try:
         with FileLock(layout.lock, owner=f"{actor}-direct"):
             outcomes = apply_all(layout)

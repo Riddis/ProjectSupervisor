@@ -1,1 +1,1 @@
-<div class="flash flash-{{ level }}" data-command-id="{{ outcome.id }}">{{ message }}</div>
+<div class="flash flash-{{ level }}" data-command-id="{{ outcome.id }}"{% if outcome.queued %} data-pending{% endif %}>{{ message }}</div>

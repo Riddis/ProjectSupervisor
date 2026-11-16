@@ -24,6 +24,9 @@ from .models.task import Task, TaskStatus
 from .paths import Layout
 
 GIT_TIMEOUT_S = 60
+RETRY_LIMIT = 3           # a transient git error (an index.lock, say) gets this many automatic attempts before an
+                          # owner item replaces the silent, permanent exclusion (R-08)
+TERMINAL_CHECKPOINT_STATUS = {"committed", "unchanged", "refused", "skipped"}
 
 
 def settings(layout: Layout) -> dict:
@@ -66,7 +69,12 @@ def completed_at(task: Task) -> str:
 
 
 def pending(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
-    """COMPLETE tasks with a delivery digest, completed on/after `since`, that carry no checkpoint record yet."""
+    """COMPLETE tasks with a delivery digest, completed on/after `since`, not yet durably checkpointed (R-08):
+    no record at all, a crash left `committing` with nothing on disk to show for it, or a `failed` attempt still
+    under its retry bound. `committed`/`unchanged` are done; `refused` (the accepted bytes changed) needs a person,
+    as does a `failed` that has already spent its retries — both are left for the owner (or `checkpoint.retry`),
+    never retried on their own. Re-running `checkpoint()` on a `committing` record reconciles against git for free:
+    `git add` is safe to repeat and a prior successful `git commit` shows up as nothing to commit."""
     cfg = settings(layout)
     if not cfg["enabled"]:
         return []
@@ -75,7 +83,11 @@ def pending(layout: Layout, tasks: dict[str, Task] | None = None) -> list[Task]:
     for t in tasks.values():
         if t.status != TaskStatus.COMPLETE or not t.delivery.digest:
             continue
-        if (t.model_extra or {}).get("checkpoint"):
+        cp = (t.model_extra or {}).get("checkpoint") or {}
+        status = cp.get("status")
+        if status in TERMINAL_CHECKPOINT_STATUS:
+            continue
+        if status == "failed" and int(cp.get("attempts") or 0) >= RETRY_LIMIT:
             continue
         if cfg["since"] and completed_at(t) < cfg["since"]:
             continue
@@ -98,9 +110,33 @@ def _ignored(root: Path, paths: list[str]) -> set[str]:
     return {line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()}
 
 
+def _prior_attempts(task: Task) -> int:
+    cp = (task.model_extra or {}).get("checkpoint") or {}
+    return int(cp.get("attempts") or 0) if cp.get("status") == "failed" else 0
+
+
+def _record_failed(layout: Layout, task: Task, reason: str, **fields) -> int:
+    """One more failed attempt, bounded (R-08): past `RETRY_LIMIT` this becomes a person's problem, exactly once,
+    the same way a digest mismatch already is. `pending()` keeps retrying it automatically until then."""
+    attempts = _prior_attempts(task) + 1
+    _record(layout, task.id, status="failed", reason=reason, attempts=attempts, **fields)
+    tasks_mod.log(layout, "checkpoint_failed", "checkpoint", task=task.id, error=reason, attempts=attempts)
+    if attempts >= RETRY_LIMIT:
+        detail = (f"{task.id}'s checkpoint has failed {attempts} time(s) in a row ({reason}). Nothing was "
+                  f"committed. Resolve the underlying git problem, then retry it (checkpoint.retry) or clear the "
+                  f"task's checkpoint record to have the normal path try it again.")
+        sig = escalation.signature(f"checkpoint_failed:{task.id}:{task.delivery.digest}")
+        if escalation.find_issue(layout, task.id, sig) is None:
+            escalation.open_issue(layout, title=f"{task.id}: checkpoint keeps failing", severity="high",
+                                  owner_role="owner", detail=detail, resolution_task=task.id, signature=sig)
+    return attempts
+
+
 def checkpoint(layout: Layout, task: Task) -> dict:
-    """Commit the accepted contents of one COMPLETE task, or refuse. Always records the outcome on the task so it is
-    attempted exactly once (a refused checkpoint is re-attempted only when the owner clears `checkpoint`)."""
+    """Commit the accepted contents of one COMPLETE task, or refuse. Always records the outcome on the task: a
+    `refused` digest mismatch or a `failed` attempt past its retry bound needs a person (the owner clears the
+    record, or retries it with `checkpoint.retry`); a transient `failed` under the bound and an interrupted
+    `committing` are retried by `pending()` on their own, with no field to clear (R-08)."""
     root = layout.root
     paths = sorted(set(task.paths))
     if not paths:
@@ -137,9 +173,8 @@ def checkpoint(layout: Layout, task: Task) -> dict:
     _record(layout, task.id, status="committing", paths=committable, ignored=sorted(ignored), digest=task.delivery.digest)
     code, out = run_git(root, "add", "--", *committable, record_path)
     if code != 0:
-        _record(layout, task.id, status="failed", reason=f"git add: {out[:300]}")
-        tasks_mod.log(layout, "checkpoint_failed", "checkpoint", task=task.id, error=out[:300])
-        return {"status": "failed", "reason": out[:300]}
+        attempts = _record_failed(layout, task, f"git add: {out[:300]}")
+        return {"status": "failed", "reason": out[:300], "attempts": attempts}
     message = (f"{task.id}: {task.title} (delivery {task.delivery.digest[:12]})\n\n"
                f"Accepted checkpoint by the supervisor: verification, required reviews and any owner approval "
                f"all cover digest {task.delivery.digest}.\n" + "".join(f"- {p}\n" for p in committable)
@@ -152,9 +187,8 @@ def checkpoint(layout: Layout, task: Task) -> dict:
                     paths=committable, digest=task.delivery.digest)
             tasks_mod.log(layout, "checkpoint_unchanged", "checkpoint", task=task.id)
             return {"status": "unchanged"}
-        _record(layout, task.id, status="failed", reason=f"git commit: {out[:300]}", paths=committable)
-        tasks_mod.log(layout, "checkpoint_failed", "checkpoint", task=task.id, error=out[:300])
-        return {"status": "failed", "reason": out[:300]}
+        attempts = _record_failed(layout, task, f"git commit: {out[:300]}", paths=committable)
+        return {"status": "failed", "reason": out[:300], "attempts": attempts}
     code, head = run_git(root, "rev-parse", "HEAD")
     commit = head.strip() if code == 0 else None
     _record(layout, task.id, status="committed", commit=commit, paths=committable, ignored=sorted(ignored), digest=task.delivery.digest)
@@ -171,7 +205,7 @@ def run(layout: Layout, tasks: dict[str, Task] | None = None, limit: int = 3) ->
         except Exception as exc:          # noqa: BLE001 - a checkpoint problem must never kill the loop
             tasks_mod.log(layout, "checkpoint_error", "checkpoint", task=t.id, error=str(exc)[:300])
             try:
-                _record(layout, t.id, status="failed", reason=str(exc)[:300])
+                _record_failed(layout, t, str(exc)[:300])
             except Exception:             # noqa: BLE001
                 pass
     return out

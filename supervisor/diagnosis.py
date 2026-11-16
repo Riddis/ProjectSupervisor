@@ -21,6 +21,8 @@ checked against the job records, so a replayed escalation cannot spend a second 
 Supervisor.dispatch → launch → supervisor.gate like every other job (decision, capacity floor, agent limit)."""
 from __future__ import annotations
 
+import re
+
 import yaml
 from pydantic import ValidationError
 
@@ -287,11 +289,23 @@ def _annotate_issue(layout: Layout, issue_id: str | None, **fields) -> None:
         pass
 
 
+_FAKE_OPTIONS_RE = re.compile(r"(?i)\ballowed responses?\s*:[^.\n]*\.?|\ba?nswer (?:with|using)\b[^.\n]*\.?")
+
+
+def _without_fake_options(question: str) -> str:
+    """A diagnosis's own question is model prose, not a contract, and it sometimes invents its own letter or word
+    choices ("Allowed responses: A, B") that only it would honour. This item accepts REQUEUE/CANCEL/DEFER (or a
+    free-text comment) and nothing else, so printing the diagnosis's invented options invites an answer the item
+    cannot act on (R-06: the owner answered exactly what was asked and the task still parked silently)."""
+    return _FAKE_OPTIONS_RE.sub("", question or "").strip()
+
+
 def route_to_owner(layout: Layout, task: Task, rec: dict, summary: str, question: str, why: str) -> dict:
     """Hand a stopped task to the owner as a `decision` item (inbox.apply_decision acts on the answer). The question
     and the options lead the text: the inbox card shows the first MAX_SUMMARY_CHARS and keeps the full diagnosis
     behind "Show full message" (before 1.4.0 the diagnosis came first and a long one cut the question off)."""
     role = rec.get("diag_role", "diagnosis")
+    question = _without_fake_options(question)
     head = (f"{question.strip() if question and question.strip() else 'How do you want to proceed?'} "
             f"REQUEUE = re-run the task (text you add is passed on as guidance); CANCEL = cancel it; "
             f"DEFER = leave it stopped. ")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,12 +40,14 @@ app = typer.Typer(help="Supervisor: run a project with AI agents under a determi
 task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
+issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in the Control Center)")
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
+app.add_typer(issue_app, name="issue")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
@@ -71,6 +74,15 @@ def _reader() -> Layout:
         raise typer.BadParameter(str(NoProject("no project.yaml found here or above; run `supervisor init <dir>` "
                                                "or set SUPERVISOR_ROOT")))
     return Layout(root)
+
+
+def _job_id() -> str | None:
+    """`SUPERVISOR_ATTEMPT`, read once, here, at the CLI boundary (R-19/P2-1): every `submit`/`submit_or_apply`
+    call below passes its result on explicitly as `job_id`, so `commands.py` never reads the environment itself
+    (R-24 - a job's own `SUPERVISOR_ATTEMPT` leaks into this same process tree, so a read any deeper would
+    mislabel a direct, interactive `commands.submit_or_apply(...)` call, the Control Center's `act()` among
+    them, the moment it happened to run under one)."""
+    return os.environ.get("SUPERVISOR_ATTEMPT") or None
 
 
 def _echo_cmd(outcome: dict, task_id: str) -> None:
@@ -205,7 +217,7 @@ def task_set_status(task_id: str, status: str, note: str = "", actor: str = "cli
     """Manual transition. COMPLETE is not allowed here; use deliver/verify/review/approve (advance). `--force` needs
     --actor owner and a --note, is persisted on the task and rendered as (forced)."""
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.set_status", {"task_id": task_id, "status": status, "note": note,
-                                                                       "force": force}, actor), task_id)
+                                                                       "force": force}, actor, job_id=_job_id()), task_id)
 
 
 @task_app.command("import")
@@ -226,7 +238,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
         for w in res.get("warnings") or []:
             typer.echo(f"warning: {w}")
         return
-    r = commands_mod.submit_or_apply(_layout(), "task.import", {"seed": seed, "update_contracts": ids}, "owner")
+    r = commands_mod.submit_or_apply(_layout(), "task.import", {"seed": seed, "update_contracts": ids}, "owner", job_id=_job_id())
     if r.get("queued"):
         typer.echo(f"queued ({r['id']}) — the running supervisor applies it within one iteration")
         return
@@ -251,14 +263,15 @@ def task_migrate_ownership():
 def task_create(file: str):
     """Add one task from a YAML file (same fields as the seed) through the command queue."""
     doc = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
-    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.create", {"task": doc}, "owner"), doc.get("id", "?"))
+    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.create", {"task": doc}, "owner", job_id=_job_id()), doc.get("id", "?"))
 
 
 @task_app.command("set-job")
 def task_set_job(task_id: str, job_json: str, cost_category: str = ""):
     """Replace the task's job block, e.g. '{"adapter":"python","fn":"my_job"}'."""
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.set_job", {"task_id": task_id, "job": json.loads(job_json),
-                                                                       "cost_category": cost_category or None}, "owner"), task_id)
+                                                                       "cost_category": cost_category or None}, "owner",
+                                           job_id=_job_id()), task_id)
 
 
 @task_app.command("digest")
@@ -276,13 +289,15 @@ def task_digest(task_id: str, paths: str = ""):
 @task_app.command("deliver")
 def task_deliver(task_id: str, digest: str, result: str = "", paths: str = "", actor: str = "cli"):
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.deliver", {"task_id": task_id, "digest": digest, "result": result or None,
-                                                                    "paths": [p for p in paths.split(",") if p]}, actor), task_id)
+                                                                    "paths": [p for p in paths.split(",") if p]}, actor,
+                                           job_id=_job_id()), task_id)
 
 
 @task_app.command("verify")
 def task_verify(task_id: str, digest: str, ok: bool = True, report: str = "", detail: str = ""):
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.verify", {"task_id": task_id, "digest": digest, "ok": ok,
-                                                                   "report": report or None, "detail": detail}, "verify"), task_id)
+                                                                   "report": report or None, "detail": detail}, "verify",
+                                           job_id=_job_id()), task_id)
 
 
 @task_app.command("review")
@@ -296,23 +311,23 @@ def task_review(task_id: str, digest: str, role: str, verdict: str, vendor: str 
     _echo_cmd(commands_mod.submit_or_apply(layout, "task.review", {"task_id": task_id, "digest": digest, "role": role,
                                                                    "verdict": verdict, "vendor": vendor or None,
                                                                    "report": report or None, "report_sha256": sha},
-                                           "review"), task_id)
+                                           "review", job_id=_job_id()), task_id)
 
 
 @task_app.command("approve")
 def task_approve(task_id: str, digest: str, response: str = "ACCEPT", by: str = "owner", note: str = ""):
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.approve", {"task_id": task_id, "digest": digest, "response": response,
-                                                                    "note": note}, by), task_id)
+                                                                    "note": note}, by, job_id=_job_id()), task_id)
 
 
 @task_app.command("advance")
 def task_advance(task_id: str):
-    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.advance", {"task_id": task_id}, "owner"), task_id)
+    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.advance", {"task_id": task_id}, "owner", job_id=_job_id()), task_id)
 
 
 @task_app.command("note")
 def task_note(task_id: str, note: str, actor: str = "owner"):
-    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.note", {"task_id": task_id, "note": note}, actor), task_id)
+    _echo_cmd(commands_mod.submit_or_apply(_layout(), "task.note", {"task_id": task_id, "note": note}, actor, job_id=_job_id()), task_id)
 
 
 # ------------------------------------------------------------------ inbox, gates, plugins
@@ -335,6 +350,14 @@ def inbox_answer(item_id: str, response: str, note: str = "", by: str = "owner")
     item = inbox_mod.answer(_writer(), item_id, response, note, by)
     render.render_all(_layout())
     typer.echo(f"{item_id}: {item.get('status')}")
+
+
+@issue_app.command("resolve")
+def issue_resolve(issue_id: str, resolution: str = "", resolving_task: str = "", by: str = "owner"):
+    """Close an issue record (R-21): the only CLI verb that writes state/issues/, queued like every other command."""
+    _echo_cmd(commands_mod.submit_or_apply(_layout(), "issue.resolve",
+                                           {"issue_id": issue_id, "resolution": resolution,
+                                            "resolving_task": resolving_task or None}, by, job_id=_job_id()), issue_id)
 
 
 @gate_app.command("show")
@@ -512,7 +535,7 @@ def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unatten
 
 
 def _control(kind: str, actor: str):
-    r = commands_mod.submit_or_apply(_layout(), kind, {}, actor)
+    r = commands_mod.submit_or_apply(_layout(), kind, {}, actor, job_id=_job_id())
     typer.echo(json.dumps(r))
 
 
@@ -540,13 +563,16 @@ def reload(actor: str = "owner"):
 @app.command()
 def drain(shutdown: bool = False, actor: str = "owner"):
     """Launch nothing more; let running jobs finish and be verified, then stop (--shutdown: then power the PC off)."""
-    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), "loop.drain", {"shutdown": shutdown}, actor)))
+    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), "loop.drain", {"shutdown": shutdown}, actor, job_id=_job_id())))
 
 
 @app.command()
 def cmd(kind: str, payload: str = "{}", actor: str = "owner"):
-    """Submit any command (JSON payload) — applied by the running supervisor, or directly if none runs."""
-    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), kind, json.loads(payload), actor)))
+    """Submit any command (JSON payload) — applied by the running supervisor, or directly if none runs. Run from
+    inside a job's own argv (its process inherits `SUPERVISOR_ATTEMPT`), the command is tagged as that job's own
+    (R-19): the job's result then waits on it, and a failure with no interactive submitter opens an owner item.
+    Every other verb below is tagged the same way (P2-1) — `cmd` was only ever the first of them."""
+    typer.echo(json.dumps(commands_mod.submit_or_apply(_layout(), kind, json.loads(payload), actor, job_id=_job_id())))
 
 
 @app.command()

@@ -20,6 +20,11 @@ from .models.task import EXCLUSIVE, TERMINAL, Task
 from .paths import Layout
 
 MODEL_LANES = ("claude_cli", "codex_cli", "claude_api")
+# Lanes that run a worker's own subprocess, so a plain stdout/stderr tail is the only account of a silent failure
+# that exists (R-12). Named, not inferred from "not a model lane": a plugin model lane (e.g. an HTTP endpoint) or
+# `human` is neither, and must not have its own transcript leaked by the same fallback. A plugin that wants the
+# fallback opts in by adding its name here; the default for everything else is no tail.
+PLAIN_PROCESS_LANES = ("process", "python")
 DEFAULT_LIMITS = {"max_agent_jobs": 2, "max_resource_jobs": 1, "resource_cost_categories": []}
 ACTIVE_PHASES = ("SUBMITTED", "RUNNING")
 

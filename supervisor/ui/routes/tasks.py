@@ -43,8 +43,10 @@ def task_detail(task_id: str, request: Request, layout: Layout = Depends(require
     jobs_by_id = {r["attempt_id"]: r for r in jobs_mod.for_task(layout, task_id)}
     attempts = [{"attempt": a, "job": jobs_by_id.get(a.id)} for a in t.attempts]
     dv = delivery_view.view(layout, t) if t.delivery.digest else None
+    action_reasons = {a: tasks_mod.action_blocked_reason(a, t.status) for a in tasks_mod.PAGE_ACTIONS}
     return render(request, "task_detail.html", {"t": t, "attempts": attempts, "dv": dv,
                                                 "broken_jobs": jobs_mod.unreadable(layout, task_id),
+                                                "action_reasons": action_reasons,
                                                 "flash": decode_flash(request)})
 
 

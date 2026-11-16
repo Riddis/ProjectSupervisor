@@ -3,6 +3,8 @@ apply commands → honour decision (pause/stop/reload) → reconcile job records
 render → sleep (wake file shortens the sleep). Resumable after a kill at any point (jobs.py)."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -31,9 +33,37 @@ EXIT_RELOAD = 3
 _attempt_no = jobs_mod.attempt_no
 
 
-def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
-    """What the worker said about why it stopped — its notes plus the head of its HANDOFF.md — so the failure detail
-    (revision brief, diagnosis brief, task record, owner item) carries the reason, not just "status BLOCKED"."""
+def _job_fingerprint(task: Task) -> str:
+    """A stable fingerprint of the one contract a delivery attempt actually runs under (R-12): its own job block
+    and its dependencies. `dispatch()` stamps it on the attempt from the task's STORED document, never a caller's
+    decorated view (a revision's prompt, a fallback's model/effort override): those change what the SAME attempt
+    carries, not the contract a later `task.patch`/`task.set_job` could change out from under it. Compared again
+    every turn (`supersede_changed_attempts`) against the task as it is now."""
+    payload = {"job": scheduler.job_spec(task), "depends_on": sorted(task.depends_on)}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+
+
+def _output_tail(run_dir: Path, lines: int = 40) -> str:
+    """The tail of a process job's own stdout/stderr (R-12): what a plain subprocess leaves behind when it never
+    wrote a HANDOFF.md or self-reported notes of its own — the only account of why it failed that exists."""
+    parts = []
+    for name in ("stderr.txt", "stdout.jsonl"):
+        try:
+            text = (run_dir / name).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            parts.append(f"{name}:\n" + "\n".join(text.splitlines()[-lines:]))
+    return "\n\n".join(parts)
+
+
+def worker_report(result, run_dir: str | None, limit: int = 2500, lane_adapter: str | None = None) -> str:
+    """What the worker said about why it stopped — its notes, the head of its HANDOFF.md, or (R-12) the tail of
+    its own stdout/stderr when it left neither — so the failure detail (revision brief, diagnosis brief, task
+    record, owner item) carries the reason, not just "status BLOCKED". The output-tail fallback is scoped to a
+    plain-process lane (`lane_adapter in gate.PLAIN_PROCESS_LANES`: `process`/`python`), not merely "not a model
+    lane" (P3-1) — a plugin model lane or `human` is neither, and leaking its own raw transcript (e.g. an
+    incidental "run /login" line) is exactly what R-12's own finding was never about."""
     parts = []
     if getattr(result, "notes", None):
         parts.append(str(result.notes).strip())
@@ -44,6 +74,10 @@ def worker_report(result, run_dir: str | None, limit: int = 2500) -> str:
                 parts.append(hp.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             pass
+        if not parts and lane_adapter in gate.PLAIN_PROCESS_LANES:
+            tail = _output_tail(Path(run_dir))
+            if tail:
+                parts.append(tail)
     text = "\n\n".join(p for p in parts if p)
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
@@ -153,7 +187,11 @@ class Supervisor:
             # task with no counter yet is seeded from the highest number already on disk, filenames only, so a
             # record this call cannot read still keeps its number retired.
             seed = jobs_mod.highest_attempt_no(self.layout, task.id)
-            _, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed, reason=reason)
+            stored, attempt_id = tasks_mod.add_attempt(self.layout, task.id, adapter_name, note=note, seed=seed, reason=reason)
+            if kind == "delivery":
+                # R-12: the STORED contract (`stored`), not `task` — a revision's prompt or a fallback's model
+                # override decorates the SAME attempt, never changes what a `task.patch`/`task.set_job` could.
+                job_extra["job_fingerprint"] = _job_fingerprint(stored)
         run_dir = self.layout.runs / task.id / attempt_id
         try:
             if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
@@ -774,6 +812,19 @@ class Supervisor:
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                           error=result.error, terminal_task=True)
             return
+        job_outcome = commands_mod.outcome_for_job(self.layout, rec["attempt_id"])
+        if job_outcome == "pending":
+            # The job itself finished, but a command it queued (SUPERVISOR_ATTEMPT at submit time) has not been
+            # applied yet: declaring this result done now would complete the task before its own queued work is
+            # known to have worked (R-19). Leave the record open; collect() is idempotent and tries again next turn.
+            return
+        if isinstance(job_outcome, dict):
+            # One of the job's own queued commands failed after the job itself returned; nothing else saw that
+            # (the owner item an interactive-less failure needs is opened in commands.apply_all). The job's result
+            # fails with the command's own error instead of whatever the job otherwise reported.
+            tasks_mod.log(self.layout, "job_command_failed", "loop", task=task_id, attempt=rec["attempt_id"],
+                          command=job_outcome.get("kind"), error=job_outcome.get("error"))
+            result = Result(status="FAILED", error=f"{job_outcome.get('kind')} failed: {job_outcome.get('error')}")
         if kind != diagnosis_mod.KIND:
             try:
                 self._ensure_in_progress(task_id, f"ingest {rec['attempt_id']}", kind=kind)
@@ -848,15 +899,15 @@ class Supervisor:
                     return
             else:
                 head = result.error or f"status {result.status}" + (f"; missing: {', '.join(missing)}" if missing else "")
-                report = worker_report(result, run_dir) if result.status != "COMPLETE" else ""
+                report = worker_report(result, run_dir, lane_adapter=rec["adapter"]) if result.status != "COMPLETE" else ""
                 outcome = verify_mod.Outcome(False, head + (f"\n\nWorker report:\n{report}" if report else ""))
             self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE",
-                                worker_status=result.status)
+                                worker_status=result.status, worker_raw=result.raw)
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
         tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
 
     def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None,
-                       worker_status: str | None = None) -> None:
+                       worker_status: str | None = None, worker_raw: dict | None = None) -> None:
         """Write a verification Outcome for digest `dg` into the task store, advance, and hand EVERY failure to
         escalation (keyed by the delivery attempt, `event`, so a replay never spends a second revision).
 
@@ -876,29 +927,50 @@ class Supervisor:
             rp = Path(rec["spec"]["run_dir"]) / "verification.json"
             atomic_json(rp, {"ok": outcome.ok, "detail": outcome.detail, **outcome.report})
             report_path = rp.relative_to(self.layout.root).as_posix() if rp.is_relative_to(self.layout.root) else str(rp)
-        tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail, actor="loop")
-        tasks_mod.advance(self.layout, task_id, actor="advance")
+        delivering_attempt = event or rec["attempt_id"]       # the delivery attempt this digest belongs to, whether
+        tasks_mod.record_verification(self.layout, task_id, dg, outcome.ok, report=report_path, detail=outcome.detail,
+                                      actor="loop")           # `rec` is that job itself or its separate verify job
+        tasks_mod.advance(self.layout, task_id, actor="advance", attempt_id=delivering_attempt)
         if outcome.ok:
             return
         lane = rec.get("adapter", "")
         if substantive:
             # the agent believed it was done and deterministic verification disagreed
-            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=event or rec["attempt_id"])
+            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=delivering_attempt)
         elif lane == "human":
             # the owner answered REJECT / MORE_LIKE: that is the owner's decision, never auto-retried
             return
         elif worker_status == "BLOCKED":
             # the worker says it cannot proceed: no blind retry, straight to the exception route (diagnosis → owner)
-            escalation_mod.record_failure(self, task_id, "worker_blocked", outcome.detail, event=event or rec["attempt_id"],
+            escalation_mod.record_failure(self, task_id, "worker_blocked", outcome.detail, event=delivering_attempt,
                                           retry=False)
         elif lane in self.IMMEDIATE_RETRY_LANES:
             # an agent run that ended FAILED/PARTIAL, crashed, timed out or was lost: retried within the revision
             # budget, then the exception route. (Capacity limits never get here — DEFERRED and handoff-incomplete runs
             # are continuations, see requeue().)
-            escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=event or rec["attempt_id"])
-        # a deterministic lane (process/python/plugin adapters) that FAILED is left to sweep_stalled(): its grace
-        # period is the back-off — a timeout or a busy resource usually clears by itself — and it then retries within the same
-        # budget and escalates the same way
+            escalation_mod.record_failure(self, task_id, "worker_failed", outcome.detail, event=delivering_attempt)
+        else:
+            # A deterministic lane (process/python/plugin adapters) that FAILED is left to sweep_stalled(): its
+            # grace period is the back-off. R-12: classified now, while the worker's own report is still in
+            # hand, so the sweep's later retry never repeats a run that cannot pass twice — a timeout, a lost
+            # process (no exit code ever came back) or an exit code the job's own `retry_on` names is transient
+            # and gets the one retry as before; any other reported exit goes straight to the exception route.
+            escalation_mod.note_process_outcome(self.layout, task_id, delivering_attempt,
+                                                retryable=self._process_failure_retryable(rec, worker_raw))
+
+    @staticmethod
+    def _process_failure_retryable(rec: dict, raw: dict | None) -> bool:
+        """Whether a deterministic lane's FAILED result (R-12) is worth the stall sweep's one automatic retry: a
+        timeout, an exit the adapter never captured (lost — a crash, an adopted handle after a restart, the loop's
+        own termination), or an exit code the job's own `retry_on` names. Any other captured exit is assumed to
+        repeat itself."""
+        raw = raw or {}
+        if raw.get("timeout"):
+            return True
+        exit_code = raw.get("exit_code")
+        if exit_code is None:
+            return True
+        return exit_code in ((rec.get("spec") or {}).get("retry_on") or [])
 
     VERIFY_KIND = "verify"
     IMMEDIATE_RETRY_LANES = gate.MODEL_LANES
@@ -939,6 +1011,54 @@ class Supervisor:
         else:
             outcome = verify_mod.Outcome(bool(payload.get("ok")), str(payload.get("detail") or ""), dict(payload.get("report") or {}))
         self.record_outcome(task_id, dg, outcome, rec, substantive=True, event=rec.get("verify_delivery"))
+
+    def supersede_changed_attempts(self) -> list[str]:
+        """A task's job or dependencies changed (`task.patch`, `task.set_job`) while one of its delivery attempts,
+        dispatched under the OLD contract, was still open: close it as SUPERSEDED before it does more work on
+        inputs that no longer apply — a queued one simply never launches, a running one is terminated first — and
+        spend no retry budget on it (R-12). Called before `reconcile()` so a now-stale PREPARED record is never
+        launched and a RUNNING one is stopped before this turn collects it. Every other open record (no
+        `job_fingerprint`: a review, a verify, a diagnosis, a conversation, or a delivery from before this fix)
+        is left alone.
+
+        Closing the task's only open attempt must never park it IN_PROGRESS with nothing routing it — neither
+        `tasks.eligible()` (NOT_STARTED/READY only) nor `sweep_stalled()` (FAILED/BLOCKED only) ever revisits an
+        IN_PROGRESS task on its own. So, exactly when no other open record is left for the task, this releases
+        it the same way a diagnosis `defer` already does (`escalation._release`): IN_PROGRESS -> BLOCKED ->
+        READY, the only legal route (`models.task.ALLOWED` has no direct IN_PROGRESS -> READY edge). `eligible()`
+        then holds the task behind whatever dependency just changed, same as any other READY task, or — if the
+        change was to `job` alone — dispatches it again next turn with the new contract. Returns the attempt ids
+        closed."""
+        acted = []
+        for rec in jobs_mod.open_records(self.layout):
+            fp = rec.get("job_fingerprint")
+            if fp is None:
+                continue
+            try:
+                task = tasks_mod.load(self.layout, rec["task_id"])
+            except tasks_mod.TaskError:
+                continue
+            if _job_fingerprint(task) == fp:
+                continue
+            if rec["phase"] in ("SUBMITTED", "RUNNING") and rec.get("handle"):
+                ad = REGISTRY.get(rec["adapter"])
+                if ad is not None:
+                    try:
+                        ad.terminate(rec["handle"])
+                    except Exception:                       # noqa: BLE001 - the record closes regardless
+                        pass
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result="SUPERSEDED", finished=now_iso(),
+                               error="superseded: the task's job or dependencies changed while this attempt was open")
+            tasks_mod.log(self.layout, "attempt_superseded", "loop", task=rec["task_id"], attempt=rec["attempt_id"])
+            note = f"{rec['attempt_id']}: superseded — its job or dependencies changed while it was open"
+            tasks_mod.add_note(self.layout, rec["task_id"], note, actor="loop")
+            acted.append(rec["attempt_id"])
+            still_open = [r for r in jobs_mod.for_task(self.layout, rec["task_id"]) if r["phase"] in jobs_mod.OPEN_PHASES]
+            if still_open or task.status != TaskStatus.IN_PROGRESS:
+                continue
+            tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.BLOCKED, actor="loop", note=note)
+            tasks_mod.set_status(self.layout, rec["task_id"], TaskStatus.READY, actor="loop", note=note)
+        return acted
 
     def reconcile(self) -> None:
         """Before any dispatch: settle every non-DONE job record (crash-safe)."""
@@ -1218,12 +1338,17 @@ class Supervisor:
           2. escalated since it stopped and still nothing routing it → one owner decision item.
 
         Deliberate holds are left alone: a stop the owner made themselves (Hold / set-status), an open or snoozed owner
-        item for the task, an owner answer (DEFER / note) given after the stop, a failure of the task's `human`
-        attempt (the owner's REJECT/MORE_LIKE — linked through the attempt, not by comparing timestamps, because the
-        loop collects the answer after it was given). A diagnosis `defer` is not a hold: it either releases the task
-        to READY behind the dependencies it named or goes to the owner (supervisor.diagnosis), so a task still
-        stopped after one — a defer recorded before that rule, parked on prose that nothing acts on — is a stall
-        like any other. Returns the task ids acted on."""
+        item for the task, a failure of the task's `human` attempt (the owner's REJECT/MORE_LIKE — linked through
+        the attempt, not by comparing timestamps, because the loop collects the answer after it was given). A
+        REQUEUE or CANCEL answer moves the task off FAILED/BLOCKED at once (inbox.apply_decision), so it is never
+        seen here at all — this sweep only ever loads tasks still FAILED/BLOCKED. A DEFER or free-text answer is
+        the opposite: it is recorded as a comment and the task does not move, so it is never treated as a resolved
+        stop here, whether or not the fresh decision item that answer tries to open could itself be opened — that
+        create() can fail for want of room in the owner's inbox, and this sweep's guarantee must not depend on it
+        succeeding (R-06). A diagnosis `defer` is not a hold either: it either releases the task to READY behind
+        the dependencies it named or goes to the owner (supervisor.diagnosis), so a task still stopped after one —
+        a defer recorded before that rule, parked on prose that nothing acts on — is a stall like any other.
+        Returns the task ids acted on."""
         now = time.time() if now is None else now
         grace = self._stall_grace()
         busy = {r["task_id"] for r in jobs_mod.open_records(self.layout)}
@@ -1244,23 +1369,33 @@ class Supervisor:
             mine = [i for i in items if i.get("task_id") == task.id]
             if any(i.get("status") in ("open", "snoozed") for i in mine):
                 continue                                          # waiting on the owner (a snooze defers, it is not a stall)
-            if any(max(str((i.get("applied") or {}).get("at") or ""), str(i.get("answered_at") or "")) >= at for i in mine):
-                continue                                          # the owner already answered this stop
+            if any(max(str((i.get("applied") or {}).get("at") or ""), str(i.get("answered_at") or "")) >= at
+                   and (i.get("applied") or {}).get("skipped") != "deferred" for i in mine):
+                continue          # a REQUEUE/CANCEL answered this stop; a DEFER/free-text one is a comment, not one
             records = jobs_mod.for_task(self.layout, task.id)
             deliveries = [r for r in records if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
-            if deliveries and max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])).get("adapter") == "human":
+            latest_delivery = max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])) if deliveries else None
+            if latest_delivery and latest_delivery.get("adapter") == "human":
                 continue                                          # the owner's own answer (REJECT/MORE_LIKE) failed it
             key = f"stall:{at}"
             state = escalation_mod._load(self.layout, task.id)
             last_note = str((stop or {}).get("note") or "")
             run_dir = next((a.run_dir for a in reversed(task.attempts) if a.run_dir), None)
-            report = worker_report(Result(status=task.status.value), run_dir)
+            report = worker_report(Result(status=task.status.value), run_dir,
+                                   lane_adapter=latest_delivery.get("adapter") if latest_delivery else None)
             detail = (f"{task.id} has been {task.status.value} since {at} with nothing in flight and no owner item. "
                       f"Last status note: {last_note or '(none)'}" + (f"\n\nLatest run report:\n{report}" if report else ""))
             if key not in state["events"] and escalation_mod.last_decision_at(self.layout, task.id) < at:
                 tasks_mod.log(self.layout, "stall_detected", "loop", task=task.id, status=task.status.value, since=at)
+                # R-12: a FAILED task's own deterministic failure was already classified (loop.record_outcome) —
+                # a timeout, a lost process or a declared retryable exit still gets the one retry here; anything
+                # else goes straight to the exception route instead of relaunching a run that cannot pass twice.
+                # No delivery record at all (a path that routes nothing - an adapter that vanished, a crash
+                # before launch) carries no classification either way, so it keeps today's default: retry.
+                retryable = (not latest_delivery) or escalation_mod.process_outcome_retryable(
+                    self.layout, task.id, latest_delivery["attempt_id"])
                 escalation_mod.record_failure(self, task.id, "stalled", detail, event=key,
-                                              retry=task.status == TaskStatus.FAILED)
+                                              retry=task.status == TaskStatus.FAILED and retryable)
                 acted.append(task.id)
                 continue
             if state.get("stall_owner", {}).get(at):
@@ -1286,17 +1421,32 @@ class Supervisor:
             tasks_mod.log(self.layout, "state_commit_error", "state_commit", error=str(exc)[:300])
             return None
 
+    IDLE_WAIT_REASON = {
+        TaskStatus.NOT_STARTED: "waiting on a phase gate or an unfinished dependency",
+        TaskStatus.READY: "eligible, but nothing has dispatched it",
+        TaskStatus.IN_PROGRESS: "in progress, with nothing currently running for it",
+        TaskStatus.WAITING_FOR_REVIEW: "waiting for a review to be dispatched",
+        TaskStatus.WAITING_FOR_HUMAN: "waiting on your approval",
+        TaskStatus.BLOCKED: "blocked, waiting on a decision",
+        TaskStatus.FAILED: "failed, waiting on a decision",
+    }
+
     def alert_if_idle(self, now: float | None = None) -> dict | None:
         """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
         work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
-        per-task sweep gets its chance first. It lists what each stuck task is waiting for."""
+        per-task sweep gets its chance first. It lists every non-terminal task that is not an owner hold (R-17: the
+        pre-1.7.0 version counted only FAILED/BLOCKED/WAITING_FOR_HUMAN, so an IN_PROGRESS or WAITING_FOR_REVIEW task
+        with nothing actually running for it never appeared; and a task the owner is deliberately holding is the
+        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list).
+        The item carries no ACCEPT/REJECT/MODIFY/REDO buttons: none of them does anything for "nothing can run"."""
         now = time.time() if now is None else now
         path = self.layout.runtime / "idle_alert.json"
         state = read_json(path) if path.exists() else {}
         tasks = tasks_mod.load_all(self.layout)
-        remaining = [t for t in tasks.values() if t.status not in (TaskStatus.COMPLETE, TaskStatus.CANCELLED)]
+        remaining = [t for t in tasks.values() if t.status not in TERMINAL]
+        waiting = [t for t in remaining if not t.held]
         idle = (not jobs_mod.open_records(self.layout) and not tasks_mod.eligible(self.layout, tasks)
-                and not inbox_mod.open_items(self.layout, "owner") and remaining)
+                and not inbox_mod.open_items(self.layout, "owner") and waiting)
         if not idle:
             if state.get("idle_since"):
                 atomic_json(path, {k: v for k, v in state.items() if k != "idle_since"})
@@ -1307,8 +1457,7 @@ class Supervisor:
             return None
         if now - float(state["idle_since"]) < 2 * self._stall_grace():
             return None
-        stuck = sorted((t for t in remaining if t.status in (TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.WAITING_FOR_HUMAN)),
-                       key=lambda t: t.id)
+        stuck = sorted(waiting, key=lambda t: t.id)
         fingerprint = "|".join(f"{t.id}:{t.status.value}:{t.updated}" for t in stuck) or "deps-or-gates"
         if state.get("fingerprint") == fingerprint:
             return None
@@ -1317,16 +1466,17 @@ class Supervisor:
             notes = (t.model_extra or {}).get("notes") or []
             last = (notes[-1].get("note") if notes else "") or next(
                 (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
-            lines.append(f"{t.id} {t.status.value}: {str(last)[:220]}")
-        if not stuck:
-            lines.append("No task is failed or blocked: the remaining work waits on a phase gate or unfinished dependencies.")
+            reason = str(last) or self.IDLE_WAIT_REASON.get(t.status, "waiting")
+            lines.append(f"{t.id} {t.status.value}: {reason[:220]}")
+        held_ct = len(remaining) - len(waiting)
+        held_note = f" ({held_ct} held by you, not listed)" if held_ct else ""
         summary, detail = inbox_mod.fit(
-            f"Nothing can run: {len(remaining)} task(s) remain, none is eligible, nothing is in flight. "
+            f"Nothing can run: {len(waiting)} task(s) remain{held_note}, none is eligible, nothing is in flight. "
             + " · ".join(lines))
         try:
             item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
                                     summary=summary, detail=detail, kind="question", from_="loop",
-                                    extra={"idle_fingerprint": fingerprint})
+                                    allowed_responses=[], extra={"idle_fingerprint": fingerprint})
         except inbox_mod.InboxFull:
             return None
         state.update(fingerprint=fingerprint, item=item["id"], raised=now_iso())
@@ -1427,7 +1577,10 @@ class Supervisor:
         tasks_snapshot = tasks_mod.load_all(self.layout)
         jobs_snapshot = jobs_mod.open_records(self.layout)
         with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
+            self.supersede_changed_attempts()  # R-12: before reconcile ever launches or collects a now-stale attempt
             self.reconcile()             # collects finished work under every decision; launches only when the gate allows
+            tasks_mod.reconcile_advance(self.layout, tasks_snapshot, {r["task_id"] for r in jobs_snapshot})
+            # evidence-complete tasks never wait on a replay (R-08); a task with an open attempt stays put (P1-1)
             self.poll_capacity()
             if decision in ("PAUSE", "DRAIN"):
                 if decision == "PAUSE":

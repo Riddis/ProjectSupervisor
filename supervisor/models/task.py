@@ -32,7 +32,9 @@ ALLOWED = {
     TaskStatus.WAITING_FOR_HUMAN: {TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.CANCELLED,
                                    TaskStatus.COMPLETE, TaskStatus.FAILED},
     TaskStatus.BLOCKED: {TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED, TaskStatus.FAILED},
-    TaskStatus.FAILED: {TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
+    # BLOCKED is here so hold() can stop a queued retry at the moment it is most needed - just after a failure,
+    # before the automatic retry races the owner's own repair (R-18).
+    TaskStatus.FAILED: {TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED, TaskStatus.BLOCKED},
     TaskStatus.COMPLETE: set(),
     TaskStatus.CANCELLED: {TaskStatus.NOT_STARTED},
 }

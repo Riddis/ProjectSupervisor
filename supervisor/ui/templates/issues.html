@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Issues — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Issues</h2>
+  <p>{{ counts.open }} open &middot; {{ counts.recovered }} recovered &middot; {{ counts.resolved }} resolved</p>
+</section>
+
+<section class="panel">
+  {% if issues %}
+  <table class="tasks-table">
+    <thead><tr><th>ID</th><th>Status</th><th>Severity</th><th>Title</th><th>Task</th><th>Resolution</th><th></th></tr></thead>
+    <tbody>
+    {% for i in issues %}
+    <tr>
+      <td>{{ i.id }}</td>
+      <td><span class="badge">{{ i.status }}</span></td>
+      <td>{{ i.severity }}</td>
+      <td>{{ i.title }}</td>
+      <td>{% if i.resolution_task %}<a href="/tasks/{{ i.resolution_task }}">{{ i.resolution_task }}</a>{% else %}&mdash;{% endif %}</td>
+      <td>
+        {% if i.status == 'resolved' %}{{ i.resolution or '—' }} ({{ i.resolved_by }})
+        {% elif i.status == 'recovered' %}recovered by {{ i.recovered_attempt or 'the completing delivery' }}
+        {% else %}&mdash;{% endif %}
+      </td>
+      <td>
+        {% if i.status != 'resolved' %}
+        <form method="post" action="/issues/{{ i.id }}/resolve" class="inline-form">
+          {% include "partials/csrf.html" %}
+          <input type="text" name="resolution" placeholder="resolution note">
+          <button type="submit">Resolve</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No issues.</p>
+  {% endif %}
+</section>
+{% endblock %}
