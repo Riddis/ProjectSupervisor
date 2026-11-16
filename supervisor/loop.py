@@ -61,9 +61,9 @@ def worker_report(result, run_dir: str | None, limit: int = 2500, lane_adapter: 
     """What the worker said about why it stopped — its notes, the head of its HANDOFF.md, or (R-12) the tail of
     its own stdout/stderr when it left neither — so the failure detail (revision brief, diagnosis brief, task
     record, owner item) carries the reason, not just "status BLOCKED". The output-tail fallback is scoped to a
-    deterministic lane (`lane_adapter` not a model lane): a model lane's own raw transcript is not a plain
-    process's stdout/stderr, and leaking it (e.g. an incidental "run /login" line) is exactly what R-12's own
-    finding was never about."""
+    plain-process lane (`lane_adapter in gate.PLAIN_PROCESS_LANES`: `process`/`python`), not merely "not a model
+    lane" (P3-1) — a plugin model lane or `human` is neither, and leaking its own raw transcript (e.g. an
+    incidental "run /login" line) is exactly what R-12's own finding was never about."""
     parts = []
     if getattr(result, "notes", None):
         parts.append(str(result.notes).strip())
@@ -74,7 +74,7 @@ def worker_report(result, run_dir: str | None, limit: int = 2500, lane_adapter: 
                 parts.append(hp.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             pass
-        if not parts and lane_adapter is not None and lane_adapter not in gate.MODEL_LANES:
+        if not parts and lane_adapter in gate.PLAIN_PROCESS_LANES:
             tail = _output_tail(Path(run_dir))
             if tail:
                 parts.append(tail)
