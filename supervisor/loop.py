@@ -252,8 +252,20 @@ class Supervisor:
     MAX_CONTINUATIONS = 3
 
     @staticmethod
-    def _continuations(recs: list[dict]) -> list[dict]:
-        return [r for r in recs if str(r.get("deferred_reason", "")).startswith("continuation")]
+    def _continuations(recs: list[dict], attempt: int | None = None) -> list[dict]:
+        """Continuation sessions among `recs`: the `cause` field when a record carries one, the `deferred_reason`
+        prefix otherwise (an un-migrated record). `attempt`, when given, scopes the count to that delivery
+        attempt's own sessions instead of every continuation the task ever queued — a record with no `attempt`
+        field of its own still counts (the permissive default on `.get`), so an un-migrated store answers exactly
+        as it always has."""
+        def _is_continuation(r: dict) -> bool:
+            if "cause" in r:
+                return r.get("cause") == "continuation"
+            return str(r.get("deferred_reason", "")).startswith("continuation")
+        out = [r for r in recs if _is_continuation(r)]
+        if attempt is not None:
+            out = [r for r in out if r.get("attempt", attempt) == attempt]
+        return out
 
     def requeue(self, rec: dict, result: Result, reason: str) -> None:
         """Capacity limit or handoff-incomplete: queue a continuation attempt FIRST (crash-safe), then close this attempt
@@ -265,7 +277,7 @@ class Supervisor:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
                                error=result.error, continued=True)       # continuation already queued before a crash
             return
-        prior = self._continuations(all_recs)
+        prior = self._continuations(all_recs, rec.get("attempt"))
         n = len(prior)
         until = result.reset_epoch or time.time()
         if result.status == "DEFERRED" and not result.raw.get("measured_window"):
@@ -1171,7 +1183,7 @@ class Supervisor:
                     continue
                 if task.status != TaskStatus.IN_PROGRESS:
                     continue
-                prior = self._continuations(recs)
+                prior = self._continuations(recs, last.get("attempt"))
                 if len(prior) >= self.MAX_CONTINUATIONS:
                     # R4: recovery enforces the same cap as requeue() — a torn write exactly at the cap boundary is
                     # still a capped attempt, never a fresh continuation repair may dispatch past the budget.
@@ -1227,7 +1239,7 @@ class Supervisor:
         allowed = (TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED) if outcome == "pending" else (TaskStatus.IN_PROGRESS,)
         if task.status not in allowed:
             return                                        # a cancellation (or anything else) moved it since - not ours
-        prior = self._continuations(recs)
+        prior = self._continuations(recs, last.get("attempt"))
         escalation_mod.record_failure(self, task_id, "continuations_exhausted",
                                       f"{last['attempt_id']}: capacity limit after {len(prior)} continuations (recovered)",
                                       event=event, retry=False)
@@ -1373,8 +1385,10 @@ class Supervisor:
                    and (i.get("applied") or {}).get("skipped") != "deferred" for i in mine):
                 continue          # a REQUEUE/CANCEL answered this stop; a DEFER/free-text one is a comment, not one
             records = jobs_mod.for_task(self.layout, task.id)
-            deliveries = [r for r in records if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
-            latest_delivery = max(deliveries, key=lambda r: _attempt_no(r["attempt_id"])) if deliveries else None
+            deliveries = [r for r in records if jobs_mod.kind_of(r) == "delivery"]
+            # the newest attempt's newest session: jobs_mod.sort_key (attempt, kind, seq; the id suffix as the
+            # fallback for whichever is unset) is already oldest-first, so the max is the newest.
+            latest_delivery = max(deliveries, key=jobs_mod.sort_key) if deliveries else None
             if latest_delivery and latest_delivery.get("adapter") == "human":
                 continue                                          # the owner's own answer (REJECT/MORE_LIKE) failed it
             key = f"stall:{at}"

@@ -314,6 +314,16 @@ def _findings_text(layout, review) -> str:
     return findings or str(obj.get("summary") or "") or f"verdict {review.verdict.value} (the report gives no text)"
 
 
+def _salvage_sort_key(r: dict) -> tuple:
+    """Newest first: `jobs.sort_key`'s own `(attempt, kind order, seq)`, the id suffix as the fallback for
+    whichever of them is unset — the one fallback rule every reader of this step shares, not a second one of
+    its own. `seq` alone cannot order these records: it is only the ordinal of a kind inside one attempt
+    (ATTEMPT_MODEL.md §6), so two attempts' review jobs for the same role and digest (a revision that re-delivers
+    a byte-identical answer keeps the digest) can both carry `seq == 1`, and only the `attempt` field tells them
+    apart."""
+    return jobs_mod.sort_key(r)
+
+
 def salvage(supervisor, task: Task, role: str) -> bool:
     """Before paying for a fresh review: a finished review attempt for this digest and role whose answer was thrown
     away as unreadable (no result.json) may parse now that the contract accepts category near-misses (a reviewer
@@ -328,8 +338,7 @@ def salvage(supervisor, task: Task, role: str) -> bool:
     recs = [r for r in jobs_mod.for_task(layout, task.id)
             if (r.get("spec") or {}).get("kind") == "review" and r.get("review_role") == role
             and r.get("review_digest") == digest and r.get("phase") in ("DONE", "FAILED") and not r.get("salvaged")]
-    import re as _re
-    recs.sort(key=lambda r: int((_re.search(r"(\d+)$", str(r["attempt_id"])) or [0, 0])[1]), reverse=True)   # newest first
+    recs.sort(key=_salvage_sort_key, reverse=True)   # newest first
     for r in recs:
         run_dir = Path((r.get("spec") or {}).get("run_dir") or "")
         if not str(run_dir) or not run_dir.is_dir() or (run_dir / "result.json").exists():

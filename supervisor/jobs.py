@@ -199,6 +199,32 @@ def attempt_no(attempt_id: str) -> int:
         return 0
 
 
+KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3}
+
+
+def kind_of(rec: dict) -> str:
+    """This job's kind: the promoted `kind` field (§2.6 of the attempt-identity design) when set, `spec["kind"]`
+    otherwise, `"delivery"` when neither is — the shape every record before this field existed is read as."""
+    return rec.get("kind") or (rec.get("spec") or {}).get("kind") or "delivery"
+
+
+def attempt_of(rec: dict) -> int:
+    """This job's attempt number: the `attempt` field when set, the id suffix otherwise — a reader's one
+    fallback rule, applied once here instead of separately in each of them."""
+    attempt = rec.get("attempt")
+    return attempt if isinstance(attempt, int) else attempt_no(rec.get("attempt_id", ""))
+
+
+def sort_key(rec: dict) -> tuple:
+    """Oldest first: `(attempt, kind order, seq)` when they are set, the id suffix as the fallback for whichever
+    of them is not — so a record with none of the fields sorts exactly as it always has (`attempt_of` and the
+    `seq` fallback both reduce to the suffix, the only signal such a record carries)."""
+    seq = rec.get("seq")
+    if not isinstance(seq, int):
+        seq = attempt_no(str(rec.get("attempt_id", "")))
+    return (attempt_of(rec), KIND_ORDER.get(kind_of(rec), 99), seq, str(rec.get("attempt_id", "")))
+
+
 def highest_attempt_no(layout: Layout, task_id: str) -> int:
     """The highest attempt number among this task's job files, from the file names alone — never opens a
     record, so it is unaffected by one being unreadable (R-03). Seeds the task's own counter the first time a
@@ -235,13 +261,14 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
 
 
 def _oldest_first(records: list[dict]) -> list[dict]:
-    return sorted(records, key=lambda r: (attempt_no(r.get("attempt_id", "")), str(r.get("attempt_id", ""))))
+    return sorted(records, key=sort_key)
 
 
 def for_task(layout: Layout, task_id: str) -> list[dict]:
-    """The task's job records, oldest attempt first by attempt NUMBER: file names sort `T.a10` before `T.a9`, and
-    callers take `[-1]` as the newest. Read-only (R-03): an unreadable record is reported once and represented
-    by a stub, never rewritten on disk."""
+    """The task's job records, oldest first by `(attempt, kind, seq)` (`sort_key`), the id suffix as the
+    fallback for a record with none of those fields — so `T.a10` still sorts before `T.a9` on an un-migrated
+    store, and callers take `[-1]` as the newest either way. Read-only (R-03): an unreadable record is reported
+    once and represented by a stub, never rewritten on disk."""
     out = []
     for p in layout.jobs.glob(f"{task_id}.*.json"):
         try:

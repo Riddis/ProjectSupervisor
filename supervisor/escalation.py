@@ -253,13 +253,6 @@ def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: 
     return rec
 
 
-def _attempt_no(attempt_id: str) -> int:
-    try:
-        return int(str(attempt_id).rsplit(".a", 1)[1])
-    except (IndexError, ValueError):
-        return 0
-
-
 def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> dict:
     """Carry out a decision. Idempotent on purpose: the revision dispatch is guarded by the caller and the issue is
     found-or-created by (task, signature), so replaying an interrupted escalation changes nothing.
@@ -350,14 +343,22 @@ def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
             jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], deferred_reason=f"reset ({reason}): {prior}")
 
 
+def _newer_delivery_exists(layout: Layout, task_id: str, event: str) -> bool:
+    """Whether a delivery session of a later attempt than `event`'s own already exists — the revision was
+    dispatched before a crash replayed this decision. The `attempt` field of `event`'s own job record and of
+    each candidate, the id suffix as the fallback when a record carries no such field (so an un-migrated store
+    compares the same suffix numbers this used to, directly)."""
+    event_attempt = jobs_mod.attempt_of(jobs_mod.resolve(layout, event) or {"attempt_id": event})
+    return any(jobs_mod.attempt_of(r) > event_attempt for r in jobs_mod.for_task(layout, task_id)
+              if jobs_mod.kind_of(r) == "delivery")
+
+
 def _replay(supervisor, task: Task, state: dict, event: str, source: str, detail: str) -> dict:
     """This failure was already decided (the job record is only closed after record_failure, so an interruption
     between the two replays it). Never spend a second revision or open a second issue; only finish the side effect
     the first pass may not have reached."""
     prior = dict(state["events"][event])
-    if prior.get("action") == "retry" and any(_attempt_no(r["attempt_id"]) > _attempt_no(event)
-                                              for r in jobs_mod.for_task(supervisor.layout, task.id)
-                                              if (r.get("spec") or {}).get("kind", "delivery") == "delivery"):
+    if prior.get("action") == "retry" and _newer_delivery_exists(supervisor.layout, task.id, event):
         return {k: v for k, v in prior.items() if k != "note"}      # the revision was dispatched before the crash
     tasks_mod.log(supervisor.layout, "escalation_replayed", "escalation", task=task.id, attempt=event,
                   action=prior.get("action"))
