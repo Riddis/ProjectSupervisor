@@ -1034,17 +1034,29 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
     return t
 
 
-def reconcile_advance(layout: Layout, tasks: dict[str, Task] | None = None) -> list[str]:
+def reconcile_advance(layout: Layout, tasks: dict[str, Task] | None = None,
+                       open_job_task_ids: Iterable[str] | None = None) -> list[str]:
     """Advance every task whose current records already satisfy the completion rule but whose status has not
     caught up (R-08): a crash, or any other missed call to advance() after a durable evidence write, leaves exactly
     this gap, and closing it must not depend on a replay ever arriving. Checked here from the in-memory snapshot
     (`_evaluate` is pure, no disk read) so a normal turn with nothing stuck pays for one pass over already-loaded
     tasks, not a second lock and read per task; `advance()` itself re-reads and re-decides, only for the few that
-    actually need it. Returns the ids it advanced."""
+    actually need it. Returns the ids it advanced.
+
+    Skips any task with an attempt still open (PREPARED/SUBMITTED/RUNNING, named by `open_job_task_ids`): its
+    current digest's verification record belongs to the attempt that open job is replacing, so `_evaluate()` would
+    read FAILED back onto a task that is, in fact, mid-revision or mid-retry (P1-1) -- nothing in `ADVANCEABLE`
+    should move backwards onto evidence a running attempt has already superseded. A caller mid-turn (`loop.once()`)
+    passes the turn's own already-scanned open-job ids; anyone else gets one fresh scan."""
     tasks = tasks if tasks is not None else load_all(layout)
+    if open_job_task_ids is None:
+        from . import jobs as jobs_mod
+        open_job_task_ids = {r["task_id"] for r in jobs_mod.open_records(layout)}
+    else:
+        open_job_task_ids = set(open_job_task_ids)
     out = []
     for t in tasks.values():
-        if t.status not in ADVANCEABLE:
+        if t.status not in ADVANCEABLE or t.id in open_job_task_ids:
             continue
         target, _note = _evaluate(t)
         if target != t.status:

@@ -1579,7 +1579,8 @@ class Supervisor:
         with tasks_mod.turn_snapshot(tasks_snapshot), jobs_mod.turn_snapshot(jobs_snapshot):
             self.supersede_changed_attempts()  # R-12: before reconcile ever launches or collects a now-stale attempt
             self.reconcile()             # collects finished work under every decision; launches only when the gate allows
-            tasks_mod.reconcile_advance(self.layout, tasks_snapshot)  # evidence-complete tasks never wait on a replay (R-08)
+            tasks_mod.reconcile_advance(self.layout, tasks_snapshot, {r["task_id"] for r in jobs_snapshot})
+            # evidence-complete tasks never wait on a replay (R-08); a task with an open attempt stays put (P1-1)
             self.poll_capacity()
             if decision in ("PAUSE", "DRAIN"):
                 if decision == "PAUSE":
