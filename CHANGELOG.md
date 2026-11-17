@@ -3,6 +3,22 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.8.0 — 2026-11-16
+
+- **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**
+  `submit_command(..., job_id=None)` gains the one thing P3-R2-3 found missing: a job can tag its own command, so
+  its failure reaches an owner issue and the job's own result waits on it, exactly as every CLI verb has since
+  R-19 — the default stays interactive and the library still reads no environment variable. `Adapter`'s
+  documented `prepare(layout, task, attempt_id)` keeps its signature; `attempt_id` is no longer promised to parse
+  as `<task>.a<n>`, so a lane takes its `run_dir` from the spec it built, not from the id. `Result.digest` is
+  documented reserved and unset, deprecated for removal in the next major version. `SUPERVISOR_ATTEMPT` keeps its
+  value; `SUPERVISOR_JOB` is added with the same value and `SUPERVISOR_ATTEMPT_NO` with the integer, for anything
+  that parsed the old id suffix; removing `SUPERVISOR_ATTEMPT` and the `attempt_id` parameter name is announced
+  for 3.0.0. `supervisor.testing`'s `job`, `jobs` and `running_job` (unstable, G2 does not record them) follow the
+  same rule: `job()` returns `None` on a miss instead of raising, under either id shape; `jobs()` orders every
+  record by `(attempt, kind, seq)` even without a `task_id`; `running_job()` gains `kind=`, `attempt=` and
+  `seq=`, each omitted by default. No name is removed and no signature breaks a caller.
+
 ## 2.7.0 — 2026-11-15
 
 - **Added: a one-field contract patch, so adding a dependency no longer means resending a task's whole contract.**

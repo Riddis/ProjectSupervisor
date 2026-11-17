@@ -23,7 +23,7 @@ from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
 from .base import Result, register
-from .process import ProcessAdapter, job_spec, scrub_env
+from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
 
 AUTH_FAILURE_RE = re.compile(r"failed to authenticate|oauth (session|token).{0,40}expired|invalid api key|please run /login|"
                              r'"type":\s*"authentication_error"', re.IGNORECASE)
@@ -257,7 +257,7 @@ class ClaudeCliAdapter(ProcessAdapter):
     def env(self, spec):
         env = scrub_env(dict(os.environ))                 # subscription login, never API keys; never a nested session
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-        env["SUPERVISOR_ATTEMPT"] = str(spec.get("attempt_id", ""))
+        env.update(job_identity_env(spec))
         env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 

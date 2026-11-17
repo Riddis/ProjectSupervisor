@@ -12,20 +12,27 @@ _COMMAND_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}")
 
 
 def submit_command(layout: Layout, kind: str, payload: dict, actor: str = "owner-ui",
-                   command_id: str | None = None) -> dict:
+                   command_id: str | None = None, job_id: str | None = None) -> dict:
     """Submit an owner command: applied now when no loop holds the state lock, else queued for the loop, exactly as
     the Control Center's own actions are. Returns the applied record (`{"id", "ok", "result" | "error", ...}`) or
     `{"id", "queued": True}`. `command_id` makes a resubmission harmless: a command with an id already submitted is
     not applied again, and the answer is that command's record (or `queued`) with `"replayed": True`. It is the
     command's `_id` in the handler's payload; letters, digits, `_`, `.` and `-`, at most 80. Without it every call
-    is a new command."""
+    is a new command.
+
+    `job_id` names the job this call is part of (default: none, so the command stays interactive) -- pass the id a
+    lane's own `prepare()` was given, from a `python_job` function or a plugin-provided CLI a job runs, so its
+    failure reaches an owner issue and the job's own result waits on it, exactly as every framework CLI verb has
+    since R-19/P2-1 (2.7.0 round 2, P3-R2-3). Never read from the environment (R-24): a job's own
+    `SUPERVISOR_ATTEMPT` can leak into unrelated work this same process starts, so the caller must name its own
+    job id explicitly."""
     if command_id is not None:
         if not isinstance(command_id, str) or not _COMMAND_ID.fullmatch(command_id):
             raise ValueError(f"command_id must be a plain name (letters, digits, _ . -; at most 80), got {command_id!r}")
         known = _commands.status_of(layout, command_id)
         if known is not None:
             return {**known, "queued": bool(known.get("pending")), "replayed": True}
-    outcome = _commands.submit_or_apply(layout, kind, payload, actor, command_id=command_id)
+    outcome = _commands.submit_or_apply(layout, kind, payload, actor, command_id=command_id, job_id=job_id)
     if command_id is not None and outcome.get("queued"):
         known = _commands.status_of(layout, command_id)
         if known is not None and not known.get("pending"):     # applied by someone else in between: report that

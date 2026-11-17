@@ -58,11 +58,14 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 # verification counted that edit as the running delivery's undeclared write, and the retry reverted it.
 OWN_WRITES = "own_writes.jsonl"
 # A dispatched job (or the loop process itself, via supervisor.launcher) carries these on its own os.environ:
-# SUPERVISOR_ATTEMPT/SUPERVISOR_RUN_DIR name *this* verification's own job (adapters/process.py),
-# SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE points at this job's own
-# PROGRESS.json (progress.py). None of them are a declared command's business (R-13, T3-06.a9: a tool's self-tests
-# wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had leaked into it).
-JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_RUN_DIR", "SUPERVISOR_ROOT", "SUPERVISOR_PROGRESS_FILE")
+# SUPERVISOR_ATTEMPT/SUPERVISOR_JOB/SUPERVISOR_ATTEMPT_NO/SUPERVISOR_RUN_DIR name *this* verification's own job
+# (adapters/process.py), SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE
+# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business (R-13,
+# T3-06.a9: a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
+# leaked into it). SUPERVISOR_JOB and SUPERVISOR_ATTEMPT_NO (ATTEMPT_MODEL.md section 7) carry the same job
+# identity SUPERVISOR_ATTEMPT does and must leak no less than it does.
+JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTEMPT_NO", "SUPERVISOR_RUN_DIR",
+                        "SUPERVISOR_ROOT", "SUPERVISOR_PROGRESS_FILE")
 
 
 def declared_test_env() -> dict[str, str]:

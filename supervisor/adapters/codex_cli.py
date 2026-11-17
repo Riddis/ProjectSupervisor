@@ -20,7 +20,7 @@ from ..paths import Layout
 from .base import Result, register
 from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits, prior_handoff,
                          role_profile, routing)
-from .process import ProcessAdapter, job_spec, scrub_env
+from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
 
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 
@@ -109,7 +109,7 @@ class CodexCliAdapter(ProcessAdapter):
 
     def env(self, spec):
         env = codex_env()
-        env["SUPERVISOR_ATTEMPT"] = str(spec.get("attempt_id", ""))
+        env.update(job_identity_env(spec))
         env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 
