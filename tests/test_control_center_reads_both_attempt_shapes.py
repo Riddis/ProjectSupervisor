@@ -74,6 +74,21 @@ def test_now_running_label_never_reads_attempt_n_alone_for_a_non_delivery_kind(l
     assert "verification" in page and "review" in page and "diagnosis" in page
 
 
+def test_now_running_label_reads_the_promoted_kind_when_spec_lacks_it(layout, auth_client):
+    """A record that carries the promoted `kind` field but no `spec["kind"]` (what a migrated-writer dispatch
+    produces, and what `jobs.kind_of` exists to read) must still label as its own kind, not fall back to
+    "delivery" by reading `spec["kind"]` raw."""
+    make_task(layout, "T0-17")
+    jobs_mod.prepare(layout, "T0-17", "T0-17.a1.v1", "process", {}, kind="verify", attempt=1, seq=1)
+    jobs_mod.set_phase(layout, "T0-17.a1.v1", "RUNNING", handle={"started": "2026-01-01T00:00:00+00:00"})
+
+    from supervisor.ui.routes.overview import now_running
+    rows = now_running(jobs_mod.open_records(layout), tasks_mod.load_all(layout), now=1767225600 + 600)
+    row = next(r for r in rows if r["attempt_id"] == "T0-17.a1.v1")
+    assert row["kind_label"] == "verification"
+    assert row["activity"] == "Verifying"
+
+
 # --------------------------------------------------------- the Attempts table, both shapes
 
 
@@ -124,11 +139,16 @@ def _migrated_shape_task(layout, tid):
 
 
 def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_old_shape(layout, auth_client):
+    """An un-migrated `Attempt.id` is a job id, not a delivery-attempt number (ATTEMPT_MODEL.md §2.7: "an
+    existing job id whose kind is whatever happened to be dispatched nth") — `T0-11.a2` here is a verification,
+    not a second delivery attempt, so the row must name the job, never assert "Attempt 2" for it."""
     _old_shape_task(layout, "T0-11")
     page = auth_client.get("/tasks/T0-11").text
     assert "<th>Kind</th>" in page
     assert "delivery" in page and "verify" in page
     assert f"T0-11.a1" in page and f"T0-11.a2" in page         # job ids still drive the open-run-dir forms
+    assert "Attempt 2" not in page                             # a2 is a verify job, not a second delivery attempt
+    assert "Job T0-11.a2" in page
 
 
 def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_migrated_shape(layout, auth_client):
