@@ -17,6 +17,7 @@ import yaml
 
 from .. import capacity
 from .. import handoff
+from .. import jobs as jobs_mod
 from .. import policy
 from .. import progress as progress_mod
 from .. import tasks as tasks_mod
@@ -57,23 +58,48 @@ def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw
                   raw={**(raw or {}), "measured_window": measured}, reset_epoch=until)
 
 
-_DELIVERY_NOTE_PREFIXES = ("dispatch", "revision after", "continuation after")
-_OTHER_KIND_NOTE_PREFIXES = ("review:", "diagnosis:", "verify delivery")
+_NOTE_KINDS = (("review:", "review"), ("diagnosis:", "diagnosis"), ("verify delivery", "verify"))
 
 
-def _delivery_identity(entries, idx: int) -> tuple[int, int]:
-    """(attempt, seq) for the delivery-kind entry at `idx`, counted from `entries` (every job this task has ever
-    had, in dispatch order): a 'continuation after' note joins the open attempt as its next session; a plain
-    dispatch or a revision opens the next one; a non-delivery entry (review/diagnosis/verify, recognisable by
-    its own note) does not affect the count. This is the live-store reading of the mapping rule the
+def _kind_from_note(note: str) -> str:
+    """The kind an attempt note alone suggests — the fallback of `_entry_kind`, and never better than a guess:
+    a note says what caused a job, not what kind of job it is."""
+    for prefix, kind in _NOTE_KINDS:
+        if note.startswith(prefix):
+            return kind
+    return "delivery"
+
+
+def _entry_kind(layout: Layout, entry) -> str:
+    """One attempt-list entry's job kind, taken from its own durable job record: `jobs.kind_of` reads the
+    promoted `kind` field, else the `spec["kind"]` that `loop.dispatch` writes on every dispatch, and nothing
+    ever deletes a job record. The note decides only for an entry whose record is missing or names no kind at
+    all (a store written before the field existed), because a note cannot tell the kinds apart: a review's and a
+    diagnosis's own continuation is dispatched with the same "continuation after <reason>" note a delivery's
+    is, and a rerouted job of any kind with the same "rerouted from <lane>"."""
+    rec = jobs_mod.resolve(layout, entry.id)
+    if rec is not None and (rec.get("kind") or (rec.get("spec") or {}).get("kind")):
+        return jobs_mod.kind_of(rec)
+    return _kind_from_note(entry.note or "")
+
+
+def _kinds(layout: Layout, entries) -> list[str]:
+    return [_entry_kind(layout, e) for e in entries]
+
+
+def _delivery_identity(entries, kinds, idx: int) -> tuple[int, int]:
+    """(attempt, seq) for the delivery entry at `idx`, counted from `entries` (every job this task has ever had,
+    in dispatch order) and their `kinds`: an entry of another kind does not affect the count at all; among the
+    delivery entries, a 'continuation after' note joins the open attempt as its next session and a plain
+    dispatch or a revision opens the next one — within one kind the note is unambiguous, which is why the count
+    reads it only after the kind is settled. This is the live-store reading of the mapping rule the
     attempt-identity design's migration (§8.2) will apply formally once the writer switch allocates these fields
     directly — nothing here persists a number, it is recomputed from the store on every call."""
     attempt = seq = 0
-    for e in entries[:idx + 1]:
-        note = e.note or ""
-        if note.startswith(_OTHER_KIND_NOTE_PREFIXES):
+    for e, kind in zip(entries[:idx + 1], kinds[:idx + 1]):
+        if kind != "delivery":
             continue
-        if attempt and note.startswith("continuation after"):
+        if attempt and (e.note or "").startswith("continuation after"):
             seq += 1
         else:
             attempt += 1
@@ -81,25 +107,34 @@ def _delivery_identity(entries, idx: int) -> tuple[int, int]:
     return attempt, seq
 
 
-def _last_delivery_index(entries, idx: int) -> int | None:
-    """The index of the most recent delivery-kind entry before `idx` (skipping review/diagnosis/verify), or None."""
+def _last_delivery_index(kinds, idx: int) -> int | None:
+    """The index of the most recent delivery entry before `idx` (skipping every other kind), or None."""
     for j in range(idx - 1, -1, -1):
-        if not (entries[j].note or "").startswith(_OTHER_KIND_NOTE_PREFIXES):
+        if kinds[j] == "delivery":
             return j
     return None
 
 
-def _produced_delivery(entries, delivery_idx: int, idx: int) -> bool:
-    """Whether the delivery-kind entry at `delivery_idx` ever passed verification, looking only at `entries`
-    between it and `idx` (exclusive): a tracked verify job recorded against its own session id, or a review
-    dispatch — `tasks._evaluate` only ever moves a task to WAITING_FOR_REVIEW once verification has already said
-    ok for the current digest, so a 'review:' entry is proof by itself. A task that declares no test commands is
-    verified the same tick its worker claims COMPLETE (verify.verify() returns ok with nothing to track) and so
-    gains no 'verify delivery' entry of its own; the review entry is the only store-only record such a delivery
-    ever happened (§4.1 of the attempt-identity design)."""
+def _produced_delivery(layout: Layout, entries, kinds, delivery_idx: int, idx: int) -> bool:
+    """Whether the delivery entry at `delivery_idx` ever passed verification, looking only at the entries
+    between it and `idx` (exclusive): its own verification, or any review of this task — `tasks._evaluate` only
+    ever moves a task to WAITING_FOR_REVIEW once verification has already said ok for the current digest, so a
+    review entry is proof by itself. A task that declares no test commands is verified the same tick its worker
+    claims COMPLETE (verify.verify() returns ok with nothing to track) and so gains no verification entry of its
+    own; the review is then the only record in the store that such a delivery ever happened (§4.1 of the
+    attempt-identity design). A verification is tied to this session by the verify job's own `verify_delivery`
+    field, by its note when its record is missing."""
     session_id = entries[delivery_idx].id
-    needle = f"verify delivery {session_id}"
-    return any((e.note or "") == needle or (e.note or "").startswith("review:") for e in entries[delivery_idx + 1:idx])
+    for e, kind in zip(entries[delivery_idx + 1:idx], kinds[delivery_idx + 1:idx]):
+        if kind == "review":
+            return True
+        if kind == "verify":
+            rec = jobs_mod.resolve(layout, e.id)
+            if rec is not None and rec.get("verify_delivery") == session_id:
+                return True
+            if rec is None and (e.note or "") == f"verify delivery {session_id}":
+                return True
+    return False
 
 
 def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "delivery"):
@@ -116,15 +151,15 @@ def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "
         return handoff.select(layout, task_id, None, kind, None, parent)
     if kind != "delivery":
         return handoff.select(layout, task_id, None, kind, None, None)
-    attempt, seq = _delivery_identity(entries, idx)
+    kinds = _kinds(layout, entries)
+    kinds[idx] = kind         # this job's own kind comes from its brief: its record is written after prepare()
+    attempt, seq = _delivery_identity(entries, kinds, idx)
+    prior_idx = _last_delivery_index(kinds, idx)
     if seq > 1:
-        prior_idx = _last_delivery_index(entries, idx)
         return handoff.select(layout, task_id, attempt, kind, seq, entries[prior_idx].id if prior_idx is not None else None)
     parent = None
-    if attempt > 1:
-        prior_idx = _last_delivery_index(entries, idx)
-        if prior_idx is not None and not _produced_delivery(entries, prior_idx, idx):
-            parent = entries[prior_idx].id
+    if attempt > 1 and prior_idx is not None and not _produced_delivery(layout, entries, kinds, prior_idx, idx):
+        parent = entries[prior_idx].id
     return handoff.select(layout, task_id, attempt, kind, seq, parent)
 DEFAULT_TOOLS = {
     "writer": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
