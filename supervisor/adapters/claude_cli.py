@@ -16,8 +16,10 @@ from pathlib import Path
 import yaml
 
 from .. import capacity
+from .. import handoff
 from .. import policy
 from .. import progress as progress_mod
+from .. import tasks as tasks_mod
 from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
@@ -55,14 +57,67 @@ def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw
                   raw={**(raw or {}), "measured_window": measured}, reset_epoch=until)
 
 
-def prior_handoff(layout: Layout, task_id: str, attempt_id: str):
-    """Newest HANDOFF.md of an earlier attempt of this task (continuation after capacity/partial handoff)."""
-    base = layout.runs / task_id
-    if not base.exists():
-        return None
-    cands = sorted((d / "HANDOFF.md" for d in base.iterdir() if d.is_dir() and d.name != attempt_id and (d / "HANDOFF.md").exists()),
-                   key=lambda f: f.stat().st_mtime)
-    return str(cands[-1]) if cands else None
+_DELIVERY_NOTE_PREFIXES = ("dispatch", "revision after", "continuation after")
+_OTHER_KIND_NOTE_PREFIXES = ("review:", "diagnosis:", "verify delivery")
+
+
+def _delivery_identity(entries, idx: int) -> tuple[int, int]:
+    """(attempt, seq) for the delivery-kind entry at `idx`, counted from `entries` (every job this task has ever
+    had, in dispatch order): a 'continuation after' note joins the open attempt as its next session; a plain
+    dispatch or a revision opens the next one; a non-delivery entry (review/diagnosis/verify, recognisable by
+    its own note) does not affect the count. This is the live-store reading of the mapping rule the
+    attempt-identity design's migration (§8.2) will apply formally once the writer switch allocates these fields
+    directly — nothing here persists a number, it is recomputed from the store on every call."""
+    attempt = seq = 0
+    for e in entries[:idx + 1]:
+        note = e.note or ""
+        if note.startswith(_OTHER_KIND_NOTE_PREFIXES):
+            continue
+        if attempt and note.startswith("continuation after"):
+            seq += 1
+        else:
+            attempt += 1
+            seq = 1
+    return attempt, seq
+
+
+def _last_delivery_before(entries, idx: int) -> str | None:
+    """The id of the most recent delivery-kind entry before `idx` (skipping review/diagnosis/verify), or None."""
+    for j in range(idx - 1, -1, -1):
+        if not (entries[j].note or "").startswith(_OTHER_KIND_NOTE_PREFIXES):
+            return entries[j].id
+    return None
+
+
+def _ever_verified(entries, session_id: str) -> bool:
+    """Whether `session_id` (a delivery session) was ever followed by a verify job: the loop only dispatches one
+    once a worker has claimed COMPLETE with every declared artifact present, so its absence means the attempt
+    produced no delivery at all (§4.1 of the attempt-identity design)."""
+    return any((e.note or "") == f"verify delivery {session_id}" for e in entries)
+
+
+def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "delivery"):
+    """(attempt, seq, parent) for `attempt_id`, read from the task's own attempt history — `tasks.add_attempt`
+    already wrote this job's own entry before `prepare()` runs, so a fresh load sees it — then `handoff.select`'s
+    answer for them. Review and diagnosis jobs never reach the delivery branch below; a diagnosis's parent is
+    simply the entry immediately before its own."""
+    entries = tasks_mod.load(layout, task_id).attempts
+    idx = next((i for i in range(len(entries) - 1, -1, -1) if entries[i].id == attempt_id), None)
+    if idx is None:
+        return handoff.select(layout, task_id, None, kind, None, None)
+    if kind == "diagnosis":
+        parent = entries[idx - 1].id if idx > 0 else None
+        return handoff.select(layout, task_id, None, kind, None, parent)
+    if kind != "delivery":
+        return handoff.select(layout, task_id, None, kind, None, None)
+    attempt, seq = _delivery_identity(entries, idx)
+    if seq > 1:
+        return handoff.select(layout, task_id, attempt, kind, seq, entries[idx - 1].id)
+    parent = None
+    if attempt > 1:
+        last = _last_delivery_before(entries, idx)
+        parent = last if last and not _ever_verified(entries, last) else None
+    return handoff.select(layout, task_id, attempt, kind, seq, parent)
 DEFAULT_TOOLS = {
     "writer": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
     "reader": ["Read", "Glob", "Grep"],
@@ -200,7 +255,8 @@ class ClaudeCliAdapter(ProcessAdapter):
             prompt_text = job.get("prompt") or self.default_brief(layout, task, run_dir)
         from .. import packets as packets_mod
         prompt_text = packets_mod.worker_prompt(task, job, prompt_text)     # owner/diagnosis guidance, any prompt source
-        prompt_text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
+        kind = job.get("result_kind", "delivery")
+        prompt_text += "\n\n" + handoff_instructions(run_dir, prior=resolve_handoff(layout, task.id, attempt_id, kind))
         if job.get("result_kind", "delivery") != "conversation":   # a one-shot chat turn has nothing to check between steps
             from .. import conversations as conversations_mod
             note = conversations_mod.owner_note_instructions(layout, run_dir)
