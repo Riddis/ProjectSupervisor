@@ -5,12 +5,18 @@ the attempt it follows produced no delivery at all, and a diagnosis reads its pa
 import os
 import time
 
-from supervisor import tasks
+from supervisor import jobs, tasks
 from supervisor.adapters import REGISTRY
 from tests.conftest import make_task
 
 ADAPTER = REGISTRY["claude_cli"]
 PRIOR_SUFFIX = " first and verify its claims against the referenced files. "
+
+
+def _write_job(layout, tid, job_id, kind, **extra):
+    """The durable job record a dispatch of `kind` leaves behind: `loop.dispatch` sets `spec["kind"]` before
+    `jobs.prepare` writes the record, so that is where a store written today carries the kind."""
+    return jobs.prepare(layout, tid, job_id, "claude_cli", {"kind": kind}, **extra)
 
 
 def _write_handoff(layout, tid, job_id, text="work in progress", mtime=None):
@@ -141,6 +147,94 @@ def test_continuation_after_an_intervening_entry_is_given_its_own_predecessor(la
     ])
     ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a3")
     assert _given_prior(layout, tid, f"{tid}.a3") == str(layout.runs / tid / f"{tid}.a1" / "HANDOFF.md")
+
+
+def test_revision_after_a_continued_review_gets_no_handoff(layout):
+    """The review of the rejected delivery was itself interrupted and continued, so the attempt list holds a
+    'continuation after ...' entry that belongs to the REVIEW lane, worded exactly as a delivery's own continuation
+    is. The revision must still start from the findings, not from that reviewer's run-directory notes, and the
+    verified delivery before it must still be read as a delivery that happened."""
+    tid = "REVC"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="first delivery", mtime=now - 300)
+    _write_handoff(layout, tid, f"{tid}.a4", text="reviewer's own notes", mtime=now)   # newest by mtime
+    _write_job(layout, tid, f"{tid}.a1", "delivery")
+    _write_job(layout, tid, f"{tid}.a2", "verify", verify_delivery=f"{tid}.a1")
+    _write_job(layout, tid, f"{tid}.a3", "review")
+    _write_job(layout, tid, f"{tid}.a4", "review")
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "process", "note": f"verify delivery {tid}.a1"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": "review:chief_architect"},
+        {"id": f"{tid}.a4", "resource": "claude_cli", "note": "continuation after capacity limit"},
+        {"id": f"{tid}.a5", "resource": "claude_cli", "note": f"revision after review failure {tid}.a5"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a5")
+    assert _given_prior(layout, tid, f"{tid}.a5") is None
+
+
+def test_revision_after_a_rerouted_review_gets_no_handoff(layout):
+    """The same, for the other note a non-delivery job is dispatched with: a review whose lane became unavailable
+    is rerouted, and 'rerouted from <lane>' says nothing about the kind of job that moved."""
+    tid = "REVR"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="first delivery", mtime=now - 300)
+    _write_handoff(layout, tid, f"{tid}.a4", text="reviewer's own notes", mtime=now)   # newest by mtime
+    _write_job(layout, tid, f"{tid}.a1", "delivery")
+    _write_job(layout, tid, f"{tid}.a2", "verify", verify_delivery=f"{tid}.a1")
+    _write_job(layout, tid, f"{tid}.a3", "review")
+    _write_job(layout, tid, f"{tid}.a4", "review", rerouted_from=f"{tid}.a3")
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "process", "note": f"verify delivery {tid}.a1"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": "review:chief_architect"},
+        {"id": f"{tid}.a4", "resource": "codex_cli", "note": "rerouted from claude_cli"},
+        {"id": f"{tid}.a5", "resource": "claude_cli", "note": f"revision after review failure {tid}.a5"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a5")
+    assert _given_prior(layout, tid, f"{tid}.a5") is None
+
+
+def test_continuation_after_a_continued_diagnosis_is_given_its_own_predecessor(layout):
+    """A diagnosis that was itself continued sits between this delivery session and the one it continues. Its
+    continuation entry must not be counted as a session of the delivery attempt (which would inflate this
+    session's number) nor handed over as this session's predecessor."""
+    tid = "CONT3"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="session 1 stopped here", mtime=now - 200)
+    _write_handoff(layout, tid, f"{tid}.a3", text="the diagnosis lane's own notes", mtime=now)
+    _write_job(layout, tid, f"{tid}.a1", "delivery")
+    _write_job(layout, tid, f"{tid}.a2", "diagnosis")
+    _write_job(layout, tid, f"{tid}.a3", "diagnosis")
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "claude_cli", "note": "diagnosis:manager"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": "continuation after time limit"},
+        {"id": f"{tid}.a4", "resource": "claude_cli", "note": "continuation after capacity limit"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a4")
+    assert _given_prior(layout, tid, f"{tid}.a4") == str(layout.runs / tid / f"{tid}.a1" / "HANDOFF.md")
+
+
+def test_an_entry_with_no_job_record_is_read_from_its_note(layout):
+    """The fallback for a store written before the job records existed (or one whose record cannot be read): the
+    entry's own note is the only signal left, so a note that announces another kind is still honoured."""
+    tid = "OLD"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="first delivery", mtime=now - 100)
+    _write_handoff(layout, tid, f"{tid}.a2", text="reviewer's own notes", mtime=now)
+    _write_job(layout, tid, f"{tid}.a1", "delivery")                 # the review entry gets no record at all
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "claude_cli", "note": "review:chief_architect"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": f"revision after review failure {tid}.a3"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a3")
+    assert _given_prior(layout, tid, f"{tid}.a3") is None
 
 
 def test_diagnosis_is_given_its_parents_handoff(layout):
