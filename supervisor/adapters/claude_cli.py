@@ -81,19 +81,25 @@ def _delivery_identity(entries, idx: int) -> tuple[int, int]:
     return attempt, seq
 
 
-def _last_delivery_before(entries, idx: int) -> str | None:
-    """The id of the most recent delivery-kind entry before `idx` (skipping review/diagnosis/verify), or None."""
+def _last_delivery_index(entries, idx: int) -> int | None:
+    """The index of the most recent delivery-kind entry before `idx` (skipping review/diagnosis/verify), or None."""
     for j in range(idx - 1, -1, -1):
         if not (entries[j].note or "").startswith(_OTHER_KIND_NOTE_PREFIXES):
-            return entries[j].id
+            return j
     return None
 
 
-def _ever_verified(entries, session_id: str) -> bool:
-    """Whether `session_id` (a delivery session) was ever followed by a verify job: the loop only dispatches one
-    once a worker has claimed COMPLETE with every declared artifact present, so its absence means the attempt
-    produced no delivery at all (§4.1 of the attempt-identity design)."""
-    return any((e.note or "") == f"verify delivery {session_id}" for e in entries)
+def _produced_delivery(entries, delivery_idx: int, idx: int) -> bool:
+    """Whether the delivery-kind entry at `delivery_idx` ever passed verification, looking only at `entries`
+    between it and `idx` (exclusive): a tracked verify job recorded against its own session id, or a review
+    dispatch — `tasks._evaluate` only ever moves a task to WAITING_FOR_REVIEW once verification has already said
+    ok for the current digest, so a 'review:' entry is proof by itself. A task that declares no test commands is
+    verified the same tick its worker claims COMPLETE (verify.verify() returns ok with nothing to track) and so
+    gains no 'verify delivery' entry of its own; the review entry is the only store-only record such a delivery
+    ever happened (§4.1 of the attempt-identity design)."""
+    session_id = entries[delivery_idx].id
+    needle = f"verify delivery {session_id}"
+    return any((e.note or "") == needle or (e.note or "").startswith("review:") for e in entries[delivery_idx + 1:idx])
 
 
 def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "delivery"):
@@ -112,11 +118,13 @@ def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "
         return handoff.select(layout, task_id, None, kind, None, None)
     attempt, seq = _delivery_identity(entries, idx)
     if seq > 1:
-        return handoff.select(layout, task_id, attempt, kind, seq, entries[idx - 1].id)
+        prior_idx = _last_delivery_index(entries, idx)
+        return handoff.select(layout, task_id, attempt, kind, seq, entries[prior_idx].id if prior_idx is not None else None)
     parent = None
     if attempt > 1:
-        last = _last_delivery_before(entries, idx)
-        parent = last if last and not _ever_verified(entries, last) else None
+        prior_idx = _last_delivery_index(entries, idx)
+        if prior_idx is not None and not _produced_delivery(entries, prior_idx, idx):
+            parent = entries[prior_idx].id
     return handoff.select(layout, task_id, attempt, kind, seq, parent)
 DEFAULT_TOOLS = {
     "writer": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
