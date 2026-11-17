@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from supervisor import jobs, migrations, store
@@ -70,11 +71,18 @@ EXTRA_EXPECTED = {
 ALL_EXPECTED = {**EXPECTED, **EXTRA_EXPECTED}
 
 
+EXPECT_TASKS = ("T-RUNDIR", "T-CONT", "T-REVCONT")
+
+
 def _write_expect(mapping_dir: Path) -> None:
-    """The committed expectation file (check assertion 6): three named tasks -- a straightforward one
-    (`T-RUNDIR`), a continuation that folds a lane change into a flagged attempt (`T-CONT`), and a review round
-    re-dispatched after a capacity limit, read as a further round rather than a new attempt (`T-REVCONT`)."""
-    expect = {"T-RUNDIR.a1": [1, "delivery", 1], "T-CONT.a1": [1, "delivery", 1], "T-REVCONT.a3": [1, "review", 1]}
+    """The committed expectation file (check assertion 6): every record of three named tasks -- a
+    straightforward one (`T-RUNDIR`), a continuation that folds a lane change into a flagged attempt
+    (`T-CONT`: `.a3` is the continuation, `.a4`/`.a5` are the attempt the flag names), and a review round
+    re-dispatched after a capacity limit, read as a further round of the same attempt rather than a new one
+    (`T-REVCONT`: `.a4` is that second round). Held in full, not one row apiece -- a single row per task
+    cannot discriminate when a mapping rule moves one of a task's *other* records (section 8.5 note 6)."""
+    expect = {job_id: list(value) for job_id, value in ALL_EXPECTED.items()
+             if job_id.split(".")[0] in EXPECT_TASKS}
     (mapping_dir / "expect.json").write_text(json.dumps(expect, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -370,6 +378,61 @@ def test_check_fails_assertion_6_when_the_expectation_file_disagrees(layout, tmp
 
     with pytest.raises(migrations.MigrationError, match="6_expectation_file"):
         migrations.check_attempts(layout, mapping_path, tmp_path / "check")
+
+
+def test_check_fails_assertion_6_when_a_mapping_rule_changes_but_the_expectation_file_does_not(layout, tmp_path):
+    """Section 8.5 note 6's whole point: an expectation file must fail when a mapping *rule* changes, not only
+    when someone edits `expect.json` by hand. Proved here with a real rule change -- an `overrides.yaml` entry
+    that forces `T-CONT.a4`'s cause, the same mechanism `test_an_override_changes_one_cause_and_renumbers_later_
+    attempts` uses -- committed against the unmodified rules, left untouched afterwards."""
+    build_apply_fixture(layout, tmp_path)
+    mapping_dir = tmp_path / "mapping"
+    migrations.dry_run_attempts(layout, mapping_dir)
+    _write_expect(mapping_dir)                              # committed against today's rules
+
+    overrides = tmp_path / "overrides.yaml"
+    overrides.write_text(yaml.safe_dump({"T-CONT.a4": "reroute"}), encoding="utf-8")
+    migrations.dry_run_attempts(layout, mapping_dir, overrides_path=overrides)   # the rule changes...
+    mapping_path = mapping_dir / "mapping.json"                                   # ...expect.json does not
+    migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+
+    with pytest.raises(migrations.MigrationError, match="6_expectation_file"):
+        migrations.check_attempts(layout, mapping_path, tmp_path / "check")
+
+
+def test_an_interruption_inside_the_counters_loop_resumes_and_finishes(layout, tmp_path, monkeypatch):
+    """An interruption can land after every job record of this call is written but before (or partway through)
+    the counters loop that follows. The next call's own `to_write` is then empty -- every record already
+    carries `migrated.attempts` -- so resuming must still raise every counter instead of treating an empty
+    `to_write` as nothing left to do (section 8.4's "the next run finishes the rest")."""
+    build_apply_fixture(layout, tmp_path)
+    mapping_path = _dry_run(layout, tmp_path / "mapping")
+
+    real_bump = migrations._bump_task_counters
+    calls = {"n": 0}
+
+    def flaky_bump(layout_, task_id, wanted):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated interruption")
+        return real_bump(layout_, task_id, wanted)
+
+    monkeypatch.setattr(migrations, "_bump_task_counters", flaky_bump)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+    monkeypatch.setattr(migrations, "_bump_task_counters", real_bump)
+
+    for job_id in ALL_EXPECTED:                   # every job record landed before the interruption, mid-loop
+        rec = jobs.resolve(layout, job_id)
+        assert rec["migrated"]["attempts"]
+
+    resumed = migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+    assert resumed["written"] == []                # to_write is empty: every record is already migrated
+    assert sorted(resumed["already_migrated"]) == sorted(ALL_EXPECTED)
+
+    cont = tasks_mod.load(layout, "T-CONT")
+    assert cont.counters["attempt"] == 3
+    assert cont.counters["jobs"][3] == {"delivery": 1, "verify": 1}
 
 
 def test_check_fails_assertion_7_when_the_mapping_loses_integrity(layout, tmp_path):
