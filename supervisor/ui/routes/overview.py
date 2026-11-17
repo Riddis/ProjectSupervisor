@@ -52,6 +52,11 @@ def _disk(layout: Layout) -> dict:
 JOB_ACTIVITY = {"delivery": "Working", "review": "Reviewing", "diagnosis": "Diagnosing a failure",
                 "conversation": "Answering chat", "verify": "Verifying"}
 
+# The word shown beside "attempt N" (ATTEMPT_MODEL.md §6, "Control Center"): a bare "attempt N" reads as a fresh
+# try at the deliverable even for a job that is a verification, a review or a diagnosis of that attempt, so the
+# label always names the kind too.
+KIND_LABEL = {"delivery": "delivery", "verify": "verification", "review": "review", "diagnosis": "diagnosis"}
+
 
 def _iso_epoch(value) -> float | None:
     try:
@@ -100,7 +105,7 @@ def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
             state, state_note = "starting", "launched, no output yet"
         else:
             state, state_note = "running", ""
-        attempt_no = str(rec.get("attempt_id", "")).rpartition(".a")[2]
+        attempt_no = jobs_mod.attempt_of(rec) or None          # the `attempt` field, the id suffix as the fallback
         if kind == "conversation":
             title, href = "Chat reply", f"/chat/{rec.get('conversation_thread')}" if rec.get("conversation_thread") else "/chat"
         else:
@@ -109,7 +114,7 @@ def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
             "attempt_id": rec.get("attempt_id"), "task_id": rec.get("task_id"), "title": title, "href": href,
             "is_chat": kind == "conversation", "activity": JOB_ACTIVITY.get(kind, kind.replace("_", " ").capitalize()),
             "role": rec.get("review_role") or spec.get("role"), "model": spec.get("model"), "effort": spec.get("effort"),
-            "adapter": rec.get("adapter"), "attempt": int(attempt_no) if attempt_no.isdigit() else None,
+            "adapter": rec.get("adapter"), "attempt": attempt_no, "kind_label": KIND_LABEL.get(kind, kind),
             "state": state, "state_note": state_note, "elapsed_s": elapsed, "timeout_s": timeout,
             "idle_s": idle_s, "idle_for_s": idle_for,
             "extended_s": sum(int(e.get("seconds") or 0) for e in handle.get("extensions") or []),

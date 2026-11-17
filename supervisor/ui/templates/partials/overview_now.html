@@ -13,7 +13,7 @@
           <span class="now-activity">{{ j.activity }}</span>
           {% if j.role %}<span>{{ j.role | replace('_',' ') }}</span>{% endif %}
           {% if j.model %}<span>{{ j.model }}{% if j.effort %} / {{ j.effort }}{% endif %}</span>{% else %}<span>{{ j.adapter | replace('_',' ') }}</span>{% endif %}
-          {% if j.attempt and not j.is_chat %}<span>attempt {{ j.attempt }}</span>{% endif %}
+          {% if j.attempt and not j.is_chat %}<span>attempt {{ j.attempt }} &middot; {{ j.kind_label }}</span>{% endif %}
           {% if j.gpu %}<span class="subtle-tag">GPU</span>{% endif %}
         </div>
         {% if j.progress %}{% with p = j.progress %}{% include "partials/job_progress.html" %}{% endwith %}{% endif %}

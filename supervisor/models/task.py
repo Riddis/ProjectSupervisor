@@ -70,8 +70,9 @@ class Attempt(BaseModel):
     id: Optional[str] = None            # a job id today; removed in step 15 (§2.7 of the attempt-identity design)
                                           # — kept, optional and never written by the new allocator, only so an
                                           # un-migrated document still parses
-    resource: str
-    at: str
+    resource: Optional[str] = None      # per §4.6, moved onto the job entry in the migrated shape (`jobs[].resource`)
+                                          # — optional so a document already on that shape still parses
+    at: Optional[str] = None            # → `opened` in the migrated shape (§4.6); optional for the same reason
     outcome: str = ""
     note: str = ""
     model: Optional[str] = None

@@ -83,23 +83,26 @@
   <p class="muted">Unreadable job record(s), left as they are: {% for id, err in broken_jobs.items() %}<strong>{{ id }} (unreadable)</strong> — {{ err }}{{ "; " if not loop.last }}{% endfor %}</p>
   {% endif %}
   <table class="tasks-table">
-    <thead><tr><th>Attempt</th><th>Resource</th><th>Model</th><th>Reason</th><th>At</th><th>Outcome</th><th></th></tr></thead>
+    <thead><tr><th>Attempt</th><th>Kind</th><th>Resource</th><th>Model</th><th>Reason</th><th>At</th><th>Outcome</th><th></th></tr></thead>
     <tbody>
-    {% for row in attempts %}
-      {% set a = row.attempt %}{% set j = row.job %}
+    {% for g in attempt_groups %}
+      {% for row in g.rows %}
       <tr>
-        <td>{{ a.id }}</td><td>{{ a.resource }}</td><td>{{ a.model or '—' }}</td>
-        <td>{{ a.reason or (j.reason if j else None) or '—' }}</td><td>{{ a.at | localtime }}</td>
-        <td>{{ (j.result if j else None) or a.outcome or (j.phase if j else '') }}</td>
+        {% if loop.first %}<td rowspan="{{ g.rows | length }}">{{ 'Attempt ' ~ g.n if g.n else '—' }}</td>{% endif %}
+        <td>{{ row.kind }}</td><td>{{ row.resource or '—' }}</td><td>{{ row.model or '—' }}</td>
+        <td>{{ row.note or '—' }}</td>
+        {% if loop.first %}<td rowspan="{{ g.rows | length }}">{{ g.opened | localtime if g.opened else '—' }}</td>{% endif %}
+        <td>{{ row.result or g.outcome or row.phase or '' }}</td>
         <td>
-          <form method="post" action="/tasks/{{ t.id }}/attempts/{{ a.id }}/open-run-dir" class="inline-form">
+          <form method="post" action="/tasks/{{ t.id }}/attempts/{{ row.job_id }}/open-run-dir" class="inline-form">
             {% include "partials/csrf.html" %}
             <button type="submit">Open run dir</button>
           </form>
-          {% if j and j.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}<a href="/agents/{{ a.id }}">live</a>{% endif %}
+          {% if row.phase in ('PREPARED', 'SUBMITTED', 'RUNNING') %}<a href="/agents/{{ row.job_id }}">live</a>{% endif %}
         </td>
       </tr>
-    {% else %}<tr><td colspan="7">no attempts yet</td></tr>{% endfor %}
+      {% endfor %}
+    {% else %}<tr><td colspan="8">no attempts yet</td></tr>{% endfor %}
     </tbody>
   </table>
 </section>
