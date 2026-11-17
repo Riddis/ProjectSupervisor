@@ -106,6 +106,43 @@ def test_revision_after_an_attempt_with_no_delivery_at_all_gets_its_last_session
     assert _given_prior(layout, tid, f"{tid}.a4") == str(layout.runs / tid / f"{tid}.a2" / "HANDOFF.md")
 
 
+def test_revision_after_an_inline_verified_attempt_gets_no_handoff(layout):
+    """The attempt being revised declared no test commands: its delivery was verified and reviewed the same tick
+    its worker claimed COMPLETE (verify.verify() returns ok with nothing to track), so the store never gained a
+    'verify delivery' entry for it — only a 'review:' one. The revision still starts from nothing, not from the
+    rejected author's own run-directory notes, even though no 'verify delivery' entry exists to say a delivery
+    ever happened."""
+    tid = "REVI"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="first delivery", mtime=now - 100)
+    _write_handoff(layout, tid, f"{tid}.a2", text="reviewer's own notes", mtime=now)   # newest by mtime
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "claude_cli", "note": "review:chief_architect"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": f"revision after review failure {tid}.a3"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a3")
+    assert _given_prior(layout, tid, f"{tid}.a3") is None
+
+
+def test_continuation_after_an_intervening_entry_is_given_its_own_predecessor(layout):
+    """A continuation dispatched after some other job for the same task was recorded in between it and the
+    session it continues (e.g. a crash-recovery diagnosis) still reads that session's own handoff — not the
+    entry that happens to sit immediately before it in the attempt list."""
+    tid = "CONT2"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "engineer"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="session 1 stopped here", mtime=now - 100)
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:engineer {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "claude_cli", "note": "diagnosis:manager"},
+        {"id": f"{tid}.a3", "resource": "claude_cli", "note": f"continuation after capacity limit {tid}.a3"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a3")
+    assert _given_prior(layout, tid, f"{tid}.a3") == str(layout.runs / tid / f"{tid}.a1" / "HANDOFF.md")
+
+
 def test_diagnosis_is_given_its_parents_handoff(layout):
     """A diagnosis reads the handoff of the job it is explaining, if that job wrote one."""
     tid = "DIAG"
