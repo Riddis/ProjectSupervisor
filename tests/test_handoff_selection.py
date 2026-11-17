@@ -237,6 +237,26 @@ def test_an_entry_with_no_job_record_is_read_from_its_note(layout):
     assert _given_prior(layout, tid, f"{tid}.a3") is None
 
 
+def test_continuation_of_a_non_delivery_schema_job_is_given_its_own_predecessor(layout):
+    """A job whose brief names a result schema other than "delivery" (an assessment, a research report) is still
+    dispatched as a delivery-lane job — `loop.dispatch` writes its job record with kind "delivery" regardless of
+    the result schema name, because only review, diagnosis and conversation jobs are dispatched any other way.
+    Its capacity/time-limit continuation must therefore read its own predecessor's handoff exactly as any other
+    delivery continuation does, not fall through to no handoff because the result schema is not named "delivery"."""
+    tid = "SCHEMA"
+    make_task(layout, tid, reviewer=(), job={"adapter": "claude_cli", "role": "senior_pm", "result_kind": "assessment"})
+    now = time.time()
+    _write_handoff(layout, tid, f"{tid}.a1", text="session 1 stopped here", mtime=now - 100)
+    _write_handoff(layout, tid, f"{tid}.decoy", text="unrelated, newer", mtime=now)   # newest by mtime, must be ignored
+    _write_job(layout, tid, f"{tid}.a1", "delivery")   # what loop.dispatch records for an assessment-kind job
+    _set_attempts(layout, tid, [
+        {"id": f"{tid}.a1", "resource": "claude_cli", "note": f"dispatch:senior_pm {tid}.a1"},
+        {"id": f"{tid}.a2", "resource": "claude_cli", "note": f"continuation after capacity limit {tid}.a2"},
+    ])
+    ADAPTER.prepare(layout, tasks.load(layout, tid), f"{tid}.a2")
+    assert _given_prior(layout, tid, f"{tid}.a2") == str(layout.runs / tid / f"{tid}.a1" / "HANDOFF.md")
+
+
 def test_diagnosis_is_given_its_parents_handoff(layout):
     """A diagnosis reads the handoff of the job it is explaining, if that job wrote one."""
     tid = "DIAG"
