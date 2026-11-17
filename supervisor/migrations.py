@@ -1121,7 +1121,6 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
                              f"(left as they were, not overwritten): {', '.join(sorted(conflicts))}")
 
     backup = None
-    bumped: list[str] = []
     if to_write:
         backup = _backup_store(layout)
         mapping_sha256 = hashlib.sha256(mapping_path.read_bytes()).hexdigest()
@@ -1132,9 +1131,14 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
             rec["migrated"] = {**(rec.get("migrated") or {}),
                                "attempts": {"at": store.now_iso(), "mapping_sha256": mapping_sha256}}
             jobs_mod.write(layout, rec)
-        for task_id, entries in sorted(_by_task(mapping).items()):
-            if _bump_task_counters(layout, task_id, _counter_maxima(entries)):
-                bumped.append(task_id)
+
+    # Raised unconditionally, even when `to_write` is empty: an interruption that lands after every job record
+    # is written but before (or partway through) this loop must still find every counter short of its maximum
+    # on the next call, since that call's own `to_write` is empty and nothing else would ever raise them.
+    bumped: list[str] = []
+    for task_id, entries in sorted(_by_task(mapping).items()):
+        if _bump_task_counters(layout, task_id, _counter_maxima(entries)):
+            bumped.append(task_id)
 
     report = {"mapping": str(mapping_path), "written": sorted(to_write), "already_migrated": sorted(already),
              "counters_bumped": sorted(bumped), "backup": str(backup) if backup else None}
