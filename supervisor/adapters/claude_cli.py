@@ -298,7 +298,8 @@ class ClaudeCliAdapter(ProcessAdapter):
             prompt_text = job.get("prompt") or self.default_brief(layout, task, run_dir)
         from .. import packets as packets_mod
         prompt_text = packets_mod.worker_prompt(task, job, prompt_text)     # owner/diagnosis guidance, any prompt source
-        kind = job.get("result_kind", "delivery")
+        rk = job.get("result_kind", "delivery")
+        kind = rk if rk in packets_mod.NON_DELIVERY_KINDS else "delivery"
         prompt_text += "\n\n" + handoff_instructions(run_dir, prior=resolve_handoff(layout, task.id, attempt_id, kind))
         if job.get("result_kind", "delivery") != "conversation":   # a one-shot chat turn has nothing to check between steps
             from .. import conversations as conversations_mod
