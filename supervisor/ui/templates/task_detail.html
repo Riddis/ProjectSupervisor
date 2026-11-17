@@ -88,7 +88,7 @@
     {% for g in attempt_groups %}
       {% for row in g.rows %}
       <tr>
-        {% if loop.first %}<td rowspan="{{ g.rows | length }}">{{ 'Attempt ' ~ g.n if g.n else '—' }}</td>{% endif %}
+        {% if loop.first %}<td rowspan="{{ g.rows | length }}">{{ 'Attempt ' ~ g.n if g.n else ('Job ' ~ g.job_id if g.job_id else '—') }}</td>{% endif %}
         <td>{{ row.kind }}</td><td>{{ row.resource or '—' }}</td><td>{{ row.model or '—' }}</td>
         <td>{{ row.note or '—' }}</td>
         {% if loop.first %}<td rowspan="{{ g.rows | length }}">{{ g.opened | localtime if g.opened else '—' }}</td>{% endif %}

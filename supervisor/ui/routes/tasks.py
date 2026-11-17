@@ -59,19 +59,20 @@ def attempt_groups(layout: Layout, t) -> list[dict]:
     """The Attempts table's rows, grouped by delivery attempt, on either shape `t.attempts` can hold: a migrated
     document's `jobs[]` under each numbered attempt (joined on `jobs[].id`), or an un-migrated document's one
     `Attempt` entry per job (joined on `Attempt.id`, used only as the fallback when `jobs[]` is empty — never read
-    on a migrated document, which never carries entries in `jobs[]` without `n` set). Each group's `n` is the
-    attempt number; each row carries the job's own kind, so a verification, a review or a diagnosis is never
-    shown as if it were a fresh attempt at the deliverable."""
+    on a migrated document, which never carries entries in `jobs[]` without `n` set). Each migrated group's `n` is
+    the attempt number. An un-migrated entry's id suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id
+    whose kind is whatever happened to be dispatched nth"), so that group names its job instead of asserting a
+    delivery-attempt count (`n: None`, `job_id` set — the design's interim remedy, §6). Each row carries the job's
+    own kind either way, so a verification, a review or a diagnosis is never shown as if it were a fresh attempt
+    at the deliverable."""
     groups = []
     for a in t.attempts:
         if a.jobs:
             rows = [_job_row(layout, e.get("id"), e.get("kind"), e.get("resource"), e.get("run_dir"),
                              e.get("note"), e.get("result"), None) for e in a.jobs]
-            groups.append({"n": a.n, "opened": a.opened, "outcome": a.outcome, "rows": rows})
+            groups.append({"n": a.n, "job_id": None, "opened": a.opened, "outcome": a.outcome, "rows": rows})
         else:
-            job = jobs_mod.resolve(layout, a.id) if a.id else None
-            n = jobs_mod.attempt_of(job) if job else jobs_mod.attempt_no(a.id or "")
-            groups.append({"n": n or None, "opened": a.at, "outcome": a.outcome,
+            groups.append({"n": None, "job_id": a.id, "opened": a.at, "outcome": a.outcome,
                           "rows": [_job_row(layout, a.id, None, a.resource, a.run_dir, a.note, None, a.model)]})
     return groups
 

@@ -82,7 +82,7 @@ def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
             continue
         spec = rec.get("spec") or {}
         handle = rec.get("handle") or {}
-        kind = spec.get("kind") or "delivery"
+        kind = jobs_mod.kind_of(rec)        # the promoted field first (§2.6); spec["kind"] only when it is unset
         task = tasks.get(rec.get("task_id"))
         started = _iso_epoch(handle.get("started") or rec.get("submitted"))
         elapsed = max(0, int(now - started)) if started and rec.get("phase") != "PREPARED" else None
