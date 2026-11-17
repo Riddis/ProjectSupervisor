@@ -142,7 +142,8 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
 
 migrate_app = typer.Typer(help="bring a project's state and config up to the installed framework version "
                               "(idempotent); `attempts` derives the attempt-identity migration's mapping "
-                              "(ATTEMPT_MODEL.md section 8) without writing to the store")
+                              "(ATTEMPT_MODEL.md section 8, --dry-run), writes a reviewed one onto the store "
+                              "(--apply) or checks an applied store against it (--check)")
 app.add_typer(migrate_app, name="migrate")
 
 
@@ -166,32 +167,60 @@ def migrate(ctx: typer.Context,
 
 @migrate_app.command("attempts")
 def migrate_attempts(
-       dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; required for now "
-                                     "(apply is not built yet)"),
-       out: Path = typer.Option(..., "--out", help="directory to write mapping.json, report.json and summary.md"),
+       dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; writes nothing "
+                                     "else"),
+       apply: bool = typer.Option(False, "--apply", help="write a reviewed mapping's identity fields onto the "
+                                  "store (ATTEMPT_MODEL.md section 8.4); refuses without --mapping"),
+       check: bool = typer.Option(False, "--check", help="section 8.5's seven assertions against the store and "
+                                  "the mapping's own report.json, read-only; refuses without --mapping"),
+       out: Path = typer.Option(..., "--out", help="directory for this run's own files: mapping.json/report.json/"
+                                "summary.md for --dry-run, apply_report.json for --apply, check_report.json for "
+                                "--check"),
+       mapping: Path = typer.Option(None, "--mapping", help="a reviewed dry run's mapping.json; required for "
+                                    "--apply and --check"),
        overrides: Path = typer.Option(None, "--overrides", help="a YAML file of job id -> cause, forcing the "
-                                      "mapping's detected cause for the named jobs"),
+                                      "mapping's detected cause for the named jobs (--dry-run only)"),
        compare: Path = typer.Option(None, "--compare", help="an earlier run's mapping.json; fails if a row "
-                                    "changed, after writing this run's own files")):
-    """Derive the attempt-identity mapping (ATTEMPT_MODEL.md section 8.2) from the store as it stands, for a
-    human to read before anything is migrated. Writes nothing but `--out`; `apply` (not yet built) will take the
-    reviewed mapping.json as its own input."""
-    if not dry_run:
-        raise typer.BadParameter("migrate attempts currently only supports --dry-run (apply is not built yet)")
+                                    "changed, after writing this run's own files (--dry-run only)")):
+    """ATTEMPT_MODEL.md section 8: derive the attempt-identity mapping from the store as it stands, for a human
+    to read before anything is migrated (--dry-run); write a reviewed one onto the store (--apply); or check an
+    applied store against it (--check). Exactly one of the three is required; apply and check both refuse
+    without --mapping, and apply never derives a mapping of its own."""
+    modes = [name for name, flag in (("dry_run", dry_run), ("apply", apply), ("check", check)) if flag]
+    if len(modes) != 1:
+        raise typer.BadParameter("pass exactly one of --dry-run, --apply, --check")
     from . import migrations
     layout = _writer(load=False)
     try:
-        report = migrations.dry_run_attempts(layout, out, overrides_path=overrides, compare_path=compare)
+        if dry_run:
+            report = migrations.dry_run_attempts(layout, out, overrides_path=overrides, compare_path=compare)
+        elif apply:
+            if mapping is None:
+                raise typer.BadParameter("--apply refuses without --mapping")
+            report = migrations.apply_attempts(layout, mapping, out)
+        else:
+            if mapping is None:
+                raise typer.BadParameter("--check refuses without --mapping")
+            report = migrations.check_attempts(layout, mapping, out)
     except migrations.MigrationError as exc:
         raise typer.BadParameter(str(exc))
-    t = report["totals"]
-    typer.echo(f"wrote mapping.json, report.json, summary.md to {out}")
-    typer.echo(f"placed {t['placed']} of {t['records']} job record(s), {t['unplaced']} unplaced")
-    if report["flags"]:
-        typer.echo(f"flagged {len(report['flags'])}: see report.json")
-    if "compare" in report:
-        c = report["compare"]
-        typer.echo(f"compared with {c['baseline']}: {c['unchanged']} unchanged, {len(c['added'])} added")
+
+    if dry_run:
+        t = report["totals"]
+        typer.echo(f"wrote mapping.json, report.json, summary.md to {out}")
+        typer.echo(f"placed {t['placed']} of {t['records']} job record(s), {t['unplaced']} unplaced")
+        if report["flags"]:
+            typer.echo(f"flagged {len(report['flags'])}: see report.json")
+        if "compare" in report:
+            c = report["compare"]
+            typer.echo(f"compared with {c['baseline']}: {c['unchanged']} unchanged, {len(c['added'])} added")
+    elif apply:
+        typer.echo(f"wrote apply_report.json to {out}")
+        typer.echo(f"wrote {len(report['written'])}, already migrated {len(report['already_migrated'])}" +
+                   (f", backed up to {report['backup']}" if report["backup"] else ""))
+    else:
+        typer.echo(f"wrote check_report.json to {out}")
+        typer.echo("check passed" if report["ok"] else "check FAILED: see check_report.json")
 
 
 @app.command()

@@ -7,9 +7,11 @@ that module is imported, never the plugin's setup(); a plugin whose framework ra
 is skipped (it does not load either)."""
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import re
+import shutil
 import tomllib
 from pathlib import Path
 from typing import Any, Callable
@@ -955,3 +957,327 @@ def dry_run_attempts(layout: Layout, out: Path | str, *, overrides_path: Path | 
                              f"the baseline: {', '.join(report['compare']['changed'])} "
                              f"(written to {out} for inspection)")
     return report
+
+
+# ---- the attempt-identity migration's apply and check (ATTEMPT_MODEL.md section 8, step 7 of "Order of work") ----
+#
+# `apply` takes a reviewed `mapping.json` (never derives its own) and writes its identity fields onto the job
+# records it names, under the existing atomic write and the task lock; `check` re-reads the store and asserts the
+# seven claims of section 8.5 against it and against the dry run's own `report.json`. Neither ever opens
+# `state/runtime/escalation/` for anything but a read (apply does not open it at all), never renames a job record
+# file or a run directory, and never invents a mapping of its own.
+
+IDENTITY_FIELDS = ("attempt", "kind", "seq", "parent", "cause", "scope")
+
+
+class _NoCountersChange(Exception):
+    """Raised inside a `store.update` callback to abort a task write whose counters already cover the observed
+    maxima -- the write that never happens is what keeps a second apply a no-op (§8.4)."""
+
+
+def _check_preconditions(layout: Layout) -> None:
+    """Section 8.1: the loop must be stopped before apply writes anything -- `state/.lock` free and the runtime's
+    own status not RUNNING -- so a live dispatch can never land on a record apply is mid-rewriting. The CLI's
+    `_writer()` already refuses a held lock for every command that mutates the store; this is the same rule,
+    checked again here so a caller of the library function directly (a test, a script) gets it too."""
+    from . import locks
+    held = locks.holder(layout.lock) if layout.lock.exists() else None
+    if held is not None:
+        raise MigrationError(f"state/.lock is held by {held.get('owner', 'unknown')}: stop the loop before "
+                             f"applying the attempts migration")
+    from . import runtime as runtime_mod
+    status = runtime_mod.read(layout).get("status")
+    if status == "RUNNING":
+        raise MigrationError(f"the runtime status is RUNNING: stop the loop before applying the attempts migration")
+
+
+def _load_mapping(mapping_path: Path | str | None) -> dict[str, dict]:
+    """The reviewed `mapping.json` apply/check take as their one input. Refuses when none is given or the file
+    does not exist (§8.4: apply never derives its own mapping -- no dry run, no apply)."""
+    if not mapping_path:
+        raise MigrationError("no mapping file given: pass --mapping <dir>/mapping.json from a reviewed dry run")
+    p = Path(mapping_path)
+    if not p.exists():
+        raise MigrationError(f"{p}: no such mapping file -- apply/check refuse without a reviewed dry run's "
+                             f"mapping.json")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _identity_fields(entry: dict) -> dict[str, Any]:
+    """The subset of `entry` apply ever writes: §2.6's identity fields, omitting the ones the mapping leaves
+    unset (`None`) exactly as `jobs.prepare` already does -- so a task-scoped job's record gains no stray
+    `attempt: null` and the write this produces is the same whether it runs once or twice."""
+    return {k: entry[k] for k in IDENTITY_FIELDS if entry.get(k) is not None}
+
+
+def _record_matches(rec: dict, wanted: dict[str, Any]) -> bool:
+    return all(rec.get(k) == v for k, v in wanted.items())
+
+
+def _counter_maxima(entries: list[dict]) -> dict[str, Any]:
+    """From one task's mapping entries: the highest attempt number, and the highest per-kind `seq` inside each
+    attempt and among its task-scoped jobs -- the maxima §8.3 says counters must be set to, never below, so the
+    allocator that starts using these counters (step 9) can never mint an id already used here."""
+    attempt_max = 0
+    per_attempt: dict[int, dict[str, int]] = {}
+    task_jobs: dict[str, int] = {}
+    for e in entries:
+        kind, seq = e.get("kind"), int(e.get("seq") or 0)
+        if e.get("attempt") is not None:
+            attempt_max = max(attempt_max, int(e["attempt"]))
+            bucket = per_attempt.setdefault(int(e["attempt"]), {})
+            bucket[kind] = max(bucket.get(kind, 0), seq)
+        elif e.get("scope") == "task":
+            task_jobs[kind] = max(task_jobs.get(kind, 0), seq)
+    return {"attempt": attempt_max, "jobs": per_attempt, "task_jobs": task_jobs}
+
+
+def _merge_counters(existing: dict, wanted: dict[str, Any]) -> tuple[dict, bool]:
+    """`existing` (a task's current `counters`) with `wanted`'s maxima merged in monotonically -- nothing here
+    ever lowers a value (§8.3) -- and whether anything actually changed, so a task already at or above every
+    maximum is left untouched rather than rewritten with an identical document."""
+    changed = False
+    out = dict(existing)
+    if wanted["attempt"] > int(out.get("attempt") or 0):
+        out["attempt"], changed = wanted["attempt"], True
+    jobs = {int(k): dict(v) for k, v in (out.get("jobs") or {}).items()}
+    for attempt, kinds in wanted["jobs"].items():
+        bucket = jobs.setdefault(attempt, {})
+        for kind, seq in kinds.items():
+            if seq > int(bucket.get(kind) or 0):
+                bucket[kind], changed = seq, True
+    out["jobs"] = jobs
+    task_jobs = dict(out.get("task_jobs") or {})
+    for kind, seq in wanted["task_jobs"].items():
+        if seq > int(task_jobs.get(kind) or 0):
+            task_jobs[kind], changed = seq, True
+    out["task_jobs"] = task_jobs
+    return out, changed
+
+
+def _bump_task_counters(layout: Layout, task_id: str, wanted: dict[str, Any]) -> bool:
+    """Merge `wanted`'s maxima into the task document's own `counters`, under the same lock and atomic write
+    every other task mutation uses -- never a second one of apply's own. Returns whether anything was written."""
+    bumped = False
+
+    def fn(doc: dict) -> dict:
+        nonlocal bumped
+        merged, changed = _merge_counters(doc.get("counters") or {}, wanted)
+        if not changed:
+            raise _NoCountersChange()
+        doc["counters"] = merged
+        bumped = True
+        return doc
+
+    try:
+        store.update(tasks_mod.path_for(layout, task_id), fn, lock_path=layout.state / ".tasks.lock")
+    except _NoCountersChange:
+        pass
+    return bumped
+
+
+def _by_task(mapping: dict[str, dict]) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for entry in mapping.values():
+        out.setdefault(entry["task"], []).append(entry)
+    return out
+
+
+def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) -> dict[str, Any]:
+    """Section 8, step 7: write a reviewed `mapping.json`'s identity fields onto the job records it names, and
+    the counters its tasks imply. Refuses without a mapping file and refuses while the loop runs (§8.1). A
+    record already carrying `migrated.attempts` is verified against the mapping, never rewritten; a mismatch is
+    an error, not an overwrite, so a hand-edited mapping can never silently relabel an already-migrated record.
+    The backup of `state/runtime/jobs/` and `state/tasks/` is taken once, before this call's own first write --
+    never when there is nothing left to write, which is what makes a second apply with the same mapping a true
+    no-op, and what lets an apply interrupted mid-way simply resume: every record this call has already written
+    is independently complete, and the next call treats it as already migrated."""
+    _check_preconditions(layout)
+    mapping_path = Path(mapping_path)
+    mapping = _load_mapping(mapping_path)
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    to_write: list[str] = []
+    already: list[str] = []
+    conflicts: list[str] = []
+    missing: list[str] = []
+    for job_id, entry in mapping.items():
+        rec = jobs_mod.resolve(layout, job_id)
+        if rec is None:
+            missing.append(job_id)
+            continue
+        wanted = _identity_fields(entry)
+        if (rec.get("migrated") or {}).get("attempts"):
+            (already if _record_matches(rec, wanted) else conflicts).append(job_id)
+        else:
+            to_write.append(job_id)
+
+    if missing:
+        raise MigrationError(f"{len(missing)} job id(s) in the mapping resolve to no record (nothing was "
+                             f"written): {', '.join(sorted(missing))}")
+    if conflicts:
+        raise MigrationError(f"{len(conflicts)} record(s) already migration-stamped disagree with this mapping "
+                             f"(left as they were, not overwritten): {', '.join(sorted(conflicts))}")
+
+    backup = None
+    bumped: list[str] = []
+    if to_write:
+        backup = _backup_store(layout)
+        mapping_sha256 = hashlib.sha256(mapping_path.read_bytes()).hexdigest()
+        for job_id in sorted(to_write):
+            entry = mapping[job_id]
+            rec = dict(jobs_mod.resolve(layout, job_id))
+            rec.update(_identity_fields(entry))
+            rec["migrated"] = {**(rec.get("migrated") or {}),
+                               "attempts": {"at": store.now_iso(), "mapping_sha256": mapping_sha256}}
+            jobs_mod.write(layout, rec)
+        for task_id, entries in sorted(_by_task(mapping).items()):
+            if _bump_task_counters(layout, task_id, _counter_maxima(entries)):
+                bumped.append(task_id)
+
+    report = {"mapping": str(mapping_path), "written": sorted(to_write), "already_migrated": sorted(already),
+             "counters_bumped": sorted(bumped), "backup": str(backup) if backup else None}
+    (out / "apply_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
+def _backup_store(layout: Layout) -> Path:
+    """`state/runtime/migrations/attempts-<timestamp>/backup/{jobs,tasks}` -- a plain copy of `state/runtime/jobs/`
+    and `state/tasks/` as they stand right now, taken once per call that is about to write (never when nothing
+    is), before the first of this call's writes. A microsecond-resolution timestamp (rather than `store.now_iso`'s
+    seconds) keeps two backups inside the same second, from two apply calls a few milliseconds apart, from ever
+    landing on the same directory."""
+    ts = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    backup = layout.runtime / "migrations" / f"attempts-{ts}" / "backup"
+    shutil.copytree(layout.jobs, backup / "jobs")
+    shutil.copytree(layout.tasks, backup / "tasks")
+    return backup
+
+
+def check_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) -> dict[str, Any]:
+    """Section 8.5: the seven assertions, each checked and every failure of each collected before any is raised,
+    so one run names everything wrong instead of one thing per re-run. Reads the store and the mapping's own
+    `report.json` (written beside `mapping.json` by the dry run that produced it); writes only `check_report.json`
+    under `--out`. Assertion 6 reads `expect.json` beside the mapping -- the committed, by-hand mapping of a
+    handful of named tasks (ATTEMPT_MODEL.md §9.1 for this project; a neutral fixture's equivalent in this
+    framework's own tests) -- and fails loudly when it is missing, since an anonymous or absent expectation file
+    cannot fail when a mapping rule changes (§8.5 note 6)."""
+    mapping_path = Path(mapping_path)
+    mapping = _load_mapping(mapping_path)
+    report_path = mapping_path.parent / "report.json"
+    if not report_path.exists():
+        raise MigrationError(f"no report.json beside {mapping_path}: run the dry run that produced this mapping "
+                             f"first (its report.json is check's own baseline)")
+    dry_report = json.loads(report_path.read_text(encoding="utf-8"))
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    failures: dict[str, list[str]] = {}
+
+    def fail(key: str, msg: str) -> None:
+        failures.setdefault(key, []).append(msg)
+
+    # 1. every pre-migration job id resolves to a record.
+    for job_id in mapping:
+        if jobs_mod.resolve(layout, job_id) is None:
+            fail("1_job_resolves", job_id)
+
+    # 2. the run-directory baseline: a value the dry run saw existing must still exist at the same path, and no
+    # recorded run_dir value may differ -- a path absent already at dry-run time is not a failure either way.
+    for job_id, info in (dry_report.get("run_dir_baseline") or {}).items():
+        rec = jobs_mod.resolve(layout, job_id)
+        current = (rec.get("spec") or {}).get("run_dir") if rec else None
+        if current != info.get("run_dir"):
+            fail("2_run_dir_baseline", f"{job_id}: run_dir changed ({info.get('run_dir')!r} -> {current!r})")
+        elif info.get("existed") and not Path(info["run_dir"]).exists():
+            fail("2_run_dir_baseline", f"{job_id}: run_dir existed at dry-run time and is gone now "
+                                      f"({info['run_dir']})")
+
+    # 3. counters >= every ordinal the mapping observes for that task, kind by kind.
+    by_task = _by_task(mapping)
+    for task_id, entries in sorted(by_task.items()):
+        wanted = _counter_maxima(entries)
+        try:
+            task = tasks_mod.load(layout, task_id)
+        except tasks_mod.TaskError as exc:
+            fail("3_counters", f"{task_id}: {exc}")
+            continue
+        counters = task.counters or {}
+        if int(counters.get("attempt") or 0) < wanted["attempt"]:
+            fail("3_counters", f"{task_id}: counters.attempt {counters.get('attempt')!r} < {wanted['attempt']}")
+        jobs_counters = counters.get("jobs") or {}
+        for attempt, kinds in wanted["jobs"].items():
+            bucket = jobs_counters.get(attempt) or jobs_counters.get(str(attempt)) or {}
+            for kind, seq in kinds.items():
+                if int(bucket.get(kind) or 0) < seq:
+                    fail("3_counters", f"{task_id} attempt {attempt}: counters.jobs[{kind}] "
+                                      f"{bucket.get(kind)!r} < {seq}")
+        task_jobs_counters = counters.get("task_jobs") or {}
+        for kind, seq in wanted["task_jobs"].items():
+            if int(task_jobs_counters.get(kind) or 0) < seq:
+                fail("3_counters", f"{task_id}: counters.task_jobs[{kind}] {task_jobs_counters.get(kind)!r} < {seq}")
+
+    # 4. per-kind counts, the attempts-per-task histogram and the unplaced list equal the dry run's own.
+    computed_by_kind: dict[str, int] = {}
+    computed_unplaced: set[str] = set()
+    for job_id, entry in mapping.items():
+        computed_by_kind[entry["kind"]] = computed_by_kind.get(entry["kind"], 0) + 1
+        if entry.get("source") == "unplaced":
+            computed_unplaced.add(job_id)
+    computed_histogram: dict[str, int] = {}
+    for entries in by_task.values():
+        attempts_here = [e["attempt"] for e in entries if e.get("attempt") is not None]
+        if attempts_here:
+            n = str(max(attempts_here))
+            computed_histogram[n] = computed_histogram.get(n, 0) + 1
+    if computed_by_kind != (dry_report.get("by_kind") or {}):
+        fail("4_counts", f"by_kind {computed_by_kind} != report.json's {dry_report.get('by_kind')}")
+    if computed_histogram != (dry_report.get("attempts_per_task") or {}):
+        fail("4_counts", f"attempts_per_task {computed_histogram} != report.json's "
+                        f"{dry_report.get('attempts_per_task')}")
+    reported_unplaced = {u["job"] for u in (dry_report.get("unplaced") or [])}
+    if computed_unplaced != reported_unplaced:
+        fail("4_counts", f"unplaced {sorted(computed_unplaced)} != report.json's {sorted(reported_unplaced)}")
+
+    # 5. every escalation file's digest is unchanged from the dry run's own reading of it.
+    for task_id, digest in (dry_report.get("escalation_digests") or {}).items():
+        _, current_digest = _read_escalation_readonly(layout, task_id)
+        if current_digest != digest:
+            fail("5_escalation_digests", f"{task_id}: escalation digest changed or the file is gone")
+
+    # 6. the committed expectation file, holding a handful of named tasks' by-hand mapping, matches exactly.
+    expect_path = mapping_path.parent / "expect.json"
+    if not expect_path.exists():
+        fail("6_expectation_file", f"no committed expectation file at {expect_path}")
+    else:
+        expected = json.loads(expect_path.read_text(encoding="utf-8"))
+        for job_id, want in expected.items():
+            got = mapping.get(job_id)
+            have = [got.get("attempt"), got.get("kind"), got.get("seq")] if got else None
+            if have != list(want):
+                fail("6_expectation_file", f"{job_id}: expected {want}, mapping has {have}")
+
+    # 7. every attempt has at least one delivery session, every non-task-scoped job has an attempt that exists,
+    # and every parent resolves.
+    attempt_kinds: dict[tuple[str, int], set[str]] = {}
+    for job_id, entry in mapping.items():
+        parent = entry.get("parent")
+        if parent is not None and parent not in mapping:
+            fail("7_integrity", f"{job_id}: parent {parent!r} does not resolve")
+        if entry.get("scope") != "task" and entry.get("attempt") is None:
+            fail("7_integrity", f"{job_id}: not task-scoped but has no attempt")
+        if entry.get("attempt") is not None:
+            attempt_kinds.setdefault((entry["task"], entry["attempt"]), set()).add(entry["kind"])
+    for (task_id, attempt), kinds in attempt_kinds.items():
+        if "delivery" not in kinds:
+            fail("7_integrity", f"{task_id} attempt {attempt}: no delivery session")
+
+    check_report = {"mapping": str(mapping_path), "report": str(report_path), "failures": failures,
+                    "ok": not failures}
+    (out / "check_report.json").write_text(json.dumps(check_report, indent=2, sort_keys=True) + "\n",
+                                           encoding="utf-8")
+    if failures:
+        lines = [f"{key}: {'; '.join(msgs)}" for key, msgs in sorted(failures.items())]
+        raise MigrationError("migrate attempts --check failed:\n" + "\n".join(lines))
+    return check_report
