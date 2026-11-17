@@ -301,7 +301,8 @@ def test_report_and_summary_name_the_resolved_package_file_and_version(layout, t
 
 
 def test_cli_help_shows_the_four_options_and_the_bare_command_still_works(layout, monkeypatch, tmp_path):
-    import os
+    from supervisor import project as project_mod
+    project_mod.write(layout, {"name": "p"})
     monkeypatch.setenv("SUPERVISOR_ROOT", str(layout.root))
     result = runner.invoke(app, ["migrate", "attempts", "--help"])
     assert result.exit_code == 0, result.output

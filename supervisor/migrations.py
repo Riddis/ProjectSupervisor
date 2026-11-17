@@ -7,14 +7,18 @@ that module is imported, never the plugin's setup(); a plugin whose framework ra
 is skipped (it does not load either)."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import tomllib
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import yaml
 
 from . import __version__, project, store, yaml_edit
+from . import jobs as jobs_mod
+from . import tasks as tasks_mod
 from .paths import Layout
 
 Migration = Callable[[Layout, bool], list[str]]
@@ -627,3 +631,327 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
             notes.append(f"committed as {str(out['commit'])[:12]}" + (f"; left uncommitted (they had changes "
                                                                        f"before): {', '.join(left)}" if left else ""))
     return notes
+
+
+# ---- the attempt-identity migration's dry run (ATTEMPT_MODEL.md section 8; step 6 of "Order of work") ----
+#
+# `migrate attempts --dry-run` derives a mapping of every job record's attempt identity (section 8.2) from the
+# fields and evidence a store already carries -- never from content equality, never by parsing an id -- and writes
+# it where a human reads it before anything is migrated. `apply` (section 8, step 7) is not built yet; this is the
+# whole of what the dry run does: read the store, write `--out`, touch nothing else.
+
+_DELIVERY_SESSION_CAUSES = ("continuation", "reroute")   # join the open attempt as its next session
+
+
+def _task_notes(task) -> dict[str, str]:
+    """The task document's own attempt note, by job id -- `Attempt.note` today holds it for every job kind
+    (`tasks.add_attempt` is the loop's one call site, for delivery, verify, review and diagnosis jobs alike); the
+    migration reads it only where section 8.2 names it (delivery's cause prefixes, verify's parent fallback)."""
+    return {a.id: (a.note or "") for a in task.attempts if a.id}
+
+
+_VERIFY_NOTE_RE = re.compile(r"verify delivery (\S+)")
+
+
+def _nearest_owner_history(task, at: str) -> dict[str, Any] | None:
+    """The task's own `history[]` entry, authored by the owner, at or before `at`, latest first -- quoted
+    verbatim beside a `lane_changed_on_plain_dispatch` flag (section 8.2's "knowingly imprecise case")."""
+    owned = [h for h in (task.history or []) if h.get("by") == "owner" and str(h.get("at") or "") <= at]
+    return max(owned, key=lambda h: str(h.get("at") or "")) if owned else None
+
+
+def _escalation_path(layout: Layout, task_id: str) -> Path:
+    return layout.runtime / "escalation" / f"{task_id}.json"
+
+
+def _read_escalation_readonly(layout: Layout, task_id: str) -> tuple[dict, str | None]:
+    """`(state, digest)` for a task's escalation file, opened read-only: `state["events"]` (or `{}` when the task
+    has none) and the sha256 of the raw bytes, or `None` digest when there is no file. Never written back --
+    the dry run's read-only proof is comparing this digest before and after the whole run."""
+    p = _escalation_path(layout, task_id)
+    if not p.exists():
+        return {}, None
+    raw = p.read_bytes()
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        state = {}
+    return state, hashlib.sha256(raw).hexdigest()
+
+
+def _load_overrides(path: Path | str | None) -> tuple[dict[str, str], dict[str, Any] | None]:
+    """`(job id -> cause, {"path", "sha256"})` from an overrides file (section 8.2: `overrides.yaml`, job id ->
+    cause), or `({}, None)` when none is given. The file is named and hashed so a re-run with the same file is
+    still byte-identical and the human's judgement is itself a reviewed, versioned artifact."""
+    if not path:
+        return {}, None
+    p = Path(path)
+    raw = p.read_bytes()
+    try:
+        doc = yaml.safe_load(raw.decode("utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise MigrationError(f"{p}: not a valid overrides file: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise MigrationError(f"{p}: an overrides file is a mapping of job id to cause")
+    overrides = {str(k): str(v) for k, v in doc.items()}
+    return overrides, {"path": p.name, "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _map_task(task, records: list[dict], overrides: dict[str, str],
+             escalation_events: dict[str, Any]) -> tuple[dict[str, dict], list[dict], list[dict]]:
+    """The per-job mapping for one task, walked in `records`' own (dispatch) order (section 8.2). Returns
+    `(entries, flags, unplaced)`; `entries` is job id -> `{task, attempt, kind, seq, parent, cause, scope,
+    source}`. Nothing here ever reads two tasks together -- every piece of evidence section 8.2 names (the
+    attempt note, `verify_delivery`, `review_digest`, the escalation event) is this task's own."""
+    notes = _task_notes(task)
+    order_index = {r.get("attempt_id"): i for i, r in enumerate(records)}
+    entries: dict[str, dict] = {}
+    flags: list[dict] = []
+    unplaced: list[dict] = []
+
+    attempt_count = 0
+    open_attempt: int | None = None
+    sessions: dict[int, list[str]] = {}
+    verify_seq: dict[int, int] = {}
+    review_seq: dict[int, int] = {}
+    diag_seq: dict[int, int] = {}
+    attempt_opened_at: dict[int, str] = {}
+    task_diag_seq = 0
+    verify_by_digest: dict[str, list[tuple[int, str, str]]] = {}
+    verify_count_by_parent: dict[str, int] = {}
+    prev_delivery_adapter: str | None = None
+    prev_delivery_job: str | None = None
+    first_delivery_seen = False
+
+    def place(job_id, kind, attempt, seq, parent, cause, source, scope=None):
+        entries[job_id] = {"task": task.id, "attempt": attempt, "kind": kind, "seq": seq, "parent": parent,
+                           "cause": cause, "scope": scope, "source": source}
+
+    def unplace(rec, kind, reason):
+        job_id = rec.get("attempt_id")
+        unplaced.append({"job": job_id, "task": task.id, "kind": kind, "reason": reason})
+        place(job_id, kind, None, None, None, None, "unplaced", scope="task")
+
+    for rec in records:
+        job_id = rec["attempt_id"]
+        kind = jobs_mod.kind_of(rec)
+        created = str(rec.get("created") or "")
+        override_cause = overrides.get(job_id)
+
+        if kind == "delivery":
+            note = notes.get(job_id, "")
+            deferred_reason = str(rec.get("deferred_reason") or "")
+            is_continuation = (note.startswith("continuation") or deferred_reason.startswith("continuation")
+                               or bool(rec.get("continuation_grant")))
+            is_reroute = bool(rec.get("rerouted_from"))
+            is_revision = note.startswith("revision after")
+            if override_cause:
+                cause = override_cause
+            elif is_continuation:
+                cause = "continuation"
+            elif is_reroute:
+                cause = "reroute"
+            elif is_revision:
+                cause = "revision"
+            else:
+                cause = "scheduled"
+
+            if cause in _DELIVERY_SESSION_CAUSES and open_attempt is not None:
+                attempt = open_attempt
+                seq = len(sessions[attempt]) + 1
+                parent = sessions[attempt][-1]
+            else:
+                attempt_count += 1
+                attempt = attempt_count
+                seq = 1
+                parent = None
+                open_attempt = attempt
+                sessions[attempt] = []
+                verify_seq[attempt] = 0
+                review_seq[attempt] = 0
+                diag_seq[attempt] = 0
+                attempt_opened_at[attempt] = created
+                if (cause == "scheduled" and first_delivery_seen and prev_delivery_adapter is not None
+                        and rec.get("adapter") != prev_delivery_adapter):
+                    flags.append({"job": job_id, "task": task.id, "reason": "lane_changed_on_plain_dispatch",
+                                 "from_lane": prev_delivery_adapter, "to_lane": rec.get("adapter"),
+                                 "history": _nearest_owner_history(task, created)})
+            sessions[attempt].append(job_id)
+            prev_delivery_adapter, prev_delivery_job, first_delivery_seen = rec.get("adapter"), job_id, True
+            place(job_id, "delivery", attempt, seq, parent, cause, "note")
+
+        elif kind == "verify":
+            parent, source = rec.get("verify_delivery"), "verify_delivery"
+            if not parent or parent not in entries or entries[parent]["kind"] != "delivery":
+                m = _VERIFY_NOTE_RE.match(notes.get(job_id, ""))
+                parent = m.group(1) if m and m.group(1) in entries else None
+                source = "note"
+            if not parent:
+                unplace(rec, kind, "no verify_delivery parent resolves, and the note names none that does")
+                continue
+            attempt = entries[parent]["attempt"]
+            if override_cause:
+                cause = override_cause
+            else:
+                cause = "reverify" if verify_count_by_parent.get(parent, 0) else None
+            verify_count_by_parent[parent] = verify_count_by_parent.get(parent, 0) + 1
+            verify_seq[attempt] = verify_seq.get(attempt, 0) + 1
+            digest = rec.get("verify_digest")
+            if digest:
+                verify_by_digest.setdefault(digest, []).append((order_index[job_id], parent, job_id))
+            place(job_id, "verify", attempt, verify_seq[attempt], parent, cause, source)
+
+        elif kind == "review":
+            digest = rec.get("review_digest")
+            candidates = verify_by_digest.get(digest, []) if digest else []
+            distinct = sorted({p for _, p, _ in candidates})
+            if len(distinct) == 1:
+                parent, source = distinct[0], "review_digest"
+            elif len(distinct) > 1:
+                before = [p for p in distinct if order_index.get(p, -1) < order_index[job_id]]
+                pool = before or distinct
+                parent = max(pool, key=lambda p: order_index.get(p, -1))
+                source = "review_digest"
+            else:
+                parent, source = prev_delivery_job, "preceding_delivery"
+            if not parent:
+                unplace(rec, kind, "no verify record shares review_digest, and no delivery precedes it")
+                continue
+            attempt = entries[parent]["attempt"]
+            review_seq[attempt] = review_seq.get(attempt, 0) + 1
+            cause = override_cause or ("rereview" if review_seq[attempt] > 1 else None)
+            place(job_id, "review", attempt, review_seq[attempt], parent, cause, source)
+
+        elif kind == "diagnosis":
+            sig = rec.get("diag_signature")
+            matches = [(k, ev) for k, ev in escalation_events.items()
+                      if ev.get("signature") == sig and str(ev.get("at") or "") <= created]
+            if not matches:
+                unplace(rec, kind, "no escalation event shares diag_signature at or before this record's created")
+                continue
+            key, _ev = max(matches, key=lambda kv: str(kv[1].get("at") or ""))
+            parent = None
+            if key.startswith("stall:"):
+                stall_at = key.split(":", 1)[1]
+                open_at_stall = [a for a, opened in attempt_opened_at.items() if opened <= stall_at]
+                attempt = max(open_at_stall) if open_at_stall else None
+            elif key in entries:
+                attempt, parent = entries[key]["attempt"], key
+            else:
+                unplace(rec, kind, f"the escalation event names {key!r}, which no job record resolves to")
+                continue
+            cause = override_cause or "diagnose"
+            if attempt is None:
+                task_diag_seq += 1
+                place(job_id, "diagnosis", None, task_diag_seq, parent, cause,
+                     "stall_key" if key.startswith("stall:") else "escalation_event", scope="task")
+            else:
+                diag_seq[attempt] = diag_seq.get(attempt, 0) + 1
+                place(job_id, "diagnosis", attempt, diag_seq[attempt], parent, cause,
+                     "stall_key" if key.startswith("stall:") else "escalation_event")
+
+    return entries, flags, unplaced
+
+
+def _compare_mapping(new_mapping: dict[str, dict], baseline_path: Path) -> dict[str, Any]:
+    """`new_mapping` against an earlier run's `mapping.json`: every row present in both and equal is unchanged,
+    one in `new_mapping` only is added (a record dispatched since), one in both but different is changed -- the
+    dry run raises on that last case (section 8.4: a re-run on an unchanged store is byte-identical, so a
+    changed row means the store moved under the mapping, or a different `overrides.yaml` was given)."""
+    baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    unchanged, added, changed = 0, [], []
+    for job_id, entry in new_mapping.items():
+        if job_id not in baseline:
+            added.append(job_id)
+        elif baseline[job_id] == entry:
+            unchanged += 1
+        else:
+            changed.append(job_id)
+    return {"baseline": str(baseline_path), "unchanged": unchanged, "added": sorted(added),
+           "changed": sorted(changed), "removed": sorted(j for j in baseline if j not in new_mapping)}
+
+
+def dry_run_attempts(layout: Layout, out: Path | str, *, overrides_path: Path | str | None = None,
+                     compare_path: Path | str | None = None) -> dict[str, Any]:
+    """Derive the attempt-identity mapping (section 8.2) from the store as it stands, and write `mapping.json`,
+    `report.json` and `summary.md` under `out` -- nothing else, nowhere else (section 8.3/8.4). Every job record
+    and task document is only ever read; every escalation file under `state/runtime/escalation/` is opened
+    read-only and its digest recorded before and after, so a difference would fail loudly rather than silently.
+    `overrides_path` (section 8.2) re-derives the whole mapping with the named causes forced; `compare_path`
+    (an earlier run's `mapping.json`) raises MigrationError if any row changed, after the files are written, so
+    the evidence of what changed is on disk even when the run is refused."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    overrides, overrides_meta = _load_overrides(overrides_path)
+
+    tasks_by_id = tasks_mod.load_all(layout)
+    mapping: dict[str, dict] = {}
+    flags: list[dict] = []
+    unplaced: list[dict] = []
+    by_kind: dict[str, int] = {}
+    by_source: dict[str, int] = {}
+    histogram: dict[str, int] = {}
+    escalation_digests: dict[str, str] = {}
+    run_dir_baseline: dict[str, dict] = {}
+
+    for task_id in sorted(tasks_by_id):
+        records = jobs_mod.for_task(layout, task_id)
+        if not records:
+            continue
+        task = tasks_by_id[task_id]
+        events, digest_before = _read_escalation_readonly(layout, task_id)
+        if digest_before is not None:
+            escalation_digests[task_id] = digest_before
+        entries, task_flags, task_unplaced = _map_task(task, records, overrides, events.get("events") or {})
+        mapping.update(entries)
+        flags += task_flags
+        unplaced += task_unplaced
+        for entry in entries.values():
+            by_kind[entry["kind"]] = by_kind.get(entry["kind"], 0) + 1
+            by_source[entry["source"]] = by_source.get(entry["source"], 0) + 1
+        attempts_here = [e["attempt"] for e in entries.values() if e["attempt"] is not None]
+        if attempts_here:
+            n = max(attempts_here)
+            histogram[str(n)] = histogram.get(str(n), 0) + 1
+        for rec in records:
+            run_dir = (rec.get("spec") or {}).get("run_dir")
+            if run_dir:
+                run_dir_baseline[rec["attempt_id"]] = {"run_dir": run_dir, "existed": Path(run_dir).exists()}
+        _, digest_after = _read_escalation_readonly(layout, task_id)
+        if digest_after != digest_before:
+            raise MigrationError(f"{task_id}: its escalation file changed while the dry run read it")
+
+    import supervisor as _pkg   # resolved here, not imported at module load, so a test can patch the attribute
+    report: dict[str, Any] = {
+        "totals": {"records": len(mapping) + len(unplaced), "placed": len(mapping), "unplaced": len(unplaced)},
+        "by_kind": by_kind, "by_source": by_source, "unplaced": unplaced, "flags": flags,
+        "attempts_per_task": histogram, "escalation_digests": escalation_digests,
+        "run_dir_baseline": run_dir_baseline, "overrides": overrides_meta,
+        "package": {"file": _pkg.__file__, "version": _pkg.__version__},
+    }
+    if compare_path:
+        report["compare"] = _compare_mapping(mapping, compare_path)
+
+    summary = [f"supervisor {_pkg.__version__} ({_pkg.__file__})", "",
+              f"placed {report['totals']['placed']} of {report['totals']['records']} job record(s), "
+              f"{report['totals']['unplaced']} unplaced", f"by kind: {by_kind}", f"by evidence source: {by_source}"]
+    if flags:
+        summary.append(f"flagged {len(flags)}: {', '.join(sorted(f['job'] for f in flags))}")
+    if unplaced:
+        summary.append(f"unplaced {len(unplaced)}: {', '.join(sorted(u['job'] for u in unplaced))}")
+    if overrides_meta:
+        summary.append(f"overrides: {overrides_meta['path']} ({overrides_meta['sha256'][:12]})")
+    if "compare" in report:
+        c = report["compare"]
+        summary.append(f"compared with {c['baseline']}: {c['unchanged']} unchanged, "
+                       f"{len(c['added'])} added, {len(c['changed'])} changed")
+
+    (out / "mapping.json").write_text(json.dumps(mapping, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (out / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (out / "summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+
+    if report.get("compare", {}).get("changed"):
+        raise MigrationError(f"--compare {compare_path}: {len(report['compare']['changed'])} row(s) changed since "
+                             f"the baseline: {', '.join(report['compare']['changed'])} "
+                             f"(written to {out} for inspection)")
+    return report

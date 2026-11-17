@@ -140,9 +140,18 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
                "then `supervisor doctor` and `supervisor task import`.")
 
 
-@app.command()
-def migrate(dry_run: bool = typer.Option(False, help="report what would change without writing")):
+migrate_app = typer.Typer(help="bring a project's state and config up to the installed framework version "
+                              "(idempotent); `attempts` derives the attempt-identity migration's mapping "
+                              "(ATTEMPT_MODEL.md section 8) without writing to the store")
+app.add_typer(migrate_app, name="migrate")
+
+
+@migrate_app.callback(invoke_without_command=True)
+def migrate(ctx: typer.Context,
+           dry_run: bool = typer.Option(False, help="report what would change without writing")):
     """Bring a project's state and config up to the installed framework version (idempotent)."""
+    if ctx.invoked_subcommand is not None:
+        return
     from . import migrations
     layout = _writer(load=False)
     try:
@@ -153,6 +162,36 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
         typer.echo(n)
     if not notes:
         typer.echo("nothing to migrate")
+
+
+@migrate_app.command("attempts")
+def migrate_attempts(
+       dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; required for now "
+                                     "(apply is not built yet)"),
+       out: Path = typer.Option(..., "--out", help="directory to write mapping.json, report.json and summary.md"),
+       overrides: Path = typer.Option(None, "--overrides", help="a YAML file of job id -> cause, forcing the "
+                                      "mapping's detected cause for the named jobs"),
+       compare: Path = typer.Option(None, "--compare", help="an earlier run's mapping.json; fails if a row "
+                                    "changed, after writing this run's own files")):
+    """Derive the attempt-identity mapping (ATTEMPT_MODEL.md section 8.2) from the store as it stands, for a
+    human to read before anything is migrated. Writes nothing but `--out`; `apply` (not yet built) will take the
+    reviewed mapping.json as its own input."""
+    if not dry_run:
+        raise typer.BadParameter("migrate attempts currently only supports --dry-run (apply is not built yet)")
+    from . import migrations
+    layout = _writer(load=False)
+    try:
+        report = migrations.dry_run_attempts(layout, out, overrides_path=overrides, compare_path=compare)
+    except migrations.MigrationError as exc:
+        raise typer.BadParameter(str(exc))
+    t = report["totals"]
+    typer.echo(f"wrote mapping.json, report.json, summary.md to {out}")
+    typer.echo(f"placed {t['placed']} of {t['records']} job record(s), {t['unplaced']} unplaced")
+    if report["flags"]:
+        typer.echo(f"flagged {len(report['flags'])}: see report.json")
+    if "compare" in report:
+        c = report["compare"]
+        typer.echo(f"compared with {c['baseline']}: {c['unchanged']} unchanged, {len(c['added'])} added")
 
 
 @app.command()
