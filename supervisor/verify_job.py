@@ -26,8 +26,9 @@ def run(input_path: Path) -> dict:
     ok, results = verify.run_declared_tests(layout.root, to_run, verify.allowed_test_commands(layout),
                                             tag=f"verify_{spec['task_id']}", roots=tuple(spec.get("roots") or ()),
                                             timeout_s=lim["per_command_timeout_s"], budget_s=lim["budget_s"],
-                                            max_commands=lim["max_commands"])
-    outcome = verify.commands_outcome(ok, results, list(spec.get("fixed") or []), bool(spec.get("fixed")))
+                                            max_commands=lim["max_commands"], layout=layout)
+    outcome = verify.commands_outcome(ok, results, list(spec.get("fixed") or []), bool(spec.get("fixed")),
+                                      environment=verify.declared_environment(layout))
     return {"status": "COMPLETE", "verification": {"ok": outcome.ok, "detail": outcome.detail, "report": outcome.report},
             "digest": spec.get("digest"), "task_id": spec["task_id"]}
 

@@ -387,6 +387,28 @@ def active(tasks: dict[str, Task]) -> list[Task]:
     return [t for t in tasks.values() if t.status != TaskStatus.CANCELLED]
 
 
+_DOCUMENT_ONLY_SUFFIXES = frozenset({".md", ".txt", ".rst"})
+
+
+def _document_only(doc: dict) -> bool:
+    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13,
+    ATTEMPT_MODEL.md section 4.4, step 13): the common planning/record task dispatched on a model lane, where
+    the pydantic default (`evidence: auto`) demands a command the moment its own prose `tests` say anything —
+    most of R-13's "no test evidence" failures were exactly this shape."""
+    artifacts = doc.get("artifacts") or []
+    if doc.get("checks") or not artifacts:
+        return False
+    return all(Path(str(a)).suffix.lower() in _DOCUMENT_ONLY_SUFFIXES for a in artifacts)
+
+
+def _default_evidence(doc: dict) -> dict:
+    """A seed or a direct `create()` row that never mentions `evidence` gets the document-only default (step
+    13) instead of silently inheriting `auto`; a row that does name it is never touched here."""
+    if "evidence" not in doc and _document_only(doc):
+        doc["evidence"] = "review"
+    return doc
+
+
 def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:
     """(the stored document, errors, warnings) for a task `create()` would add: the contract (pydantic), the graph
     with it in place, its ownership and its artifacts; `contract_warnings` stay warnings. `combined` (default: the
@@ -395,6 +417,7 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     doc = dict(doc)
     doc.setdefault("status", "NOT_STARTED")
     doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+    doc = _default_evidence(doc)
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
@@ -453,6 +476,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+            doc = _default_evidence(doc)
             task = Task.model_validate(doc)                              # fail before touching the graph or the disk
             resulting[tid], new_docs[tid] = task, doc
             changed.append(task)

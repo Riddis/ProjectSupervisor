@@ -17,6 +17,7 @@ from . import policy, verify
 from ._vendor.contract import manifest
 from .models.task import Task
 from .paths import Layout
+from .verify import normalise_command  # the one normaliser the allow-list and this brief both decide with (R-13)
 
 
 def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True) -> str:
@@ -44,7 +45,10 @@ def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True
         "finish inside that is saved as a log under your run directory and cited in `notes` — never declared as a "
         "command.\n"
         f"Only these commands are re-run, matched by prefix: {allowed}. A helper script is never a command — wrap "
-        "what it asserts in a pytest.\n")
+        "what it asserts in a pytest.\n"
+        "Spelling does not matter for an allow-listed tool: `<tool>`, `python -m <tool>` and the task's own "
+        "venv's `python.exe -m <tool>` are one lane (the same normaliser decides both what is allowed here and "
+        f"what actually runs; `pytest` and `python -m pytest` both reduce to `{' '.join(normalise_command('python -m pytest'))}`).\n")
 
 
 def role_card(layout: Layout, role: str) -> str:
@@ -78,7 +82,12 @@ def _checks_block(task: Task) -> str:
 
 def _test_roots_note(layout: Layout, task: Task) -> str:
     """Where a declared test command re-runs (G2, 2.4.0): named roots when the task sets any, else the one
-    sentence that is true when it does not."""
+    sentence that is true when it does not. Either way, the pinned (interpreter, cwd, PATH) default triple
+    (`verify.declared_environment`, step 13) is stated verbatim — the same values `verification.json` records —
+    so a disagreement between what the brief promises and what actually ran is visible, not inferred."""
+    env = verify.declared_environment(layout)
+    pinned = (f"Pinned and recorded in `verification.json`: interpreter `{env['interpreter']}`, cwd "
+             f"`{env['cwd']}`, PATH `{env['path']}`.")
     if task.test_roots:
         example = task.test_roots[0]
         return ("\n\n**Where your test commands re-run.** Verification re-runs each command you report from "
@@ -86,8 +95,10 @@ def _test_roots_note(layout: Layout, task: Task) -> str:
                 "its own entry, and only these are allowed: " + ", ".join(task.test_roots) + ". The interpreter is "
                 "chosen here — that directory's `.venv` if it has one, otherwise the supervisor's own — so what "
                 "you write as the first word of the command does not select it.\n"
-                '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`')
-    return f"\n\nVerification re-runs each command from `{layout.root}` with the supervisor's own interpreter."
+                '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`'
+                f"\nFor a command with no `cwd` of its own: {pinned}")
+    return (f"\n\nVerification re-runs each command from `{layout.root}` with the supervisor's own interpreter. "
+            f"{pinned}")
 
 
 def _ownership_block(layout: Layout, task: Task) -> str:

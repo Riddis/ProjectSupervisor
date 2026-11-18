@@ -85,13 +85,13 @@ def test_interpreter_cwd_and_path_in_verification_json_equal_the_briefs_own_stat
 # own call shape, which now threads `layout` through)
 
 def test_basetemp_is_removed_after_a_passing_run_and_kept_after_a_failing_one(layout):
-    (layout.root / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (layout.root / "test_ok.py").write_text("def test_ok(tmp_path):\n    assert tmp_path.exists()\n", encoding="utf-8")
     ok_cmd = f"{sys.executable} -m pytest -q -p no:cacheprovider test_ok.py"
     ok, _ = verify.run_declared_tests(layout.root, [{"command": ok_cmd}], allowed=["python -m pytest"], layout=layout)
     assert ok is True
     assert list((layout.root / "runs" / "pytest_tmp").iterdir()) == []
 
-    (layout.root / "test_bad.py").write_text("def test_no():\n    assert False\n", encoding="utf-8")
+    (layout.root / "test_bad.py").write_text("def test_no(tmp_path):\n    assert False\n", encoding="utf-8")
     bad_cmd = f"{sys.executable} -m pytest -q -p no:cacheprovider test_bad.py"
     ok2, results = verify.run_declared_tests(layout.root, [{"command": bad_cmd}], allowed=["python -m pytest"],
                                              layout=layout)
