@@ -19,7 +19,8 @@ SCRIPT = ("import json, os, pathlib\n"
 
 def _dispatch_process_job(layout, task_id: str) -> str:
     make_task(layout, task_id)
-    tasks._update(layout, task_id, lambda d: d.update(job={"adapter": "process", "argv": [sys.executable, "-c", SCRIPT]}))
+    tasks._update(layout, task_id, lambda d: d.update(job={"adapter": "process", "argv": [sys.executable, "-c", SCRIPT]},
+                                                       artifacts=[]))
     sup = Supervisor(layout, sleep_s=0)
     attempt_id = None
     for _ in range(20):
@@ -87,8 +88,8 @@ def test_no_env_value_is_ever_written_to_the_job_record_or_the_log(layout):
 
 
 def test_the_loop_refuses_to_start_under_a_foreign_supervisors_markers(monkeypatch):
-    monkeypatch.delenv("SUPERVISOR_ATTEMPT", raising=False)
-    monkeypatch.delenv("SUPERVISOR_JOB", raising=False)
+    for name in envconfig.FOREIGN_MARKERS:
+        monkeypatch.delenv(name, raising=False)
     _check_launch_environment_guard()           # a clean launching environment: must not raise
     monkeypatch.setenv("SUPERVISOR_ATTEMPT", "OTHER-TASK.a1")
     monkeypatch.setenv("SUPERVISOR_JOB", "OTHER-TASK.a1")

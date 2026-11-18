@@ -130,6 +130,13 @@ codex:                              # executable auto-discovered (PATH, %LOCALAP
   model: gpt-5-codex                # verify with the app-server model/list; the setup skill records what the account accepts
   sandbox: workspace-write          # default for builder roles; review roles get read-only
 
+env:                                 # the declared job environment (supervisor/envconfig.py, R-24): a process job's
+                                     # subprocess starts from this allow-list plus its own lane's additions, never
+                                     # from the loop's whole environment - name a variable here once rather than let
+                                     # every new vendor variable leak into every lane until someone notices
+  base: [PATH, SystemRoot, ComSpec, TEMP, TMP, HOME, USERPROFILE, LANG, LC_ALL, TZ, PYTHONHASHSEED]
+  lanes: {}                          # <lane> (the job's own adapter name, e.g. process): {add: {NAME: value}, secrets: [NAME in secrets/.env]}
+
 verification:                       # supervisor/verify.py re-runs declared tests here; only these command prefixes
   allowed_test_commands:
   - pytest

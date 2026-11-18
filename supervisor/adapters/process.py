@@ -4,7 +4,6 @@ claude_cli / codex_cli subclass this. A plain `process` adapter exists for tests
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import time
@@ -13,10 +12,12 @@ from typing import Optional
 
 import psutil   # hard dependency: a job is never launched without a verifiable {pid, create_time} handle
 
+from .. import envconfig
 from .. import policy
 from .. import timeouts
 from .._vendor import handoff
 from .._vendor.contract import atomic_json, read_json
+from ..paths import Layout
 from ..progress import env as progress_env
 from ..store import now_iso
 from .base import Adapter, Result, register
@@ -116,11 +117,12 @@ class ProcessAdapter(Adapter):
         jobspec = job_spec(task)
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
+        _, env_digest = envconfig.build(layout, self.name)
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),
                 "timeout_s": jobspec.get("timeout_s", timeouts.PROCESS_CAP_S), "idle_s": jobspec.get("idle_timeout_s"),
                 "retry_on": list(jobspec.get("retry_on") or []),
-                "root": str(layout.root), "stdin_file": jobspec.get("stdin_file")}
+                "root": str(layout.root), "stdin_file": jobspec.get("stdin_file"), "env_digest": env_digest}
 
     def submit(self, spec):
         run_dir = Path(spec["run_dir"])
@@ -182,7 +184,12 @@ class ProcessAdapter(Adapter):
         return None
 
     def env(self, spec):
-        return {**os.environ, **job_identity_env(spec),   # lets recover() find an untracked child
+        """The declared base plus this lane's own additions (`envconfig.build`, R-24) — never `os.environ`:
+        a vendor variable the project did not name in `config/routing.yaml` does not reach this child, however
+        many new ones the loop's own launching environment picks up. `job_identity_env` (lets recover() find an
+        untracked child) and the run-directory/progress markers are the framework's own, added after."""
+        declared, _ = envconfig.build(Layout(spec.get("root")), spec.get("adapter", self.name))
+        return {**declared, **job_identity_env(spec),
                 # where the job writes result.json (1.13.0); before, only the progress file's parent said so
                 **({"SUPERVISOR_RUN_DIR": str(spec["run_dir"])} if spec.get("run_dir") else {}),
                 **progress_env(spec)}

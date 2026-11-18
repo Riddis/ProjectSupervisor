@@ -72,6 +72,29 @@ def _check_writer_guard(layout: Layout) -> None:
         f"`supervisor migrate attempts --check --mapping <dir>/mapping.json --out <dir>` before dispatch resumes.")
 
 
+class ForeignEnvironmentError(RuntimeError):
+    """ATTEMPT_MODEL.md section 4.4's start-up guard: the launching environment this `supervisor run` process was
+    started with already carries a job's own identity markers (`envconfig.FOREIGN_MARKERS`) — the shape H-001
+    found by hand ("the loop had been launched from the desktop session with that session's environment"), a
+    shell or a session that still holds another job's `SUPERVISOR_ATTEMPT`/`SUPERVISOR_JOB`/`SUPERVISOR_RUN_DIR`/
+    `SUPERVISOR_PROGRESS_FILE` from earlier. Raised by `cli.run()` before it ever constructs a `Supervisor`, the
+    same point `UnmigratedJobsError` is raised from — a test (or a library caller) that builds one directly is
+    not the thing this guard exists to stop. `SUPERVISOR_ROOT` is never one of these markers: it is this loop's
+    own self-reference (`envconfig.FOREIGN_MARKERS` excludes it), set by its own launcher or the owner to point
+    this very process at a project, never evidence of being nested inside another supervisor's job."""
+
+
+def _check_launch_environment_guard() -> None:
+    from . import envconfig
+    found = envconfig.foreign_markers()
+    if not found:
+        return
+    raise ForeignEnvironmentError(
+        f"this process's own launching environment already carries {', '.join(found)} — another supervisor's "
+        "job identity, not this loop's own. Start the loop from a clean shell (or one that never ran a job), "
+        "not from inside an agent session or a terminal that still holds a finished job's environment.")
+
+
 def _job_fingerprint(task: Task) -> str:
     """A stable fingerprint of the one contract a delivery attempt actually runs under (R-12): its own job block
     and its dependencies. `dispatch()` stamps it on the attempt from the task's STORED document, never a caller's
@@ -276,7 +299,8 @@ class Supervisor:
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
                                gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
                                kind=kind, attempt=job_attempt, seq=job_seq, parent=parent, cause=cause,
-                               scope=job_scope, **job_extra)                   # durable BEFORE launch
+                               scope=job_scope, env_digest=spec.get("env_digest"),
+                               **job_extra)                   # durable BEFORE launch
         if kind != "conversation":            # the attempt itself was already recorded when the id was allocated
             tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
