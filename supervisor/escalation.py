@@ -1,8 +1,9 @@
 """Retries, failure signatures and escalation. A substantive failure — failed verification or a
 REVISE/REJECT review — gets an automatic revision attempt with a failure brief quoting the evidence verbatim; the
-second automatic revision runs on the role's senior model. The same normalized failure signature twice, or the
-two-revision budget exhausted, stops retrying and opens an issue instead of spending another attempt on a problem
-a human needs to see.
+second automatic revision runs on the role's senior model. The same normalized failure signature twice, a REJECT,
+or the cause's own budget (or the total across causes) exhausted, stops retrying and opens an issue instead of
+spending another attempt on a problem a human needs to see (R-14: `substance`, `infra`, `stall`, `total`, each a
+separate counter so infrastructure failures cannot spend the budget a content review needs).
 
 The decision is keyed by the attempt id that failed (`event`) and written before the revision is dispatched or the
 issue opened, because the job record is only closed afterwards: a kill in between makes settle() re-collect the same
@@ -128,9 +129,16 @@ def _state_path(layout: Layout, task_id: str) -> Path:
 def _load(layout: Layout, task_id: str) -> dict:
     p = _state_path(layout, task_id)
     state = read_json(p) if p.exists() else {}
-    state.pop("revisions", None)            # pre-2.8.0's single shared counter, replaced by "counters" below
+    legacy = state.pop("revisions", None)   # pre-2.8.0's single shared counter, replaced by "counters" below
     state.setdefault("signatures", [])
-    state.setdefault("counters", {"substance": 0, "infra": 0, "stall": 0, "total": 0})
+    if "counters" not in state and legacy is not None:
+        # a task mid-flight on the old field already spent part of the one shared budget; the old field
+        # always meant `substance` (the only cause the pre-2.8.0 code ever charged), so the split carries
+        # that spend over instead of handing the task a fresh budget it was never granted.
+        n = int(legacy)
+        state["counters"] = {"substance": n, "infra": 0, "stall": 0, "total": n}
+    else:
+        state.setdefault("counters", {"substance": 0, "infra": 0, "stall": 0, "total": 0})
     state.setdefault("events", {})          # attempt_id -> the decision already taken for that failure
     return state
 
@@ -340,7 +348,9 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     # here would only decide what the review already said. Straight to the owner, as an issue already
     # visible on the Issues page, never through a diagnosis session.
     if source == "review" and decision.get("trigger") == "substance_exhausted":
-        rec = {"diag_role": "diagnosis", "diag_level": "manager"}
+        # no diagnosis runs on this route (that is the whole point), so the owner text must not claim
+        # one did and failed — "review", not "diagnosis", names what actually could not resolve it.
+        rec = {"diag_role": "review", "diag_level": "manager"}
         out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
                                                      "the review budget is spent; another round would only repeat "
                                                      "what the review already found")

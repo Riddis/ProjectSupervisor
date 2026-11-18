@@ -140,7 +140,7 @@ def _budget_routing(layout, limits=None, causes=None):
 
 
 def test_four_infrastructure_failures_do_not_spend_the_content_review_budget(layout):
-    """The recorded defect (R-14): T2-08's first content review arrived after four verifier-condition
+    """The recorded defect (R-14): a task's first content review arrived after four verifier-condition
     failures had already spent the one shared budget. With the budget split by cause, four `infra`
     failures leave the `substance` counter untouched, so the first content review still gets its own,
     full budget."""
@@ -228,3 +228,19 @@ def test_escalation_event_keys_are_never_rekeyed_by_the_budget_split(layout):
     escalation.record_failure(sup, "T", "verification", "problem one", event="T.a1", reason="infra")  # replay
     state = escalation._load(layout, "T")
     assert list(state["events"].keys()) == ["T.a1"]
+
+
+def test_a_legacy_shared_counter_upgrades_into_substance_not_a_fresh_budget(layout):
+    """A task mid-flight when the split lands already spent part of the old single shared counter. The old
+    field only ever charged the one counter the new `substance` now covers, so the upgrade must carry that
+    spend over, not reset every counter to zero — a reset no diagnosis or owner REQUEUE ever granted."""
+    from supervisor._vendor.contract import atomic_json
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    p = escalation._state_path(layout, "T")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(p, {"revisions": 2, "events": {}})   # pre-2.8.0 document: the shared budget (default 2) already spent
+    sup = FakeSupervisor(layout)
+    outcome = escalation.record_failure(sup, "T", "review", "finding: brand new issue")
+    assert outcome["action"] == "escalate"           # a fresh budget would have retried instead
+    assert "resets" not in escalation._load(layout, "T")   # carrying the spend over is not a grant
