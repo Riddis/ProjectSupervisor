@@ -17,7 +17,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   for 3.0.0. `supervisor.testing`'s `job`, `jobs` and `running_job` (unstable, G2 does not record them) follow the
   same rule: `job()` returns `None` on a miss instead of raising, under either id shape; `jobs()` orders every
   record by `(attempt, kind, seq)` even without a `task_id`; `running_job()` gains `kind=`, `attempt=` and
-  `seq=`, each omitted by default. No name is removed and no signature breaks a caller.
+  `seq=`, each omitted by default. No name is removed and no signature breaks a caller. **Migration note for a
+  plugin's own tests, not only its runtime code:** the same rule applies to anything a plugin's test suite reads
+  off disk — a first attempt's run directory is no longer guaranteed to be `<layout.runs>/<task_id>/<task_id>.a1`;
+  take it from the job record a test already has in hand (`supervisor.testing.jobs(layout, task_id)[-1]["spec"]`
+  `["run_dir"]`), never by formatting the id. This is additive and compatible on the framework's own documented
+  contract (G2 passes unchanged); G2 compares `Adapter`/`ProcessAdapter`/`Result`/`submit_command` as declared,
+  not a downstream package's test bodies, so it neither flagged nor could flag a plugin test that still guesses
+  the old id shape — that is this note's own job.
 
 - **Plugin API: `ProcessAdapter.env()`'s default changes (R-24, ATTEMPT_MODEL.md section 4.4, step 12).** A
   process job's child no longer inherits the loop's own environment; the default is now the declared allow-list
