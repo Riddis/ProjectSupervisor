@@ -196,7 +196,7 @@ def test_two_reviewers_revising_the_same_digest_cost_one_revision_not_two(layout
     all_recs = jobs_mod.for_task(layout, "T")
     deliveries = [r for r in all_recs if (r.get("spec") or {}).get("kind", "delivery") == "delivery"]
     assert len(deliveries) == 2                                     # a1 + exactly one revision, not two
-    assert escalation._load(layout, "T")["revisions"] == 1
+    assert escalation._load(layout, "T")["counters"]["substance"] == 1   # R-14: review charges "substance"
     assert tasks.load(layout, "T").status != TaskStatus.BLOCKED     # budget not exhausted by a single round
 
 

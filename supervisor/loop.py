@@ -1003,8 +1003,11 @@ class Supervisor:
             return
         lane = rec.get("adapter", "")
         if substantive:
-            # the agent believed it was done and deterministic verification disagreed
-            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=delivering_attempt)
+            # the agent believed it was done and deterministic verification disagreed; R-14's `reason` tells
+            # a verifier-condition failure (interpreter, cwd, allow-list, basetemp, a timed-out budget) apart
+            # from one on the work itself, so it charges its own counter instead of the review budget
+            escalation_mod.record_failure(self, task_id, "verification", outcome.detail, event=delivering_attempt,
+                                          reason=verify_mod.failure_reason(outcome))
         elif lane == "human":
             # the owner answered REJECT / MORE_LIKE: that is the owner's decision, never auto-retried
             return

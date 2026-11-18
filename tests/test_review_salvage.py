@@ -60,7 +60,8 @@ def test_requeue_salvages_the_readable_verdict_on_disk_instead_of_paying_for_a_r
     t = tasks.load(layout, "T")
     assert t.status == TaskStatus.WAITING_FOR_REVIEW
     failures = []
-    monkeypatch.setattr(escalation, "record_failure", lambda sup, tid, src, detail, event=None: failures.append((tid, src, event)))
+    monkeypatch.setattr(escalation, "record_failure",
+                        lambda sup, tid, src, detail, event=None, **kw: failures.append((tid, src, event)))
     dispatched = []
     monkeypatch.setattr(review, "dispatch", lambda *a, **k: dispatched.append(a))
     sup.dispatch_reviews()

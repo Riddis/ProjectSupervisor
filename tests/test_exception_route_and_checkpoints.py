@@ -112,7 +112,7 @@ def test_requeue_diagnosis_puts_the_task_back_with_guidance_and_a_fresh_retry_bu
     from supervisor import packets
     assert packets.GUIDANCE_HEADING in packets.delivery_brief(layout, t)
     state = json.loads((layout.runtime / "escalation" / "T.json").read_text())
-    assert state["resets"] == 1 and state["revisions"] <= 1          # fresh budget (the synchronous job may already be retrying)
+    assert state["resets"] == 1 and state["counters"]["substance"] <= 1   # fresh budget (the synchronous job may already be retrying)
     hist = [h for h in t.history if h["to"] == "READY" and "requeue" in h["note"]]
     assert hist, "the task was re-queued by the diagnosis"
     issue = store.read(layout.issues / "I-001.yaml")
@@ -347,7 +347,9 @@ def test_a_failing_check_in_the_verify_job_fails_verification_and_escalates(layo
     t = tasks.load(layout, "T")
     assert t.delivery.verification.ok is False and "required check failed" in t.delivery.verification.detail
     state = json.loads((layout.runtime / "escalation" / "T.json").read_text())
-    assert state["revisions"] == 1 and "T.a1.s1" in state["events"]          # keyed by the delivery attempt, not the verify job
+    assert state["counters"]["substance"] == 1 and "T.a1.s1" in state["events"]   # a check failure is "substance"
+                                                                                   # (not infra); keyed by the
+                                                                                   # delivery attempt, not the verify job
 
 
 def test_artifact_only_verification_stays_inline(layout):

@@ -319,7 +319,10 @@ def ingest(supervisor, rec: dict, result) -> None:
     if not bad:
         return                                             # the round completed clean; advance() already applied it
     combined = "\n\n".join(f"{r.role} ({r.verdict.value}): {_findings_text(layout, r)}" for r in bad)
-    escalation_mod.record_failure(supervisor, task_id, "review", combined, event=rec["attempt_id"])
+    # R-14, trigger 4: a REJECT is a verdict on the approach, not a list of repairs — it escalates at once,
+    # regardless of how much of the review budget remains.
+    rejected = any(r.verdict == ReviewVerdict.REJECT for r in bad)
+    escalation_mod.record_failure(supervisor, task_id, "review", combined, event=rec["attempt_id"], immediate=rejected)
 
 
 UNAVAILABLE = {"none": "no review report was recorded",

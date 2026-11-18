@@ -147,6 +147,25 @@ escalation:                         # supervisor/diagnosis.py: when automatic re
   architect_role: chief_architect
   stall_grace_s: 600                # a FAILED/BLOCKED task nothing is routing is escalated after this long (also the
                                     # back-off before a failed deterministic job is retried); idle alert after 2x
+  budget:                           # supervisor/escalation.py record_failure(): retries by cause, never one shared
+                                    # counter (R-14) - a project retunes these without a release
+    limits:
+      substance: 2                 # a verification that failed on the work, a REVISE/REJECT review, a worker
+                                    # that ended FAILED or BLOCKED on the work
+      infra: 4                     # a verifier-condition failure (interpreter, cwd, PATH, allow-list, basetemp),
+                                    # a malformed result envelope, an adapter error, a lost job, a timeout
+      stall: 2                     # the stall sweep
+      total: 8                     # across every cause
+    causes:                        # record_failure's source (or "source:reason", e.g. a verification report's
+                                    # own reason code) -> which counter above it charges; anything unlisted
+                                    # charges "substance"
+      verification: substance
+      verification:infra: infra
+      review: substance
+      worker_blocked: substance
+      worker_failed: substance
+      stalled: stall
+      continuations_exhausted: infra
 checkpoint:                         # supervisor/checkpoint.py: commit exactly the accepted contents of a COMPLETE task
   enabled: true
   since: null                       # tasks completed before this timestamp are left alone (null = all)

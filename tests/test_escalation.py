@@ -147,8 +147,11 @@ def test_four_infrastructure_failures_do_not_spend_the_content_review_budget(lay
     make_task(layout, "T")
     tasks.set_status(layout, "T", "IN_PROGRESS")
     sup = FakeSupervisor(layout)
-    for i in range(4):
-        outcome = escalation.record_failure(sup, "T", "verification", f"quoting failure {i}", reason="infra")
+    # four distinct quoting failures — normalize() collapses digits, so these differ by word, not by number
+    details = ["quoting failure in the basetemp argument", "quoting failure in the cwd argument",
+              "quoting failure in the interpreter argument", "quoting failure in the allow-list match"]
+    for detail in details:
+        outcome = escalation.record_failure(sup, "T", "verification", detail, reason="infra")
         assert outcome["action"] == "retry"
     content_review = escalation.record_failure(sup, "T", "review", "finding: the brief is missing a section")
     assert content_review["action"] == "retry"

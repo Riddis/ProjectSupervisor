@@ -493,6 +493,33 @@ def as_job(layout: Layout) -> bool:
     return True
 
 
+# A command result with no exit_code never ran to a verdict (not allow-listed, a bad cwd, an unparsable or
+# malformed entry, the test budget exhausted, more commands than the cap) — a verifier-condition failure,
+# R-14's `infra` cause, never one on the work itself. These two detail substrings are the same kind of
+# failure outside the command path (verify()'s own pre/post snapshot).
+_INFRA_DETAIL_MARKERS = ("pre-dispatch snapshot failed", "post-delivery snapshot failed")
+
+
+def failure_reason(outcome: Outcome) -> str | None:
+    """Classify a failed Outcome for escalation.record_failure's `reason` (R-14): `"infra"` for a
+    verifier-condition failure (interpreter, cwd, PATH, allow-list, basetemp, a malformed entry, a lost
+    command, the test budget) that says nothing about the delivered work; `None` (the default,
+    `escalation.classify`'s "substance") once a declared command actually ran and disagreed, or the
+    delivery itself failed a structural check (missing artifact, undeclared write). A passing Outcome
+    classifies as `None` too — the caller only asks this of a failure."""
+    if outcome.ok:
+        return None
+    tests = (outcome.report or {}).get("tests")
+    if tests:
+        failed = [r for r in tests if r.get("exit_code") != 0]
+        if failed and all(r.get("exit_code") is None for r in failed):
+            return "infra"
+        return None
+    if any(marker in outcome.detail for marker in _INFRA_DETAIL_MARKERS):
+        return "infra"
+    return None
+
+
 def commands_outcome(ok: bool, results: list[dict], fixed: list[str], checks_declared: bool) -> Outcome:
     """The Outcome for a finished command run — shared by the inline path and the verify job (supervisor.verify_job)."""
     if not ok:

@@ -13,6 +13,8 @@ import hashlib
 import re
 from pathlib import Path
 
+import yaml
+
 from . import jobs as jobs_mod
 from . import packets as packets_mod
 from . import scheduler
@@ -23,9 +25,51 @@ from .locks import FileLock
 from .models.task import Task, TaskStatus
 from .paths import Layout
 
-REVISION_BUDGET = 2
 ISSUE_TITLES = {"worker_blocked": "worker reported BLOCKED", "worker_failed": "worker run failed repeatedly",
                 "stalled": "stopped with nothing routing it", "continuations_exhausted": "continuation budget exhausted"}
+
+# R-14: one counter used to charge infrastructure failures and content revisions alike, so four
+# infrastructure failures could spend the budget a content review needed. Three counters, by cause, plus
+# a `total` across all of them; the limits and the cause table are data (config/routing.yaml
+# escalation.budget), never constants, so a project can retune its own work class without a release.
+DEFAULT_BUDGET_LIMITS = {"substance": 2, "infra": 4, "stall": 2, "total": 8}
+# source (or "source:reason") -> counter. A source with no entry here, and no "source:reason" entry for
+# the reason it was called with, charges "substance" — the conservative default, since an unclassified
+# failure is about the work until shown otherwise.
+DEFAULT_CAUSE_TABLE = {
+    "verification": "substance",
+    "verification:infra": "infra",
+    "review": "substance",
+    "worker_blocked": "substance",
+    "worker_failed": "substance",
+    "stalled": "stall",
+    "continuations_exhausted": "infra",
+}
+
+
+def _budget_config(layout: Layout) -> tuple[dict[str, int], dict[str, str]]:
+    """(limits, causes) with config/routing.yaml's `escalation.budget` layered over the defaults above —
+    missing file, missing section or an unreadable document all fall back to the defaults, never an error."""
+    limits, causes = dict(DEFAULT_BUDGET_LIMITS), dict(DEFAULT_CAUSE_TABLE)
+    cfg = layout.config / "routing.yaml"
+    if cfg.exists():
+        try:
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            data = {}
+        budget = ((data.get("escalation") or {}).get("budget")) or {}
+        limits.update({str(k): int(v) for k, v in (budget.get("limits") or {}).items()})
+        causes.update({str(k): str(v) for k, v in (budget.get("causes") or {}).items()})
+    return limits, causes
+
+
+def classify(layout: Layout, source: str, reason: str | None = None) -> str:
+    """Which counter `source` (optionally qualified by `reason`, e.g. a verification report's own reason
+    code) charges: the "source:reason" entry first, then plain "source", then "substance"."""
+    _, causes = _budget_config(layout)
+    if reason and f"{source}:{reason}" in causes:
+        return causes[f"{source}:{reason}"]
+    return causes.get(source, "substance")
 # retry=False decisions never get a second try at the same brief; the note explains why in the failure's own terms
 # instead of a stock worker_blocked sentence (D-010 Consequences: this is also where continuations-exhausted lands).
 NO_RETRY_NOTES = {"worker_blocked": "the worker reported it cannot proceed; retrying the same brief would repeat it",
@@ -84,8 +128,9 @@ def _state_path(layout: Layout, task_id: str) -> Path:
 def _load(layout: Layout, task_id: str) -> dict:
     p = _state_path(layout, task_id)
     state = read_json(p) if p.exists() else {}
-    state.setdefault("revisions", 0)
+    state.pop("revisions", None)            # pre-2.8.0's single shared counter, replaced by "counters" below
     state.setdefault("signatures", [])
+    state.setdefault("counters", {"substance": 0, "infra": 0, "stall": 0, "total": 0})
     state.setdefault("events", {})          # attempt_id -> the decision already taken for that failure
     return state
 
@@ -290,7 +335,16 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     # owner needs to hear about it. After DIAGNOSIS_BUDGET requeues the owner decides directly.
     from . import diagnosis as diagnosis_mod
     out = {"action": "escalate", "issue": issue["id"], "signature": sig}
-    if diagnosis_mod.count_requeues(layout, task.id) >= diagnosis_mod.DIAGNOSIS_BUDGET:
+    # R-14, trigger 2: a review escalation that happens because `substance` is spent is not a worker or a
+    # process to diagnose — review rejections and their fixes belong to the review lane, and a diagnosis
+    # here would only decide what the review already said. Straight to the owner, as an issue already
+    # visible on the Issues page, never through a diagnosis session.
+    if source == "review" and decision.get("trigger") == "substance_exhausted":
+        rec = {"diag_role": "diagnosis", "diag_level": "manager"}
+        out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
+                                                     "the review budget is spent; another round would only repeat "
+                                                     "what the review already found")
+    elif diagnosis_mod.count_requeues(layout, task.id) >= diagnosis_mod.DIAGNOSIS_BUDGET:
         rec = {"diag_role": "diagnosis", "diag_level": "manager"}
         out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
                                                      f"diagnosis budget of {diagnosis_mod.DIAGNOSIS_BUDGET} requeues spent")
@@ -303,18 +357,23 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     return out
 
 
-def reset_retries(layout: Layout, task_id: str, reason: str = "", key: str | None = None) -> bool:
-    """A diagnosis or an owner REQUEUE granted a fresh start: forget the failure signatures and the spent revisions
-    (the decisions already taken stay, so replays remain idempotent) and count the grant. With `key` (the inbox item
-    of an owner decision) the grant is made once: a replay of the same decision returns False and changes nothing."""
+def reset_retries(layout: Layout, task_id: str, reason: str = "", key: str | None = None,
+                  reset: list[str] | None = None) -> bool:
+    """A diagnosis or an owner REQUEUE granted a fresh start: forget the failure signatures and the spent
+    counters named in `reset` (default: all of `substance`, `infra`, `stall`, `total` — a fresh start
+    unless the caller means something narrower). The decisions already taken stay, so replays remain
+    idempotent; count the grant. With `key` (the inbox item of an owner decision) the grant is made once:
+    a replay of the same decision returns False and changes nothing."""
     state = _load(layout, task_id)
     grants = state.setdefault("reset_log", [])
     if key and any(e.get("key") == key for e in grants if isinstance(e, dict)):
         return False
+    counters = list(reset) if reset else list(DEFAULT_BUDGET_LIMITS)
     state["signatures"] = []
-    state["revisions"] = 0
+    for name in counters:
+        state["counters"][name] = 0
     state["resets"] = state.get("resets", 0) + 1
-    grants.append({"at": store.now_iso(), "reason": reason, **({"key": key} if key else {})})
+    grants.append({"at": store.now_iso(), "reason": reason, "reset": counters, **({"key": key} if key else {})})
     _save(layout, task_id, state)
     return True
 
@@ -368,12 +427,19 @@ def _replay(supervisor, task: Task, state: dict, event: str, source: str, detail
 
 
 def record_failure(supervisor, task_id: str, source: str, detail: str, event: str | None = None,
-                   retry: bool = True) -> dict:
+                   retry: bool = True, reason: str | None = None, immediate: bool = False) -> dict:
     """A failure that must not dead-end: failed verification, a REVISE/REJECT review, a worker that ended BLOCKED or
     FAILED instead of COMPLETE, or a task the stall sweep found stopped with nothing routing it. `event` is the
     attempt id (or stall key) that failed and makes the decision idempotent across an interruption. `retry=False`
     skips the blind revision and goes straight to the exception route — used when the worker itself reported
     BLOCKED: re-sending the same brief into the same environment reproduces the same block.
+
+    R-14: `reason` is the extra classifier a caller may already have in hand (today, a verification
+    report's own reason code distinguishing a verifier-condition failure from one on the work) that
+    `classify()` uses, alongside `source`, to pick which of the three counters this failure charges.
+    `immediate` is trigger 4 of the review-rounds rule (ATTEMPT_MODEL.md 4.2): a REJECT escalates at once,
+    regardless of any counter — a rejection is a verdict on the approach, not a list of repairs.
+
     Returns {"action": "retry"|"escalate", ...}."""
     layout = supervisor.layout
     task = tasks_mod.load(layout, task_id)
@@ -383,17 +449,33 @@ def record_failure(supervisor, task_id: str, source: str, detail: str, event: st
     sig = signature(f"{source}:{detail}")
     repeat = sig in state["signatures"]
     state["signatures"].append(sig)
-    state["revisions"] += 1
+    cause = classify(layout, source, reason)
+    counters = state["counters"]
+    counters[cause] = counters.get(cause, 0) + 1
+    counters["total"] = counters.get("total", 0) + 1
+    limits, _ = _budget_config(layout)
+    cause_limit = limits.get(cause, DEFAULT_BUDGET_LIMITS.get(cause, 2))
+    total_limit = limits.get("total", DEFAULT_BUDGET_LIMITS["total"])
     if not retry:
-        decision = {"action": "escalate", "signature": sig,
+        decision = {"action": "escalate", "signature": sig, "cause": cause, "trigger": "no_retry",
                     "note": f"{source}: {NO_RETRY_NOTES.get(source, 'retrying the same brief would repeat it')}"}
-    elif repeat or state["revisions"] > REVISION_BUDGET:
-        decision = {"action": "escalate", "signature": sig,
-                    "note": (f"{source} failed again with the same signature" if repeat else
-                             f"{source} failed after {state['revisions']} revisions (budget {REVISION_BUDGET})")}
+    elif immediate:
+        decision = {"action": "escalate", "signature": sig, "cause": cause, "trigger": "reject",
+                    "note": f"{source}: rejected outright; a rejection is a verdict on the approach, "
+                            f"not a list of repairs"}
+    elif repeat:
+        decision = {"action": "escalate", "signature": sig, "cause": cause, "trigger": "repeat_signature",
+                    "note": f"{source} failed again with the same signature"}
+    elif counters[cause] > cause_limit:
+        decision = {"action": "escalate", "signature": sig, "cause": cause,
+                    "trigger": "substance_exhausted" if cause == "substance" else "cause_exhausted",
+                    "note": f"{source} failed after {counters[cause]} {cause} failures (budget {cause_limit})"}
+    elif counters["total"] > total_limit:
+        decision = {"action": "escalate", "signature": sig, "cause": cause, "trigger": "total_exhausted",
+                    "note": f"{source} failed after {counters['total']} total failures (budget {total_limit})"}
     else:
-        decision = {"action": "retry", "revision": state["revisions"], "signature": sig,
-                    "senior": state["revisions"] >= REVISION_BUDGET}      # the second automatic revision
+        decision = {"action": "retry", "revision": counters[cause], "signature": sig, "cause": cause,
+                    "senior": counters[cause] >= cause_limit}      # the second automatic revision of this cause
     decision["at"] = store.now_iso()                  # lets the stall sweep tell "escalated after this stop" apart
     if event:
         decision["event"] = event
