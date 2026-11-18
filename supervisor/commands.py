@@ -277,7 +277,7 @@ def _deliver(layout, payload, actor):
     if cid and t.delivery and t.delivery.digest == payload["digest"]:
         return {"skipped": "already delivered", "status": t.status.value}
     t = tasks_mod.record_delivery(layout, payload["task_id"], payload["digest"], actor=actor, result=payload.get("result"),
-                                  paths=payload.get("paths") or [])
+                                  paths=payload.get("paths") or [], findings_response=payload.get("findings_response"))
     return {"status": t.status.value}
 
 

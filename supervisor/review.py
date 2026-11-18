@@ -172,7 +172,11 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     fell_back = bool(overrides) or adapter_name != prof.get("adapter", "claude_cli")
     digest = task.delivery.digest
     artifacts = task.paths or task.artifacts
-    brief = packets_mod.review_brief(layout, task, digest, artifacts, role)
+    # Computed once: review_brief() needs it for the packet text, this function needs the same result again for
+    # the dispatch extra (prior_round/digest_diff, below) — a frozen manifest, a text snapshot and a unified diff
+    # built twice per dispatch would be wasted work on every review, not only one with a prior round to show.
+    prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
+    brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
     review_task = _review_task_view(layout, task, role, adapter_name, brief, overrides)
     note = f"review:{role}" + (" (same-vendor fallback)" if fell_back and same_vendor else "")
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the
@@ -184,12 +188,12 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
             "review_text_snapshot": packets_mod.text_snapshot(layout, artifacts)}
     if fell_back:
         extra["same_vendor"] = same_vendor
-    prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
     if prior_ctx["rounds"]:
         # Written beside this review's own run (loop.dispatch) for audit — never read back from there: every
         # input that built them already came from the store (prior_round_context's own docstring).
         extra["prior_round"] = {"task_id": task.id, "digest": digest, "rounds": prior_ctx["rounds"],
-                                "claim": prior_ctx["claim"], "change_list": prior_ctx["change_list"]}
+                                "claim": prior_ctx["claim"], "responses": prior_ctx["responses"],
+                                "change_list": prior_ctx["change_list"]}
         if prior_ctx["diff_text"]:
             extra["digest_diff"] = prior_ctx["diff_text"]
     prior_round = any(jobs_mod.kind_of(r) == "review" and r.get("review_role") == role and r.get("review_digest") == digest
@@ -348,7 +352,9 @@ def _findings_text(layout, review) -> str:
     obj, state = tasks_mod.review_report(layout, review)
     if obj is None:
         return f"verdict {review.verdict.value}; rationale unavailable: {UNAVAILABLE.get(state, state)}"
-    findings = "; ".join(f"[{f.get('category')}] {f.get('message')} ({f.get('evidence')})"
+    # The id (R-15): carried here too, not only in a later round's own packet, so the next delivery can name a
+    # specific finding in its own optional findings_response instead of only one undifferentiated paragraph.
+    findings = "; ".join(f"[{f.get('category')}] {f.get('id', '')}: {f.get('message')} ({f.get('evidence')})"
                          for f in obj.get("findings") or [] if isinstance(f, dict))
     return findings or str(obj.get("summary") or "") or f"verdict {review.verdict.value} (the report gives no text)"
 

@@ -56,6 +56,11 @@
     "handoff": {
       "$ref": "#/$defs/repo_path",
       "description": "Path to the HANDOFF.md written when the attempt stopped early."
+    },
+    "findings_response": {
+      "type": "array",
+      "description": "Optional, additive: a reply to specific findings a review packet's previous-round section named, keyed by their own id. task.result (notes) stays the one free-text account read when a finding has none of these, or when this is absent altogether.",
+      "items": {"$ref": "#/$defs/finding_response"}
     }
   },
   "$defs": {
@@ -78,6 +83,16 @@
         "consequences": {"type": "string", "minLength": 1},
         "decided_by": {"type": "string", "minLength": 1},
         "supersedes": {"type": "string", "pattern": "^D-[0-9]{3,}"}
+      }
+    },
+    "finding_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 200, "description": "The finding's own id, from a previous round's packet."},
+        "status": {"enum": ["addressed", "disputed", "deferred"]},
+        "note": {"type": "string", "maxLength": 1000}
       }
     }
   }

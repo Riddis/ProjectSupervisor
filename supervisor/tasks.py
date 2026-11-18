@@ -954,9 +954,13 @@ def volatile_state(rel: str) -> bool:
 
 
 def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "system", result: str | None = None,
-                    paths: Iterable[str] = ()) -> Task:
+                    paths: Iterable[str] = (), findings_response: list[dict] | None = None) -> Task:
     """A new artifact digest: earlier verification/reviews/approvals are superseded (kept in history). A task that was
-    waiting on review/approval of the old digest returns to IN_PROGRESS."""
+    waiting on review/approval of the old digest returns to IN_PROGRESS.
+
+    `findings_response` (R-15, ATTEMPT_MODEL.md 4.3 point 3): the producer's own optional, per-finding reply
+    to the previous round's own findings, kept the same way `result` already is — set when given, left as the
+    last delivery's own value otherwise, so a producer that forgot to repeat it does not lose the one it gave."""
     def fn(doc):
         d = doc.setdefault("delivery", {}) or {}
         doc["delivery"] = d
@@ -975,6 +979,8 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
         d["digest"] = digest
         if result is not None:
             doc["result"] = result
+        if findings_response is not None:
+            doc["findings_response"] = findings_response
         if paths:
             # the delivery's own paths replace the previous delivery's (a review freezes on them; accumulated stale
             # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never

@@ -299,6 +299,11 @@ def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list
     # round's own notes do not survive being superseded (task.result is overwritten on every delivery, R-15) — so
     # only the latest previous round ever has one, and it is said plainly rather than invented for the rest.
     claim = task.result if rounds else None
+    # `responses`: the producer's own optional, per-finding reply (point 3), keyed by the finding id it answers —
+    # `claim` (task.result) stays the one free-text account read for a finding this carries none of, or when a
+    # producer gives none of these at all.
+    responses = {str(r["id"]): {"status": r.get("status"), "note": r.get("note")}
+                for r in (task.findings_response or []) if isinstance(r, dict) and r.get("id")} if rounds else {}
     change_list: list[dict] = []
     diff_text = ""
     if rounds:
@@ -310,14 +315,18 @@ def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list
                 prior_snapshot = rec.get("review_text_snapshot") or prior_snapshot
         change_list = _change_list(prior_manifest, frozen_inputs(layout, artifacts))
         diff_text = _unified_diffs(layout, prior_snapshot, change_list)
-    return {"rounds": rounds, "claim": claim, "change_list": change_list, "diff_text": diff_text,
-            "snapshot": text_snapshot(layout, artifacts)}
+    return {"rounds": rounds, "claim": claim, "responses": responses, "change_list": change_list,
+            "diff_text": diff_text, "snapshot": text_snapshot(layout, artifacts)}
 
 
-def _finding_line(f: dict) -> str:
+def _finding_line(f: dict, responses: dict | None = None) -> str:
     tag = "blocking" if f.get("blocking") else "advisory"
+    resp = (responses or {}).get(f.get("id"))
+    reply = ""
+    if resp:
+        reply = f" — producer: {resp.get('status')}" + (f" ({resp['note']})" if resp.get("note") else "")
     return (f"  - `{f.get('id', '')}` [{f.get('category', '')}, {tag}]: {f.get('message', '')} "
-            f"(evidence: {f.get('evidence', '')})")
+            f"(evidence: {f.get('evidence', '')}){reply}")
 
 
 def prior_round_block(ctx: dict) -> str:
@@ -330,7 +339,7 @@ def prior_round_block(ctx: dict) -> str:
         lines.append(f"\n### Round {rnd['round']} (attempt {attempt}, digest {rnd['digest'][:12]})")
         for rv in rnd["reviews"]:
             lines.append(f"- **{rv['role']}** verdict {rv['verdict']}")
-            lines.extend(_finding_line(f) for f in rv["findings"])
+            lines.extend(_finding_line(f, ctx["responses"]) for f in rv["findings"])
     lines.append("\n**What the producer's current delivery result claims about the above:**\n"
                  + (ctx["claim"] or "no notes were recorded."))
     if ctx["change_list"]:
@@ -349,11 +358,14 @@ def _review_note_block(task: Task) -> str:
     return f"\n\n## Owner's guidance for reviewers\n{task.review_note}\n"
 
 
-def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], role: str) -> str:
+def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], role: str, ctx: dict | None = None) -> str:
+    """`ctx`, when given, is this call's own `prior_round_context()` result, already computed by the caller (e.g.
+    `review.dispatch()`, which also needs it for the dispatch extra) — passed through rather than built again here
+    a second time for the same dispatch. Built fresh when omitted, as every existing caller still does."""
     card = role_card(layout, role)
     example = json.dumps({"kind": "review", "schema_version": 1, "verdict": "ACCEPT|REVISE|REJECT|BLOCKED",
                           "findings": [], "summary": "...", "reviewed": artifacts, "digest": digest})
-    ctx = prior_round_context(layout, task, digest, artifacts)
+    ctx = ctx if ctx is not None else prior_round_context(layout, task, digest, artifacts)
     return policy.assert_packet_clean(((card + "\n\n") if card else "") + (
         f"# Review {task.id}: {task.title}\n\nRepository: {layout.root}\n\n"
         f"You are reviewing frozen inputs bound to digest `{digest}`. If any of the listed files change before "

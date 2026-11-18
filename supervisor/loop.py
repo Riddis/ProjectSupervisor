@@ -952,7 +952,9 @@ class Supervisor:
                 dg = digest_of(manifest([self.layout.root / a for a in files], root=self.layout.root)) if files else digest_of({"attempt": rec["attempt_id"]})
             except ValueError as exc:
                 dg, result = digest_of({"attempt": rec["attempt_id"]}), Result(status="FAILED", error=f"manifest: {exc}")
-            tasks_mod.record_delivery(self.layout, task_id, dg, actor="loop", result=result.notes or None, paths=files)
+            findings_response = [r for r in (result.raw or {}).get("findings_response") or [] if isinstance(r, dict)]
+            tasks_mod.record_delivery(self.layout, task_id, dg, actor="loop", result=result.notes or None,
+                                      findings_response=findings_response or None, paths=files)
             if result.status == "COMPLETE" and not missing:
                 # a model lane must show its work: the brief asks for the commands it ran
                 # (packets.result_contract_delivery(layout, task)), and a task that declares tests is not verified

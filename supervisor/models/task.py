@@ -195,6 +195,13 @@ class Task(BaseModel):
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
     result: Optional[str] = None
+    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:
+                                                                               # the producer's own optional, per-
+                                                                               # finding reply {id, status, note?} to
+                                                                               # the previous round's own findings —
+                                                                               # additive beside `result`, the one
+                                                                               # free-text account read when a
+                                                                               # finding has none of these
     paths: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     owned_paths: list[str] = Field(default_factory=list)
