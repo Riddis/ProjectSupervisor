@@ -182,7 +182,7 @@ def test_a_timed_out_session_is_continued_not_counted_as_a_failed_attempt(layout
         sup.once()
         time.sleep(0.2)
     recs = {r["attempt_id"]: r for r in jobs.for_task(layout, "T")}
-    first = recs["T.a1"]
+    first = next(r for r in recs.values() if r.get("seq") == 1 and jobs.kind_of(r) == "delivery")
     assert first["phase"] == "DONE" and first.get("continued") and first["error"].startswith("timeout: idle")
     cont = [r for r in recs.values() if str(r.get("deferred_reason", "")).startswith("continuation after time limit (idle)")]
     assert cont, recs

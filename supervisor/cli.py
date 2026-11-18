@@ -593,8 +593,13 @@ def _launch_update_check(layout: Layout, interactive: bool) -> None:
 def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unattended: bool = False,
         no_update_check: bool = typer.Option(False, help="skip the origin check at launch")):
     """Run the supervisor loop (holds state/.lock). Exit code 3 = reload requested."""
-    from .loop import Supervisor
+    from .loop import Supervisor, UnmigratedJobsError, _check_writer_guard
     layout = _layout()
+    try:
+        _check_writer_guard(layout)       # ATTEMPT_MODEL.md §8.6: before anything below can ever dispatch
+    except UnmigratedJobsError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
     if not no_update_check and not once and not max_iterations:
         _launch_update_check(layout, interactive=False)     # the loop never blocks on a prompt: the UI asks
     sup = Supervisor(layout, sleep_s=sleep, unattended=unattended)

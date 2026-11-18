@@ -347,7 +347,7 @@ def test_a_failing_check_in_the_verify_job_fails_verification_and_escalates(layo
     t = tasks.load(layout, "T")
     assert t.delivery.verification.ok is False and "required check failed" in t.delivery.verification.detail
     state = json.loads((layout.runtime / "escalation" / "T.json").read_text())
-    assert state["revisions"] == 1 and "T.a1" in state["events"]          # keyed by the delivery attempt, not the verify job
+    assert state["revisions"] == 1 and "T.a1.s1" in state["events"]          # keyed by the delivery attempt, not the verify job
 
 
 def test_artifact_only_verification_stays_inline(layout):

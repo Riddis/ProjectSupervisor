@@ -63,7 +63,7 @@ def test_a_queued_retry_running_keeps_the_task_in_progress_through_once(layout):
 
         t = tasks.load(layout, "A")
         records = {r["attempt_id"]: r["phase"] for r in jobs.for_task(layout, "A")}
-        assert records.get("A.a2") in ("SUBMITTED", "RUNNING")
+        assert records.get("A.a2.s1") in ("SUBMITTED", "RUNNING")
         assert t.status == TaskStatus.IN_PROGRESS
         failed_entries = [h for h in t.history if "verification failed" in (h.get("note") or "")]
         assert len(failed_entries) == 1, "the running retry must not be re-evaluated against the digest it replaces"

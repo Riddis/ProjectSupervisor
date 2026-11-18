@@ -13,7 +13,6 @@ from typing import Optional
 
 import psutil   # hard dependency: a job is never launched without a verifiable {pid, create_time} handle
 
-from .. import jobs as jobs_mod
 from .. import policy
 from .. import timeouts
 from .._vendor import handoff
@@ -77,12 +76,16 @@ def _ppid(p):
 
 def job_identity_env(spec: dict) -> dict:
     """`SUPERVISOR_ATTEMPT` (kept, same value), `SUPERVISOR_JOB` (added, the same value under its own name) and
-    `SUPERVISOR_ATTEMPT_NO` (added, the integer the id's `.a<n>` suffix carries) -- the three names every
+    `SUPERVISOR_ATTEMPT_NO` (added, the delivery attempt number this job belongs to) -- the three names every
     dispatched job's own child process carries so `recover()` and anything that parsed the old suffix keep working
-    for one more major version (ATTEMPT_MODEL.md section 7). Shared by every agent lane's own `env()`."""
+    for one more major version (ATTEMPT_MODEL.md section 7). `attempt`, written onto `spec` by `loop.dispatch`
+    from the id the allocator minted, not parsed back out of the id string — empty for a task-scoped job (a
+    diagnosis raised before any delivery) or a conversation turn, same as an id with no such suffix read before
+    this. Shared by every agent lane's own `env()`."""
     attempt_id = str(spec.get("attempt_id", ""))
+    attempt = spec.get("attempt")
     return {"SUPERVISOR_ATTEMPT": attempt_id, "SUPERVISOR_JOB": attempt_id,
-            "SUPERVISOR_ATTEMPT_NO": str(jobs_mod.attempt_no(attempt_id))}
+            "SUPERVISOR_ATTEMPT_NO": str(attempt) if attempt is not None else ""}
 
 
 def _started(handle: dict, now: float) -> float:

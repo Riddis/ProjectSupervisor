@@ -54,7 +54,7 @@ def test_a_fake_lane_completes_a_task_through_the_loop(tmp_path):
         testing.make_task(lay, "A", job={"adapter": "fake_done"}, artifacts=["out/a.txt"])
         testing.drive(lay, until=lambda: tasks.load(lay, "A").status == TaskStatus.COMPLETE)
     assert tasks.load(lay, "A").status == TaskStatus.COMPLETE
-    assert fake.submitted == ["A.a1"] and (lay.root / "out" / "a.txt").is_file()
+    assert fake.submitted == ["A.a1.s1"] and (lay.root / "out" / "a.txt").is_file()
     from supervisor.adapters import REGISTRY
     assert "fake_done" not in REGISTRY                         # the lane is gone after the block
 

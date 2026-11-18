@@ -87,20 +87,20 @@ def test_a_second_project_waits_for_the_first_to_let_go_of_the_gpu_lease(tmp_pat
         sup_a, sup_b = Supervisor(lay_a, sleep_s=0), Supervisor(lay_b, sleep_s=0)
 
         sup_a.once()
-        assert lane_a.submitted == ["A.a1"]                        # a took the lease and launched
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert lane_a.submitted == ["A.a1.s1"]                        # a took the lease and launched
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
 
         sup_b.once()
         assert lane_b.submitted == []                              # b is held: a holds the lease
         assert jobs.for_task(lay_b, "B") == []                     # the scheduler never dispatches it in the first place
 
-        lane_a.done["A.a1"] = True                                 # a's job finishes
+        lane_a.done["A.a1.s1"] = True                                 # a's job finishes
         sup_a.once()                                                # settle collects it; reconcile releases the lease
-        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "DONE"
 
         sup_b.once()
-        assert lane_b.submitted == ["B.a1"]                         # the lease is free: b may launch now
-        assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+        assert lane_b.submitted == ["B.a1.s1"]                         # the lease is free: b may launch now
+        assert jobs.read(lay_b, "B.a1.s1")["phase"] == "RUNNING"
 
 
 def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(tmp_path):
@@ -119,7 +119,7 @@ def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(t
         sup_a, sup_b = Supervisor(lay_a, sleep_s=0), Supervisor(lay_b, sleep_s=0)
 
         sup_a.once()
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"        # a holds the lease and is still running
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"        # a holds the lease and is still running
 
         deadline = time.monotonic() + stale_after_s * 1.6
         while time.monotonic() < deadline:
@@ -132,9 +132,9 @@ def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(t
         assert lane_b.submitted == []                                 # b is still refused: a's job has not ended
         assert jobs.for_task(lay_b, "B") == []
 
-        lane_a.done["A.a1"] = True                                    # a's job finishes
+        lane_a.done["A.a1.s1"] = True                                    # a's job finishes
         sup_a.once()                                                   # settle() collects it; reconcile() releases
-        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "DONE"
         assert leases.status(lay_a, "gpu")["live"] == []               # left RUNNING: let go, not kept renewed
 
 
@@ -166,8 +166,8 @@ def test_a_waiting_loop_records_a_release_request_so_the_holder_yields_and_the_w
         holder.release()                                  # step 3: A's watchdog poll stops its server, A releases
 
         sup_b.once()                                       # step 4: the lease is free, B's next pass launches
-        assert lane_b.submitted == ["B.a1"]
-        assert jobs.read(lay_b, "B.a1")["phase"] == "RUNNING"
+        assert lane_b.submitted == ["B.a1.s1"]
+        assert jobs.read(lay_b, "B.a1.s1")["phase"] == "RUNNING"
 
 
 def test_repeated_waiting_passes_record_the_release_request_once_and_do_not_restart_the_window(tmp_path):
@@ -214,12 +214,12 @@ def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_pa
         make_task(lay_a, "A", job={"adapter": "gpu_a_restart"}, cost_category="local")
         sup_a = Supervisor(lay_a, sleep_s=0)
         sup_a.once()
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"          # a holds the lease and is still running
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"          # a holds the lease and is still running
 
         _simulate_restart(lease_file, "project-a")                     # the old loop's process is now gone
 
         sup_a.once()                                                   # the restarted loop's own reconcile() tick
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"           # the job itself never stopped
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"           # the job itself never stopped
 
         assert leases.holder_label(lay_b, "gpu") == "project-a"         # b's peek names the real holder, not None
 
@@ -228,7 +228,7 @@ def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_pa
         sup_b.once()
         assert lane_b.submitted == []                                   # b does not launch on top of a's job
         assert jobs.for_task(lay_b, "B") == []
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
 
 
 def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_record_alone(tmp_path):
@@ -245,7 +245,7 @@ def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_reco
         make_task(lay_a, "A", job={"adapter": "gpu_a_refused"}, cost_category="local")
         sup_a = Supervisor(lay_a, sleep_s=0)
         sup_a.once()
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
 
         _simulate_restart(lease_file, "project-a")
 
@@ -258,7 +258,7 @@ def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_reco
         assert leases.holder_label(lay_a, "gpu") == "project-c"     # the cards really are c's now
         events = [e for e in log_lines(lay_a)[before:] if e["event"] == "gpu_lease_retake_refused"]
         assert events and events[-1]["holder"] == "project-c"        # named, not silent
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"         # the job record itself is not wedged
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"         # the job record itself is not wedged
         holder_c.release()
 
 
@@ -277,16 +277,16 @@ def test_the_retake_only_fires_for_a_record_still_running_not_once_it_has_left_r
         make_task(lay_a, "A", job={"adapter": "gpu_a_running_only"}, cost_category="local")
         sup_a = Supervisor(lay_a, sleep_s=0)
         sup_a.once()
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
 
         _simulate_restart(lease_file, "project-a")
 
         sup_a.once()                                            # RUNNING -> re-taken
         assert leases.status(lay_a, "gpu")["live"] != []
 
-        lane_a.done["A.a1"] = True
+        lane_a.done["A.a1.s1"] = True
         sup_a.once()                                             # settle() collects it; reconcile() releases
-        assert jobs.read(lay_a, "A.a1")["phase"] == "DONE"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "DONE"
         assert leases.status(lay_a, "gpu")["live"] == []          # left RUNNING: already let go, not kept alive
 
 
@@ -335,7 +335,7 @@ def test_a_retake_leaves_another_projects_pending_release_request_untouched(tmp_
         make_task(lay_a, "A", job={"adapter": "gpu_a_handover"}, cost_category="local")
         sup_a = Supervisor(lay_a, sleep_s=0)
         sup_a.once()
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
 
         waiter_b = leases.resource_lease(lay_b, "gpu")              # b's own wait, recorded while a's entry is live
         assert waiter_b.acquire(wait_s=0) is False
@@ -352,7 +352,7 @@ def test_a_retake_leaves_another_projects_pending_release_request_untouched(tmp_
         assert after["release_requested_by"] == requested_by         # b's hand-over request: untouched
         assert after["release_requested_label"] == requested_label
         assert after["release_requested_at"] == requested_at
-        assert jobs.read(lay_a, "A.a1")["phase"] == "RUNNING"
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
         assert leases.status(lay_a, "gpu")["live"] != []              # and the retake still succeeded
         assert leases.holder_label(lay_b, "gpu") == "project-a"       # b's own peek names a, not nobody
 
@@ -364,5 +364,5 @@ def test_a_lone_project_is_unaffected_by_no_lease_configured(tmp_path):
         make_task(lay, "A", job={"adapter": "gpu_solo"}, cost_category="local")
         sup = Supervisor(lay, sleep_s=0)
         sup.once()
-        assert lane.submitted == ["A.a1"]
-        assert jobs.read(lay, "A.a1")["phase"] == "RUNNING"
+        assert lane.submitted == ["A.a1.s1"]
+        assert jobs.read(lay, "A.a1.s1")["phase"] == "RUNNING"

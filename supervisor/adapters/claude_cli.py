@@ -137,12 +137,35 @@ def _produced_delivery(layout: Layout, entries, kinds, delivery_idx: int, idx: i
     return False
 
 
+def _new_shape_identity(entries, attempt_id: str) -> tuple[int, str, int, str | None] | None:
+    """(attempt, kind, seq, parent) for `attempt_id`, when the task's own `attempts[]` already carries it in the
+    allocator-written shape (ATTEMPT_MODEL.md §2.7: a numbered attempt's own `jobs[]`, written by
+    `tasks.allocate_job` before `prepare()` ever runs) — the direct read every new job gets, no reconstruction
+    needed because the fields were never derived from a note or a suffix in the first place. `None` when
+    `attempt_id` is not there (a legacy entry from before the writer switch, §6's "readers first, writers
+    second": the old per-job-entry shape below is still what such an id resolves against)."""
+    for a in entries:
+        if a.n is None:
+            continue
+        for j in a.jobs or []:
+            if j.get("id") == attempt_id:
+                return a.n, j.get("kind"), j.get("seq"), j.get("parent")
+    return None
+
+
 def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "delivery"):
-    """(attempt, seq, parent) for `attempt_id`, read from the task's own attempt history — `tasks.add_attempt`
-    already wrote this job's own entry before `prepare()` runs, so a fresh load sees it — then `handoff.select`'s
-    answer for them. Review and diagnosis jobs never reach the delivery branch below; a diagnosis's parent is
-    simply the entry immediately before its own."""
+    """(attempt, seq, parent) for `attempt_id`, then `handoff.select`'s answer for them. A job the allocator
+    wrote (§2.7) is read straight off its own `attempts[]` entry (`_new_shape_identity`); only a legacy job
+    dispatched before the writer switch falls through to the task's older, flat attempt history —
+    `tasks.add_attempt` wrote that job's own entry before `prepare()` ran, so a fresh load still sees it. Review
+    and diagnosis jobs never reach the delivery branch below; a diagnosis's parent is simply the entry
+    immediately before its own."""
     entries = tasks_mod.load(layout, task_id).attempts
+    new_shape = _new_shape_identity(entries, attempt_id)
+    if new_shape is not None:
+        attempt, job_kind, seq, parent = new_shape
+        return handoff.select(layout, task_id, attempt, job_kind or kind, seq, parent)
+    entries = [e for e in entries if e.n is None]      # the old reconstruction only ever walked flat, per-job entries
     idx = next((i for i in range(len(entries) - 1, -1, -1) if entries[i].id == attempt_id), None)
     if idx is None:
         return handoff.select(layout, task_id, None, kind, None, None)

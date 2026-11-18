@@ -65,7 +65,7 @@ def test_command_shape_and_env(layout):
 def test_ok_review_parsed(layout):
     rtask(layout, "ok")
     run(layout)
-    rd = layout.runs / "R" / "R.a1"
+    rd = layout.runs / "R" / "R.a1.s1"
     obj = json.loads((rd / "result.json").read_text())
     meta = json.loads((rd / "result_meta.json").read_text())
     assert obj["verdict"] == "ACCEPT" and meta["session_id"] == "thr_123" and meta["usage"]["input_tokens"] == 120

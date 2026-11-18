@@ -343,7 +343,7 @@ def test_verification_failure_dispatches_a_revision_despite_its_own_attempt_stil
     t = tasks.load(layout, "T")
     # the revision really was dispatched (not silently skipped as "attempt already open"): the task moved back
     # to IN_PROGRESS for the new attempt instead of sitting FAILED with nothing queued
-    assert "revision after verification failure" in t.attempts[-1].note
+    assert "revision after verification failure" in t.attempts[-1].jobs[-1]["note"]   # §4.6: note moved to jobs[]
     assert t.status == TaskStatus.IN_PROGRESS
 
 

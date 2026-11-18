@@ -239,11 +239,11 @@ def test_a_revision_dispatched_during_pause_waits_for_resume(layout, monkeypatch
 def test_finished_work_is_still_collected_under_pause(layout):
     proc_task(layout, "P", seconds=0.1)
     sup = Supervisor(layout, sleep_s=0)
-    sup.dispatch(tasks.load(layout, "P"), "process")
+    job_id = sup.dispatch(tasks.load(layout, "P"), "process")["attempt_id"]
     time.sleep(1.5)
     runtime.set_decision(layout, "PAUSE")
     sup.once()
-    assert jobs.read(layout, "P.a1")["phase"] == "DONE" and tasks.load(layout, "P").status == TaskStatus.COMPLETE
+    assert jobs.read(layout, job_id)["phase"] == "DONE" and tasks.load(layout, "P").status == TaskStatus.COMPLETE
 
 
 # ------------------------------------------------------------------ §4 drain and shutdown

@@ -439,10 +439,12 @@ def test_a_task_pinned_to_claude_api_waits_for_credit(layout, ad, monkeypatch):
 
 
 def _history(layout, tid, upto):
-    """Attempts 1..upto-1 of `tid` already finished, so the next record is attempt `upto`."""
+    """Attempts 1..upto-1 of `tid` already finished, so the next record is attempt `upto`. Each keeps its old,
+    flat id (ids are never renamed) but carries the identity fields a migrated record would — the shape every
+    record is guaranteed to have by the writer switch's own start-up guard (ATTEMPT_MODEL.md §8.6)."""
     for n in range(1, upto):
         jobs.write(layout, {"attempt_id": f"{tid}.a{n}", "task_id": tid, "adapter": "claude_cli", "phase": "DONE",
-                            "result": "FAILED", "spec": {"kind": "delivery"}})
+                            "result": "FAILED", "spec": {"kind": "delivery"}, "attempt": n, "kind": "delivery", "seq": 1})
 
 
 def test_job_records_are_ordered_by_attempt_number(layout):
@@ -458,14 +460,20 @@ def test_a_reroute_interrupted_before_its_successor_is_repaired_at_any_attempt_n
     tasks.set_status(layout, "CR", "IN_PROGRESS")
     _history(layout, "CR", refused)
     jobs.write(layout, {"attempt_id": f"CR.a{refused}", "task_id": "CR", "adapter": "claude_api", "phase": "DONE",
-                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"}})
+                        "result": "REROUTED", "rerouted_to": "claude_cli", "spec": {"kind": "delivery"},
+                        "attempt": refused, "kind": "delivery", "seq": 1})
+
+    def _seed(doc):
+        doc.setdefault("counters", {}).setdefault("jobs", {})[refused] = {"delivery": 1}
+    tasks._update(layout, "CR", _seed)   # this job was never minted by allocate_job; the counter must still know it
     monkeypatch.setattr(REGISTRY["claude_cli"], "submit", lambda spec: {"kind": "fake"})
     monkeypatch.setattr(REGISTRY["claude_cli"], "recover", lambda spec: None)
     sup = Supervisor(layout, sleep_s=0)
     sup.repair_continuations()
     recs = jobs.for_task(layout, "CR")
     new = recs[-1]
-    assert new["attempt_id"] == f"CR.a{refused + 1}" and new["adapter"] == "claude_cli"
+    # a reroute's successor is the next SESSION of the same attempt (§2.4), never a fresh attempt
+    assert new["attempt_id"] == f"CR.a{refused}.s2" and new["adapter"] == "claude_cli"
     assert new["rerouted_from"] == f"CR.a{refused}" and new["phase"] == "SUBMITTED"
     assert jobs.read(layout, f"CR.a{refused}")["continued"] is True
     sup.repair_continuations()                                       # idempotent
@@ -506,14 +514,15 @@ def _pinned_and_deferred(layout, ad, monkeypatch):
 
 def test_lane_reset_releases_a_job_waiting_for_credit(layout, ad, monkeypatch):
     sup, calls = _pinned_and_deferred(layout, ad, monkeypatch)
-    sup.launch(jobs.read(layout, "CA.a1"))
+    job_id = "CA.a1.s1"
+    sup.launch(jobs.read(layout, job_id))
     assert len(calls) == 1                                           # still spent: no request, still waiting
     text = "```json\n" + json.dumps(DELIVERY_JSON) + "\n```\n"
     monkeypatch.setattr(ad, "_post", lambda *a, **kw: calls.append(1) or FakeResponse(messages_body(text)))
     commands.submit(layout, "lane.reset", {"lane": "claude_api"}, actor="owner")
     commands.apply_all(layout)
     assert not claude_api.credit_state_path(layout).exists()
-    rec = sup.launch(jobs.read(layout, "CA.a1"))                    # long before the 24 h recheck
+    rec = sup.launch(jobs.read(layout, job_id))                    # long before the 24 h recheck
     assert len(calls) == 2 and rec["phase"] == "SUBMITTED"
 
 
@@ -528,10 +537,11 @@ def test_raising_a_reached_budget_releases_a_waiting_job(layout, ad, monkeypatch
     sup = Supervisor(layout, sleep_s=0)
     rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api")
     assert rec["phase"] == "PREPARED" and rec["deferred_lane"] and not calls     # budget reached: no request
-    sup.launch(jobs.read(layout, "CA.a1"))
+    job_id = rec["attempt_id"]
+    sup.launch(jobs.read(layout, job_id))
     assert not calls
     write_routing(layout, monthly_budget_usd=10, pricing_usd_per_mtok={"claude-sonnet-5": {"input": 1000, "output": 0}})
-    rec = sup.launch(jobs.read(layout, "CA.a1"))
+    rec = sup.launch(jobs.read(layout, job_id))
     assert calls == [1] and rec["phase"] == "SUBMITTED"
 
 
@@ -544,8 +554,9 @@ def test_a_timed_deferral_is_not_released_by_lane_readiness(layout, ad, monkeypa
     sup = Supervisor(layout, sleep_s=0)
     rec = sup.dispatch(tasks.load(layout, "CA"), "claude_api", deferred_until=time.time() + 3600, note="wait")
     assert ad.lane_ready(layout) and rec["phase"] == "PREPARED"
-    sup.launch(jobs.read(layout, "CA.a1"))
-    assert not calls and jobs.read(layout, "CA.a1")["phase"] == "PREPARED"
+    job_id = rec["attempt_id"]
+    sup.launch(jobs.read(layout, job_id))
+    assert not calls and jobs.read(layout, job_id)["phase"] == "PREPARED"
 
 
 def test_lane_reset_of_an_unknown_lane_fails_the_command(layout):

@@ -203,8 +203,8 @@ def job(layout: Layout, attempt_id: str) -> dict | None:
 
 
 def jobs(layout: Layout, task_id: str | None = None) -> list[dict]:
-    """The task's job records, oldest first by `(attempt, kind, seq)` with the id suffix as the fallback
-    (`jobs.sort_key`, ATTEMPT_MODEL.md section 7), or every record in that order when `task_id` is omitted."""
+    """The task's job records, oldest first by `(attempt, kind, seq)` (`jobs.sort_key`, ATTEMPT_MODEL.md section
+    7), or every record in that order when `task_id` is omitted."""
     from . import jobs as _jobs
     return _jobs.for_task(layout, task_id) if task_id is not None else sorted(_jobs.all_records(layout), key=_jobs.sort_key)
 

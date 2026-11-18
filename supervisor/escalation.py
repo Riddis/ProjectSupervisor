@@ -244,7 +244,7 @@ def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: 
     revision_task = Task.model_validate(doc)
     note = f"revision after {source} failure" + (" (senior model)" if senior else "")
     extra = {"same_vendor": resolved.same_vendor} if resolved.same_vendor else None
-    rec = supervisor.dispatch(revision_task, adapter_name, note=note, reason=resolved.reason, extra=extra)
+    rec = supervisor.dispatch(revision_task, adapter_name, note=note, reason=resolved.reason, extra=extra, cause="revision")
     dep = tasks_mod.unmet_dependency(layout, task)
     if dep and rec.get("attempt_id"):
         # G6, 2.4.0: the record is queued either way (crash-safe, same spirit as a continuation's own note) - the
@@ -295,7 +295,8 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
         out["owner"] = diagnosis_mod.route_to_owner(layout, task, rec, decision.get("note", ""), "",
                                                      f"diagnosis budget of {diagnosis_mod.DIAGNOSIS_BUDGET} requeues spent")
     else:
-        rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"], grant=grant)
+        rec = diagnosis_mod.dispatch(supervisor, task, source, detail, sig, level="manager", issue_id=issue["id"], grant=grant,
+                                     event=decision.get("event"))
         if rec:
             out["diagnosis"] = rec.get("attempt_id")
     _mark_routed(layout, task.id, decision.get("event"))
@@ -338,18 +339,19 @@ def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
     an earlier generation" never depends on when this function happens to run."""
     grant = current_grant(layout, task_id)
     for r in jobs_mod.for_task(layout, task_id):
-        prior = str(r.get("deferred_reason", ""))
-        if prior.startswith("continuation") and int(r.get("continuation_grant") or 0) < grant:
+        if r.get("cause") == "continuation" and int(r.get("continuation_grant") or 0) < grant:
+            prior = str(r.get("deferred_reason", ""))
             jobs_mod.set_phase(layout, r["attempt_id"], r["phase"], deferred_reason=f"reset ({reason}): {prior}")
 
 
 def _newer_delivery_exists(layout: Layout, task_id: str, event: str) -> bool:
     """Whether a delivery session of a later attempt than `event`'s own already exists — the revision was
     dispatched before a crash replayed this decision. The `attempt` field of `event`'s own job record and of
-    each candidate, the id suffix as the fallback when a record carries no such field (so an un-migrated store
-    compares the same suffix numbers this used to, directly)."""
-    event_attempt = jobs_mod.attempt_of(jobs_mod.resolve(layout, event) or {"attempt_id": event})
-    return any(jobs_mod.attempt_of(r) > event_attempt for r in jobs_mod.for_task(layout, task_id)
+    each candidate, fields only (§6/§8.6: no id-suffix fallback); a record with no `attempt` at all (`event`
+    itself unresolvable, or a delivery dispatched before this field existed) reads as attempt 0, never a
+    comparison between two `None`s."""
+    event_attempt = jobs_mod.attempt_of(jobs_mod.resolve(layout, event) or {"attempt_id": event}) or 0
+    return any((jobs_mod.attempt_of(r) or 0) > event_attempt for r in jobs_mod.for_task(layout, task_id)
               if jobs_mod.kind_of(r) == "delivery")
 
 

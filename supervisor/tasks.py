@@ -782,9 +782,13 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
     """Allocate the task's next job number from its own counter and record the attempt, in the same locked
     update, so the job record and the task's own attempt list can never disagree (R-03). `seed` covers a task
     with no counter yet (one written before this field existed): pass the highest attempt number already on
-    disk (`jobs.highest_attempt_no`, filenames only, so this works even with an unreadable record among them) so
-    the number allocated here is never one already used. Returns the updated task and the id it chose; `note`
-    gets that id appended."""
+    disk so the number allocated here is never one already used. Returns the updated task and the id it chose;
+    `note` gets that id appended.
+
+    Superseded, for a fresh dispatch, by `allocate_job` (ATTEMPT_MODEL.md §2.3/§9, the writer switch) — this
+    function and the id shape it writes (`<task>.a<n>`, one flat counter) are kept only because an un-migrated
+    document and a handful of narrow, unrelated tests still read and write it; `loop.dispatch` no longer calls
+    it."""
     allocated: dict[str, str] = {}
 
     def fn(doc):
@@ -826,19 +830,30 @@ class JobId:
 
 
 def allocate_job(layout: Layout, task_id: str, kind: str, *, attempt: int | None = None,
-                 cause: str | None = None) -> JobId:
+                 cause: str | None = None, new_attempt: bool = False, resource: str | None = None,
+                 parent: str | None = None, note: str | None = None) -> JobId:
     """The one function that may invent a job id (§2.3): a seq drawn from the task's own `counters` block,
     allocated under the task lock in the same update that advances it. Counters are monotonic — nothing ever
     decrements them — so a job record lost between two allocations (a torn write, an antivirus lock, a manual
     cleanup, R-03) can never cause the next one to reuse an id. `attempt` names the delivery attempt this job
-    belongs to; omitted, the job is task-scoped (`scope="task"`), which today only a diagnosis raised before any
-    delivery uses (§2.5). Nothing calls this yet — `loop.dispatch` still counts files (step 9 switches it)."""
+    belongs to; omitted (with `new_attempt=False`), the job is task-scoped (`scope="task"`), which today only a
+    diagnosis raised before any delivery uses (§2.5). `new_attempt=True` (only ever a fresh delivery) opens the
+    next attempt number instead (`counters.attempt + 1`), ignoring whatever `attempt` was passed.
+
+    Called by `loop.dispatch` (step 9, the writer switch). In the SAME locked update, when this job belongs to
+    an attempt, the task's own `attempts[]` gains the delivery-attempt entry (opened now, if this is the first
+    job of a fresh `attempt` number) and this job's row inside its `jobs[]` (§2.7) — never a second, separate
+    write a crash between the two could tear apart. A task-scoped job (diagnosis before any delivery) is never
+    added to `attempts[]`: §2.5 shows it as a task-level row above Attempt 1, not inside one."""
     if kind not in _JOB_KIND_LETTERS:
         raise ValueError(f"unknown job kind: {kind!r}")
     allocated: dict[str, int] = {}
 
     def fn(doc):
+        nonlocal attempt
         counters = doc.setdefault("counters", {})
+        if new_attempt:
+            attempt = int(counters.get("attempt") or 0) + 1
         if attempt is None:
             task_jobs = counters.setdefault("task_jobs", {})
             seq = int(task_jobs.get(kind, 0)) + 1
@@ -849,6 +864,16 @@ def allocate_job(layout: Layout, task_id: str, kind: str, *, attempt: int | None
             seq = int(per_attempt.get(kind, 0)) + 1
             per_attempt[kind] = seq
         allocated["seq"] = seq
+        if attempt is not None:
+            job_id = JobId(task_id=task_id, kind=kind, seq=seq, attempt=attempt, cause=cause).id
+            attempts = doc.setdefault("attempts", [])
+            entry = next((a for a in attempts if a.get("n") == attempt), None)
+            if entry is None:
+                entry = {"n": attempt, "opened": store.now_iso(), "closed": None, "cause": cause,
+                         "outcome": "open", "jobs": []}
+                attempts.append(entry)
+            entry.setdefault("jobs", []).append({"id": job_id, "kind": kind, "seq": seq, "resource": resource,
+                                                 "parent": parent, "result": None, "note": note or ""})
 
     _update(layout, task_id, fn)
     return JobId(task_id=task_id, kind=kind, seq=allocated["seq"], attempt=attempt,
@@ -856,14 +881,33 @@ def allocate_job(layout: Layout, task_id: str, kind: str, *, attempt: int | None
 
 
 def annotate_attempt(layout: Layout, task_id: str, attempt_id: str, **fields) -> Task:
-    """Fill in fields (`run_dir`, once it is known) on an attempt already recorded by `add_attempt` — never
-    reallocates its number or id."""
+    """Fill in fields (`run_dir`, once it is known) on a job already recorded by `add_attempt` (the old,
+    one-entry-per-job shape: `a.id == attempt_id`) or by `allocate_job` (the new shape: `attempt_id` inside one
+    attempt's `jobs[]`) — never reallocates a number or an id, either shape."""
     def fn(doc):
         for a in doc.get("attempts", []):
             if a.get("id") == attempt_id:
                 a.update(fields)
-                break
+                return
+            for j in a.get("jobs") or []:
+                if j.get("id") == attempt_id:
+                    j.update(fields)
+                    return
     return _update(layout, task_id, fn)
+
+
+def current_attempt(layout: Layout, task_id: str) -> int | None:
+    """The highest attempt number this task's own `counters` block has ever opened, or `None` when it has none
+    yet — the task document's own record, never a job-id suffix parse. Used only as the bounded fallback for a
+    diagnosis whose triggering event does not name a resolvable job (a stall key, or one from before this
+    field existed): the live writer places such a diagnosis on the task's newest attempt rather than
+    reconstructing "the newest attempt open at the time", which only the migration (§8.2) needs to do, from
+    historical evidence this call has no reason to re-read."""
+    try:
+        n = load(layout, task_id).counters.get("attempt")
+    except TaskError:
+        return None
+    return int(n) if n else None
 
 
 def add_note(layout: Layout, task_id: str, note: str, actor: str = "owner", command_id: str | None = None,

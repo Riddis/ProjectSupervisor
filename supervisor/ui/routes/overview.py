@@ -105,7 +105,7 @@ def now_running(open_jobs: list[dict], tasks: dict, now: float) -> list[dict]:
             state, state_note = "starting", "launched, no output yet"
         else:
             state, state_note = "running", ""
-        attempt_no = jobs_mod.attempt_of(rec) or None          # the `attempt` field, the id suffix as the fallback
+        attempt_no = jobs_mod.attempt_of(rec) or None          # the `attempt` field; `None` for a task-scoped job
         if kind == "conversation":
             title, href = "Chat reply", f"/chat/{rec.get('conversation_thread')}" if rec.get("conversation_thread") else "/chat"
         else:

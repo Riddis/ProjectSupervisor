@@ -233,7 +233,7 @@ def test_a_capacity_deferral_costs_no_attempt(layout, monkeypatch):
         sup.once()
     assert DeferringLane.submits >= 3
     recs = jobs.for_task(layout, "X")
-    assert [r["attempt_id"] for r in recs] == ["X.a1"]
+    assert [r["attempt_id"] for r in recs] == ["X.a1.s1"]
     assert recs[0]["phase"] == "PREPARED" and int(recs[0].get("launch_attempts", 0)) == 0
     assert "out of capacity" in recs[0]["deferred_reason"]
     assert tasks.load(layout, "X").status not in (TaskStatus.FAILED, TaskStatus.BLOCKED)

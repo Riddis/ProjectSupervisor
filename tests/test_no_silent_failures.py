@@ -59,7 +59,9 @@ def test_a_failed_agent_run_is_retried_within_the_budget_then_diagnosed(layout, 
     run_until(layout, lambda: diag_records(layout, "T") and diag_records(layout, "T")[0].get("diag_action"))
     # first run + one revision: the identical failure signature twice stops retrying and opens the exception route
     assert len(delivery_records(layout, "T")) == 2
-    assert any("revision after worker_failed" in a.note for a in tasks.load(layout, "T").attempts)
+    # §4.6: a job's own note moved onto its `jobs[]` entry in the new shape (never the attempt's own `.note`)
+    job_notes = [j.get("note") or "" for a in tasks.load(layout, "T").attempts for j in a.jobs]
+    assert any("revision after worker_failed" in n for n in job_notes)
 
 
 def _stop(layout, tid, status, minutes_ago):

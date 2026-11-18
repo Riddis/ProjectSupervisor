@@ -88,13 +88,14 @@ def test_crash_after_submit_adopts_live_child(layout):
     sup = Supervisor(layout, sleep_s=0)
     rec = sup.dispatch(tasks.load(layout, "P"), "process")      # submitted; now "crash"
     assert rec["phase"] == "SUBMITTED"
+    job_id = rec["attempt_id"]
     sup2 = Supervisor(layout, sleep_s=0)
     sup2.once()
-    assert jobs.read(layout, "P.a1")["phase"] == "RUNNING"       # adopted, not re-run
+    assert jobs.read(layout, job_id)["phase"] == "RUNNING"       # adopted, not re-run
     deadline = time.time() + 10
-    while time.time() < deadline and jobs.read(layout, "P.a1")["phase"] != "DONE":
+    while time.time() < deadline and jobs.read(layout, job_id)["phase"] != "DONE":
         sup2.once(); time.sleep(0.2)
-    assert jobs.read(layout, "P.a1")["phase"] == "DONE"
+    assert jobs.read(layout, job_id)["phase"] == "DONE"
     assert tasks.load(layout, "P").status == TaskStatus.COMPLETE
     assert len(list(layout.jobs.glob("P.*.json"))) == 1
 
@@ -103,10 +104,11 @@ def test_crash_after_result_before_done_ingests_without_rerun(layout):
     proc_task(layout, "P", seconds=0.1)
     sup = Supervisor(layout, sleep_s=0)
     rec = sup.dispatch(tasks.load(layout, "P"), "process")
+    job_id = rec["attempt_id"]
     time.sleep(1.5)                                              # child finished, result.json written, record still SUBMITTED
     assert (layout.root / "P.txt").exists()
     Supervisor(layout, sleep_s=0).once()
-    assert jobs.read(layout, "P.a1")["phase"] == "DONE"
+    assert jobs.read(layout, job_id)["phase"] == "DONE"
     assert len(list(layout.jobs.glob("P.*.json"))) == 1
     assert tasks.load(layout, "P").status == TaskStatus.COMPLETE
 
@@ -115,11 +117,12 @@ def test_lost_process_marks_failed(layout):
     proc_task(layout, "P", seconds=30)
     sup = Supervisor(layout, sleep_s=0)
     rec = sup.dispatch(tasks.load(layout, "P"), "process")
+    job_id = rec["attempt_id"]
     from supervisor.adapters import REGISTRY
     REGISTRY["process"].terminate(rec["handle"])
     time.sleep(0.5)
     Supervisor(layout, sleep_s=0).once()
-    assert jobs.read(layout, "P.a1")["phase"] == "DONE"
+    assert jobs.read(layout, job_id)["phase"] == "DONE"
     assert tasks.load(layout, "P").status == TaskStatus.FAILED
     assert "lost" in tasks.load(layout, "P").delivery.verification.detail
 
@@ -483,25 +486,26 @@ def test_command_envelope_with_wrong_typed_kind_or_payload_is_quarantined_and_la
 
 
 def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
-    """R-03: `dispatch` allocates `len(jobs.for_task(...)) + 1`. `jobs.open_records` — called by every Overview
-    and Agents GET — replaces a record it cannot read with a `.corrupt.json` stub and deletes the original, so
-    `for_task` undercounts by one and the next dispatch reuses an existing id and run directory instead of
-    getting a new one."""
+    """R-03, carried by the allocator's monotonic `counters` block (ATTEMPT_MODEL.md §2.3) now that `dispatch`
+    no longer counts files at all: `jobs.open_records` — called by every Overview and Agents GET — never
+    rewrites or quarantines a record it cannot read, and the next dispatch still never reuses an id or run
+    directory, because nothing about it was ever derived from a file count to begin with."""
     ptask(layout, "A")
     sup = Supervisor(layout, sleep_s=0)
     runtime.set_decision(layout, "PAUSE", "test")              # records stay PREPARED: nothing runs
     ids = [sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"] for _ in range(3)]
-    assert ids == ["A.a1", "A.a2", "A.a3"]
-    (layout.runs / "A" / "A.a3" / "marker.txt").write_text("belongs to the first A.a3", encoding="utf-8")
+    assert ids == ["A.a1.s1", "A.a2.s1", "A.a3.s1"]
+    (layout.runs / "A" / "A.a3.s1" / "marker.txt").write_text("belongs to the first A.a3.s1", encoding="utf-8")
     broken = "{broken"
-    jobs.path(layout, "A.a2").write_text(broken, encoding="utf-8")
+    jobs.path(layout, "A.a2.s1").write_text(broken, encoding="utf-8")
     jobs.open_records(layout)                                  # what any Overview/Agents GET calls
-    assert jobs.path(layout, "A.a2").read_text(encoding="utf-8") == broken, "the unreadable record was rewritten"
-    assert not jobs.path(layout, "A.a2").with_suffix(".corrupt.json").exists(), "the record was quarantined"
+    assert jobs.path(layout, "A.a2.s1").read_text(encoding="utf-8") == broken, "the unreadable record was rewritten"
+    assert not jobs.path(layout, "A.a2.s1").with_suffix(".corrupt.json").exists(), "the record was quarantined"
     again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
     assert again not in ids, "the new job reused an id already on disk"
     assert not (layout.runs / "A" / again / "marker.txt").exists(), "the new job ran in an old run directory"
-    assert sorted(a.id for a in tasks.load(layout, "A").attempts) == ["A.a1", "A.a2", "A.a3", again]
+    all_job_ids = [j["id"] for a in tasks.load(layout, "A").attempts for j in a.jobs]
+    assert sorted(all_job_ids) == sorted(ids + [again])
 
 
 def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
@@ -510,45 +514,46 @@ def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
     ptask(layout, "A")
     sup = Supervisor(layout, sleep_s=0)
     runtime.set_decision(layout, "PAUSE", "test")
-    sup.dispatch(tasks.load(layout, "A"), "python")
+    job_id = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
     broken = "{broken"
-    jobs.path(layout, "A.a1").write_text(broken, encoding="utf-8")
+    jobs.path(layout, job_id).write_text(broken, encoding="utf-8")
     c = testing.ui_client(layout)
     for url in ("/overview", "/agents"):
         r = c.get(url)
         assert r.status_code == 200, url
-    assert jobs.path(layout, "A.a1").read_text(encoding="utf-8") == broken
-    assert not jobs.path(layout, "A.a1").with_suffix(".corrupt.json").exists()
-    assert list(layout.jobs.glob("A.*.json")) == [jobs.path(layout, "A.a1")]
+    assert jobs.path(layout, job_id).read_text(encoding="utf-8") == broken
+    assert not jobs.path(layout, job_id).with_suffix(".corrupt.json").exists()
+    assert list(layout.jobs.glob("A.*.json")) == [jobs.path(layout, job_id)]
 
 
 def test_a_task_written_before_the_counter_existed_still_gets_the_right_next_number(layout):
-    """R-03: a task document from before `job_seq` existed has no such field. The next dispatch must still pick
-    up where its own job files and attempt list left off — no migration step."""
+    """A task document from before `counters` existed (ATTEMPT_MODEL.md §2.3) has no such field. The next
+    dispatch must still open attempt 1 — the allocator treats a missing block exactly as an empty one, no
+    migration step, and (unlike the old `job_seq`/file-count scheme this superseded) never reads a job file to
+    find out."""
     ptask(layout, "A")
     sup = Supervisor(layout, sleep_s=0)
     runtime.set_decision(layout, "PAUSE", "test")
-    sup.dispatch(tasks.load(layout, "A"), "python")
-    sup.dispatch(tasks.load(layout, "A"), "python")
 
     def fn(doc):
-        doc.pop("job_seq", None)               # a document written before this field was added
+        doc.pop("counters", None)              # a document written before this block was added
+        doc.pop("job_seq", None)
     tasks._update(layout, "A", fn)
     again = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
-    assert again == "A.a3"
+    assert again == "A.a1.s1"
 
 
 def test_dispatch_refuses_a_run_directory_that_already_exists(layout):
-    """R-03: a job number must never be used a second time while its old run directory is still there."""
+    """R-03: a job id must never be used a second time while its old run directory is still there."""
     ptask(layout, "A")
     sup = Supervisor(layout, sleep_s=0)
     runtime.set_decision(layout, "PAUSE", "test")
-    sup.dispatch(tasks.load(layout, "A"), "python")       # A.a1
-    stray = layout.runs / "A" / "A.a2"
+    sup.dispatch(tasks.load(layout, "A"), "python")       # A.a1.s1
+    stray = layout.runs / "A" / "A.a2.s1"
     stray.mkdir(parents=True)
     (stray / "marker.txt").write_text("left behind", encoding="utf-8")
-    rec = sup.dispatch(tasks.load(layout, "A"), "python")  # would naturally be A.a2
-    assert rec["attempt_id"] == "A.a2"
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")  # would naturally be A.a2.s1
+    assert rec["attempt_id"] == "A.a2.s1"
     assert rec["result"] == "FAILED"
     assert "already exists" in rec.get("error", "")
     assert (stray / "marker.txt").exists()     # the stray directory was not touched

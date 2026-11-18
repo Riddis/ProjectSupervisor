@@ -136,6 +136,22 @@ def _skip_once(layout, task: Task, role: str) -> None:
     tasks_mod.log(layout, "review_skip", "loop", task=task.id, role=role, reason=gate.inactive_reason(role))
 
 
+def _delivery_for_digest(layout, task_id: str, digest: str | None) -> tuple[int | None, str | None]:
+    """(attempt, delivery job id) for the digest under review: the most recently dispatched verify job whose
+    `verify_digest` matches names its own `verify_delivery` and carries the same `attempt` — the same join
+    §8.2's migration uses to place a review, read live instead of from history. `None, None` when no verify
+    job has ever recorded this digest (a task that declares no test commands is verified without one, §4.1 of
+    the attempt-identity design — in that case the review simply carries no attempt/parent of its own)."""
+    if not digest:
+        return None, None
+    verifies = [r for r in jobs_mod.for_task(layout, task_id)
+               if jobs_mod.kind_of(r) == "verify" and r.get("verify_digest") == digest]
+    if not verifies:
+        return None, None
+    v = verifies[-1]          # for_task is oldest-first; the latest verify of this digest is the one still live
+    return v.get("attempt"), v.get("verify_delivery")
+
+
 def dispatch(supervisor, task: Task, role: str) -> dict | None:
     """Dispatch one review attempt, or None if the lane's capacity is out and there is no fallback (token-free
     wait, exactly like a primary dispatch deferral — nothing is consumed). Logged once per (task, role) so the
@@ -165,7 +181,16 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts)}
     if fell_back:
         extra["same_vendor"] = same_vendor
-    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review", extra=extra)
+    prior_round = any(jobs_mod.kind_of(r) == "review" and r.get("review_role") == role and r.get("review_digest") == digest
+                      for r in jobs_mod.for_task(layout, task.id))
+    attempt, delivery_id = _delivery_for_digest(layout, task.id, digest)
+    if attempt is None:
+        # No tracked verify job for this digest (a task with no declared test commands, §4.1 of the
+        # attempt-identity design): the review still belongs to the task's current attempt, it is only the
+        # exact delivery job id that cannot be named this way — never task-scoped (§2.5 is diagnosis-only).
+        attempt = tasks_mod.current_attempt(layout, task.id)
+    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review", extra=extra,
+                               cause="rereview" if prior_round else None, attempt=attempt, parent=delivery_id)
 
 
 def rebuild(layout, rec: dict) -> Task | None:

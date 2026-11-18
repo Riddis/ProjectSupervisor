@@ -63,7 +63,7 @@ def test_a_requeued_continuation_of_a_fallen_back_delivery_keeps_the_fallback_s_
     cont = recs[1]
     assert cont["phase"] == "PREPARED" and cont["adapter"] == "claude_cli"
     assert not lost(cont), f"continuation lost the fallback's keys/flag: {lost(cont)} (expected {WANT})"
-    note = tasks.load(layout, "A").attempts[-1].note
+    note = tasks.load(layout, "A").attempts[-1].jobs[-1]["note"]   # §4.6: note moved to jobs[]
     assert "same-vendor fallback" in note, f"attempt note does not say same-vendor fallback: {note!r}"
 
 
@@ -79,7 +79,7 @@ def test_a_torn_continuation_repair_keeps_the_fallback_s_keys_and_note(layout, m
     recs = jobs.for_task(layout, "A")
     assert len(recs) == 2 and recs[1]["phase"] == "PREPARED" and recs[1]["adapter"] == "claude_cli"
     assert not lost(recs[1]), f"repaired continuation lost the fallback's keys/flag: {lost(recs[1])}"
-    note = tasks.load(layout, "A").attempts[-1].note
+    note = tasks.load(layout, "A").attempts[-1].jobs[-1]["note"]   # §4.6: note moved to jobs[]
     assert "same-vendor fallback" in note, f"repaired attempt note does not say same-vendor fallback: {note!r}"
     assert recs[1].get("reason") and "same-vendor fallback" in recs[1]["reason"]   # R-16: never silent
 
@@ -91,6 +91,7 @@ def test_a_rebuilt_fallback_review_keeps_the_fallback_s_keys_and_note(layout, mo
                            "code_review": {"adapter": "codex_cli", "model": "gpt-6-astra", "effort": "high",
                                            "fallback": FALLBACK}})
     make_task(layout, "RV2", owner_role="engineer", reviewer=["code_review"], status="IN_PROGRESS")
+    tasks.allocate_job(layout, "RV2", "delivery", attempt=1, cause="scheduled")   # seeds counters.attempt = 1
     tasks.record_delivery(layout, "RV2", "e" * 64, actor="loop", result=None, paths=[])
     tasks.set_status(layout, "RV2", "WAITING_FOR_REVIEW")
     deny_codex(monkeypatch)
@@ -105,7 +106,7 @@ def test_a_rebuilt_fallback_review_keeps_the_fallback_s_keys_and_note(layout, mo
     assert cont["adapter"] == "claude_cli" and cont.get("same_vendor") is True and cont["spec"]["kind"] == "review"
     assert cont["spec"]["model"] == "fable", f"review continuation model is {cont['spec']['model']!r}, not the fallback's"
     assert cont["spec"].get("effort") == "high"
-    note = tasks.load(layout, "RV2").attempts[-1].note
+    note = tasks.load(layout, "RV2").attempts[-1].jobs[-1]["note"]   # §4.6: note moved to jobs[]
     assert "same-vendor fallback" in note, f"review continuation note does not say same-vendor fallback: {note!r}"
 
 

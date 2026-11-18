@@ -95,20 +95,22 @@ def test_submit_command_default_stays_interactive_and_the_library_reads_no_envir
 # ---------------------------------------------------------------- SUPERVISOR_JOB / SUPERVISOR_ATTEMPT_NO
 
 def test_process_lane_env_carries_the_job_and_attempt_number_markers():
-    env = REGISTRY["process"].env({"attempt_id": "F.a3"})
-    assert env["SUPERVISOR_ATTEMPT"] == "F.a3"
-    assert env["SUPERVISOR_JOB"] == "F.a3"
+    # `attempt` is written onto the spec by `loop.dispatch`, from the id the allocator minted — never parsed
+    # back out of `attempt_id` (ATTEMPT_MODEL.md §6: the writer switch deletes that parse).
+    env = REGISTRY["process"].env({"attempt_id": "F.a3.s1", "attempt": 3})
+    assert env["SUPERVISOR_ATTEMPT"] == "F.a3.s1"
+    assert env["SUPERVISOR_JOB"] == "F.a3.s1"
     assert env["SUPERVISOR_ATTEMPT_NO"] == "3"
 
 
 def test_codex_cli_env_carries_the_same_markers():
-    env = REGISTRY["codex_cli"].env({"attempt_id": "F.a5"})
-    assert env["SUPERVISOR_JOB"] == "F.a5" and env["SUPERVISOR_ATTEMPT_NO"] == "5"
+    env = REGISTRY["codex_cli"].env({"attempt_id": "F.a5.s1", "attempt": 5})
+    assert env["SUPERVISOR_JOB"] == "F.a5.s1" and env["SUPERVISOR_ATTEMPT_NO"] == "5"
 
 
 def test_claude_cli_env_carries_the_same_markers():
-    env = REGISTRY["claude_cli"].env({"attempt_id": "F.a7"})
-    assert env["SUPERVISOR_JOB"] == "F.a7" and env["SUPERVISOR_ATTEMPT_NO"] == "7"
+    env = REGISTRY["claude_cli"].env({"attempt_id": "F.a7.s1", "attempt": 7})
+    assert env["SUPERVISOR_JOB"] == "F.a7.s1" and env["SUPERVISOR_ATTEMPT_NO"] == "7"
 
 
 def test_a_declared_command_sees_none_of_the_two_new_markers_either(monkeypatch):

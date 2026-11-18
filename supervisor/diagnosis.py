@@ -222,15 +222,36 @@ def _task_view(layout: Layout, task: Task, role: str, adapter_name: str, prompt:
     return Task.model_validate(doc)
 
 
+def _attempt_and_parent_for_event(layout, task_id: str, event: str | None) -> tuple[int | None, str | None]:
+    """(attempt, parent) for a fresh diagnosis raised by `event` (§2.5/§8.2): `event` is usually the failing
+    job's own id, resolved through its durable record for the `attempt` it belongs to (or `None` — task-scoped
+    — when that job was itself task-scoped); a composite key (`requeue()`'s own `"<id>:continuations"`) is
+    stripped to the job id first. An `event` that still does not resolve (a `stall:<timestamp>` key, or none at
+    all) falls back to the task's own newest attempt (`tasks.current_attempt`) with no parent named — simpler
+    than the migration's own "newest attempt open at the time" (§8.2), which has historical evidence to read
+    that a live dispatch does not."""
+    if not event:
+        return tasks_mod.current_attempt(layout, task_id), None
+    job_id = event.split(":", 1)[0]
+    rec = jobs_mod.resolve(layout, job_id)
+    if rec is not None:
+        return rec.get("attempt"), job_id
+    return tasks_mod.current_attempt(layout, task_id), None
+
+
 def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, level: str = "manager",
-             issue_id: str | None = None, grant: int = 0) -> dict | None:
+             issue_id: str | None = None, grant: int = 0, event: str | None = None) -> dict | None:
     """The diagnosis job for (task, signature, level) under this grant generation (`grant`, R4): the EXISTING
     record when one already matches (a replayed hand-off reuses a transition that is already durable — round-3
     review F7 — never a fresh dispatch, so a second architect for the same signature and generation is still
     never created), a freshly dispatched one otherwise, or None when the route is disabled, the role's lane is
     unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before). None
     therefore only ever means "no diagnosis is running for this" — a caller that reads it as "unavailable" is
-    never looking at one that is in fact already under way."""
+    never looking at one that is in fact already under way.
+
+    `event` (the escalation event that raised this, `decision.get("event")`) names the job this diagnosis
+    explains (§2.6's `parent`) and the attempt it belongs to — or neither, when the task has never had a
+    delivery yet (§2.5: task-scoped)."""
     from . import review
     layout = supervisor.layout
     cfg = settings(layout)
@@ -248,10 +269,12 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
     if adapter_name not in REGISTRY:
         return None
     view = _task_view(layout, task, role, adapter_name, brief(layout, task, role, level, source, detail, issue_id), overrides)
+    diag_attempt, diag_parent = _attempt_and_parent_for_event(layout, task.id, event)
     rec = supervisor.dispatch(view, adapter_name, note=f"diagnosis:{role}", kind=KIND,
                               extra={"diag_signature": signature, "diag_level": level, "diag_issue": issue_id,
                                      "diag_source": source, "diag_detail": detail[:4000], "diag_role": role,
-                                     "diag_grant": grant})
+                                     "diag_grant": grant},
+                              cause="diagnose", attempt=diag_attempt, parent=diag_parent)
     tasks_mod.log(layout, "diagnosis_dispatched", "escalation", task=task.id, role=role, level=level, issue=issue_id,
                   attempt=(rec or {}).get("attempt_id"))
     return rec

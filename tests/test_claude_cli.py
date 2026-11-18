@@ -110,7 +110,7 @@ def test_ok_run_parses_result_and_capacity(layout):
     run_until_done(layout, "C")
     t = tasks.load(layout, "C")
     assert t.status == TaskStatus.COMPLETE and t.paths == ["out/fake.txt"]
-    run_dir = layout.runs / "C" / "C.a1"
+    run_dir = layout.runs / "C" / "C.a1.s1"
     meta = json.loads((run_dir / "result_meta.json").read_text())
     assert meta["session_id"] and meta["model_usage"]["claude-sonnet-5"]["inputTokens"] == 100
     w = capacity.windows(layout)["claude"]["windows"]
@@ -120,7 +120,7 @@ def test_ok_run_parses_result_and_capacity(layout):
 def test_missing_json_triggers_one_followup(layout):
     ctask(layout, mode="nojson")
     run_until_done(layout, "C")
-    run_dir = layout.runs / "C" / "C.a1"
+    run_dir = layout.runs / "C" / "C.a1.s1"
     assert (run_dir / "followup_stdout.jsonl").exists()
     assert tasks.load(layout, "C").status == TaskStatus.COMPLETE
 
@@ -170,7 +170,7 @@ def test_permission_denials_are_visible_not_fatal(layout):
     run_until_done(layout, "C")
     t = tasks.load(layout, "C")
     assert t.status == TaskStatus.COMPLETE and "denial" in (t.result or "")
-    assert json.loads((layout.runs / "C" / "C.a1" / "result.json").read_text())["permission_denials"]
+    assert json.loads((layout.runs / "C" / "C.a1.s1" / "result.json").read_text())["permission_denials"]
 
 
 def test_registry_has_both_cli_adapters():
@@ -240,6 +240,6 @@ def test_max_turns_is_failure_not_limit(layout, tmp_path):
 def test_followup_quotes_the_contract_error_so_the_model_fixes_only_that(layout):
     ctask(layout, mode="nojson")
     run_until_done(layout, "C")
-    run_dir = layout.runs / "C" / "C.a1"
+    run_dir = layout.runs / "C" / "C.a1.s1"
     ask = (run_dir / "followup_prompt.md").read_text(encoding="utf-8")
     assert "The supervisor could not accept it:" in ask and "keep your verdict and findings" in ask

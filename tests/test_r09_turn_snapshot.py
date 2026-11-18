@@ -132,7 +132,7 @@ def test_a_dispatch_is_visible_to_every_step_later_in_the_same_turn(layout, monk
             later_tasks = tasks_mod.load_all(layout)
             later_jobs = jobs_mod.open_records(layout)
     assert counts == {"tasks": 0, "jobs": 0}, f"a later step re-scanned the store: {counts}"
-    attempt_id = later_tasks["A"].attempts[0].id
+    attempt_id = later_tasks["A"].attempts[0].jobs[0]["id"]      # new shape (§2.7): the join key is jobs[].id
     assert any(r["attempt_id"] == attempt_id for r in later_jobs)
 
 

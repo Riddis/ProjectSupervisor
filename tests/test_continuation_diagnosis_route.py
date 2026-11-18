@@ -20,16 +20,35 @@ def continuation_chain(layout, tid, start=1):
     """MAX_CONTINUATIONS prior continuation attempts already recorded for `tid` (attempt numbers `start`..), and
     one more (the task's newest attempt) still running and about to defer again — the next requeue() call for it
     must hit the cap. `start` must be past any other attempt already recorded for `tid`: requeue()'s own crash-safety
-    check ("a newer attempt already exists") keys off the attempt number alone."""
+    check ("a newer attempt already exists") keys off the `parent` field alone (ATTEMPT_MODEL.md §6, the writer
+    switch); every record here keeps its old, flat id (ids are never renamed) but carries the identity fields a
+    migrated record would, which is exactly what they are standing in for."""
     n = Supervisor.MAX_CONTINUATIONS
-    jobs.write(layout, {"attempt_id": f"{tid}.a{start}", "task_id": tid, "adapter": "python", "phase": "DONE",
-                        "spec": {"kind": "delivery"}, "handle": {}, "result": "DEFERRED"})
+    first_id = f"{tid}.a{start}"
+    jobs.write(layout, {"attempt_id": first_id, "task_id": tid, "adapter": "python", "phase": "DONE",
+                        "spec": {"kind": "delivery"}, "handle": {}, "result": "DEFERRED",
+                        "attempt": start, "kind": "delivery", "seq": 1})
+    parent = first_id
     for i in range(start + 1, start + n + 1):
-        fields = {"attempt_id": f"{tid}.a{i}", "task_id": tid, "adapter": "python", "spec": {"kind": "delivery"},
-                  "handle": {}, "deferred_reason": "continuation after capacity limit"}
+        attempt_id = f"{tid}.a{i}"
+        fields = {"attempt_id": attempt_id, "task_id": tid, "adapter": "python", "spec": {"kind": "delivery"},
+                  "handle": {}, "deferred_reason": "continuation after capacity limit",
+                  "attempt": start, "kind": "delivery", "seq": i - start + 1, "cause": "continuation", "parent": parent}
         fields.update({"phase": "DONE", "result": "DEFERRED", "continued": True} if i < start + n else {"phase": "RUNNING"})
         jobs.write(layout, fields)
+        parent = attempt_id
     return jobs.read(layout, f"{tid}.a{start + n}")
+
+
+def seed_counter(layout, tid, attempt, kind="delivery", seq=1):
+    """A manually-planted job record's `attempt`/`kind`/`seq` (standing in for a migrated one, never allocated
+    through `tasks.allocate_job`) leaves the task's own `counters` block not knowing it exists. Without this,
+    the allocator mints the SAME seq for the next real continuation, and the tie between two same-seq records
+    is broken by id text alone (`jobs.sort_key`) — not by which one is actually newer."""
+    def fn(doc):
+        per_attempt = doc.setdefault("counters", {}).setdefault("jobs", {}).setdefault(attempt, {})
+        per_attempt[kind] = max(int(per_attempt.get(kind) or 0), seq)
+    tasks._update(layout, tid, fn)
 
 
 def reconcile_until(sup, predicate, timeout=25):
@@ -137,7 +156,8 @@ def test_the_next_continuation_after_a_grant_runs_and_the_fresh_chain_still_hits
     issues_after_grant_1 = len(list(layout.issues.glob("I-*.yaml")))
     n = len(jobs.for_task(layout, "T")) + 1
     rec2 = jobs.write(layout, {"attempt_id": f"T.a{n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
-                              "spec": {"kind": "delivery"}, "handle": {}})
+                              "spec": {"kind": "delivery"}, "handle": {}, "attempt": 2, "kind": "delivery", "seq": 1})
+    seed_counter(layout, "T", 2)
     for _ in range(Supervisor.MAX_CONTINUATIONS):
         sup.requeue(rec2, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
         assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS    # the fresh grant's budget is still live
@@ -200,7 +220,8 @@ def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping
     tasks.set_status(layout, "T", "IN_PROGRESS")
     sup = Supervisor(layout, sleep_s=0)
     rec = continuation_chain(layout, "T")
-    attempt = 50
+    attempt_id_n = 50
+    attempt_n = 1
     owner_items = []
     for round_n in range(1, diagnosis.DIAGNOSIS_BUDGET + 2):          # one more round than the budget allows
         sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
@@ -215,9 +236,11 @@ def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping
                                                                           "summary": "again", "guidance": "retry"}))
         assert out["action"] == "requeue"
         tasks.set_status(layout, "T", "IN_PROGRESS")
-        attempt += 10
-        rec = jobs.write(layout, {"attempt_id": f"T.a{attempt}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
-                                  "spec": {"kind": "delivery"}, "handle": {}})
+        attempt_id_n += 10
+        attempt_n += 1
+        rec = jobs.write(layout, {"attempt_id": f"T.a{attempt_id_n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
+                                  "spec": {"kind": "delivery"}, "handle": {}, "attempt": attempt_n, "kind": "delivery", "seq": 1})
+        seed_counter(layout, "T", attempt_n)
         for _ in range(Supervisor.MAX_CONTINUATIONS):
             sup.requeue(rec, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
             rec = jobs.for_task(layout, "T")[-1]
@@ -417,7 +440,7 @@ def test_a_replay_after_new_continuations_already_exist_retires_only_the_old_gra
     tasks.set_status(layout, "T", "IN_PROGRESS")
     n = len(jobs.for_task(layout, "T")) + 1
     rec2 = jobs.write(layout, {"attempt_id": f"T.a{n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
-                              "spec": {"kind": "delivery"}, "handle": {}})
+                              "spec": {"kind": "delivery"}, "handle": {}, "attempt": 2, "kind": "delivery", "seq": 1})
     sup.requeue(rec2, Result(status="DEFERRED", error="still waiting", reset_epoch=time.time()), "capacity limit")
     fresh = old_markers(layout, "T")
     assert len(fresh) == 1                                              # the fresh chain's own continuation
