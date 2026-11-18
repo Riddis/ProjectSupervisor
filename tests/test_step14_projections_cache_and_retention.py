@@ -4,6 +4,12 @@ Covers: render only what changed (R-22), the document cache's key and filesystem
 already shipped — these two tests pin it down rather than change it), the archive behind the resolver so a
 finished job record leaves the loop's own scan (R-23), the log rotating by size and being tailed by byte
 offset (R-23), and two of astra's load_all/turn-snapshot questions (F-load-all-sharing, F-mid-turn-create).
+
+The review-round section at the bottom covers three findings raised against the first delivery of this task:
+jobs.read() left as a second, archive-blind by-id lookup that production code (loop.dispatch/reroute/launch)
+calls straight after a set_phase that can itself have just archived the very record being read back; a stale
+docstring on `_core_inputs_fingerprint` that claimed render_state always rebuilds when render_all's own gate
+skips it too; and store.rotate_log's rename/touch left unguarded next to its own size check.
 """
 from __future__ import annotations
 
@@ -217,6 +223,107 @@ def test_load_all_hands_out_the_same_task_object_across_calls_in_one_turn():
                     "sharing is real: a direct mutation is visible to every other reader of this turn's snapshot")
             finally:
                 a1.status = before               # leave the shared object as found
+
+
+# ------------------------------------------------------------------ review round: jobs.read() as a second,
+# archive-blind lookup (regression), the render_state docstring (quality), rotate_log's unguarded rename (quality)
+
+def test_jobs_read_resolves_an_archived_record_like_resolve_does(layout):
+    """jobs.read() must be the same resolver jobs.resolve() is — one boundary, not two. Production code
+    (loop.dispatch/reroute/launch) calls the bare `jobs.read()` to get a record back right after a set_phase
+    that can itself have just archived it; an archive-blind read must not raise where resolve() would have
+    found it."""
+    from supervisor import jobs as jobs_mod
+    _finish_task_with_jobs(layout, "A", 1)
+    rec = jobs_mod.read(layout, "A.a1")
+    assert rec["task_id"] == "A" and rec["phase"] == "DONE"
+
+
+def test_a_prepare_failure_on_an_already_terminal_task_still_reads_back_its_job(layout, monkeypatch):
+    """The exact production trace: `ad.prepare()` raises, which goes to `_adapter_failed()` -> `ingest()`'s
+    terminal-task branch (the task is already CANCELLED) -> that branch's own
+    `jobs_mod.set_phase(..., "DONE", ...)` archives this very record, since its task has already gone terminal
+    — and `dispatch()` then does `return jobs_mod.read(self.layout, attempt_id)` on the id that just moved.
+    Must not raise FileNotFoundError."""
+    from supervisor import tasks as tasks_mod
+    from supervisor.adapters import REGISTRY
+    from supervisor.loop import Supervisor
+    make_task(layout, "A")
+    tasks_mod.set_status(layout, "A", "CANCELLED", actor="test")
+    sup = Supervisor(layout, sleep_s=0)
+    task = tasks_mod.load(layout, "A")
+
+    def failing_prepare(layout_, task_, attempt_id):
+        raise RuntimeError("adapter prepare failed")
+    monkeypatch.setattr(REGISTRY["python"], "prepare", failing_prepare)
+    rec = sup.dispatch(task, "python")
+    assert rec["task_id"] == "A" and rec["phase"] == "DONE"
+
+
+def test_a_write_to_an_already_archived_record_lands_in_the_archive_not_a_new_top_level_file(layout):
+    """"a write must land where the record lives": set_phase on an id already moved to the archive (a reroute's
+    second set_phase call, say, once its task went terminal between the two) must update the archived copy, not
+    resurrect a fresh duplicate at the top level while the archived one sits there stale."""
+    from supervisor import jobs as jobs_mod
+    _finish_task_with_jobs(layout, "A", 1)
+    jobs_mod.set_phase(layout, "A.a1", "DONE", note="rewritten after archiving")
+    assert not (layout.jobs / "A.a1.json").exists(), "must not resurrect a top-level duplicate"
+    archived = jobs_mod.archive_dir(layout, "A") / "A.a1.json"
+    assert json.loads(archived.read_text(encoding="utf-8"))["note"] == "rewritten after archiving"
+
+
+def test_an_idle_turn_with_only_the_heartbeat_ticking_still_skips_state_md(layout):
+    """Ruling for the render_state docstring finding: the fingerprint sees none of the caller's `runtime` dict,
+    so a turn where only the heartbeat timestamp moved is indistinguishable from an idle one and is skipped too
+    — STATE.md's own "- **Supervisor:** ..." line does not refresh on it. `supervisor status` and the Control
+    Center read the live runtime record directly instead (see render.py's own docstring), so this is a stated
+    tradeoff, not a correctness bug."""
+    from supervisor import render
+    make_task(layout, "A")
+    render.render_all(layout, runtime={"status": "RUNNING", "pid": 111, "heartbeat": "2026-01-01T00:00:00+00:00"})
+    before = (layout.root / "STATE.md").read_text(encoding="utf-8")
+    render.render_all(layout, runtime={"status": "RUNNING", "pid": 111, "heartbeat": "2026-01-01T00:05:00+00:00"})
+    after = (layout.root / "STATE.md").read_text(encoding="utf-8")
+    assert after == before, "a heartbeat-only change must not force a rewrite (render_state is gated too)"
+
+
+def test_a_rotation_that_cannot_rename_is_skipped_not_raised(layout, monkeypatch):
+    """store.rotate_log's rename and touch were unguarded next to its own size check: on Windows a rotation
+    racing any concurrent reader of the log (ui/sse.py tailing it) raises PermissionError/OSError straight
+    through instead of being skipped the way a missing/small file already is."""
+    import pathlib
+    from supervisor import store
+    layout.log.parent.mkdir(parents=True, exist_ok=True)
+    store.append_line(layout.log, json.dumps({"ts": "x", "event": "probe"}))
+    real_replace = pathlib.Path.replace
+
+    def failing_replace(self, target):
+        if self == layout.log:
+            raise PermissionError("another process has the file open (Windows, a concurrent reader)")
+        return real_replace(self, target)
+    monkeypatch.setattr(pathlib.Path, "replace", failing_replace)
+    assert store.rotate_log(layout.log, max_bytes=1) is False          # must not raise
+    assert layout.log.exists()
+
+
+def test_tasks_log_does_not_propagate_a_failed_rotation(layout, monkeypatch):
+    """The same race, through `tasks.log()` — the single append path every event in the system goes through —
+    so the event itself is never lost because its own rotation attempt collided with a reader."""
+    import pathlib
+    from supervisor import store, tasks as tasks_mod
+    layout.log.parent.mkdir(parents=True, exist_ok=True)
+    store.append_line(layout.log, json.dumps({"ts": "x", "event": "probe"}))
+    real_rotate = store.rotate_log
+    monkeypatch.setattr(store, "rotate_log", lambda path: real_rotate(path, max_bytes=1))
+    real_replace = pathlib.Path.replace
+
+    def failing_replace(self, target):
+        if self == layout.log:
+            raise PermissionError("another process has the file open (Windows, a concurrent reader)")
+        return real_replace(self, target)
+    monkeypatch.setattr(pathlib.Path, "replace", failing_replace)
+    tasks_mod.log(layout, "probe_event", "test")          # must not raise even though rotation is due and fails
+    assert any('"probe_event"' in line for line in layout.log.read_text(encoding="utf-8").splitlines())
 
 
 def test_a_task_created_mid_turn_is_visible_to_load_all_inside_that_turn(layout):
