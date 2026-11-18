@@ -648,8 +648,13 @@ _DELIVERY_SESSION_CAUSES = ("continuation", "reroute")   # join the open attempt
 def _task_notes(task) -> dict[str, str]:
     """The task document's own attempt note, by job id -- `Attempt.note` today holds it for every job kind
     (`tasks.add_attempt` is the loop's one call site, for delivery, verify, review and diagnosis jobs alike); the
-    migration reads it only where section 8.2 names it (delivery's cause prefixes, verify's parent fallback)."""
-    return {a.id: (a.note or "") for a in task.attempts if a.id}
+    migration reads it only where section 8.2 names it (delivery's cause prefixes, verify's parent fallback).
+
+    Read from each stored attempt's own dump, never through `Attempt.id` as a declared field (gone as of section
+    4.6, step 15): only an un-migrated, per-job entry was ever written with an `id` key, and this walks every task
+    in the store, so an allocator-written entry (section 2.7) simply contributes nothing."""
+    dumps = (a.model_dump() for a in task.attempts)
+    return {ad["id"]: (ad.get("note") or "") for ad in dumps if ad.get("id")}
 
 
 _VERIFY_NOTE_RE = re.compile(r"verify delivery (\S+)")
