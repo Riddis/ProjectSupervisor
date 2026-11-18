@@ -159,7 +159,11 @@ def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "
     dispatched before the writer switch falls through to the task's older, flat attempt history —
     `tasks.add_attempt` wrote that job's own entry before `prepare()` ran, so a fresh load still sees it. Review
     and diagnosis jobs never reach the delivery branch below; a diagnosis's parent is simply the entry
-    immediately before its own."""
+    immediately before its own. A kind that is neither delivery nor diagnosis is given nothing either way
+    (`handoff.select` returns `None` for it regardless of attempt/seq/parent) — checked before the load below,
+    not after, because a conversation's `task_id` names a chat thread, never a Task document on disk."""
+    if kind not in ("delivery", "diagnosis"):
+        return handoff.select(layout, task_id, None, kind, None, None)
     entries = tasks_mod.load(layout, task_id).attempts
     new_shape = _new_shape_identity(entries, attempt_id)
     if new_shape is not None:
