@@ -2,16 +2,19 @@
 document carried per-job detail that drifted from the job record it duplicated. Covers: the five removed fields
 (`Attempt.id`, `.extra`, `.model`, `.session_id`, `Task.decisions`) have no reader left in the framework package;
 a document written before this release still loads (`extra: allow`); `Attempt.outcome` is finally written, by the
-code that closes an attempt (`tasks.advance`); and the Task page's Model column reads the job record alone, never
-the task document.
+code that closes an attempt (`tasks.advance`); the Task page's Model column reads the job record alone, never
+the task document; and the attempt-mapping dry run, which walks every task in a store whether or not it has been
+migrated, survives an attempt entry that carries no `id` key at all.
 """
 from __future__ import annotations
 
 import ast
+import json
 
 import pytest
 
 from supervisor import jobs as jobs_mod
+from supervisor import migrations as migrations_mod
 from supervisor import tasks as tasks_mod
 from supervisor.models.task import Attempt, Task, TaskStatus
 from tests.conftest import make_task
@@ -24,6 +27,7 @@ from tests.conftest import make_task
 _PRODUCTION_READERS = {
     "supervisor/render.py": ("_attempt_line",),
     "supervisor/diagnosis.py": ("_attempt_summary",),
+    "supervisor/migrations.py": ("_task_notes",),
     "supervisor/ui/routes/tasks.py": ("_job_row", "attempt_groups"),
 }
 
@@ -166,3 +170,27 @@ def test_the_task_page_model_column_reads_only_the_job_record(layout):
     # the stored `jobs[]` entry itself never carries a model at all (ATTEMPT_MODEL.md §4.6) — only the live job
     # record does, which is exactly what the assertion above already depends on
     assert "model" not in t.attempts[0].jobs[0]
+
+
+# ------------------------------------------------------------------ the mapping dry run over an allocator-written store
+
+
+def test_the_attempt_mapping_dry_run_reads_an_attempt_that_has_no_id(layout, tmp_path):
+    """The attempt-mapping dry run (ATTEMPT_MODEL.md §8) walks every task in the store, with no filter for the
+    shape its attempts are in, and its per-job note map is the last reader that joined on `Attempt.id`. An
+    allocator-written entry (§2.7) carries no `id` key at all, so that map has to read the stored dump: through a
+    declared field the read raises instead of finding nothing, and the whole dry run dies on it."""
+    make_task(layout, "A", status="IN_PROGRESS")
+    job = tasks_mod.allocate_job(layout, "A", "delivery", new_attempt=True, cause="scheduled",
+                                 resource="claude_cli")
+    jobs_mod.prepare(layout, "A", job.id, "claude_cli", {"adapter": "claude_cli"},
+                     kind=job.kind, attempt=job.attempt, seq=job.seq, cause=job.cause)
+    t = tasks_mod.load(layout, "A")
+    assert "id" not in t.attempts[0].model_dump()           # the allocator never writes one
+
+    assert migrations_mod._task_notes(t) == {}               # nothing to join on, and nothing raised
+
+    result = migrations_mod.dry_run_attempts(layout, tmp_path / "out")
+    assert result["totals"]["records"] == 1
+    mapping = json.loads((tmp_path / "out" / "mapping.json").read_text(encoding="utf-8"))
+    assert mapping[job.id]["kind"] == "delivery"
