@@ -209,17 +209,17 @@ def _verification_summary(layout: Layout, task: Task, digest: str) -> str:
 # category spelling the contract refuses.
 FINDING_CATEGORY_LIST = "correctness | requirement | regression | architecture | quality | advisory"
 
-# The cap bounding which text artifacts a review round snapshots for a later diff (ATTEMPT_MODEL.md 4.3): a mid-task
+# The cap bounding which text artifacts a review pass snapshots for a later diff (ATTEMPT_MODEL.md 4.3): a mid-task
 # attempt is never committed to git (only a COMPLETE task's bytes are checkpointed, checkpoint.py), so the only
-# durable copy of what a prior round actually saw is the one its own job record keeps — kept small on purpose.
+# durable copy of what a prior pass actually saw is the one its own job record keeps — kept small on purpose.
 TEXT_SNAPSHOT_CAP = 20_000
-# The cap bounding how much of the combined unified diff a review packet quotes; a round that changed more than
+# The cap bounding how much of the combined unified diff a review packet quotes; a pass that changed more than
 # this is still named in the artifact-level change list, just not diffed line by line in the prompt itself.
 DIGEST_DIFF_CAP = 8_000
 
-ROUND_1_INSTRUCTION = ("This is the first review round for this delivery's current digest. Report every blocking "
-                      "finding you find in this pass, not only the first one you hit — a round that stops early "
-                      "costs another round to find the next defect.")
+ROUND_1_INSTRUCTION = ("This is the first review pass for this delivery's current digest. Report every blocking "
+                      "finding you find in this pass, not only the first one you hit — stopping early just "
+                      "costs another pass to find the next defect.")
 
 
 def _text_or_none(layout: Layout, rel: str, cap: int) -> str | None:

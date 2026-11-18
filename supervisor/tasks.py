@@ -1086,7 +1086,7 @@ def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict:
     what the reviewer wrote.
 
     `findings` (R-15): the reviewer's own findings, already carrying `id` (contract.review_result's fallback),
-    kept on the ReviewRecord itself so a later review round can read this round's findings from the task
+    kept on the ReviewRecord itself so a later review pass can read this pass's findings from the task
     document alone, never from a run directory."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
     sha = report_file_sha256(layout, report) if report_sha256 is HASH_AT_RECORD else report_sha256
