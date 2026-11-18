@@ -129,6 +129,14 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
         _server.clear_deferral(root)   # reached the server: this window is over, win or lose the next one fresh
         return super().submit(spec)
 
+    def env(self, spec: dict) -> dict:
+        """The declared base (R-24): `_worker.py` takes `base_url`/`model`/`prompt`/`schema` from `request.json`,
+        never from its own environment, so this lane needs nothing beyond `ProcessAdapter`'s default. A project
+        whose endpoint needs something unusual (a proxy, an API key the server itself reads) names it under
+        `env.lanes.llm_endpoint.add`/`.secrets` in `config/routing.yaml`, keyed by this adapter's own `name` -
+        explicit here rather than left to the base class's default to document the decision, not just inherit it."""
+        return super().env(spec)
+
     @staticmethod
     def _on_defer(spec: dict, reason: str) -> None:
         """R5's `defer_budget_s` (D-013 section 5): persist when this continuous window of deferral started -

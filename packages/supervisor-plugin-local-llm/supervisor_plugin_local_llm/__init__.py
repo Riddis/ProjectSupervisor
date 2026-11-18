@@ -85,6 +85,14 @@ class LocalLlmAdapter(plugin.ProcessAdapter):
                 raise plugin.CapacityDeferred(time.time() + DEFER_SECONDS, f"{prefix} {free}MiB below floor {floor}MiB")
         return super().submit(spec)
 
+    def env(self, spec: dict) -> dict:
+        """The declared base (R-24): `_worker.py` takes `base_url`/`model`/`prompt`/`schema` from `request.json`,
+        never from its own environment, so this lane needs nothing beyond `ProcessAdapter`'s default. A project
+        whose Ollama needs something unusual (a proxy, a non-default `OLLAMA_MODELS`) names it under
+        `env.lanes.local_llm.add`/`.secrets` in `config/routing.yaml`, keyed by this adapter's own `name` -
+        explicit here rather than left to the base class's default to document the decision, not just inherit it."""
+        return super().env(spec)
+
 
 ADAPTER = LocalLlmAdapter()       # one instance; setup() registers it (importing this module registers nothing)
 

@@ -197,6 +197,14 @@ it. Raises `ValueError` when a path traverses a symbolic link or junction: conta
 A plugin adds a lane with `registry.adapter(...)` from its `setup(registry)` (`docs/FRAMEWORK_VS_PLUGIN.md`).
 The loop calls the methods below; it never calls them concurrently for one job.
 
+Since 2.8.0 (R-24), a process job's child does not inherit the loop's own environment: `ProcessAdapter.env()`'s
+default is the declared allow-list (`config/routing.yaml`'s `env.base`, or `DEFAULT_BASE` when a project's
+`routing.yaml` predates this release) plus this lane's own `env.lanes.<name>.add`/`.secrets`, keyed by the
+adapter's own `name` — a project names an unusual variable there and every lane of that name gets it with no
+code change. A vendor variable the loop's own launching environment happens to carry is not handed down unless
+a project names it. A subclass that defines no `env()` gets this default, not the pre-2.8.0 full environment;
+one whose child needs something the allow-list cannot express overrides `env()` (see `ProcessAdapter.env` below).
+
 A dispatched job's own child process (`ProcessAdapter.env()` and its subclasses) carries `SUPERVISOR_ATTEMPT` as
 before, `SUPERVISOR_JOB` added with the same value under its own name, and `SUPERVISOR_ATTEMPT_NO` added with the
 integer the id's `.a<n>` suffix carries (`0` when it has none). `SUPERVISOR_ATTEMPT` keeps its value for one more
@@ -234,7 +242,7 @@ Output goes to `run_dir/stdout.jsonl` and `run_dir/stderr.txt`; the job ends whe
 | Member | Meaning |
 |---|---|
 | `command(spec) -> list[str]` | the argv to run. Default `spec["argv"]` |
-| `env(spec) -> dict` | the child's environment. Default: the loop's, plus the attempt id the recovery uses; keep those keys when overriding |
+| `env(spec) -> dict` | the child's environment. Default (R-24, 2.8.0): the declared allow-list (`env.base` plus this lane's own `env.lanes.<name>`, never the loop's own environment), plus the attempt id the recovery uses; keep those keys when overriding, and declare a name the allow-list does not carry in `env.lanes.<name>` rather than reading it from the loop's own environment |
 | `parse_result(spec, handle) -> Result` | the `Result` after the child exits. Default: read `result.json`, or `FAILED` without one |
 | `on_timeout(spec, handle) -> None` | salvage partial output before a timeout's `FAILED` result. Default: nothing |
 | `limits(spec, handle) -> tuple` | `(hard-cap deadline epoch, idle seconds or None, idle CPU-seconds threshold)` |

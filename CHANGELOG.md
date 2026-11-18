@@ -19,6 +19,17 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   record by `(attempt, kind, seq)` even without a `task_id`; `running_job()` gains `kind=`, `attempt=` and
   `seq=`, each omitted by default. No name is removed and no signature breaks a caller.
 
+- **Plugin API: `ProcessAdapter.env()`'s default changes (R-24, ATTEMPT_MODEL.md section 4.4, step 12).** A
+  process job's child no longer inherits the loop's own environment; the default is now the declared allow-list
+  (`config/routing.yaml`'s `env.base`, or a built-in default for a project that predates this release) plus the
+  lane's own `env.lanes.<name>.add`/`.secrets`. `env(spec)`'s signature is unchanged and a subclass that already
+  overrides it is unaffected, but one that defined none — relying on the old default to see the loop's launching
+  environment — now sees only the allow-list instead; declare an unusual name under `env.lanes.<name>` rather
+  than reading it from the loop's own environment. The two in-repo HTTP-worker lanes under `packages/` that
+  defined no `env()` now declare one explicitly: both take everything their worker needs from a request file,
+  never from an inherited variable, so neither needed any addition. The job record gains `env_digest` (sorted
+  declared names plus a hash of values, never a value itself).
+
 ## 2.7.0 — 2026-11-15
 
 - **Added: a one-field contract patch, so adding a dependency no longer means resending a task's whole contract.**
