@@ -1,10 +1,14 @@
 """Five readers recover meaning from a job id suffix today: `jobs.for_task`'s sort, the escalation replay's
 "a later delivery already exists" check, the continuation count, the stall sweep's "newest delivery" and the
-review salvage sort. Each gets a store of the same scenario told two ways -- once with no attempt-identity fields
-at all (the suffix is the only signal, as every record is today) and once with the fields set and the suffix
-deliberately misleading (as a migrated-but-not-renamed record can be, since a record is never renamed) -- and must
-answer identically either way. `jobs.open_records` is also covered here: it is already read-only (an earlier
-release's fix), and this is the regression that keeps it that way.
+review salvage sort. At the reader release each also tolerated a record with none of the attempt-identity fields
+(the suffix was the only signal such a record carried) with the fields set and the suffix deliberately misleading
+(as a migrated-but-not-renamed record can be, since a record is never renamed) answering identically. The writer
+switch (ATTEMPT_MODEL.md §6/§8.6, step 9 of "Order of work") deletes every one of those suffix fallbacks:
+`jobs.attempt_no` is gone, and the start-up guard it ships with refuses to dispatch on a store holding even one
+record with neither a migration stamp nor an allocator-written `kind`/`seq` — so a fallback for "no fields at all"
+no longer has a reachable input to answer for. What is left below tests the fields-only behaviour each reader
+settles on; `jobs.open_records` is also covered here: it is already read-only (an earlier release's fix), and
+this is the regression that keeps it that way.
 
 Two further cases, carried over from the prior release's round-2 review as observations rather than findings, each
 get a test that states what the tree does today: a caller of `reconcile_advance` that passes an explicit job set
@@ -35,94 +39,54 @@ def _write(layout, attempt_id, task_id, phase="DONE", kind="delivery", **fields)
 
 # ---------------------------------------------------------------- 1. job sort (jobs.for_task)
 
-def test_for_task_sorts_by_attempt_field_with_the_suffix_as_the_fallback(layout):
-    # no fields at all: the suffix is the only signal, and it already matches the true order
-    _write(layout, "A.a1", "A", marker="first")
-    _write(layout, "A.a2", "A", marker="second")
-    without_fields = [r["marker"] for r in jobs.for_task(layout, "A")]
-
-    # the fields are set and the suffix is misleading: a1 is really the later attempt
+def test_for_task_sorts_by_attempt_field(layout):
+    # the suffix is misleading: a1 is really the later attempt. No fallback reads it (§6/§8.6): only the fields do.
     _write(layout, "B.a1", "B", attempt=2, seq=1, marker="second")
     _write(layout, "B.a2", "B", attempt=1, seq=1, marker="first")
-    with_fields = [r["marker"] for r in jobs.for_task(layout, "B")]
-
-    assert without_fields == ["first", "second"]
-    assert with_fields == without_fields
+    assert [r["marker"] for r in jobs.for_task(layout, "B")] == ["first", "second"]
 
 
 # ---------------------------------------------------------------- 2. escalation replay
 
-def test_escalation_replay_compares_attempt_fields_with_the_suffix_as_the_fallback(layout):
-    _write(layout, "A.a1", "A")                      # the failing delivery, no fields
-    _write(layout, "A.a2", "A")                      # a later delivery already exists
-    without_fields = escalation._newer_delivery_exists(layout, "A", "A.a1")
-
+def test_escalation_replay_compares_attempt_fields(layout):
     _write(layout, "B.a5", "B", attempt=1)            # the failing delivery: attempt 1, a misleading high suffix
     _write(layout, "B.a2", "B", attempt=2)            # the later delivery: attempt 2, a lower suffix
-    with_fields = escalation._newer_delivery_exists(layout, "B", "B.a5")
-
-    assert without_fields is True
-    assert with_fields == without_fields
+    assert escalation._newer_delivery_exists(layout, "B", "B.a5") is True
 
 
 # ---------------------------------------------------------------- 3. continuation count
 
 def test_continuation_count_reads_cause_and_scopes_to_the_attempt():
-    # no fields: a text prefix, counted across the task exactly as today (unscoped: attempt is None)
-    recs_no_fields = [{"attempt_id": "A.a1", "deferred_reason": "continuation after capacity limit"}]
-    without_fields = len(Supervisor._continuations(recs_no_fields, None))
-
-    # fields set: an earlier attempt's own continuation (never reset) must not inflate this attempt's count
-    recs_with_fields = [{"attempt_id": "B.a1", "cause": "continuation", "attempt": 1},
-                        {"attempt_id": "B.a2", "cause": "continuation", "attempt": 2}]
-    with_fields = len(Supervisor._continuations(recs_with_fields, 2))
-
-    assert without_fields == 1
-    assert with_fields == without_fields
+    # an earlier attempt's own continuation (never reset) must not inflate this attempt's count
+    recs = [{"attempt_id": "B.a1", "cause": "continuation", "attempt": 1},
+           {"attempt_id": "B.a2", "cause": "continuation", "attempt": 2}]
+    assert len(Supervisor._continuations(recs, 2)) == 1
 
 
 # ---------------------------------------------------------------- 4. stall sweep's "newest delivery"
 
-def test_stall_sweep_newest_delivery_selection_reads_fields_with_the_suffix_as_the_fallback(layout):
+def test_stall_sweep_newest_delivery_selection_reads_the_attempt_field(layout):
     """Drives `Supervisor.sweep_stalled` itself, not a copy of its selection expression. A FAILED task's human
     delivery (the owner's own REJECT/MORE_LIKE) is a deliberate hold the sweep must leave alone -- but only when
-    it is read as the newest delivery. On one store it is newest by suffix (no fields at all); on the other its
-    suffix is the lower of the two and only its `attempt` field marks it newest. Either way the sweep's own
-    decision -- no action -- must be identical."""
-    now = _stop(layout, "T", "FAILED", minutes_ago=15)
-    _write(layout, "T.a1", "T", adapter="claude_cli")
-    _write(layout, "T.a2", "T", adapter="human")                       # newest by suffix: no fields set
-    without_fields = Recorder(layout).sweep_stalled(now=now)
-
-    now2 = _stop(layout, "U", "FAILED", minutes_ago=15)
+    it is read as the newest delivery. Its id suffix is the lower of the two on purpose; only its `attempt` field
+    marks it newest, and only that field is read."""
+    now = _stop(layout, "U", "FAILED", minutes_ago=15)
     _write(layout, "U.a9", "U", adapter="claude_cli", attempt=1, seq=1)   # high suffix, but the older attempt
     _write(layout, "U.a1", "U", adapter="human", attempt=2, seq=1)       # low suffix, newest by field
-    with_fields = Recorder(layout).sweep_stalled(now=now2)
-
-    assert without_fields == []
-    assert with_fields == without_fields
+    assert Recorder(layout).sweep_stalled(now=now) == []
 
 
 # ---------------------------------------------------------------- 5. review salvage sort
 
-def test_review_salvage_sorts_by_attempt_then_seq_with_the_suffix_as_the_fallback():
+def test_review_salvage_sorts_by_attempt_then_seq():
     """`seq` alone cannot tell two attempts' review jobs apart -- it is only the ordinal of a kind inside one
     attempt (ATTEMPT_MODEL.md section 6), and a revision that re-delivers a byte-identical answer keeps the same
-    role, digest and `seq == 1` on both attempts' review records. Only `attempt` orders them correctly."""
-    no_fields = [{"attempt_id": "A.a1", "marker": "older"}, {"attempt_id": "A.a2", "marker": "newer"}]
-    no_fields.sort(key=review._salvage_sort_key, reverse=True)
-    without_fields = [r["marker"] for r in no_fields]
-
-    # both attempts' review jobs carry seq == 1 (seq is per-attempt), listed oldest first exactly as jobs.for_task
-    # would hand them to salvage() -- a `seq`-only (or stable-sort) tie-break leaves them in that order, newest
-    # last, not first.
-    with_fields = [{"attempt_id": "B.a2", "attempt": 1, "seq": 1, "marker": "older"},
-                  {"attempt_id": "B.a1", "attempt": 2, "seq": 1, "marker": "newer"}]
-    with_fields.sort(key=review._salvage_sort_key, reverse=True)
-    with_fields_markers = [r["marker"] for r in with_fields]
-
-    assert without_fields == ["newer", "older"]
-    assert with_fields_markers == without_fields
+    role, digest and `seq == 1` on both attempts' review records. Only `attempt` orders them correctly; the id
+    suffix (misleading here on purpose) is never read."""
+    recs = [{"attempt_id": "B.a2", "attempt": 1, "seq": 1, "marker": "older"},
+           {"attempt_id": "B.a1", "attempt": 2, "seq": 1, "marker": "newer"}]
+    recs.sort(key=review._salvage_sort_key, reverse=True)
+    assert [r["marker"] for r in recs] == ["newer", "older"]
 
 
 # ---------------------------------------------------------------- job enumeration: already read-only
