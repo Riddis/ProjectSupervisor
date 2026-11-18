@@ -485,6 +485,48 @@ def test_command_envelope_with_wrong_typed_kind_or_payload_is_quarantined_and_la
     assert outcome["ok"] is False
 
 
+def test_directory_named_like_a_command_file_is_reported_once_and_the_loop_runs_on(layout):
+    """F8 (round-3 review of 2.6.1, probe i5): a directory named like a command file must not stop every
+    command queued behind it. `apply_all()` called `Path.unlink()` on the lookalike after the per-file guard
+    already caught the read failure, which raises again (PermissionError on Windows, IsADirectoryError on
+    POSIX) uncaught, so the turn fails every time and the loop reaches BLOCKED after five errors with the
+    `loop.pause` queued behind it never applied."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    (layout.commands / "0000000000001-bad.json").mkdir()
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert sup.errors == []
+    outcome = json.loads((layout.commands_applied / "0000000000001-bad.json").read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
+
+
+def test_command_file_with_non_utf8_bytes_is_quarantined_with_its_bytes_intact(layout):
+    """F9 (round-3 review of 2.6.1, probe i4): `apply_all()` only captured `raw` after a successful
+    `read_text(encoding="utf-8")`, so a file whose bytes are not valid UTF-8 never reached the quarantine copy
+    even though the loop stayed healthy and the `loop.pause` queued behind it still applied."""
+    ptask(layout, "A")
+    layout.commands.mkdir(parents=True, exist_ok=True)
+    bad_bytes = b'{"kind": "loop.pause", "payload": {"x": "\xff\xfe"}}'
+    (layout.commands / "0000000000001-bad.json").write_bytes(bad_bytes)
+    commands.submit(layout, "loop.pause", {}, actor="owner")
+    sup = Supervisor(layout, sleep_s=0)
+    code = sup.run(max_iterations=10)
+    assert code == 0
+    assert runtime.read(layout).get("status") != "BLOCKED"
+    assert runtime.read(layout).get("decision") == "PAUSE"
+    assert list(commands.pending(layout)) == []
+    quarantined = list((layout.commands / "quarantine").glob("*.json"))
+    assert [p.name for p in quarantined] == ["0000000000001-bad.json"]
+    assert quarantined[0].read_bytes() == bad_bytes
+    outcome = json.loads((layout.commands_applied / "0000000000001-bad.json").read_text(encoding="utf-8"))
+    assert outcome["ok"] is False
+
+
 def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
     """R-03, carried by the allocator's monotonic `counters` block (ATTEMPT_MODEL.md §2.3) now that `dispatch`
     no longer counts files at all: `jobs.open_records` — called by every Overview and Agents GET — never
