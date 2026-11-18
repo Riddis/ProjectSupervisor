@@ -576,8 +576,19 @@ class Supervisor:
             if rec.get("held") != reason:
                 tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
-        if rec.get("held"):
+        # Captured before the reset below rebinds `rec` to a record whose `held` is already None - every
+        # later refusal in this method compares against this, not against `rec.get("held")`, so each one still
+        # logs once per reason, not once per turn for as long as the same refusal repeats.
+        prior_held = rec.get("held")
+        if prior_held:
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
+        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
+            # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
+            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
+            reason = "gpu lease unavailable: another project holds it"
+            if prior_held != reason:
+                tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+            return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
             try:
                 self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
@@ -586,19 +597,12 @@ class Supervisor:
                 # task - exactly this one). load_all()'s own turn scan already reports and dedupes the owner
                 # item; this record is simply held until the file is readable again, the same shape gate.check's
                 # own held branch above uses, rather than spending the loop's error budget on a bad input file.
-                # Run only after the one gate passes (PAUSE/DRAIN/STOP et al. above): a refused launch must
-                # never flip a FAILED/BLOCKED task's status when nothing is actually about to run.
+                # Run only after the one gate and the GPU lease both pass: a refused launch must never flip a
+                # FAILED/BLOCKED task's status when nothing is actually about to run.
                 reason = f"task file unreadable: {exc}"
-                if rec.get("held") != reason:
+                if prior_held != reason:
                     tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
                 return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
-        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
-            # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
-            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
-            reason = "gpu lease unavailable: another project holds it"
-            if rec.get("held") != reason:
-                tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
-            return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         attempts = int(rec.get("launch_attempts", 0)) + 1
         jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", launch_attempts=attempts)
         if attempts > 2:
