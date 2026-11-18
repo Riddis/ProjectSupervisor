@@ -274,9 +274,18 @@ def _core_inputs_fingerprint(layout: Layout) -> str:
     """Fingerprint of exactly what the five store-backed projections read (R-22): the task store (by identity —
     see below), the issue, decision and inbox directories (stat-only: path, mtime, size, no parse), the
     owner-tasks and gates documents, the event log and project.yaml. Checked against every one of those five
-    builders' own reads, so "dirty" here means what it says: nothing any of them touches has moved. render_state
-    is not gated by this (it also depends on the caller's own `runtime` dict, which this walk cannot see) — it
-    always rebuilds, and `_write`'s own content compare is what keeps an unchanged STATE.md from being rewritten.
+    builders' own reads, so "dirty" here means what it says: nothing any of them touches has moved.
+
+    render_state's own extra input, the caller's `runtime` dict (pid/status/heartbeat), is invisible to this
+    walk — but render_all gates render_state on this same fingerprint exactly like its five siblings (see
+    render_all), not separately, so a turn where only the heartbeat ticked is indistinguishable from an idle one
+    and is skipped too: STATE.md's own "- **Supervisor:** ..." line stops refreshing its heartbeat timestamp
+    until something this walk DOES see also moves. Not a correctness bug — `supervisor status` calls
+    `state_lines()` directly with the live runtime, bypassing this cache, and the Control Center and
+    `state/runtime/supervisor.json` itself read the live value the same way — but it does retire STATE.md's own
+    line as a liveness signal for a human reading only that file while the loop is otherwise idle.
+    `ui.live.HEARTBEAT_KEYS` is the primitive already in this codebase for telling a real status change from a
+    heartbeat-only tick, if a future caller wants render_state re-gated on that distinction instead of this one.
 
     The task store's own share of this is `(id, rev, updated)` per task from `tasks_mod.load_all(layout)`, never
     a second `layout.tasks.glob()` — inside a turn that call is free (the turn's own snapshot), and a second real

@@ -58,15 +58,38 @@ def _sync_turn_snapshot(record: dict) -> None:
         snap.append(record)
 
 
+def _current_path(layout: Layout, attempt_id: str) -> Path:
+    """Where this id's record is right now: the main dir, unless only the archive has it. The one place a write
+    must land (R-23) — without this, updating an already-archived record (set_phase called on it again, say a
+    reroute's second call) would write a fresh duplicate at the top level while the archived copy sat there
+    stale, instead of there being exactly one file per id."""
+    p = path(layout, attempt_id)
+    if p.exists():
+        return p
+    ap = archive_path(layout, attempt_id)
+    return ap if ap.exists() else p
+
+
 def write(layout: Layout, record: dict) -> dict:
     record["updated"] = now_iso()
-    atomic_json(path(layout, record["attempt_id"]), record)
+    atomic_json(_current_path(layout, record["attempt_id"]), record)
     _sync_turn_snapshot(record)
     return record
 
 
 def read(layout: Layout, attempt_id: str) -> dict:
-    return read_json(path(layout, attempt_id))
+    """The record this id names: the main dir, falling back to the archive on a miss there (R-23) — the one
+    resolver a by-id lookup goes through, so production code (loop.dispatch/reroute/launch all read a record
+    straight back after a set_phase that can itself have just archived it, once its task went terminal in the
+    meantime) never has to choose between raising on an id that in fact still exists and a second, archive-blind
+    lookup. `resolve()` below is this with the miss turned into `None` instead of raised. Raises FileNotFoundError
+    when neither location has it; a corrupt (not missing) file at either one raises straight through — no
+    fallback is attempted for that, only for an outright miss."""
+    try:
+        return _cached_read(path(layout, attempt_id))
+    except FileNotFoundError:
+        pass
+    return _cached_read(archive_path(layout, attempt_id))
 
 
 def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, *,
@@ -98,15 +121,11 @@ def archive_path(layout: Layout, job_id: str) -> Path:
 
 
 def resolve(layout: Layout, job_id: str) -> dict | None:
-    """The job record named `job_id`, or `None` when it does not exist, instead of raising. Falls back to the
-    archive on a miss (R-23, §4.5): a terminal task's records move there, so an old id or URL still resolves —
-    only the loop's own bulk scans (`_scan_open`, `all_records`, `all_grouped`) stop seeing them."""
+    """The job record named `job_id`, or `None` when it does not exist, instead of raising. `read()`'s own
+    archive fallback (R-23, §4.5) is what makes a terminal task's old id or URL still resolve — this is that,
+    with a miss turned into `None` for a caller (a URL, a past digest) that expects one instead of a raise."""
     try:
-        return _cached_read(path(layout, job_id))
-    except (OSError, ValueError):
-        pass
-    try:
-        return _cached_read(archive_path(layout, job_id))
+        return read(layout, job_id)
     except (OSError, ValueError):
         return None
 
