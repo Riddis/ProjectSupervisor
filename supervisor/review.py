@@ -340,12 +340,11 @@ def _findings_text(layout, review) -> str:
 
 
 def _salvage_sort_key(r: dict) -> tuple:
-    """Newest first: `jobs.sort_key`'s own `(attempt, kind order, seq)`, the id suffix as the fallback for
-    whichever of them is unset — the one fallback rule every reader of this step shares, not a second one of
-    its own. `seq` alone cannot order these records: it is only the ordinal of a kind inside one attempt
-    (ATTEMPT_MODEL.md §6), so two attempts' review jobs for the same role and digest (a revision that re-delivers
-    a byte-identical answer keeps the digest) can both carry `seq == 1`, and only the `attempt` field tells them
-    apart."""
+    """Newest first: `jobs.sort_key`'s own `(attempt, kind order, seq)` fields, no id-suffix fallback (§6) —
+    the same rule every reader of this step shares, not a second one of its own. `seq` alone cannot order
+    these records: it is only the ordinal of a kind inside one attempt (ATTEMPT_MODEL.md §6), so two attempts'
+    review jobs for the same role and digest (a revision that re-delivers a byte-identical answer keeps the
+    digest) can both carry `seq == 1`, and only the `attempt` field tells them apart."""
     return jobs_mod.sort_key(r)
 
 

@@ -246,10 +246,10 @@ def _oldest_first(records: list[dict]) -> list[dict]:
 
 
 def for_task(layout: Layout, task_id: str) -> list[dict]:
-    """The task's job records, oldest first by `(attempt, kind, seq)` (`sort_key`), the id suffix as the
-    fallback for a record with none of those fields — so `T.a10` still sorts before `T.a9` on an un-migrated
-    store, and callers take `[-1]` as the newest either way. Read-only (R-03): an unreadable record is reported
-    once and represented by a stub, never rewritten on disk."""
+    """The task's job records, oldest first by `(attempt, kind, seq)` (`sort_key`) — no id-suffix fallback (§6):
+    the start-up guard already refuses to dispatch on a store holding a record without these fields, so every
+    record this reads carries them, and callers take `[-1]` as the newest. Read-only (R-03): an unreadable
+    record is reported once and represented by a stub, never rewritten on disk."""
     out = []
     for p in layout.jobs.glob(f"{task_id}.*.json"):
         try:

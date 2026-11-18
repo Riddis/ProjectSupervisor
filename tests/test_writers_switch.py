@@ -1,7 +1,10 @@
 """ATTEMPT_MODEL.md section 8.6 and step 9 of "Order of work": the writers switch. `loop.dispatch` allocates
-every job's identity through `tasks.allocate_job` (never counts files again), the start-up guard refuses to
-dispatch on a store holding a record that is neither migration-stamped nor allocator-written, and every suffix
-reader `jobs.attempt_no` fed (deleted in this same release) answers from fields instead.
+every delivery/continuation/reroute/revision/verify/review/diagnosis job's identity through `tasks.allocate_job`
+instead of counting files; a conversation job is the one exception (§2.2: it backs no Task document for the
+allocator to lock, so `dispatch` still counts `jobs.for_task`'s rows for it, by design, not by oversight). The
+start-up guard refuses to dispatch on a store holding a record that is neither migration-stamped nor
+allocator-written, and every suffix reader `jobs.attempt_no` fed (deleted in this same release) answers from
+fields instead.
 
 Each test below is read against a neutral, invented store — no project name, task id or path from any real
 project (D-005)."""

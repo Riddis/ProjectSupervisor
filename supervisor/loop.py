@@ -31,13 +31,15 @@ EXIT_RELOAD = 3
 
 
 class UnmigratedJobsError(RuntimeError):
-    """ATTEMPT_MODEL.md §8.6's start-up guard: a job record under `state/runtime/jobs/` (or its archive) is
-    neither migration-stamped nor allocator-written, so it has no `attempt`/`kind`/`seq` for the writer switch's
-    readers to sort or group it by. Raised by `cli.run()` before it ever constructs a `Supervisor` or enters the
-    loop — "start-up" names the supervisor *process*, not a `Supervisor` object: a test (or a library caller)
-    that builds one directly, the way the suite's own fixtures plant a bare, un-migrated job record for a dozen
-    unrelated scenarios, is not the thing this guard exists to stop. `python -m supervisor.boundary` and similar
-    one-shot tools construct no `Supervisor` either and are likewise untouched by it."""
+    """ATTEMPT_MODEL.md §8.6's start-up guard: a job record under `state/runtime/jobs/` is neither
+    migration-stamped nor allocator-written, so it has no `attempt`/`kind`/`seq` for the writer switch's
+    readers to sort or group it by. Checks only `layout.jobs` today — the archive §8.6 also names is step 14's
+    retention work (§4.5), not yet built, so there is nothing under it to check. Raised by `cli.run()` before it
+    ever constructs a `Supervisor` or enters the loop — "start-up" names the supervisor *process*, not a
+    `Supervisor` object: a test (or a library caller) that builds one directly, the way the suite's own
+    fixtures plant a bare, un-migrated job record for a dozen unrelated scenarios, is not the thing this guard
+    exists to stop. `python -m supervisor.boundary` and similar one-shot tools construct no `Supervisor` either
+    and are likewise untouched by it."""
 
 
 def _unmigrated_job_files(layout: Layout) -> list[str]:
@@ -1446,8 +1448,8 @@ class Supervisor:
                 continue          # a REQUEUE/CANCEL answered this stop; a DEFER/free-text one is a comment, not one
             records = jobs_mod.for_task(self.layout, task.id)
             deliveries = [r for r in records if jobs_mod.kind_of(r) == "delivery"]
-            # the newest attempt's newest session: jobs_mod.sort_key (attempt, kind, seq; the id suffix as the
-            # fallback for whichever is unset) is already oldest-first, so the max is the newest.
+            # the newest attempt's newest session: jobs_mod.sort_key (attempt, kind, seq fields only, no
+            # id-suffix fallback, §6) is already oldest-first, so the max is the newest.
             latest_delivery = max(deliveries, key=jobs_mod.sort_key) if deliveries else None
             if latest_delivery and latest_delivery.get("adapter") == "human":
                 continue                                          # the owner's own answer (REJECT/MORE_LIKE) failed it
