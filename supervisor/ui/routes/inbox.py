@@ -105,8 +105,11 @@ def _evidence_view(layout: Layout, ref: str) -> dict:
     return {"ref": ref, "kind": "link"}
 
 
-def is_approval(item: dict) -> bool:
-    return item.get("kind") == inbox_mod.APPROVAL_KIND or bool(item.get("approval_digest"))
+def is_approval(layout: Layout, item: dict) -> bool:
+    """F3: an item is an approval target either the loop's own way (kind/approval_digest) or inbox.approval_target's
+    second shape - an agent-written question for a task WAITING_FOR_HUMAN with no attempt behind it - which carries
+    neither and is resolved the same way the item's own card now shows its digest (_item_view, below)."""
+    return item.get("kind") == inbox_mod.APPROVAL_KIND or bool(inbox_mod.approval_target(layout, item))
 
 
 def _approval_evidence(layout: Layout, item: dict) -> list[dict]:
@@ -134,7 +137,7 @@ def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None
         **item,
         "summary_html": render_md(item.get("summary", "")),
         "detail_html": render_md(item["detail"]) if item.get("detail") else "",
-        "evidence_views": (_approval_evidence(layout, item) if is_approval(item)
+        "evidence_views": (_approval_evidence(layout, item) if is_approval(layout, item)
                            else [_evidence_view(layout, e) for e in (item.get("evidence") or [])]),
         "score_items": [] if blind else [i for i in sub_items if _is_score_block(i, keys)],
         "plain_items": [] if blind else [i for i in sub_items if not _is_score_block(i, keys)],
@@ -144,20 +147,26 @@ def _item_view(layout: Layout, item: dict, info=None, unknown: str | None = None
         "ownership_unknown": unknown,
         "age_display": _age_display(_age_seconds(item)),
         "delivery": _delivery(layout, item),
+        "approval_digest_shown": inbox_mod.approval_target(layout, item) if item.get("status") == "open" else None,
     }
 
 
 def _delivery(layout: Layout, item: dict) -> dict | None:
     """An approval item shows what it approves: the delivery its digest names (supervisor.ui.delivery), read from
-    the task record when the page renders — so items opened before this view existed show it too. Only open
-    items: an answered one is history, and its files may since belong to a newer delivery."""
-    if item.get("status") != "open" or not item.get("approval_digest") or not item.get("task_id"):
+    the task record when the page renders — so items opened before this view existed show it too, and so does an
+    agent-written question that is itself an approval target (F3: inbox.approval_target's second shape, which
+    carries no approval_digest field of its own). Only open items: an answered one is history, and its files may
+    since belong to a newer delivery."""
+    if item.get("status") != "open" or not item.get("task_id"):
+        return None
+    digest = inbox_mod.approval_target(layout, item)
+    if not digest:
         return None
     try:
         task = tasks_mod.load(layout, item["task_id"])
     except tasks_mod.TaskError:
         return None
-    return delivery_view.view(layout, task, item["approval_digest"])
+    return delivery_view.view(layout, task, digest)
 
 
 @router.get("/inbox")

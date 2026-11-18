@@ -473,8 +473,11 @@ class Supervisor:
                                  rerouted_extra=extra or None)
         tasks_mod.log(self.layout, "lane_rerouted", "loop", task=rec["task_id"], attempt=rec["attempt_id"],
                       adapter=rec["adapter"], to=lane, reason=reason)
-        tasks_mod.add_note(self.layout, rec["task_id"], f"{rec['attempt_id']}: {rec['adapter']} unavailable ({reason}); "
-                           f"rerouted to {lane}", actor="loop")
+        try:
+            tasks_mod.add_note(self.layout, rec["task_id"], f"{rec['attempt_id']}: {rec['adapter']} unavailable "
+                               f"({reason}); rerouted to {lane}", actor="loop")
+        except Exception:                             # noqa: BLE001 - F10: the record is already closed REROUTED;
+            pass                                       # an unreadable task file must not raise past this turn
         task, kind_extra = self._reroute_rebuild(rec, kind)
         if task is None:
             jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", continued=True)
@@ -538,18 +541,6 @@ class Supervisor:
         ad = REGISTRY[rec["adapter"]]
         job_kind = (rec.get("spec") or {}).get("kind", "delivery")
         conversation = job_kind == "conversation"
-        if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
-            try:
-                self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
-            except tasks_mod.TaskError as exc:
-                # F1: the task file itself is unreadable (an editor's mid-write save, most likely on an active
-                # task - exactly this one). load_all()'s own turn scan already reports and dedupes the owner
-                # item; this record is simply held until the file is readable again, the same shape gate.check's
-                # own held branch below uses, rather than spending the loop's error budget on a bad input file.
-                reason = f"task file unreadable: {exc}"
-                if rec.get("held") != reason:
-                    tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
-                return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         try:
             handle = ad.recover(rec["spec"])                  # a previous loop may have launched it already
         except Exception as exc:                              # noqa: BLE001 - this attempt's failure, not the loop's
@@ -587,6 +578,20 @@ class Supervisor:
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         if rec.get("held"):
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
+        if not conversation and job_kind != diagnosis_mod.KIND:   # a diagnosis judges a BLOCKED task
+            try:
+                self._ensure_in_progress(rec["task_id"], f"launch {rec['attempt_id']} via {rec['adapter']}", kind=job_kind)
+            except tasks_mod.TaskError as exc:
+                # F1: the task file itself is unreadable (an editor's mid-write save, most likely on an active
+                # task - exactly this one). load_all()'s own turn scan already reports and dedupes the owner
+                # item; this record is simply held until the file is readable again, the same shape gate.check's
+                # own held branch above uses, rather than spending the loop's error budget on a bad input file.
+                # Run only after the one gate passes (PAUSE/DRAIN/STOP et al. above): a refused launch must
+                # never flip a FAILED/BLOCKED task's status when nothing is actually about to run.
+                reason = f"task file unreadable: {exc}"
+                if rec.get("held") != reason:
+                    tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
+                return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
         if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
             # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
             # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
