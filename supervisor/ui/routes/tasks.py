@@ -38,42 +38,47 @@ def _get_task(layout: Layout, task_id: str):
 
 
 def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str | None, run_dir: str | None,
-            note: str | None, result: str | None, model: str | None) -> dict:
+            note: str | None, result: str | None) -> dict:
     """One Attempts-table row for one job, on either `Attempt` shape (ATTEMPT_MODEL.md §2.7): the stored entry
-    (an un-migrated `Attempt` itself, or one of a migrated `Attempt`'s `jobs[]`) gives the static fields; the live
-    job record, when it still exists, gives the kind as a fallback, the current phase/result and the model
-    (§4.6 — `Attempt.model` is not read here, the job record is)."""
+    (an un-migrated `Attempt`'s own dump, or one of a migrated `Attempt`'s `jobs[]`) gives the static fields; the
+    live job record, when it still exists, gives the kind as a fallback, the current phase/result and the model
+    (§4.6 — the model is read only from the job record here, never from the task document)."""
     job = jobs_mod.resolve(layout, job_id) if job_id else None
     spec = (job or {}).get("spec") or {}
     return {
         "job_id": job_id, "kind": kind or (jobs_mod.kind_of(job) if job else "delivery"),
         "resource": resource, "note": note or "",
         "run_dir": run_dir or spec.get("run_dir"),
-        "model": (job or {}).get("model") or spec.get("model") or model,
+        "model": (job or {}).get("model") or spec.get("model"),
         "result": (job or {}).get("result") or result,
         "phase": (job or {}).get("phase"),
     }
 
 
 def attempt_groups(layout: Layout, t) -> list[dict]:
-    """The Attempts table's rows, grouped by delivery attempt, on either shape `t.attempts` can hold: a migrated
-    document's `jobs[]` under each numbered attempt (joined on `jobs[].id`), or an un-migrated document's one
-    `Attempt` entry per job (joined on `Attempt.id`, used only as the fallback when `jobs[]` is empty — never read
-    on a migrated document, which never carries entries in `jobs[]` without `n` set). Each migrated group's `n` is
-    the attempt number. An un-migrated entry's id suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id
-    whose kind is whatever happened to be dispatched nth"), so that group names its job instead of asserting a
-    delivery-attempt count (`n: None`, `job_id` set — the design's interim remedy, §6). Each row carries the job's
-    own kind either way, so a verification, a review or a diagnosis is never shown as if it were a fresh attempt
-    at the deliverable."""
+    """The Attempts table's rows, grouped by delivery attempt, read from each stored entry's own dump
+    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone (ATTEMPT_MODEL.md
+    §4.6, step 15). A migrated document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
+    un-migrated document's one entry per job is named by whatever `id` key it was written under — tolerated,
+    never typed, used only as the fallback when `jobs[]` is empty (never on a migrated document, which never
+    carries an entry without `n` set). Each migrated group's `n` is the attempt number. An un-migrated entry's id
+    suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id whose kind is whatever happened to be
+    dispatched nth"), so that group names its job instead of asserting a delivery-attempt count (`n: None`,
+    `job_id` set — the design's interim remedy, §6). Each row carries the job's own kind either way, so a
+    verification, a review or a diagnosis is never shown as if it were a fresh attempt at the deliverable."""
     groups = []
     for a in t.attempts:
-        if a.jobs:
+        ad = a.model_dump()
+        jobs = ad.get("jobs") or []
+        if jobs:
             rows = [_job_row(layout, e.get("id"), e.get("kind"), e.get("resource"), e.get("run_dir"),
-                             e.get("note"), e.get("result"), None) for e in a.jobs]
-            groups.append({"n": a.n, "job_id": None, "opened": a.opened, "outcome": a.outcome, "rows": rows})
+                             e.get("note"), e.get("result")) for e in jobs]
+            groups.append({"n": ad.get("n"), "job_id": None, "opened": ad.get("opened"), "outcome": ad.get("outcome"),
+                          "rows": rows})
         else:
-            groups.append({"n": None, "job_id": a.id, "opened": a.at, "outcome": a.outcome,
-                          "rows": [_job_row(layout, a.id, None, a.resource, a.run_dir, a.note, None, a.model)]})
+            groups.append({"n": None, "job_id": ad.get("id"), "opened": ad.get("at"), "outcome": ad.get("outcome"),
+                          "rows": [_job_row(layout, ad.get("id"), None, ad.get("resource"), ad.get("run_dir"),
+                                            ad.get("note"), None)]})
     return groups
 
 

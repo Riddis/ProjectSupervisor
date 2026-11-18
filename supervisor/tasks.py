@@ -416,7 +416,7 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract."""
     doc = dict(doc)
     doc.setdefault("status", "NOT_STARTED")
-    doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+    doc.update({"attempts": [], "result": None, "paths": []})
     doc = _default_evidence(doc)
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
     combined = dict(load_all(layout) if combined is None else combined)
@@ -476,7 +476,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
                 continue
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
-            doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+            doc.update({"attempts": [], "result": None, "paths": []})
             doc = _default_evidence(doc)
             task = Task.model_validate(doc)                              # fail before touching the graph or the disk
             resulting[tid], new_docs[tid] = task, doc
@@ -1157,10 +1157,28 @@ def record_approval(layout: Layout, task_id: str, digest: str, response: str, by
     return t
 
 
+def _close_current_attempt(doc: dict, outcome: str) -> None:
+    """Write `Attempt.outcome` (ATTEMPT_MODEL.md §4.6 — 0 of ~1,400 records carried a real value before this):
+    the migrated shape's most recently opened `attempts[]` entry (`n` set, still `outcome: "open"`) gets its
+    `outcome` and `closed` here, by the one place that knows the current try is over. An un-migrated entry (no
+    `n`) has nothing here to close; it stays exactly as the old writer left it."""
+    for a in reversed(doc.get("attempts") or []):
+        if a.get("n") is not None and a.get("outcome") == "open":
+            a["outcome"] = outcome
+            a["closed"] = store.now_iso()
+            return
+
+
 def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: str | None = None) -> Task:
     """The only path to COMPLETE. Decides from the locked, freshly read document. `attempt_id`, when the caller
     knows which delivery attempt produced the digest now completing (loop.record_outcome does), is recorded on
-    any issue this task's completion recovers (R-21, escalation.recover_issues_for_task)."""
+    any issue this task's completion recovers (R-21, escalation.recover_issues_for_task).
+
+    Three of the transitions here close the attempt that produced the current digest (§2.4, §4.6): verified and
+    accepted, verification failed, or a review that was not ACCEPT sends the task back to IN_PROGRESS for a
+    revision. A review-BLOCKED stop and a worker's own FAILED/BLOCKED result (classified before this ever runs,
+    `loop.record_outcome`/escalation) are not covered here — the next release's supersede mechanism is where
+    those close (left to 2.9.0, ATTEMPT_MODEL.md "Deliberately left to 2.9.0")."""
     outcome = {}
 
     def fn(doc):
@@ -1171,6 +1189,12 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
         if target == task.status:
             raise _NoChange()
         outcome.update({"from": task.status.value, "to": target.value, "note": note})
+        if target == TaskStatus.COMPLETE:
+            _close_current_attempt(doc, "accepted")
+        elif target == TaskStatus.FAILED:
+            _close_current_attempt(doc, "failed")
+        elif target == TaskStatus.IN_PROGRESS and task.status == TaskStatus.WAITING_FOR_REVIEW:
+            _close_current_attempt(doc, "rejected")
         _record_history(doc, target, actor, note)
     try:
         t = _update(layout, task_id, fn)

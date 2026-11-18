@@ -195,10 +195,21 @@ def _defer_question(task: Task, role: str, blocked_on: str) -> str:
             f"task create`) and add it to {task.id}'s depends_on, or decide here.")
 
 
+def _attempt_summary(ad: dict) -> str:
+    """One line of the diagnosis brief's recent-attempts list, read from the stored dict (`Attempt.model_dump()`)
+    — never `Attempt.id` as a declared field, gone as of ATTEMPT_MODEL.md §4.6, step 15. The migrated shape
+    (`jobs[]` set) names its jobs; an un-migrated entry names itself by whatever `id` key it was written under."""
+    jobs = ad.get("jobs") or []
+    if jobs:
+        names = ", ".join(f"{j.get('id')} ({j.get('kind')})" for j in jobs)
+        return f"- attempt {ad.get('n')}: {names} → {ad.get('outcome') or 'open'}"
+    return f"- {ad.get('id', '')} ({ad.get('resource', '')}): {ad.get('note', '')}"
+
+
 def brief(layout: Layout, task: Task, role: str, level: str, source: str, detail: str, issue_id: str | None) -> str:
     from . import packets
     card = packets.role_card(layout, role)
-    attempts = "\n".join(f"- {a.id} ({a.resource}): {a.note}" for a in task.attempts[-6:]) or "- none recorded"
+    attempts = "\n".join(_attempt_summary(a.model_dump()) for a in task.attempts[-6:]) or "- none recorded"
     notes = "\n".join(f"- {n.get('by')}: {n.get('note')}" for n in ((task.model_extra or {}).get("notes") or [])[-6:]) or "- none"
     levels = ("requeue, defer, architect or owner" if level == "manager" else "requeue, defer or owner")
     text = ((card + "\n\n") if card else "") + (

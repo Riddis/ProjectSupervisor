@@ -67,18 +67,17 @@ class CostCategory(str, Enum):
 
 
 class Attempt(BaseModel):
-    id: Optional[str] = None            # a job id today; removed in step 15 (§2.7 of the attempt-identity design)
-                                          # — kept, optional and never written by the new allocator, only so an
-                                          # un-migrated document still parses
+    """ATTEMPT_MODEL.md §4.6 (step 15): `id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
+    first three, and the fourth was never written either; a reader now takes the model from the job record
+    (§2.7), never from this document. `at` is gone too, renamed to `opened` (closed sits beside it, §2.3's
+    delivery-attempt shape). `model_config` stays `extra: allow` so a document written before this release —
+    whose `attempts[]` entries still carry `id`/`at`/`model`/`session_id`/`extra` on disk — still loads; those
+    bytes are tolerated, never read back through a declared field."""
     resource: Optional[str] = None      # per §4.6, moved onto the job entry in the migrated shape (`jobs[].resource`)
                                           # — optional so a document already on that shape still parses
-    at: Optional[str] = None            # → `opened` in the migrated shape (§4.6); optional for the same reason
     outcome: str = ""
     note: str = ""
-    model: Optional[str] = None
-    session_id: Optional[str] = None
     run_dir: Optional[str] = None
-    extra: dict[str, Any] = Field(default_factory=dict)
 
     # the delivery-attempt shape the migration writes (§2.7): additive here, unused until the writer switch
     n: Optional[int] = None
@@ -203,7 +202,6 @@ class Task(BaseModel):
                                                                                # free-text account read when a
                                                                                # finding has none of these
     paths: list[str] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
     owned_paths: list[str] = Field(default_factory=list)
     priority: int = 0
     delivery: Delivery = Field(default_factory=Delivery)

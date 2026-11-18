@@ -69,6 +69,17 @@ def _front_matter(text: str) -> dict:
     return yaml.safe_load(m.group(1)) or {} if m else {}
 
 
+def _attempt_line(ad: dict) -> str:
+    """One `**Attempts.**` entry, read from the stored dict (`Attempt.model_dump()`), never from `Attempt.id` or
+    `.model` as a declared field — both are gone (ATTEMPT_MODEL.md §4.6, step 15; the model is on the job record,
+    never in TASKS.md). The migrated shape (`jobs[]` set) names its jobs; an un-migrated entry (no `jobs[]`)
+    names itself by whatever key it was written under — tolerated, never typed."""
+    jobs = ad.get("jobs") or []
+    if jobs:
+        return ", ".join(j.get("id", "") for j in jobs) + f" → {ad.get('outcome') or '…'}"
+    return f"{ad.get('id', '')} {ad.get('resource', '')} → {ad.get('outcome') or '…'}"
+
+
 def render_tasks(layout: Layout) -> Path:
     def build() -> list[str]:
         tasks = tasks_mod.load_all(layout)
@@ -98,7 +109,7 @@ def render_tasks(layout: Layout) -> Path:
                     lines.extend(["**History.** " + "; ".join(f"{h.get('at', '')[:16]} {h.get('by')}: {h.get('from')} → {h.get('to')}"
                                                           + (" (FORCED: " + str(h.get('note')) + ")" if h.get('forced') else "") for h in t.history), ""])
                 if t.attempts:
-                    lines.extend(["**Attempts.** " + "; ".join(f"{a.id} {a.resource}{' ' + a.model if a.model else ''} → {a.outcome or '…'}" for a in t.attempts), ""])
+                    lines.extend(["**Attempts.** " + "; ".join(_attempt_line(a.model_dump()) for a in t.attempts), ""])
                 if t.result:
                     lines.extend([f"**Result.** {t.result}", ""])
         return lines

@@ -153,7 +153,7 @@ def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_old_shape(layo
 
 def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_migrated_shape(layout, auth_client):
     t = _migrated_shape_task(layout, "T0-12")
-    assert t.attempts[0].id is None                            # the migrated shape never carries Attempt.id
+    assert "id" not in t.attempts[0].model_dump()              # the migrated shape never carries an Attempt.id
     page = auth_client.get("/tasks/T0-12").text
     assert "<th>Kind</th>" in page
     assert "delivery" in page and "verify" in page
@@ -164,16 +164,17 @@ def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_migrated_shape
 
 
 def test_no_route_reads_attempt_id_on_a_migrated_document(layout, auth_client):
-    """A migrated `Attempt` has no `.id` (it is never written, §2.7); the page must still resolve every job,
-    every kind and the model from `jobs[]` alone, and `Attempt.id` must still read back as `None` afterwards —
-    nothing on the read path may have treated it as a join key and filled it in."""
+    """A migrated `Attempt` has no `id` key at all (it is never written, §2.7, and the field itself is gone from
+    the model as of step 15); the page must still resolve every job, every kind and the model from `jobs[]`
+    alone, and no `id` key must appear on the stored attempt afterwards — nothing on the read path may have
+    treated it as a join key and filled it in."""
     t = _migrated_shape_task(layout, "T0-13")
-    assert t.attempts[0].id is None
+    assert "id" not in t.attempts[0].model_dump()
     r = auth_client.get("/tasks/T0-13")
     assert r.status_code == 200
     assert "sonnet" in r.text
     assert "T0-13.a1.s1" in r.text and "T0-13.a1.v1" in r.text
-    assert tasks_mod.load(layout, "T0-13").attempts[0].id is None
+    assert "id" not in tasks_mod.load(layout, "T0-13").attempts[0].model_dump()
 
 
 # --------------------------------------------------------- old-shape ids still resolve
