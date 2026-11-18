@@ -154,7 +154,7 @@ def test_a_human_job_offering_approve_completes_on_it_after_migrate(layout, answ
     inbox.answer(layout, item["id"], offered[0] if answer == "first" else answer)
     sup.once()
     assert tasks.load(layout, "H").status == status
-    assert jobs.read(layout, "H.a1.s1")["result"] == status.value
+    assert jobs.resolve(layout, "H.a1.s1")["result"] == status.value   # R-23: a terminal task's record may be archived
 
 
 # --------------------------------------------------------------------------- F2 regressions: resumable retirement

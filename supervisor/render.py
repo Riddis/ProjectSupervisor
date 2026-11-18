@@ -2,6 +2,7 @@
 OWNER_TASKS, plus any projection a plugin registers. Deterministic given the store (timestamps come from the data, plus one render stamp)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -16,10 +17,15 @@ from . import gates as gates_mod
 from . import store, tasks as tasks_mod
 from .models.task import TaskStatus
 from .paths import Layout
+from .ui import logtail as logtail_mod
 
 
 def _write(path: Path, lines: list[str]):
-    store.write_text(path, "\n".join(lines).rstrip() + "\n")       # the file's own line endings (1.12.1)
+    """Replace `path` with `lines`, in its own line endings — unless that is already its content (R-22): a
+    projection rebuilt from an unchanged store produces the unchanged text, and `store.rewrite_text` is the one
+    primitive the framework already has for "write only when it differs" (migrations use it for the same
+    reason). Every render still reads and builds fresh; only the write itself is skipped."""
+    store.rewrite_text(path, "\n".join(lines).rstrip() + "\n")     # the file's own line endings (1.12.1)
 
 
 _held = threading.local()        # render-lock paths this thread holds: the lock is reentrant within a thread
@@ -165,10 +171,13 @@ def render_owner_tasks(layout: Layout) -> Path:
 
 
 def _tail_log(layout: Layout, n=10) -> list[dict]:
+    """The last `n` events, oldest first within that window — STATE.md's own convention, kept distinct from
+    `ui.logtail.tail()`'s newest-first. Seeks from the end instead of reading the whole file (R-23): shares
+    `logtail_mod`'s byte-offset tail rather than a second implementation of it."""
     if not layout.log.exists():
         return []
     rows = []
-    for line in layout.log.read_text(encoding="utf-8").splitlines()[-n:]:
+    for line in logtail_mod._tail_lines(layout.log, n):
         try:
             rows.append(json.loads(line))
         except ValueError:
@@ -253,10 +262,72 @@ def _guarded(layout: Layout, fn, *args, **kw) -> Path | None:
     return out
 
 
-def render_all(layout: Layout, **kw) -> list[Path]:
-    out = [_guarded(layout, fn) for fn in (render_tasks, render_issues, render_decisions, render_inbox, render_owner_tasks)]
-    out.append(_guarded(layout, render_state, **kw))
-    out = [p for p in out if p is not None]
+def _stat_entry(root: Path, p: Path) -> str | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return f"{p.relative_to(root).as_posix()}\0{st.st_mtime_ns}\0{st.st_size}"
+
+
+def _core_inputs_fingerprint(layout: Layout) -> str:
+    """Fingerprint of exactly what the five store-backed projections read (R-22): the task store (by identity —
+    see below), the issue, decision and inbox directories (stat-only: path, mtime, size, no parse), the
+    owner-tasks and gates documents, the event log and project.yaml. Checked against every one of those five
+    builders' own reads, so "dirty" here means what it says: nothing any of them touches has moved. render_state
+    is not gated by this (it also depends on the caller's own `runtime` dict, which this walk cannot see) — it
+    always rebuilds, and `_write`'s own content compare is what keeps an unchanged STATE.md from being rewritten.
+
+    The task store's own share of this is `(id, rev, updated)` per task from `tasks_mod.load_all(layout)`, never
+    a second `layout.tasks.glob()` — inside a turn that call is free (the turn's own snapshot), and a second real
+    scan here would be exactly the R-09 regression this project's own `test_r09_turn_snapshot.py` measures: one
+    task-directory scan per idle turn, not two. Deliberately excludes state/runtime/jobs/ (R-23): no projection
+    reads a job record, so an archive that grows with finished work must never make this walk — or the turn —
+    cost more."""
+    entries: list[str] = [f"{t.id}\0{t.rev}\0{t.updated or ''}" for t in tasks_mod.load_all(layout).values()]
+    for d, pattern in ((layout.issues, "*.yaml"), (layout.decisions, "*.md"), (layout.inbox, "*.yaml")):
+        try:
+            paths = sorted(d.glob(pattern))
+        except OSError:
+            paths = []
+        entries.extend(e for p in paths if (e := _stat_entry(layout.root, p)))
+    entries.extend(e for p in (layout.owner_tasks, layout.gates, layout.log, layout.project_file)
+                   if (e := _stat_entry(layout.root, p)))
+    entries.sort()
+    h = hashlib.sha1(usedforsecurity=False)
+    for e in entries:
+        h.update(e.encode("utf-8", "surrogateescape"))
+        h.update(b"\n")
+    return h.hexdigest()[:16]
+
+
+_LAST_CORE_FP: dict[str, str] = {}
+_LAST_CORE_FP_LOCK = threading.Lock()
+
+
+def render_all(layout: Layout, *, force: bool = False, **kw) -> list[Path]:
+    """Every projection. The five store-backed ones (plus STATE.md's own build) are skipped outright — not
+    rebuilt, not opened for a write — while `_core_inputs_fingerprint` has not moved since the last call for this
+    project (R-22): an idle turn costs one stat walk, not nine YAML directory listings and six writes. `force`
+    (the `supervisor render` CLI command) always does the full pass, so an explicit "render everything" never
+    reports that nothing happened. A plugin projection is never gated by this — only a built-in one; it has no
+    external inputs this walk can see."""
+    key = str(layout.root)
+    fp = _core_inputs_fingerprint(layout)
+    with _LAST_CORE_FP_LOCK:
+        skip = not force and _LAST_CORE_FP.get(key) == fp
+    if skip:
+        out = []
+    else:
+        built = [_guarded(layout, fn) for fn in (render_tasks, render_issues, render_decisions, render_inbox, render_owner_tasks)]
+        built.append(_guarded(layout, render_state, **kw))
+        out = [p for p in built if p is not None]
+        if all(p is not None for p in built):
+            # Only remember this fingerprint as "done" when every one of them actually rendered: a view that
+            # failed (R-02 — a half-written YAML record, say) must be retried every call until it recovers, not
+            # cached as settled the moment one of its six siblings happened to succeed next to it.
+            with _LAST_CORE_FP_LOCK:
+                _LAST_CORE_FP[key] = fp
     for fn in plugins_mod.load(layout).projections:
         try:
             with render_lock(layout):                       # a registered projection reads and writes under it too

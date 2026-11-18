@@ -242,7 +242,7 @@ def status():
 @app.command("render")
 def render_cmd():
     """Render every markdown projection from the store."""
-    for p in render.render_all(_layout()):
+    for p in render.render_all(_layout(), force=True):          # an explicit ask always does the full pass (R-22)
         typer.echo(f"rendered {p.name}")
 
 

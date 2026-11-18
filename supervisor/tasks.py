@@ -436,7 +436,8 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     doc, errors, warnings = check_new(layout, doc)
     if errors:
         raise TaskError("; ".join(errors))
-    store.write_new(path, doc)
+    written = store.write_new(path, doc)
+    _sync_turn_snapshot(Task.model_validate(written))     # a task created mid-turn must be visible inside it too
     log(layout, "task_created", actor, task=doc["id"], **({"warnings": warnings} if warnings else {}))
     out = {"id": doc["id"], "status": doc["status"]}
     if warnings:
@@ -499,11 +500,13 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
 
     if not dry_run:
         for tid in created:
-            store.write_new(path_for(layout, tid), new_docs[tid])
+            written = store.write_new(path_for(layout, tid), new_docs[tid])
+            _sync_turn_snapshot(Task.model_validate(written))
         for t in seed:
             if t["id"] in updated:
-                store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
-                            lock_path=layout.state / ".tasks.lock")
+                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
+                                       lock_path=layout.state / ".tasks.lock")
+                _sync_turn_snapshot(Task.model_validate(written))
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
 
     out = {"created": created, "updated": updated, "untouched": untouched, "ignored": ignored}
@@ -641,6 +644,7 @@ def log(layout: Layout, event: str, actor: str = "system", **fields):
               "actor": policy_mod.screen_log_identity(actor, layout),
               "event": policy_mod.screen_log_identity(event, layout),
               **policy_mod.redact_fields(fields, layout)}
+    store.rotate_log(layout.log)                                             # R-23: before, not after — bounded
     store.append_line(layout.log, json.dumps(record, ensure_ascii=False))     # the log's own line endings
 
 
@@ -696,10 +700,18 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")
     t = Task.model_validate(doc)
-    snap = _TURN_SNAPSHOT.get()
-    if snap is not None:              # this turn's snapshot, if one is open: later steps must see this write (R-09)
-        snap[t.id] = t
+    _sync_turn_snapshot(t)
     return t
+
+
+def _sync_turn_snapshot(task: Task) -> None:
+    """This turn's snapshot, if one is open, kept in step with a write `_update()` did not make — `create()` and
+    `import_seed()`'s own new-row branch write with `store.write_new()` directly, not through `_update()`, so
+    without this a task created mid-turn stayed invisible to `load_all()` for the rest of that turn even though
+    `_update()`'s own writes were already promised to be seen by it (astra: load_all/turn-snapshot visibility)."""
+    snap = _TURN_SNAPSHOT.get()
+    if snap is not None:
+        snap[task.id] = task
 
 
 def _record_history(doc: dict, to: TaskStatus, by: str, note: str, forced: bool = False):
@@ -757,6 +769,7 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
         closed = jobs_mod.retire(layout, task_id, reason=f"task moved to {status.value}", actor=actor)
         if closed:
             log(layout, "jobs_retired", actor, task=task_id, jobs=closed, to=status.value)
+        jobs_mod.archive_terminal(layout, task_id)        # R-23: after retire, so a just-closed record moves too
     return t
 
 
@@ -1166,7 +1179,9 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
     log(layout, "task_status", actor, task=task_id, **outcome)
     if outcome.get("to") == TaskStatus.COMPLETE.value:
         from . import escalation as escalation_mod
+        from . import jobs as jobs_mod
         escalation_mod.recover_issues_for_task(layout, task_id, attempt_id, t.delivery.digest or "")
+        jobs_mod.archive_terminal(layout, task_id)        # R-23: out of the loop's own scans from here on
     return t
 
 

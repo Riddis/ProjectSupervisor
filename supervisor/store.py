@@ -61,11 +61,57 @@ def write_text(path: Path, text: str) -> None:
     atomic_write_text(path, text.replace("\r\n", "\n").replace("\n", newline), newline="")
 
 
+_NEWLINE_CACHE: dict[str, str] = {}
+_NEWLINE_CACHE_LOCK = threading.Lock()
+
+
+def _cached_newline(path: Path) -> str:
+    """`newline_of(path)`, read from disk once per process and remembered by path (R-23): `append_line` is the
+    only writer of the files it is used for (the event log), so nothing else can move its convention while this
+    process runs — the same assumption `tasks._PARSE_CACHE` and `jobs._RECORD_CACHE` already make about their own
+    files, just for a line ending instead of a parse."""
+    key = str(path)
+    with _NEWLINE_CACHE_LOCK:
+        hit = _NEWLINE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    nl = newline_of(path)
+    with _NEWLINE_CACHE_LOCK:
+        _NEWLINE_CACHE[key] = nl
+    return nl
+
+
 def append_line(path: Path, line: str) -> None:
     """Append one line in the file's own line endings (LF for a new file): the event log's writer."""
-    newline = newline_of(path)
+    newline = _cached_newline(path)
     with open(path, "a", encoding="utf-8", newline="") as f:
         f.write(line.rstrip("\r\n") + newline)
+
+
+ROTATE_MAX_BYTES = 10 * 1024 * 1024    # generous for one project's event log, next to a multi-GB disk
+ROTATE_KEEP = 3                        # path.1 .. path.<keep>, oldest dropped
+
+
+def rotate_log(path: Path, max_bytes: int = ROTATE_MAX_BYTES, keep: int = ROTATE_KEEP) -> bool:
+    """Rotate `path` to `path.1` (shifting `.1`..`.<keep-1>` up one, dropping the oldest) once it is at least
+    `max_bytes` (R-23): the event log is appended every turn and otherwise grows forever, and every tail — by
+    line count or by byte offset — still opens and seeks within whatever is there. Leaves a fresh, empty file at
+    `path`. Returns whether it rotated; a missing or small file is left alone."""
+    path = Path(path)
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return False
+    except OSError:
+        return False
+    for n in range(keep - 1, 0, -1):
+        src, dst = path.with_name(f"{path.name}.{n}"), path.with_name(f"{path.name}.{n + 1}")
+        if src.exists():
+            src.replace(dst)
+    path.replace(path.with_name(f"{path.name}.1"))
+    path.touch()
+    with _NEWLINE_CACHE_LOCK:
+        _NEWLINE_CACHE.pop(str(path), None)       # the fresh file's own ending is read again on its first append
+    return True
 
 
 def now_iso() -> str:

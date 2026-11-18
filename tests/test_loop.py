@@ -77,9 +77,9 @@ def test_crash_before_submit_redispatches_same_attempt(layout):
     spec = REGISTRY["python"].prepare(layout, task, "A.a1")
     jobs.prepare(layout, "A", "A.a1", "python", spec)          # crash here: record exists, nothing launched
     Supervisor(layout, sleep_s=0).once()                       # restart
-    recs = list(layout.jobs.glob("A.*.json"))
-    assert [r.name for r in recs] == ["A.a1.json"]
-    assert json.loads(recs[0].read_text())["phase"] == "DONE"
+    recs = jobs.for_task(layout, "A")       # R-23: COMPLETE now, so the record may have moved to the archive
+    assert [r["attempt_id"] for r in recs] == ["A.a1"]
+    assert recs[0]["phase"] == "DONE"
     assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
 
 
@@ -91,13 +91,13 @@ def test_crash_after_submit_adopts_live_child(layout):
     job_id = rec["attempt_id"]
     sup2 = Supervisor(layout, sleep_s=0)
     sup2.once()
-    assert jobs.read(layout, job_id)["phase"] == "RUNNING"       # adopted, not re-run
+    assert jobs.resolve(layout, job_id)["phase"] == "RUNNING"       # adopted, not re-run
     deadline = time.time() + 10
-    while time.time() < deadline and jobs.read(layout, job_id)["phase"] != "DONE":
+    while time.time() < deadline and jobs.resolve(layout, job_id)["phase"] != "DONE":
         sup2.once(); time.sleep(0.2)
-    assert jobs.read(layout, job_id)["phase"] == "DONE"
+    assert jobs.resolve(layout, job_id)["phase"] == "DONE"          # R-23: COMPLETE now, maybe archived
     assert tasks.load(layout, "P").status == TaskStatus.COMPLETE
-    assert len(list(layout.jobs.glob("P.*.json"))) == 1
+    assert len(jobs.for_task(layout, "P")) == 1
 
 
 def test_crash_after_result_before_done_ingests_without_rerun(layout):
@@ -108,8 +108,8 @@ def test_crash_after_result_before_done_ingests_without_rerun(layout):
     time.sleep(1.5)                                              # child finished, result.json written, record still SUBMITTED
     assert (layout.root / "P.txt").exists()
     Supervisor(layout, sleep_s=0).once()
-    assert jobs.read(layout, job_id)["phase"] == "DONE"
-    assert len(list(layout.jobs.glob("P.*.json"))) == 1
+    assert jobs.resolve(layout, job_id)["phase"] == "DONE"          # R-23: COMPLETE now, maybe archived
+    assert len(jobs.for_task(layout, "P")) == 1
     assert tasks.load(layout, "P").status == TaskStatus.COMPLETE
 
 
@@ -190,15 +190,15 @@ def test_crash_between_submit_and_submitted_record_adopts_not_duplicates(layout,
     assert jobs.read(layout, "P.a1")["phase"] == "PREPARED"
     sup2 = Supervisor(layout, sleep_s=0)
     sup2.once()
-    rec = jobs.read(layout, "P.a1")
+    rec = jobs.resolve(layout, "P.a1")
     assert rec.get("recovered") is True and rec["handle"]["pid"] == handle["pid"]
     import psutil
     assert len([p for p in psutil.Process().children(recursive=True) if p.pid == handle["pid"]]) <= 1
     deadline = time.time() + 10
-    while time.time() < deadline and jobs.read(layout, "P.a1")["phase"] != "DONE":
+    while time.time() < deadline and jobs.resolve(layout, "P.a1")["phase"] != "DONE":
         sup2.once(); time.sleep(0.2)
     assert tasks.load(layout, "P").status == TaskStatus.COMPLETE
-    assert len(list(layout.jobs.glob("P.*.json"))) == 1
+    assert len(jobs.for_task(layout, "P")) == 1    # R-23: COMPLETE now, maybe archived; no duplicate either way
 
 
 def test_command_not_reapplied_after_crash_between_handler_and_ack(layout, monkeypatch):
@@ -576,7 +576,7 @@ def test_cancelled_tasks_queued_job_never_launches_on_resume(layout):
     assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
     runtime.set_decision(layout, "RUN", "test")
     sup.once()
-    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert jobs.resolve(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
     assert not (layout.root / "A.txt").exists(), "a job of a cancelled task wrote its artifact"
     assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
 
@@ -593,8 +593,9 @@ def test_cancel_terminates_a_running_job_and_its_late_result_changes_nothing(lay
     commands.submit(layout, "task.set_status", {"task_id": "P", "status": "CANCELLED", "note": "owner cancel"},
                     actor="owner")
     commands.apply_all(layout)
-    assert jobs.read(layout, rec["attempt_id"])["phase"] == "DONE"
-    assert jobs.read(layout, rec["attempt_id"])["result"] == "CANCELLED"
+    closed = jobs.resolve(layout, rec["attempt_id"])   # R-23: CANCELLED is terminal, so this may be archived
+    assert closed["phase"] == "DONE"
+    assert closed["result"] == "CANCELLED"
     time.sleep(0.5)
     assert not REGISTRY["process"].alive(rec["handle"]), "the running job kept running after its task was cancelled"
     sup.once()                       # the dead process, if ever collected again, must change nothing
@@ -618,7 +619,7 @@ def test_cancel_through_an_inbox_decision_also_retires_jobs(layout):
     assert tasks.load(layout, "A").status == TaskStatus.CANCELLED
     runtime.set_decision(layout, "RUN", "test")
     sup.once()
-    assert jobs.read(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
+    assert jobs.resolve(layout, rec["attempt_id"])["phase"] != "PREPARED", "the cancelled task's job still launched"
     assert not (layout.root / "A.txt").exists()
 
 
@@ -638,8 +639,9 @@ def test_cancel_then_reopen_then_dispatch_gives_the_new_job_its_own_id(layout):
     assert tasks.load(layout, "A").status == TaskStatus.NOT_STARTED
     new = sup.dispatch(tasks.load(layout, "A"), "python")["attempt_id"]
     assert new != old
-    assert jobs.read(layout, old)["phase"] == "DONE"
-    assert jobs.read(layout, old)["result"] == "CANCELLED"
+    old_rec = jobs.resolve(layout, old)   # R-23: belonged to the now-closed CANCELLED episode, may be archived
+    assert old_rec["phase"] == "DONE"
+    assert old_rec["result"] == "CANCELLED"
 
 
 def test_gate_refuses_every_job_kind_for_a_terminal_task(layout):

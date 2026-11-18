@@ -69,7 +69,7 @@ def test_env_digest_is_stable_for_an_unchanged_declaration_and_moves_when_it_cha
 def test_two_dispatched_jobs_with_the_same_declaration_carry_the_same_env_digest_on_their_record(layout):
     a1 = _dispatch_process_job(layout, "E3")
     a2 = _dispatch_process_job(layout, "E4")
-    rec1, rec2 = jobs_mod.read(layout, a1), jobs_mod.read(layout, a2)
+    rec1, rec2 = jobs_mod.resolve(layout, a1), jobs_mod.resolve(layout, a2)   # R-23: the task is terminal, archived
     assert rec1.get("env_digest") and rec1["env_digest"] == rec2["env_digest"]
 
 
@@ -80,7 +80,7 @@ def test_no_env_value_is_ever_written_to_the_job_record_or_the_log(layout):
     (layout.root / "config" / "routing.yaml").write_text(
         "env:\n  base: [PATH]\n  lanes:\n    process: {secrets: [A_LANE_SECRET]}\n", encoding="utf-8")
     attempt_id = _dispatch_process_job(layout, "E5")
-    rec = jobs_mod.read(layout, attempt_id)
+    rec = jobs_mod.resolve(layout, attempt_id)        # R-23: the task is terminal, its record archived
     assert "super-secret-value" not in json.dumps(rec)
     assert isinstance(rec.get("env_digest"), str) and rec["env_digest"]
     if layout.log.exists():

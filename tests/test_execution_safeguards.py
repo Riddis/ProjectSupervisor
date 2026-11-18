@@ -218,7 +218,8 @@ def test_pause_holds_prepared_records_and_a_resume_launches_them(layout):
     assert len(held) == 1                                      # logged once per reason, not per iteration
     commands.submit(layout, "loop.resume", {}, actor="owner")
     sup.once()
-    assert jobs.read(layout, "A.a1")["phase"] == "DONE" and jobs.read(layout, "A.a1").get("held") is None
+    rec = jobs.resolve(layout, "A.a1")                 # R-23: COMPLETE now, so this record may be archived
+    assert rec["phase"] == "DONE" and rec.get("held") is None
     assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
 
 
@@ -243,7 +244,7 @@ def test_finished_work_is_still_collected_under_pause(layout):
     time.sleep(1.5)
     runtime.set_decision(layout, "PAUSE")
     sup.once()
-    assert jobs.read(layout, job_id)["phase"] == "DONE" and tasks.load(layout, "P").status == TaskStatus.COMPLETE
+    assert jobs.resolve(layout, job_id)["phase"] == "DONE" and tasks.load(layout, "P").status == TaskStatus.COMPLETE
 
 
 # ------------------------------------------------------------------ §4 drain and shutdown

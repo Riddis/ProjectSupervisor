@@ -83,13 +83,30 @@ def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: d
                           "spec": spec, "handle": None, "gpu": gpu, "created": now_iso(), **extra})
 
 
+def _task_id_of(job_id: str) -> str:
+    """The task id a job id names: `job_id` up to its own `.a<n>` suffix — the same split `all_grouped`'s stub
+    already uses for a record it cannot read."""
+    return job_id.rsplit(".a", 1)[0]
+
+
+def archive_dir(layout: Layout, task_id: str) -> Path:
+    return layout.jobs / "archive" / task_id
+
+
+def archive_path(layout: Layout, job_id: str) -> Path:
+    return archive_dir(layout, _task_id_of(job_id)) / f"{job_id}.json"
+
+
 def resolve(layout: Layout, job_id: str) -> dict | None:
-    """The job record named `job_id`, or `None` when it does not exist, instead of raising — the one place a
-    later fallback to the archive (§4.5, not built yet) will add itself, and the one way a caller that merely
-    wants to know whether a job exists avoids catching an exception to find out."""
-    p = path(layout, job_id)
+    """The job record named `job_id`, or `None` when it does not exist, instead of raising. Falls back to the
+    archive on a miss (R-23, §4.5): a terminal task's records move there, so an old id or URL still resolves —
+    only the loop's own bulk scans (`_scan_open`, `all_records`, `all_grouped`) stop seeing them."""
     try:
-        return _cached_read(p)
+        return _cached_read(path(layout, job_id))
+    except (OSError, ValueError):
+        pass
+    try:
+        return _cached_read(archive_path(layout, job_id))
     except (OSError, ValueError):
         return None
 
@@ -100,7 +117,22 @@ def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
     rec = read(layout, attempt_id)
     rec["phase"] = phase
     rec.update(fields)
-    return write(layout, rec)
+    out = write(layout, rec)
+    if phase in ("DONE", "FAILED"):
+        # R-23: the job that is itself completing a task's final transition is still PREPARED/SUBMITTED/RUNNING
+        # at the moment advance()/set_status() archives everything else of this task (archive_terminal only
+        # moves already-terminal records, on purpose — see there); once IT reaches DONE/FAILED too, sweep it
+        # into the archive if its task has in the meantime gone terminal, so nothing is left behind forever.
+        from . import tasks as tasks_mod            # local: tasks.py already imports jobs.py at call time
+        task_id = rec.get("task_id")
+        if task_id:
+            try:
+                terminal = tasks_mod.load(layout, task_id).status in tasks_mod.TERMINAL
+            except tasks_mod.TaskError:
+                terminal = False
+            if terminal:
+                archive_terminal(layout, task_id)
+    return out
 
 
 # A read shared by every caller in the process, not only one turn's own snapshot (C-1): keyed by path, kept only
@@ -249,17 +281,49 @@ def for_task(layout: Layout, task_id: str) -> list[dict]:
     """The task's job records, oldest first by `(attempt, kind, seq)` (`sort_key`) — no id-suffix fallback (§6):
     the start-up guard already refuses to dispatch on a store holding a record without these fields, so every
     record this reads carries them, and callers take `[-1]` as the newest. Read-only (R-03): an unreadable
-    record is reported once and represented by a stub, never rewritten on disk."""
+    record is reported once and represented by a stub, never rewritten on disk.
+
+    Reads the archive too (R-23): a terminal task's records have moved to `archive_dir(layout, task_id)`, but the
+    Task page's own Attempts table is this function — archiving must stop the *loop's* bulk scans from seeing a
+    finished record, never make a task's own history disappear from the one place that still asks for it by id."""
     out = []
-    for p in layout.jobs.glob(f"{task_id}.*.json"):
-        try:
-            r = _cached_read(p)
-        except (OSError, ValueError) as exc:
-            msg = _report_unreadable(layout, p, exc)
-            r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
-        if r.get("task_id") == task_id:
-            out.append(r)
+    for base in (layout.jobs, archive_dir(layout, task_id)):
+        for p in base.glob(f"{task_id}.*.json"):
+            try:
+                r = _cached_read(p)
+            except (OSError, ValueError) as exc:
+                msg = _report_unreadable(layout, p, exc)
+                r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
+            if r.get("task_id") == task_id:
+                out.append(r)
     return _oldest_first(out)
+
+
+def archive_terminal(layout: Layout, task_id: str) -> list[str]:
+    """Move every already-DONE/FAILED job record of now-terminal `task_id` from `state/runtime/jobs/` into
+    `state/runtime/jobs/archive/<task_id>/` (R-23): the loop's own scans (`_scan_open`, `all_records`,
+    `all_grouped`) glob only the top level, non-recursively, so this is what makes a finished task's records stop
+    costing every turn a stat, however many tasks have finished. `resolve()` and `for_task()` still find them
+    there. Deliberately skips a record still PREPARED/SUBMITTED/RUNNING: the job that is itself completing this
+    task's final transition can be exactly that, mid-call, one line above its own `jobs.set_phase(..., "DONE")`
+    (`loop.ingest`'s delivery branch advances the task before closing its own job record) — moving it out from
+    under that write would turn the next read into a FileNotFoundError. `set_phase` sweeps it in once it, too,
+    reaches DONE/FAILED. Returns the attempt ids moved; a task with none movable, or already archived, is a
+    no-op."""
+    dest = archive_dir(layout, task_id)
+    moved = []
+    for p in sorted(layout.jobs.glob(f"{task_id}.*.json")):
+        try:
+            if _cached_read(p).get("phase") not in ("DONE", "FAILED"):
+                continue
+        except (OSError, ValueError):
+            continue
+        dest.mkdir(parents=True, exist_ok=True)
+        p.replace(dest / p.name)
+        moved.append(p.stem)
+        with _RECORD_CACHE_LOCK:
+            _RECORD_CACHE.pop(str(p), None)
+    return moved
 
 
 def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
