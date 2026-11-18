@@ -30,6 +30,70 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   never from an inherited variable, so neither needed any addition. The job record gains `env_digest` (sorted
   declared names plus a hash of values, never a value itself).
 
+- **Added: stable attempt identity for every job, so one attempt owns its own delivery, verification, review and
+  diagnosis (C-3).** A job's `attempt`, `kind`, `seq`, `parent`, `cause` and `scope` are now derived by one
+  allocator from a locked, monotonic counter the task document itself carries, never by counting job files, so a
+  lost job record can no longer make the next dispatch reuse an id. The Overview's "now running" panel, the task
+  page's Attempts table and the Control Center read these fields first, falling back to the old id-suffix count
+  only for a job record nobody has migrated yet (labelled by its own job id, never a borrowed attempt number). A
+  new `supervisor migrate attempts` subcommand (`--dry-run`, `--apply`, `--mapping`, `--compare`) derives, and then
+  writes, this identity onto every job record a project already has; the loop refuses to dispatch on a store
+  holding a record that is neither migration-stamped nor allocator-written, naming the file and the command that
+  fixes it.
+
+- **Fixed: a review round always started from zero, and a task's own `review_note` never reached one (R-15).** A
+  second or later review round's packet now carries the previous round's findings (each with a stable `id`), the
+  producer's own response to them and what changed since; `Task.review_note` now reaches the packet it was
+  written for. A continuation's or a revision's handoff is now selected by the job's own dispatch kind, never by
+  the newest file's mtime across every run directory or by a job's result-schema name, so a reviewer or a revision
+  after a non-delivery schema (an assessment, a research report) is handed the producer's actual last notes
+  instead of a stranger's run directory or none at all.
+
+- **Fixed: one shared retry budget let an infrastructure failure spend what a content review needed (R-14).**
+  A failure is now classified by its own cause and charged against a separate budget per cause, so repeated
+  verifier-condition failures (a quoting mismatch, a bad cwd, an allow-list miss) no longer exhaust the budget a
+  review round needs before the review itself has even run.
+
+- **Fixed: the verifier's test environment and allow-list still depended on whatever this process happened to
+  inherit (R-13, the remainder).** A declared command now runs under the same declared base allow-list a job's own
+  process lane uses, with every `SUPERVISOR_*` name dropped by prefix instead of a fixed list of six; the
+  interpreter, working directory and `PATH` a command actually runs under are now one pinned, named triple,
+  recorded on `verification.json` and quoted in the review packet's own brief; the allow-list now matches a
+  command and each of its own entries through the same normaliser.
+
+- **Fixed: an idle turn re-rendered every projection, and nothing was ever retired from the job store (R-09 step
+  2, R-22, R-23).** A markdown projection is now rewritten only when its own content actually changed; a job
+  record moves to an on-disk archive once its task is terminal and old enough, read back through one resolver so
+  nothing that reads a job by id needs to know whether it is still live; the event log now rotates instead of
+  growing forever and being read in full before every tail or append.
+
+- **Fixed: a directory named like a command file blocked the loop, and bytes that were not UTF-8 were dropped
+  with no quarantine copy (F8, F9).** `commands.apply_all()` now rejects a directory before any read or unlink is
+  attempted, reporting it once and leaving it in place; a command file's bytes are captured before a UTF-8 decode
+  is attempted, so a decode failure still quarantines the file with its own bytes intact.
+
+- **Fixed: a login failure on a diagnosis lane could raise past the loop's own turn, a refused launch still
+  flipped a failed or blocked task's status, and an agent-written approval card carried no digest to bind to
+  (F10, the PAUSE observation, F3).** `reroute()` now tolerates an unreadable task file the way its own
+  neighbours already do, instead of raising past the turn; `launch()` now checks the one gate, the resource lease
+  and an unreadable task file before it ever changes a task's status, so a refusal — PAUSE among the reasons — no
+  longer moves a FAILED or BLOCKED task to IN_PROGRESS with nothing launched, and logs the refusal once per
+  reason rather than once per turn it stays open. An agent-written question that is itself an approval target now
+  shows the digest it binds to, so Approve refuses a stale delivery for it exactly as it already did for a
+  loop-opened card.
+
+- **Clarification, 2.6.1's own entry above:** "now has that job held, if it has not yet launched, or closed with
+  whatever result did arrive, if it has" describes the delivery, verify and review kinds. A diagnosis-kind job
+  record for an unreadable task file is always closed, never held — neither `launch()` nor `ingest()` ever holds
+  that kind open waiting on one (F7).
+
+**Migration:** `supervisor migrate` itself is unchanged. The new, separate `migrate attempts` subcommand backfills
+the attempt-identity fields above onto a project's existing job records; it is not required for this release to
+run (an un-migrated record is still read, by its own job id, through the fallback above), but the loop's own
+start-up guard refuses to dispatch once any job record exists that is neither migration-stamped nor
+allocator-written, so a project upgrading in place runs `migrate attempts --dry-run` then `--apply` (reviewed
+first) in the same stopped window it upgrades in, before restarting the loop.
+
 ## 2.7.0 — 2026-11-15
 
 - **Added: a one-field contract patch, so adding a dependency no longer means resending a task's whole contract.**
