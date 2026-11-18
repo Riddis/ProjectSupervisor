@@ -185,6 +185,29 @@ def test_dispatch_under_pause_leaves_a_failed_tasks_status_alone_across_several_
     assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
 
 
+def test_unreadable_task_file_during_launch_logs_held_once_not_per_turn(layout):
+    """Chief Architect review of the fix above: moving `_ensure_in_progress()` below the held-reset
+    (`if rec.get("held"): rec = jobs_mod.set_phase(..., held=None)`) rebinds `rec` to a record whose `held` is
+    always `None` by the time the `TaskError` branch compares it to the new reason, so that comparison is always
+    true and `launch_held` is logged once per turn for as long as the file stays unreadable - the same "logged
+    once per reason, not per iteration" invariant `test_pause_holds_prepared_records_and_a_resume_launches_them`
+    pins for the gate branch above it."""
+    ptask(layout, "A")
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    assert rec["phase"] == "PREPARED" and rec.get("held") == "decision is PAUSE"
+    (layout.tasks / "A.yaml").write_text("id: A\nphase: [unclosed\n", encoding="utf-8")
+    runtime.set_decision(layout, "RUN", "test")           # the gate now lets the record through the held-reset
+    for _ in range(3):
+        sup.once()
+    held = [json.loads(e) for e in layout.log.read_text().splitlines()
+            if '"launch_held"' in e and "task file unreadable" in e]
+    assert len(held) == 1                                      # logged once per reason, not per iteration
+    rec = jobs.read(layout, rec["attempt_id"])
+    assert rec["phase"] == "PREPARED" and (rec.get("held") or "").startswith("task file unreadable")
+
+
 def test_stop_decision_exits_run(layout):
     runtime.set_decision(layout, "STOP")
     assert Supervisor(layout, sleep_s=0).run() == 0
