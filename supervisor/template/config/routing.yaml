@@ -134,7 +134,8 @@ env:                                 # the declared job environment (supervisor/
                                      # subprocess starts from this allow-list plus its own lane's additions, never
                                      # from the loop's whole environment - name a variable here once rather than let
                                      # every new vendor variable leak into every lane until someone notices
-  base: [PATH, SystemRoot, ComSpec, TEMP, TMP, HOME, USERPROFILE, LANG, LC_ALL, TZ, PYTHONHASHSEED]
+  base: [PATH, SystemRoot, ComSpec, TEMP, TMP, HOME, USERPROFILE, LANG, LC_ALL, TZ, PYTHONHASHSEED, PYTHONPATH,
+         PYTHONIOENCODING, APPDATA, LOCALAPPDATA, PATHEXT, SystemDrive, windir, NUMBER_OF_PROCESSORS]
   lanes: {}                          # <lane> (the job's own adapter name, e.g. process): {add: {NAME: value}, secrets: [NAME in secrets/.env]}
 
 verification:                       # supervisor/verify.py re-runs declared tests here; only these command prefixes

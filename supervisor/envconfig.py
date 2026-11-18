@@ -22,8 +22,22 @@ from .paths import Layout
 # Shipped default (config/routing.yaml's own `env.base` overrides it; the template ships this same list so a
 # fresh project sees it written out, not only implied). A name absent from this process's own environment is
 # simply absent from the job's — never an error.
+#
+# Beyond the cross-platform shell/locale names, this carries what a plain Windows Python subprocess already
+# needs to behave like one rather than a stripped-down one: PATHEXT (so Windows can resolve an extensionless
+# command on PATH at all — `COMSPEC`/`PATH` alone are not enough to launch one), SystemDrive/windir (the two
+# system-identity names most Windows tooling assumes are set, the same tier as SystemRoot/ComSpec already
+# here), NUMBER_OF_PROCESSORS (what a worker reads to size its own parallelism, absent any job-specific
+# override), and PYTHONPATH/PYTHONIOENCODING/APPDATA/LOCALAPPDATA — already load-bearing for a *different*
+# framework-launched child elsewhere (`plugins.import_side_effects`'s probe sets `PYTHONPATH`;
+# `plugin_template/tests/test_conformance.py-tpl` and every in-repo plugin's own conformance test set
+# `PYTHONIOENCODING`; a Python install's own user site-packages/cache resolution needs `APPDATA`/
+# `LOCALAPPDATA` on Windows), so narrowing a process job to less than that would be a worse regression than
+# this release's own fix. An upgrading project that already relies on something outside even this widened set
+# still names it once, in its own `env.base` (see the release doc's upgrade note, 2.8.0 step 12).
 DEFAULT_BASE: tuple[str, ...] = ("PATH", "SystemRoot", "ComSpec", "TEMP", "TMP", "HOME", "USERPROFILE", "LANG",
-                                "LC_ALL", "TZ", "PYTHONHASHSEED")
+                                "LC_ALL", "TZ", "PYTHONHASHSEED", "PYTHONPATH", "PYTHONIOENCODING", "APPDATA",
+                                "LOCALAPPDATA", "PATHEXT", "SystemDrive", "windir", "NUMBER_OF_PROCESSORS")
 
 # A job's own identity, minted by the allocator and added by adapters.process.job_identity_env — never inherited
 # from the loop's launching environment, which is exactly what makes a launching process that already carries
