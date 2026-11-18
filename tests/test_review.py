@@ -113,6 +113,26 @@ def test_full_cycle_implement_verify_review_complete(layout):
     assert t.delivery.reviews[0].vendor == "claude"
 
 
+def test_dispatch_computes_prior_round_context_once(layout, monkeypatch):
+    """review.dispatch() needs the previous-round context for both the packet (review_brief) and the dispatch
+    extra (prior_round/digest_diff) - one computation shared between the two, not one each (R-15,
+    ATTEMPT_MODEL.md 4.3): a frozen manifest, a text snapshot and a unified diff built twice is wasted work on
+    every single review dispatch, not only a round with a prior round to show."""
+    from supervisor import packets
+    review_task(layout, "T")
+    sup = Supervisor(layout, sleep_s=0)
+    sup.once()                                                     # a1 delivery -> WAITING_FOR_REVIEW
+    calls = []
+    orig = packets.prior_round_context
+
+    def counting(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+    monkeypatch.setattr(packets, "prior_round_context", counting)
+    review.dispatch(sup, tasks.load(layout, "T"), "code_review")
+    assert len(calls) == 1
+
+
 def test_revise_verdict_dispatches_an_automatic_revision(layout):
     review_task(layout, "T")
     os.environ["FAKE_REVIEW_VERDICT"] = "REVISE"

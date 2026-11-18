@@ -1,6 +1,8 @@
 """R-15/R-25 (ATTEMPT_MODEL.md section 4.3): a round-two review packet carries round one's findings, the
 producer's claim, the artifact-level diff and `review_note` — entirely from the store, never a run directory.
-Round one's packet asks for every blocking finding. A review result that omits `findings[].id` still gets one."""
+Round one's packet asks for every blocking finding. A review result that omits `findings[].id` still gets one.
+The producer's per-finding response (`findings_response`, optional, additive) renders beside the matching
+finding; `task.result` stays the one free-text fallback when a producer gives none."""
 import json
 
 from supervisor import jobs, packets, tasks
@@ -88,3 +90,23 @@ def test_round_two_packet_carries_round_one_and_the_diff_entirely_from_the_store
     assert ctx["claim"] == "addressed R-1 by fixing the default; nothing else changed"
     assert {"path": "out.py", "change": "changed"} in ctx["change_list"]
     assert "-value = 1" in ctx["diff_text"] and "+value = 2" in ctx["diff_text"]
+
+
+def test_round_two_packet_renders_the_producers_response_beside_each_finding(layout):
+    """ATTEMPT_MODEL.md 4.3 point 3: what the producer claimed PER FINDING (addressed/disputed/deferred), not
+    only the one undifferentiated paragraph `task.result` already carries — the optional `findings_response`
+    delivery field, keyed by the prior round's own finding id, rendered next to that finding's own line.
+    `task.result` stays the fallback: a producer that gives none still has its one free-text claim shown."""
+    finding = _set_up_round_one(layout)
+    (layout.root / "out.py").write_text("value = 2\n", encoding="utf-8")
+    tasks.record_delivery(layout, "T", DIGEST_2, actor="test", paths=["out.py"],
+                          findings_response=[{"id": finding["id"], "status": "addressed",
+                                              "note": "fixed the default"}])
+    task = tasks.load(layout, "T")
+
+    brief = packets.review_brief(layout, task, DIGEST_2, ["out.py"], "code_review")
+    finding_line = next(line for line in brief.splitlines() if finding["id"] in line)
+    assert "producer: addressed (fixed the default)" in finding_line
+
+    ctx = packets.prior_round_context(layout, task, DIGEST_2, ["out.py"])
+    assert ctx["responses"][finding["id"]] == {"status": "addressed", "note": "fixed the default"}

@@ -11,5 +11,8 @@
   "decisions": [],
   "tests": [
     {"command": ".venv/Scripts/python.exe -m pytest tests/test_agent_cards_and_schemas.py", "exit_code": 0, "summary": "14 passed"}
+  ],
+  "findings_response": [
+    {"id": "R-01", "status": "addressed", "note": "added the forbidden-token assertion to the card test"}
   ]
 }

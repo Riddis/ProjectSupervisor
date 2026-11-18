@@ -14,7 +14,8 @@
       "blocking": true,
       "message": "The acceptance criterion 'no model names appear in cards' is not enforced anywhere, so a later edit can reintroduce one. Add the forbidden-token assertion to the card test.",
       "evidence": "state/tasks/T1-04.yaml acceptance; tests/test_agent_cards_and_schemas.py has no token check",
-      "severity": "medium"
+      "severity": "medium",
+      "id": "R-01"
     },
     {
       "category": "advisory",
