@@ -22,6 +22,7 @@ from supervisor import jobs, migrations
 from supervisor.cli import app
 
 from tests.conftest import make_task
+from tests._cli_help_width import clean, invoke_help
 
 runner = CliRunner()
 
@@ -304,10 +305,10 @@ def test_cli_help_shows_the_four_options_and_the_bare_command_still_works(layout
     from supervisor import project as project_mod
     project_mod.write(layout, {"name": "p"})
     monkeypatch.setenv("SUPERVISOR_ROOT", str(layout.root))
-    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    result = invoke_help(runner, app, "migrate", "attempts")
     assert result.exit_code == 0, result.output
     for opt in ("--dry-run", "--out", "--overrides", "--compare"):
-        assert opt in result.output, result.output
+        assert opt in clean(result.output), result.output
 
     bare = runner.invoke(app, ["migrate", "--dry-run"])
     assert bare.exit_code == 0, bare.output
@@ -331,7 +332,7 @@ def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, mon
         monkeypatch.delenv("COLUMNS", raising=False)
     else:
         monkeypatch.setenv("COLUMNS", ambient_columns)
-    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    result = invoke_help(runner, app, "migrate", "attempts")
     assert result.exit_code == 0, result.output
     for opt in ("--dry-run", "--out", "--overrides", "--compare"):
-        assert opt in result.output, result.output
+        assert opt in clean(result.output), result.output

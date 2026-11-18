@@ -22,6 +22,7 @@ from supervisor.cli import app
 
 from tests.conftest import make_task
 from tests.test_migrate_attempts_dry_run import EXPECTED, T, _attempt, build_fixture
+from tests._cli_help_width import clean, invoke_help
 
 runner = CliRunner()
 
@@ -469,10 +470,10 @@ def test_cli_help_shows_apply_and_check_and_an_end_to_end_run_passes(layout, mon
     project_mod.write(layout, {"name": "p"})
     monkeypatch.setenv("SUPERVISOR_ROOT", str(layout.root))
 
-    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    result = invoke_help(runner, app, "migrate", "attempts")
     assert result.exit_code == 0, result.output
     for opt in ("--dry-run", "--apply", "--check", "--out", "--mapping", "--overrides", "--compare"):
-        assert opt in result.output, result.output
+        assert opt in clean(result.output), result.output
 
     build_apply_fixture(layout, tmp_path)
     mapping_dir = tmp_path / "mapping"
@@ -512,7 +513,7 @@ def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, mon
         monkeypatch.delenv("COLUMNS", raising=False)
     else:
         monkeypatch.setenv("COLUMNS", ambient_columns)
-    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    result = invoke_help(runner, app, "migrate", "attempts")
     assert result.exit_code == 0, result.output
     for opt in ("--dry-run", "--apply", "--check", "--out", "--mapping", "--overrides", "--compare"):
-        assert opt in result.output, result.output
+        assert opt in clean(result.output), result.output
