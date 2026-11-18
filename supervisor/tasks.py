@@ -1077,20 +1077,25 @@ HASH_AT_RECORD = object()        # record_review(report_sha256=...) default: no 
 
 
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
-                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD) -> Task:
+                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD,
+                  findings: list[dict] | None = None) -> Task:
     """`report_sha256`: the hash of the report as the reviewer produced it, when the caller holds those bytes (the
     loop's snapshot of the job's result, a CLI review hashed at submission). An explicit None means the caller had no
     verifiable bytes: it is kept as None (the report is never shown as the reviewer's) and the file is NOT hashed
     later in its place. Omitted, the file is hashed now, at record time — which says what the file held then, not
-    what the reviewer wrote."""
+    what the reviewer wrote.
+
+    `findings` (R-15): the reviewer's own findings, already carrying `id` (contract.review_result's fallback),
+    kept on the ReviewRecord itself so a later review round can read this round's findings from the task
+    document alone, never from a run directory."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
     sha = report_file_sha256(layout, report) if report_sha256 is HASH_AT_RECORD else report_sha256
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")
         d.setdefault("reviews", []).append(ReviewRecord(digest=digest, role=role, verdict=verdict_e, at=store.now_iso(),
-                                                        vendor=vendor, report=report,
-                                                        report_sha256=sha).model_dump(mode="json"))
+                                                        vendor=vendor, report=report, report_sha256=sha,
+                                                        findings=findings or []).model_dump(mode="json"))
     t = _update(layout, task_id, fn)
     log(layout, "review", actor, task=task_id, role=role, verdict=verdict_e.value, digest=digest)
     return t

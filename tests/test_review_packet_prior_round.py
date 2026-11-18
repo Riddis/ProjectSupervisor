@@ -79,7 +79,7 @@ def test_round_two_packet_carries_round_one_and_the_diff_entirely_from_the_store
     assert "watch the edge cases" in brief                           # review_note reaches the packet
     assert "out.py: changed" in brief                                # artifact-level change list
     assert "-value = 1" in brief and "+value = 2" in brief            # unified diff content
-    assert "## Round 1" not in brief                                 # this is round two, not round one
+    assert "first review round" not in brief                        # this is round two, not round one
 
     ctx = packets.prior_round_context(layout, task, DIGEST_2, ["out.py"])
     assert ctx["rounds"][0]["attempt"] == 1

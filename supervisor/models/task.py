@@ -121,6 +121,10 @@ class ReviewRecord(BaseModel):
     report: Optional[str] = None
     report_sha256: Optional[str] = None    # the report's bytes when the review was recorded (1.10.0); the approval view
                                            # shows its summary/findings only while the file still hashes to this
+    findings: list[dict[str, Any]] = Field(default_factory=list)   # R-15: the reviewer's own findings (with
+                                                                     # findings[].id), kept on the task document
+                                                                     # itself so a later review round can read them
+                                                                     # without ever reaching into a run directory
     superseded: bool = False
 
 

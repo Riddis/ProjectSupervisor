@@ -178,9 +178,20 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the
     # content hashes an artifact edited under the reviewer would still collect an ACCEPT for bytes that are gone
     #. loop.dispatch writes it next to the run as frozen_inputs.json for the audit.
-    extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts)}
+    # review_text_snapshot (R-15, ATTEMPT_MODEL.md 4.3) rides the same durable record: a capped text copy of these
+    # artifacts, so the NEXT round's review_brief() can diff against this one without ever reading a run directory.
+    extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts),
+            "review_text_snapshot": packets_mod.text_snapshot(layout, artifacts)}
     if fell_back:
         extra["same_vendor"] = same_vendor
+    prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
+    if prior_ctx["rounds"]:
+        # Written beside this review's own run (loop.dispatch) for audit — never read back from there: every
+        # input that built them already came from the store (prior_round_context's own docstring).
+        extra["prior_round"] = {"task_id": task.id, "digest": digest, "rounds": prior_ctx["rounds"],
+                                "claim": prior_ctx["claim"], "change_list": prior_ctx["change_list"]}
+        if prior_ctx["diff_text"]:
+            extra["digest_diff"] = prior_ctx["diff_text"]
     prior_round = any(jobs_mod.kind_of(r) == "review" and r.get("review_role") == role and r.get("review_digest") == digest
                       for r in jobs_mod.for_task(layout, task.id))
     attempt, delivery_id = _delivery_for_digest(layout, task.id, digest)
@@ -294,7 +305,7 @@ def ingest(supervisor, rec: dict, result) -> None:
     report, report_hash = tasks_mod.review_snapshot(layout, run_dir, obj) if run_dir else (None, None)
     try:
         tasks_mod.record_review(layout, task_id, digest, role, verdict, vendor=vendor, report=report, actor="loop",
-                                report_sha256=report_hash)
+                                report_sha256=report_hash, findings=[f for f in obj.get("findings") or [] if isinstance(f, dict)])
     except tasks_mod.TaskError:
         # the digest moved on in the instant between our check above and the lock-protected write: discard, same
         # as the ordinary invalidation path above.

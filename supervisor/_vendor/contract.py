@@ -479,6 +479,15 @@ def normalize_category(value):
     return key if key in FINDING_CATEGORIES else CATEGORY_ALIASES.get(key, value)
 
 
+def finding_id(message: str) -> str:
+    """The id a finding gets when a reviewer's result omits one: a hash of its own normalised title (its
+    `message`, the only title-shaped text every finding already carries) — same input, same id, so "the same
+    finding again" (a review-rounds budget trigger, ATTEMPT_MODEL.md 4.2) and "the previous round's own finding"
+    (4.3) are both decidable without asking every reviewer to invent and remember an id of its own."""
+    norm = re.sub(r"\s+", " ", (message or "").strip().lower())
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
 def review_result(text):
     value = result_object(text, "review")
     if value.get("verdict") not in REVIEW_VERDICTS:
@@ -498,6 +507,10 @@ def review_result(text):
                              + json.dumps(f, ensure_ascii=False)[:300])
         if f["category"] == "advisory" and f["blocking"] and value["verdict"] != "BLOCKED":
             raise ValueError("Advisory findings cannot block")
+        # findings[].id (R-15/R-25): a result that already names one keeps it; one that omits it is still
+        # accepted, and gets the derived fallback instead of a refusal — no existing role card breaks.
+        fid = str(f.get("id") or "").strip()
+        f["id"] = fid or finding_id(f["message"])
     if value["verdict"] == "ACCEPT" and any(f["blocking"] for f in findings):
         raise ValueError("Accepted review contains blocking findings")
     return value

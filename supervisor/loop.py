@@ -224,6 +224,10 @@ class Supervisor:
         # review, a verify, a diagnosis, a conversation) has none to give — those records stay exactly as narrow
         # as before this.
         job_extra = {**(extra or {}), "reason": reason} if reason else dict(extra or {})
+        # prior_round/digest_diff (R-15, ATTEMPT_MODEL.md 4.3) are this dispatch's own audit output, written beside
+        # the run below; review_text_snapshot is the one of the three a LATER round still needs, so it alone stays
+        # on the durable job record.
+        run_dir_payload = {k: job_extra.pop(k) for k in ("prior_round", "digest_diff") if k in job_extra}
         if kind == "conversation":          # no Task document backs a conversation thread; nothing to count on
             n = len(jobs_mod.for_task(self.layout, task.id)) + 1
             attempt_id = f"{task.id}.a{n}"
@@ -263,6 +267,10 @@ class Supervisor:
             atomic_json(Path(spec["run_dir"]) / "before_manifest.json", verify_mod.snapshot(self.layout, task))
         if extra and extra.get("review_frozen") is not None and spec.get("run_dir"):
             atomic_json(Path(spec["run_dir"]) / "frozen_inputs.json", extra["review_frozen"])   # audit trail
+        if run_dir_payload.get("prior_round") is not None and spec.get("run_dir"):
+            atomic_json(Path(spec["run_dir"]) / "prior_round.json", run_dir_payload["prior_round"])   # audit trail
+        if run_dir_payload.get("digest_diff") and spec.get("run_dir"):
+            (Path(spec["run_dir"]) / "digest_diff.patch").write_text(run_dir_payload["digest_diff"], encoding="utf-8")
         # One durable write carries everything a continuation or ingestion needs: a crash between prepare() and a
         # second record write used to leave a review job without its role and discard the finished verdict.
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,

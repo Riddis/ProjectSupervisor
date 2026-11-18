@@ -262,6 +262,16 @@ def for_task(layout: Layout, task_id: str) -> list[dict]:
     return _oldest_first(out)
 
 
+def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
+    """The delivery attempt a past review digest belongs to, read from this task's own review job records (the
+    store, never a run directory): the newest review job whose `review_digest` matches it names its own
+    `attempt` — the same join `review._delivery_for_digest` uses from a verify job, available here too because
+    every review job already carries `attempt` once dispatched through the allocator (ATTEMPT_MODEL.md step 9).
+    `None` when no such record exists (a digest reviewed before this field existed, or never reviewed at all)."""
+    matches = [r for r in for_task(layout, task_id) if kind_of(r) == "review" and r.get("review_digest") == digest]
+    return attempt_of(matches[-1]) if matches else None
+
+
 def all_grouped(layout: Layout) -> dict[str, list[dict]]:
     """Every job record, read once (one glob, one read per file) and grouped by task id, each group ordered
     exactly as `for_task()` orders it — for a caller (`repair_continuations`) that would otherwise call
