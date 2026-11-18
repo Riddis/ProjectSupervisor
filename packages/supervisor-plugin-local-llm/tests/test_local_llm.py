@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -70,7 +71,9 @@ def test_schema_valid_response_completes(layout, fake_server):
     run_until_done(layout, "LL")
     t = testing.task(layout, "LL")
     assert t.status == "COMPLETE"
-    run_dir = layout.runs / "LL" / "LL.a1"
+    # attempt_id is no longer promised to parse as "<task>.a<n>" (docs/PLUGIN_API.md, Adapter.prepare) - take
+    # run_dir from the job record's own spec rather than rebuilding it from a guessed id.
+    run_dir = Path(testing.jobs(layout, "LL")[-1]["spec"]["run_dir"])
     result = json.loads((run_dir / "result.json").read_text())
     assert result["status"] == "COMPLETE" and result["answer"]["caption"] == "a red fox"
 
@@ -78,7 +81,7 @@ def test_schema_valid_response_completes(layout, fake_server):
 def test_schema_invalid_response_fails(layout, fake_server):
     lltask(layout, fake_server, mode="bad")
     run_until_done(layout, "LL")
-    run_dir = layout.runs / "LL" / "LL.a1"
+    run_dir = Path(testing.jobs(layout, "LL")[-1]["spec"]["run_dir"])
     result = json.loads((run_dir / "result.json").read_text())
     assert result["status"] == "FAILED" and "schema validation failed" in result["error"]
 
