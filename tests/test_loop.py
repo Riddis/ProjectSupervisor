@@ -161,6 +161,30 @@ def test_pause_stops_dispatch_and_resume_restarts(layout):
     assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
 
 
+def test_dispatch_under_pause_leaves_a_failed_tasks_status_alone_across_several_turns(layout):
+    """2.7.0 review, P3-2 (observed, pre-existing): `launch()` called `_ensure_in_progress()` before the one
+    gate (`gate.check`), so a FAILED task whose only queued job the gate then refuses (PAUSE: "decision is
+    PAUSE") was still flipped to IN_PROGRESS at prepare time even though nothing launched. The status must
+    stay FAILED while every launch is refused, across several paused turns, and only move once the decision
+    returns to RUN and the gate actually lets the job through."""
+    ptask(layout, "A")
+    tasks.set_status(layout, "A", "FAILED", actor="owner", note="forced for the test", force=True)
+    sup = Supervisor(layout, sleep_s=0)
+    runtime.set_decision(layout, "PAUSE", "test")
+    rec = sup.dispatch(tasks.load(layout, "A"), "python")
+    assert rec["phase"] == "PREPARED" and rec.get("held") == "decision is PAUSE"
+    assert tasks.load(layout, "A").status == TaskStatus.FAILED
+    for _ in range(3):
+        sup.once()
+        assert tasks.load(layout, "A").status == TaskStatus.FAILED
+    runtime.set_decision(layout, "RUN", "test")
+    for _ in range(5):
+        sup.once()
+        if tasks.load(layout, "A").status == TaskStatus.COMPLETE:
+            break
+    assert tasks.load(layout, "A").status == TaskStatus.COMPLETE
+
+
 def test_stop_decision_exits_run(layout):
     runtime.set_decision(layout, "STOP")
     assert Supervisor(layout, sleep_s=0).run() == 0

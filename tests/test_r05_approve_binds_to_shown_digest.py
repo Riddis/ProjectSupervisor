@@ -89,3 +89,48 @@ def test_the_inbox_card_for_the_current_digest_still_approves(layout, client):
     t = tasks.load(layout, "A")
     assert t.status.value == "COMPLETE"
     assert [a.digest for a in t.delivery.approvals] == [DIGEST_A]
+
+
+def _agent_written_question(layout, digest):
+    """F3 (round 1's finding, deferred through 2.6.1/2.7.0): a task WAITING_FOR_HUMAN with no attempt behind
+    it (an agent asked the owner the question the loop would otherwise have asked) is itself an approval
+    target (inbox.approval_target's second shape) but the item this leaves open carries no `approval_digest`
+    field at all - R-05's fix only ever gave a hidden digest field to the first shape."""
+    _ready(layout, digest)
+    return inbox_mod.create(layout, for_role="owner", subject="A needs a decision",
+                            summary="the task is waiting on you; can I proceed with it as delivered?",
+                            kind="question", from_="agent", task_id="A")
+
+
+def test_the_card_for_an_agent_written_question_shows_the_digest_it_binds_to(layout, client):
+    """F3: the card must show what it would approve, the same way the loop-opened approval card already
+    does, so the owner's browser actually has a digest to carry back."""
+    _agent_written_question(layout, DIGEST_A)
+    page = client.get("/inbox").text
+    assert f'name="digest" value="{DIGEST_A}"' in page
+
+
+def test_the_agent_written_card_for_an_older_digest_is_refused_when_a_newer_delivery_lands(layout, client):
+    item = _agent_written_question(layout, DIGEST_A)
+    page = client.get("/inbox").text
+    assert f'name="digest" value="{DIGEST_A}"' in page       # the card's own form carries the digest it shows
+
+    tasks.record_delivery(layout, "A", DIGEST_B, actor="test", paths=[])
+    tasks.record_verification(layout, "A", DIGEST_B, ok=True)
+    tasks.advance(layout, "A")
+
+    client.post(f"/inbox/{item['id']}/answer", data={"csrf_token": "csrf", "response": "ACCEPT",
+                                                      "digest": DIGEST_A})
+    t = tasks.load(layout, "A")
+    assert t.status.value == "WAITING_FOR_HUMAN"
+    assert t.delivery.approvals == []
+    assert inbox_mod.load(layout, item["id"])["status"] == "open"   # a refused answer is not spent
+
+
+def test_the_agent_written_card_for_the_current_digest_still_approves(layout, client):
+    item = _agent_written_question(layout, DIGEST_A)
+    client.post(f"/inbox/{item['id']}/answer", data={"csrf_token": "csrf", "response": "ACCEPT",
+                                                      "digest": DIGEST_A})
+    t = tasks.load(layout, "A")
+    assert t.status.value == "COMPLETE"
+    assert [a.digest for a in t.delivery.approvals] == [DIGEST_A]
