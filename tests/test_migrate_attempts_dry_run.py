@@ -317,3 +317,21 @@ def test_cli_help_shows_the_four_options_and_the_bare_command_still_works(layout
     ran = runner.invoke(app, ["migrate", "attempts", "--dry-run", "--out", str(out)])
     assert ran.exit_code == 0, ran.output
     assert (out / "mapping.json").exists()
+
+
+@pytest.mark.parametrize("ambient_columns", ["40", None])
+def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, monkeypatch, ambient_columns):
+    """A narrower rendered width (CI's own no-TTY default among them) truncates typer/rich's Options panel's
+    longer option names with an ellipsis before this test's own `in result.output` check ever runs; COLUMNS=40
+    reproduces the same truncation on a workstation whose own wide terminal otherwise hides it."""
+    from supervisor import project as project_mod
+    project_mod.write(layout, {"name": "p"})
+    monkeypatch.setenv("SUPERVISOR_ROOT", str(layout.root))
+    if ambient_columns is None:
+        monkeypatch.delenv("COLUMNS", raising=False)
+    else:
+        monkeypatch.setenv("COLUMNS", ambient_columns)
+    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    assert result.exit_code == 0, result.output
+    for opt in ("--dry-run", "--out", "--overrides", "--compare"):
+        assert opt in result.output, result.output

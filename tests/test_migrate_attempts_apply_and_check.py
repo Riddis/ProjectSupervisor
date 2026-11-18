@@ -498,3 +498,21 @@ def test_cli_help_shows_apply_and_check_and_an_end_to_end_run_passes(layout, mon
 
     both = runner.invoke(app, ["migrate", "attempts", "--dry-run", "--apply", "--out", str(apply_out)])
     assert both.exit_code != 0
+
+
+@pytest.mark.parametrize("ambient_columns", ["40", None])
+def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, monkeypatch, ambient_columns):
+    """A narrower rendered width (CI's own no-TTY default among them) truncates typer/rich's Options panel's
+    longer option names with an ellipsis before this test's own `in result.output` check ever runs; COLUMNS=40
+    reproduces the same truncation on a workstation whose own wide terminal otherwise hides it."""
+    from supervisor import project as project_mod
+    project_mod.write(layout, {"name": "p"})
+    monkeypatch.setenv("SUPERVISOR_ROOT", str(layout.root))
+    if ambient_columns is None:
+        monkeypatch.delenv("COLUMNS", raising=False)
+    else:
+        monkeypatch.setenv("COLUMNS", ambient_columns)
+    result = runner.invoke(app, ["migrate", "attempts", "--help"])
+    assert result.exit_code == 0, result.output
+    for opt in ("--dry-run", "--apply", "--check", "--out", "--mapping", "--overrides", "--compare"):
+        assert opt in result.output, result.output
