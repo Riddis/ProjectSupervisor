@@ -639,10 +639,48 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
 #
 # `migrate attempts --dry-run` derives a mapping of every job record's attempt identity (section 8.2) from the
 # fields and evidence a store already carries -- never from content equality, never by parsing an id -- and writes
-# it where a human reads it before anything is migrated. `apply` (section 8, step 7) is not built yet; this is the
-# whole of what the dry run does: read the store, write `--out`, touch nothing else.
+# it where a human reads it before anything is migrated. The one exception is dispatch order itself (`_dispatch_
+# order`, below): a record with no identity fields yet carries no other evidence of when it was dispatched, so
+# establishing that order is this migration's own job, not an identity field it invents. `apply` (section 8, step
+# 7) is not built yet; this is the whole of what the dry run does: read the store, write `--out`, touch nothing
+# else.
 
 _DELIVERY_SESSION_CAUSES = ("continuation", "reroute")   # join the open attempt as its next session
+
+_LEGACY_SUFFIX_RE = re.compile(r"\.a(\d+)$")   # the pre-allocator id shape: "<task>.a<n>", one flat counter
+
+
+def _has_identity_fields(rec: dict) -> bool:
+    """Migration-stamped or allocator-written -- the same test `loop.py`'s start-up guard (section 8.6) uses to
+    decide a record needs no further migration: it already carries the fields `_map_task` would otherwise have
+    to derive an order for."""
+    if (rec.get("migrated") or {}).get("attempts"):
+        return True
+    return rec.get("kind") is not None and isinstance(rec.get("seq"), int)
+
+
+def _dispatch_order(records: list[dict]) -> list[dict]:
+    """The dispatch order `jobs.for_task` no longer gives an un-migrated record (section 8.2's own walk):
+    `jobs.sort_key` dropped its id-suffix fallback at the writers switch (C-3/T7-08, `a1fa01d`), on the grounds
+    that every record it ever sorts by then is migration-stamped or allocator-written -- which is exactly not
+    true of the records this migration exists to place. A record with no identity fields yet is ordered by the
+    one thing it does carry that still reflects when it was dispatched: the numeric suffix of its old-shape id,
+    the flat counter `tasks.add_attempt` minted before the allocator existed. A record that already has fields
+    (a previous migration run's work, or one dispatched by the allocator since) is left in exactly the order
+    `jobs.sort_key` already gives it -- never re-ordered by suffix, which a freshly allocated id does not even
+    carry in the same shape. The two groups are never interleaved: a task's fielded records are always the ones
+    a past `apply_attempts` call saw, and a task's own flat counter only grows, so every record dispatched since
+    sorts after all of them regardless of which rule placed it."""
+    def key(rec):
+        if _has_identity_fields(rec):
+            attempt = rec.get("attempt")
+            return (0, attempt if attempt is not None else -1,
+                   jobs_mod.KIND_ORDER.get(jobs_mod.kind_of(rec), 99), rec.get("seq") or 0,
+                   str(rec.get("attempt_id", "")))
+        m = _LEGACY_SUFFIX_RE.search(str(rec.get("attempt_id", "")))
+        suffix = int(m.group(1)) if m else None
+        return (1, suffix if suffix is not None else float("inf"), str(rec.get("attempt_id", "")))
+    return sorted(records, key=key)
 
 
 def _task_notes(task) -> dict[str, str]:
@@ -706,10 +744,12 @@ def _load_overrides(path: Path | str | None) -> tuple[dict[str, str], dict[str, 
 
 def _map_task(task, records: list[dict], overrides: dict[str, str],
              escalation_events: dict[str, Any]) -> tuple[dict[str, dict], list[dict], list[dict]]:
-    """The per-job mapping for one task, walked in `records`' own (dispatch) order (section 8.2). Returns
-    `(entries, flags, unplaced)`; `entries` is job id -> `{task, attempt, kind, seq, parent, cause, scope,
-    source}`. Nothing here ever reads two tasks together -- every piece of evidence section 8.2 names (the
-    attempt note, `verify_delivery`, `review_digest`, the escalation event) is this task's own."""
+    """The per-job mapping for one task, walked in `records`' own order -- the caller's job, not this
+    function's: `dry_run_attempts` passes them through `_dispatch_order` first, which is what establishes
+    dispatch order for a record that carries none of the fields that would otherwise say what it is (section
+    8.2). Returns `(entries, flags, unplaced)`; `entries` is job id -> `{task, attempt, kind, seq, parent,
+    cause, scope, source}`. Nothing here ever reads two tasks together -- every piece of evidence section 8.2
+    names (the attempt note, `verify_delivery`, `review_digest`, the escalation event) is this task's own."""
     notes = _task_notes(task)
     order_index = {r.get("attempt_id"): i for i, r in enumerate(records)}
     entries: dict[str, dict] = {}
@@ -902,7 +942,7 @@ def dry_run_attempts(layout: Layout, out: Path | str, *, overrides_path: Path | 
     run_dir_baseline: dict[str, dict] = {}
 
     for task_id in sorted(tasks_by_id):
-        records = jobs_mod.for_task(layout, task_id)
+        records = _dispatch_order(jobs_mod.for_task(layout, task_id))
         if not records:
             continue
         task = tasks_by_id[task_id]
