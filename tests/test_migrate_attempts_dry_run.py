@@ -336,3 +336,127 @@ def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, mon
     assert result.exit_code == 0, result.output
     for opt in ("--dry-run", "--out", "--overrides", "--compare"):
         assert opt in clean(result.output), result.output
+
+
+# ---- dispatch order on an un-migrated store (section 8.2) ----
+#
+# `jobs.for_task` groups its result by kind, then by id string, for a record carrying none of `jobs.sort_key`'s
+# fields (no id-suffix fallback since the writers switch, C-3/T7-08) -- which is exactly the shape of a record the
+# migration exists to place. These four cases are the ones no fixture above builds: ten or more records of one
+# kind, and a review that falls to the preceding-delivery rule after a later delivery has already been walked.
+
+def _fielded_job(layout, job_id, task_id, spec_kind, created, attempt, kind, seq, **fields):
+    rec = {"attempt_id": job_id, "task_id": task_id, "adapter": fields.pop("adapter", "claude_cli"),
+          "phase": fields.pop("phase", "DONE"), "spec": {"kind": spec_kind}, "handle": None, "created": created,
+          "attempt": attempt, "kind": kind, "seq": seq}
+    rec.update(fields)
+    return jobs.write(layout, rec)
+
+
+def test_a_task_with_more_than_nine_bare_deliveries_is_numbered_in_dispatch_order(layout, tmp_path):
+    make_task(layout, "T-TEN", attempts=[
+        _attempt("T-TEN.a1", "dispatch T-TEN.a1", at=T.format(1)),
+        *[_attempt(f"T-TEN.a{i}", f"continuation after capacity limit T-TEN.a{i}", at=T.format(i))
+          for i in range(2, 10)],
+        _attempt("T-TEN.a10", "revision after worker_failed failure T-TEN.a10", at=T.format(10)),
+        _attempt("T-TEN.a11", "continuation after capacity limit T-TEN.a11", at=T.format(11)),
+        _attempt("T-TEN.a12", "continuation after capacity limit T-TEN.a12", at=T.format(12)),
+    ])
+    _job(layout, "T-TEN.a1", "T-TEN", "delivery", T.format(1), adapter="claude_cli", phase="DONE")
+    for i in range(2, 10):
+        _job(layout, f"T-TEN.a{i}", "T-TEN", "delivery", T.format(i), adapter="claude_cli", phase="FAILED",
+            deferred_reason="continuation after capacity limit")
+    _job(layout, "T-TEN.a10", "T-TEN", "delivery", T.format(10), adapter="claude_cli", phase="DONE")
+    _job(layout, "T-TEN.a11", "T-TEN", "delivery", T.format(11), adapter="claude_cli", phase="FAILED",
+        deferred_reason="continuation after capacity limit")
+    _job(layout, "T-TEN.a12", "T-TEN", "delivery", T.format(12), adapter="claude_cli", phase="DONE")
+
+    out = tmp_path / "out"
+    migrations.dry_run_attempts(layout, out)
+    mapping = json.loads((out / "mapping.json").read_text(encoding="utf-8"))
+
+    expected = {"T-TEN.a1": (1, "delivery", 1), **{f"T-TEN.a{i}": (1, "delivery", i) for i in range(2, 10)},
+               "T-TEN.a10": (2, "delivery", 1), "T-TEN.a11": (2, "delivery", 2), "T-TEN.a12": (2, "delivery", 3)}
+    for job_id, (attempt, kind, seq) in expected.items():
+        entry = mapping[job_id]
+        assert (entry["attempt"], entry["kind"], entry["seq"]) == (attempt, kind, seq), (job_id, entry)
+
+
+def test_a_first_round_review_with_no_verify_record_is_parented_on_its_own_preceding_delivery(layout, tmp_path):
+    make_task(layout, "T-NOVERIFY2", attempts=[
+        _attempt("T-NOVERIFY2.a1", "dispatch T-NOVERIFY2.a1", at=T.format(1)),
+        _attempt("T-NOVERIFY2.a2", "review T-NOVERIFY2.a2", at=T.format(2)),
+        _attempt("T-NOVERIFY2.a3", "revision after worker_failed failure T-NOVERIFY2.a3", at=T.format(3)),
+        _attempt("T-NOVERIFY2.a4", "review T-NOVERIFY2.a4", at=T.format(4)),
+    ])
+    _job(layout, "T-NOVERIFY2.a1", "T-NOVERIFY2", "delivery", T.format(1), adapter="claude_cli", phase="DONE")
+    _job(layout, "T-NOVERIFY2.a2", "T-NOVERIFY2", "review", T.format(2), adapter="claude_cli",
+        review_digest="1" * 64)
+    _job(layout, "T-NOVERIFY2.a3", "T-NOVERIFY2", "delivery", T.format(3), adapter="claude_cli", phase="DONE")
+    _job(layout, "T-NOVERIFY2.a4", "T-NOVERIFY2", "review", T.format(4), adapter="claude_cli",
+        review_digest="2" * 64)
+
+    out = tmp_path / "out"
+    migrations.dry_run_attempts(layout, out)
+    mapping = json.loads((out / "mapping.json").read_text(encoding="utf-8"))
+
+    assert (mapping["T-NOVERIFY2.a2"]["attempt"], mapping["T-NOVERIFY2.a2"]["parent"]) == (1, "T-NOVERIFY2.a1")
+    assert (mapping["T-NOVERIFY2.a4"]["attempt"], mapping["T-NOVERIFY2.a4"]["parent"]) == (2, "T-NOVERIFY2.a3")
+
+
+def test_a_mixed_kind_task_interleaving_delivery_and_review_walks_in_dispatch_order_not_grouped_by_kind(
+        layout, tmp_path):
+    make_task(layout, "T-INTERLEAVE", attempts=[
+        _attempt("T-INTERLEAVE.a1", "dispatch T-INTERLEAVE.a1", at=T.format(1)),
+        _attempt("T-INTERLEAVE.a2", "review T-INTERLEAVE.a2", at=T.format(2)),
+        _attempt("T-INTERLEAVE.a3", "dispatch T-INTERLEAVE.a3", at=T.format(3)),
+        _attempt("T-INTERLEAVE.a4", "review T-INTERLEAVE.a4", at=T.format(4)),
+        _attempt("T-INTERLEAVE.a5", "dispatch T-INTERLEAVE.a5", at=T.format(5)),
+        _attempt("T-INTERLEAVE.a6", "review T-INTERLEAVE.a6", at=T.format(6)),
+    ])
+    for i, kind in zip(range(1, 7), ("delivery", "review", "delivery", "review", "delivery", "review")):
+        job_id = f"T-INTERLEAVE.a{i}"
+        if kind == "delivery":
+            _job(layout, job_id, "T-INTERLEAVE", "delivery", T.format(i), adapter="claude_cli", phase="DONE")
+        else:
+            _job(layout, job_id, "T-INTERLEAVE", "review", T.format(i), adapter="claude_cli",
+                review_digest=str(i) * 64)
+
+    out = tmp_path / "out"
+    migrations.dry_run_attempts(layout, out)
+    mapping = json.loads((out / "mapping.json").read_text(encoding="utf-8"))
+
+    # each delivery opens its own attempt (parent None, the first session); each review is parented on the
+    # delivery that immediately precedes it in dispatch order, not on the task's last delivery.
+    for job_id, attempt in (("T-INTERLEAVE.a1", 1), ("T-INTERLEAVE.a3", 2), ("T-INTERLEAVE.a5", 3)):
+        entry = mapping[job_id]
+        assert (entry["attempt"], entry["kind"]) == (attempt, "delivery"), (job_id, entry)
+    for job_id, (attempt, parent) in (("T-INTERLEAVE.a2", (1, "T-INTERLEAVE.a1")),
+                                      ("T-INTERLEAVE.a4", (2, "T-INTERLEAVE.a3")),
+                                      ("T-INTERLEAVE.a6", (3, "T-INTERLEAVE.a5"))):
+        entry = mapping[job_id]
+        assert (entry["attempt"], entry["kind"], entry["parent"]) == (attempt, "review", parent), (job_id, entry)
+
+
+def test_a_fully_fielded_store_is_still_walked_in_field_order(layout, tmp_path):
+    """The control: a record already carrying `attempt`/`kind`/`seq` (migration-stamped or allocator-written)
+    must be walked in the same field order `jobs.sort_key` already gives it, unchanged by this fix -- the ids
+    are deliberately out of suffix order (`.a20`, `.a5`, `.a1`) so a fix that sorted by suffix regardless of
+    fields would misplace this task too."""
+    make_task(layout, "T-FIELDCTRL", attempts=[
+        _attempt("T-FIELDCTRL.a20", "dispatch T-FIELDCTRL.a20", at=T.format(1)),
+        _attempt("T-FIELDCTRL.a5", "verify delivery T-FIELDCTRL.a20 T-FIELDCTRL.a5", at=T.format(2)),
+        _attempt("T-FIELDCTRL.a1", "revision after worker_failed failure T-FIELDCTRL.a1", at=T.format(3)),
+    ])
+    _fielded_job(layout, "T-FIELDCTRL.a20", "T-FIELDCTRL", "delivery", T.format(1), 1, "delivery", 1)
+    _fielded_job(layout, "T-FIELDCTRL.a5", "T-FIELDCTRL", "verify", T.format(2), 1, "verify", 1,
+                adapter="process", verify_delivery="T-FIELDCTRL.a20", verify_digest="3" * 64)
+    _fielded_job(layout, "T-FIELDCTRL.a1", "T-FIELDCTRL", "delivery", T.format(3), 2, "delivery", 1)
+
+    out = tmp_path / "out"
+    migrations.dry_run_attempts(layout, out)
+    mapping = json.loads((out / "mapping.json").read_text(encoding="utf-8"))
+
+    assert (mapping["T-FIELDCTRL.a20"]["attempt"], mapping["T-FIELDCTRL.a20"]["seq"]) == (1, 1)
+    assert (mapping["T-FIELDCTRL.a5"]["attempt"], mapping["T-FIELDCTRL.a5"]["seq"]) == (1, 1)
+    assert (mapping["T-FIELDCTRL.a1"]["attempt"], mapping["T-FIELDCTRL.a1"]["seq"]) == (2, 1)
