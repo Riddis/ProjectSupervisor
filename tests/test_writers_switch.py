@@ -10,6 +10,7 @@ Each test below is read against a neutral, invented store — no project name, t
 project (D-005)."""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -284,3 +285,62 @@ def test_a_conversation_job_record_is_exempt_from_the_guard(layout):
     jobs_mod.write(layout, {"attempt_id": "chat.a1", "task_id": "chat", "adapter": "claude_cli", "phase": "DONE",
                             "spec": {"kind": "conversation"}, "handle": None, "result": "COMPLETE"})
     _check_writer_guard(layout)             # must not raise
+
+
+# ---------------------------------------------------------------- 11. the guard reads the archive too (RELEASE_
+# REVIEW_2.8.0.md P2): a job record that moved into `jobs.archive_dir` before `migrate attempts` ever ran is still
+# a record the writer switch's readers must be able to sort/group by fields it does not carry, and the guard's own
+# promise (ATTEMPT_MODEL.md §8.6) is "every job record under state/runtime/jobs/ and its archive", not the top
+# level alone.
+
+
+def test_an_unmigrated_record_in_the_archive_refuses_to_dispatch_and_names_the_fix(layout, monkeypatch):
+    """Clears the five job markers first: a supervisor-dispatched session (this one, possibly) already carries
+    `SUPERVISOR_ATTEMPT`, and the launch-environment guard (round 1's P3) answers before this one ever would."""
+    from typer.testing import CliRunner
+
+    from supervisor import envconfig
+    from supervisor.cli import app
+    for name in envconfig.FOREIGN_MARKERS:
+        monkeypatch.delenv(name, raising=False)
+    archive = jobs_mod.archive_dir(layout, "T-ARCBAD")
+    archive.mkdir(parents=True, exist_ok=True)
+    bad_path = archive / "T-ARCBAD.a1.json"
+    bad_path.write_text(json.dumps({"attempt_id": "T-ARCBAD.a1", "task_id": "T-ARCBAD", "adapter": "claude_cli",
+                                    "phase": "DONE", "spec": {"kind": "delivery"}, "handle": None,
+                                    "result": "COMPLETE"}), encoding="utf-8")
+    make_task(layout, "T-ARCTRIGGER")
+    result = CliRunner(env={"SUPERVISOR_ROOT": str(layout.root)}).invoke(app, ["run", "--once"])
+    assert result.exit_code == 1
+    assert bad_path.name in result.output
+    assert result.output.count("supervisor migrate attempts") == 3        # dry-run, apply, check
+    assert jobs_mod.for_task(layout, "T-ARCTRIGGER") == []     # the refused run dispatched nothing
+
+
+def test_a_migration_stamped_record_in_the_archive_passes_the_guard(layout):
+    from supervisor.loop import _check_writer_guard
+    archive = jobs_mod.archive_dir(layout, "T-ARCOK")
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "T-ARCOK.a1.json").write_text(json.dumps(
+        {"attempt_id": "T-ARCOK.a1", "task_id": "T-ARCOK", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE",
+         "migrated": {"attempts": {"at": "2026-01-01T00:00:00+00:00"}}}), encoding="utf-8")
+    _check_writer_guard(layout)             # must not raise
+
+
+def test_an_allocator_written_record_in_the_archive_passes_the_guard(layout):
+    from supervisor.loop import _check_writer_guard
+    archive = jobs_mod.archive_dir(layout, "T-ARCOK2")
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "T-ARCOK2.a1.s1.json").write_text(json.dumps(
+        {"attempt_id": "T-ARCOK2.a1.s1", "task_id": "T-ARCOK2", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE", "kind": "delivery",
+         "attempt": 1, "seq": 1}), encoding="utf-8")
+    _check_writer_guard(layout)             # must not raise
+
+
+def test_the_guard_passes_on_an_empty_or_absent_archive(layout):
+    from supervisor.loop import _check_writer_guard
+    _check_writer_guard(layout)                                            # no archive directory exists yet
+    jobs_mod.archive_dir(layout, "T-ARCEMPTY").mkdir(parents=True, exist_ok=True)
+    _check_writer_guard(layout)                                            # an archive directory that holds nothing
