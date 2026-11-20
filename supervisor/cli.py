@@ -44,6 +44,7 @@ issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in 
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
+plan_app = typer.Typer(help="recovery plans (RECOVERY_PLAN.md) - step 1 validates only, nothing is applied")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
@@ -51,6 +52,7 @@ app.add_typer(issue_app, name="issue")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
+app.add_typer(plan_app, name="plan")
 
 
 def _layout(load: bool = True) -> Layout:
@@ -469,6 +471,26 @@ def boundary_words(targets: list[str] = typer.Argument(..., help="folders or bui
     (~/.config/supervisor/project-terms.toml). Exit 0 clean, 1 hits, 2 when it cannot run (no word list)."""
     from . import boundary
     raise typer.Exit(boundary.words([Path(t) for t in targets], echo=typer.echo))
+
+
+@plan_app.command("validate")
+def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
+    """Validate a plan document against the store: refuses whole on any of the 26 named codes (RECOVERY_PLAN.md
+    section 1.2); applies nothing (there is no applier yet). Exit 0 with an empty refusal list, 1 refused."""
+    from . import plans as plans_mod
+    doc = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
+    report, refusals = plans_mod.validate(doc, _reader())
+    if as_json:
+        typer.echo(json.dumps({"refusals": refusals, **report.as_dict()}, indent=2, ensure_ascii=False))
+    else:
+        if not refusals:
+            typer.echo(f"valid: scope {report.scope}, {len(report.normalised)} normalisation(s)")
+        for n in report.normalised:
+            typer.echo(f"normalised: op {n['op_index']} {n['code']} -- {n['detail']}")
+        for r in refusals:
+            loc = f"op {r['op_index']}" if r["op_index"] is not None else "plan"
+            typer.echo(f"{r['code']}: {loc} {r['field'] or ''} -- {r['message']}")
+    raise typer.Exit(1 if refusals else 0)
 
 
 @skills_app.command("status")

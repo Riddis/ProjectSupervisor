@@ -1,0 +1,777 @@
+"""The recovery plan (R-10, step 1 of RECOVERY_PLAN.md order of work): a typed document a diagnosis may propose to
+repair one stopped attempt, a closed six-operation vocabulary, and a deterministic validator that refuses whole on
+any of 26 named codes. No applier lives here — `validate()` never writes to the store, never touches state/plans/,
+and never mutates a task; step 2 of the order of work builds the journal and the apply path.
+
+R0 (D-018, restated): no value a model produces ever becomes a program, an argument, a path outside a declared
+root, or an operation the framework did not already know how to perform. `SetJobOp` is the one place this has to be
+structural rather than a check (RF-04): the model declares exactly `op`, `task`, `template`, `params` and forbids
+every other key, so there is no `argv`, `fn`, `cmd` or `shell` slot anywhere in the six operations for a value to
+reach. Every other refusal is ordinary deterministic code.
+
+Three refusal codes (RF-23, RF-24, RF-25) belong, by RECOVERY_PLAN.md section 1's own preamble, to the approval
+lane and the inbox (steps 7-8 of the order of work) rather than to a plan document's own shape. Their rule is
+already fully determined by this step's inputs, so the pure functions that decide them (`self_approval_refusal`,
+`choice_not_offered_refusal`, `choice_stale_refusal`) live here, ahead of the machinery that will call them, so the
+vocabulary of refusals has exactly one home.
+"""
+from __future__ import annotations
+
+import hashlib
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from . import policy as policy_mod
+from . import tasks as tasks_mod
+from .models.task import Task, TaskStatus
+from .paths import Layout
+
+PLAN_SCHEMA = 1
+
+OPERATIONS = ("create_task", "add_dependency", "remove_dependency", "patch_contract", "set_job", "resume")
+OWNER_ONLY_EFFECTS = frozenset({"apply_plan", "cancel_plan", "cancel_task", "hold", "release_hold", "diagnose_now"})
+
+
+# ----------------------------------------------------------------------- the six operations, typed, closed (§2.2)
+#
+# Every model forbids any key beyond the ones named: an operation is a selection from the vocabulary plus typed,
+# bounded parameters, never an open document. `SetJobOp` is the one R0 binds structurally rather than by a check
+# (RF-04) — it declares exactly `op`, `task`, `template`, `params`, so there is no `argv`, `fn`, `cmd` or `shell`
+# key anywhere for a value to reach; `test_no_job_fix_structural` constructs one to prove it.
+
+class CreateTaskOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: str
+    task: dict
+
+
+class AddDependencyOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: str
+    task: str
+    depends_on: list[str]
+
+
+class RemoveDependencyOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: str
+    task: str
+    depends_on: list[str]
+
+
+class PatchContractOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    op: str
+    task: str
+    fields: dict
+
+
+class SetJobOp(BaseModel):
+    """The whole of what a plan may ever write towards running something: a template id and typed parameters.
+    No other key — not `argv`, not `fn`, not `cmd`, not `shell` — is a field this model could ever hold."""
+    model_config = ConfigDict(extra="forbid")
+    op: str
+    task: str
+    template: str
+    params: dict = Field(default_factory=dict)
+
+
+class ResumeOp(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    op: str
+    task: str
+    as_: str = Field("ready", alias="as")
+
+
+_OP_MODELS = {"create_task": CreateTaskOp, "add_dependency": AddDependencyOp, "remove_dependency": RemoveDependencyOp,
+              "patch_contract": PatchContractOp, "set_job": SetJobOp, "resume": ResumeOp}
+
+# What `patch_contract.fields` may name, before the monotonicity checks run (§2.4). Anything outside this set is
+# not a field this operation may touch at all (RF-02) except the two named elsewhere: the eight authority fields
+# (RF-15) and `acceptance` (RF-16, "replaces acceptance").
+AUTHORITY_FIELDS = frozenset({"human_approval", "escalation", "cost_category", "owner_role", "phase", "priority",
+                              "title", "objective"})
+PATCH_ALLOWED_FIELDS = frozenset({"tests", "checks", "test_roots", "artifacts", "reviewer", "evidence",
+                                  "owned_paths", "actions", "review_note"})
+PATCH_ADD_ONLY_FIELDS = frozenset({"tests", "checks", "test_roots", "artifacts", "reviewer"})
+
+# What `create_task.task` may name (§2.3/§2.4 of D-027 decision 3): the four the created task must state, the four
+# inherited from the subject and therefore forbidden here, and everything else a contract may optionally carry.
+CREATE_REQUIRED_FIELDS = frozenset({"title", "objective", "owner_role", "cost_category"})
+CREATE_FORBIDDEN_FIELDS = frozenset({"human_approval", "escalation", "phase", "priority"})
+CREATE_OPTIONAL_FIELDS = frozenset({"id", "depends_on", "actions", "artifacts", "tests", "checks", "owned_paths",
+                                    "reviewer", "review_note", "acceptance", "evidence", "test_roots",
+                                    "approval_note"})
+CREATE_ALLOWED_FIELDS = CREATE_REQUIRED_FIELDS | CREATE_OPTIONAL_FIELDS
+
+EXCLUSIVE = "."
+
+# A string this long or longer is screened for shell metacharacters and path separators (RF-03); kept in one place
+# so a future operation's field is covered automatically rather than by a per-operation allow-list of what to scan.
+_SHELL_META = set(";&|`$><(){}\n\r\x00")
+_PATH_SEP = set("/\\")
+
+EVIDENCE_ORDER = {"review": 0, "auto": 1, "commands": 2}
+
+DEFAULT_MAX_OPS = 8
+DEFAULT_MAX_CREATES = 2
+
+
+@dataclass(frozen=True)
+class Refusal:
+    code: str
+    op_index: int | None
+    field: str | None
+    message: str
+    rule: str
+
+    def as_dict(self) -> dict:
+        return {"code": self.code, "op_index": self.op_index, "field": self.field, "message": self.message,
+                "rule": self.rule}
+
+
+@dataclass
+class PlanReport:
+    """What `validate()` returns beside the refusal list: the normalisations applied, the computed scope, and
+    (only for a plan with no refusals) the graph diff — edges added/removed and contract fields before/after,
+    per task. Never includes anything an applier would need beyond what is already here (there is no applier)."""
+    normalised: list[dict] = field(default_factory=list)
+    scope: list[str] = field(default_factory=list)
+    graph_diff: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return {"normalised": self.normalised, "scope": self.scope, "graph_diff": self.graph_diff}
+
+
+def _rf(code: str, rule: str, op_index: int | None, field_: str | None, message: str) -> Refusal:
+    return Refusal(code=code, op_index=op_index, field=field_, message=message, rule=rule)
+
+
+# ----------------------------------------------------------------------- scanning every string of every operation
+
+def _iter_strings(value: Any, path: str):
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield from _iter_strings(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield from _iter_strings(v, f"{path}[{i}]")
+
+
+def _path_param_fields(op: dict, templates: dict) -> set[str]:
+    """Dotted paths, inside one `set_job` operation's own dict, that a declared `path`-typed template parameter
+    may legitimately contain a path separator in (RF-03's one exemption). Empty for every other operation and for
+    a `set_job` whose template is unknown (RF-05 refuses that on its own)."""
+    if op.get("op") != "set_job":
+        return set()
+    tmpl = (templates.get(str(op.get("template"))) or {})
+    params = tmpl.get("params") or {}
+    out = set()
+    for name, decl in params.items():
+        if isinstance(decl, dict) and decl.get("type") == "path":
+            out.add(f"params.{name}")
+    return out
+
+
+def _is_contract_content(field_path: str) -> bool:
+    """A string that lives inside `create_task.task` or `patch_contract.fields` — a contract field, already
+    legal to hold a path (`artifacts`, `owned_paths`, `test_roots`, a check's `command`) and already checked for
+    that by `tasks.check_new`/`_apply_patch`. RF-03's path-separator clause (unlike its metacharacter clause,
+    which still runs on this content too) is about a bare field growing a path it was never declared to carry —
+    a task id, a template id, a dependency id, a `set_job` parameter — not about the contract's own path fields."""
+    return field_path.startswith("task.") or field_path.startswith("fields.")
+
+
+def _command_shaped_refusals(op_index: int, op: dict, templates: dict) -> list[Refusal]:
+    allowed_path_fields = _path_param_fields(op, templates)
+    out = []
+    for field_path, s in _iter_strings(op, ""):
+        if field_path == "op":
+            continue
+        if any(c in s for c in _SHELL_META):
+            out.append(_rf("RF-03", "I1 §1.2", op_index, field_path,
+                           f"{field_path!r} contains a shell metacharacter or control character"))
+            continue
+        if (any(c in s for c in _PATH_SEP) and field_path not in allowed_path_fields
+                and not _is_contract_content(field_path)):
+            out.append(_rf("RF-03", "I1 §1.2", op_index, field_path,
+                           f"{field_path!r} contains a path separator outside a parameter declared as a path"))
+    return out
+
+
+def _secret_shaped_refusals(op_index: int, op: dict, layout: Layout) -> list[Refusal]:
+    out = []
+    for field_path, s in _iter_strings(op, ""):
+        if field_path == "op":
+            continue
+        if policy_mod.find_secrets(s, layout):
+            out.append(_rf("RF-21", "I1 §1.2", op_index, field_path, f"{field_path!r} holds a secret-shaped value"))
+    return out
+
+
+# ----------------------------------------------------------------------- normalisation (§1.3), closed
+
+def _resolves(first_token: str) -> bool:
+    if not first_token:
+        return False
+    if Path(first_token).is_file():
+        return True
+    return shutil.which(first_token) is not None
+
+
+def _normalise_fields(fields: dict, op_index: int, normalised: list[dict],
+                      existing_tests: list[str] | None = None) -> dict:
+    """`checks_to_tests`: a `checks` entry whose first token resolves to nothing executable moves to `tests`.
+    `existing_tests` (the task's current contract, for `patch_contract` only) is the base the moved entries join
+    when the operation's own `fields` does not already state `tests` — so the move itself never trips RF-16 by
+    discarding what the contract already carries."""
+    checks = fields.get("checks")
+    if not checks:
+        return fields
+    kept, moved = [], []
+    for c in checks:
+        command = c.get("command") if isinstance(c, dict) else c
+        first = str(command or "").split()[0] if str(command or "").strip() else ""
+        (moved if not _resolves(first) else kept).append(c)
+    if not moved:
+        return fields
+    fields = dict(fields)
+    fields["checks"] = kept
+    base_tests = fields["tests"] if "tests" in fields else (existing_tests or [])
+    fields["tests"] = list(base_tests or []) + [
+        (m.get("command") if isinstance(m, dict) else m) for m in moved]
+    normalised.append({"code": "checks_to_tests", "op_index": op_index,
+                       "detail": f"moved {len(moved)} checks entry(ies) with no resolvable command to tests"})
+    return fields
+
+
+def _normalise_dependency_op(op: dict, op_index: int, tasks: dict[str, Task], normalised: list[dict]) -> dict:
+    """`dedupe_dependencies`: a dependency already present, or listed twice. `drop_complete_waits`: a dependency
+    naming a task already COMPLETE is dropped — the caller (`_graph_refusals`) is responsible for RF-17 when
+    dropping would empty the release, which is checked AFTER normalisation, not here."""
+    deps = list(op.get("depends_on") or [])
+    target = tasks.get(op.get("task"))
+    existing = set(target.depends_on) if target is not None else set()
+    out, seen, dropped_dupe, dropped_complete = [], set(existing), [], []
+    for d in deps:
+        if d in seen:
+            dropped_dupe.append(d)
+            continue
+        seen.add(d)
+        t = tasks.get(d)
+        if op.get("op") == "add_dependency" and t is not None and t.status == TaskStatus.COMPLETE:
+            dropped_complete.append(d)
+            continue
+        out.append(d)
+    if dropped_dupe:
+        normalised.append({"code": "dedupe_dependencies", "op_index": op_index,
+                           "detail": f"dropped already-present or duplicated id(s): {', '.join(dropped_dupe)}"})
+    if dropped_complete:
+        normalised.append({"code": "drop_complete_waits", "op_index": op_index,
+                           "detail": f"dropped already-COMPLETE id(s): {', '.join(dropped_complete)}"})
+    op = dict(op)
+    op["depends_on"] = out
+    return op
+
+
+def normalise(doc: dict, tasks: dict[str, Task]) -> tuple[dict, list[dict]]:
+    """(the normalised document, the normalisations applied) — the closed list of §1.3, reported and never counted
+    as a refusal. Called once, before any refusal is computed, so every refusal check sees the normalised form."""
+    normalised: list[dict] = []
+    ops = list(doc.get("operations") or [])
+    out_ops = []
+    for i, op in enumerate(ops):
+        if not isinstance(op, dict):
+            out_ops.append(op)
+            continue
+        op = dict(op)
+        if op.get("op") in ("add_dependency", "remove_dependency"):
+            op = _normalise_dependency_op(op, i, tasks, normalised)
+        if op.get("op") == "patch_contract" and isinstance(op.get("fields"), dict):
+            target = tasks.get(op.get("task"))
+            op["fields"] = _normalise_fields(op["fields"], i, normalised,
+                                             existing_tests=list(target.tests) if target is not None else None)
+        if op.get("op") == "create_task" and isinstance(op.get("task"), dict):
+            op["task"] = _normalise_fields(op["task"], i, normalised)
+        out_ops.append(op)
+    doc = dict(doc)
+    doc["operations"] = out_ops
+    return doc, normalised
+
+
+# ----------------------------------------------------------------------- templates (a minimal, read-only lookup;
+# the loader, the probe and `needs` matching are step 4's own work — this reads only what RF-05/06/07/08/09 need)
+
+def _load_templates(layout: Layout) -> dict:
+    p = layout.config / "job_templates.yaml"
+    if not p.exists():
+        return {}
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    templates = data.get("templates")
+    return templates if isinstance(templates, dict) else {}
+
+
+def _resolve_executable(executable: str, root: Path) -> bool:
+    if not executable:
+        return False
+    if shutil.which(executable):
+        return True
+    return (root / executable).exists()
+
+
+# ----------------------------------------------------------------------- the scope rule (§2.3) — from the store
+
+def compute_scope(doc: dict, tasks: dict[str, Task]) -> dict[str, set[str]]:
+    """Two scopes, computed from the store and never from the plan: `narrow` (subject + created — what
+    `patch_contract` and `set_job` may touch) and `dependency` (narrow + the subject's direct neighbours — what
+    `add_dependency`/`remove_dependency` may touch)."""
+    subject_id = (doc.get("subject") or {}).get("task")
+    created = {op.get("task", {}).get("id") for op in (doc.get("operations") or [])
+               if isinstance(op, dict) and op.get("op") == "create_task" and isinstance(op.get("task"), dict)}
+    created.discard(None)
+    narrow = {subject_id} | created
+    neighbours = set()
+    if subject_id in tasks:
+        neighbours |= set(tasks[subject_id].depends_on)
+        neighbours |= {t.id for t in tasks.values() if subject_id in t.depends_on}
+    return {"narrow": narrow, "dependency": narrow | neighbours}
+
+
+# ----------------------------------------------------------------------- per-operation refusals
+
+def _check_create_task(i: int, op: dict, layout: Layout, tasks: dict[str, Task], subject: Task | None) -> list[Refusal]:
+    task_doc = op.get("task")
+    if not isinstance(task_doc, dict):
+        return [_rf("RF-02", "I3 §1.2", i, "task", "create_task.task must be an object (a task contract)")]
+    keys = set(task_doc)
+    out = []
+    forbidden = keys & CREATE_FORBIDDEN_FIELDS
+    missing = CREATE_REQUIRED_FIELDS - keys
+    if forbidden or missing:
+        why = []
+        if forbidden:
+            why.append(f"sets {', '.join(sorted(forbidden))} (inherited from the subject)")
+        if missing:
+            why.append(f"is missing {', '.join(sorted(missing))}")
+        out.append(_rf("RF-15", "I2 §1.2", i, "task", "create_task.task " + "; ".join(why)))
+    unknown = keys - CREATE_ALLOWED_FIELDS - CREATE_FORBIDDEN_FIELDS
+    if unknown:
+        out.append(_rf("RF-02", "I3 §1.2", i, "task",
+                       f"create_task.task carries {', '.join(sorted(unknown))}, not a contract field"))
+    if out:
+        return out
+    tid = task_doc.get("id")
+    if not tid or (tid in tasks):
+        return [_rf("RF-02", "I3 §1.2", i, "task.id", f"create_task names id {tid!r}, already a task or empty")]
+    combined = dict(tasks)
+    inherited = {"phase": subject.phase, "human_approval": subject.human_approval, "escalation": subject.escalation,
+                "priority": subject.priority} if subject is not None else {"phase": 0}
+    full_doc = {**inherited, **task_doc}
+    try:
+        _, errors, warnings = tasks_mod.check_new(layout, full_doc, combined)
+    except Exception as exc:                                  # ValidationError or anything check_new raises
+        return [_rf("RF-02", "I3 §1.2", i, "task", f"create_task.task is not a valid task contract: {str(exc)[:300]}")]
+    for e in errors:
+        code = "RF-17" if "cycle" in e else "RF-02"
+        out.append(_rf(code, "I3 §1.2" if code == "RF-02" else "I2 §1.2", i, "task", e))
+    if not out and warnings:
+        task_obj = Task.model_validate({**full_doc, "status": "NOT_STARTED", "attempts": [], "result": None,
+                                        "paths": []})
+        refusals = tasks_mod.contract_warnings([task_obj], layout)
+        for w in refusals:
+            out.append(_rf("RF-18", "I2 §1.2", i, "task", w))
+    return out
+
+
+def _check_dependency_op(i: int, op: dict, tasks: dict[str, Task], scope: dict[str, set[str]]) -> list[Refusal]:
+    """§2.3: scope bounds which task an `add_dependency`/`remove_dependency` may *edit* (`op.task`) — a direct
+    neighbour, the subject or a task this plan created. A `depends_on` target is not itself scope-checked: adding
+    or removing an edge never touches the target task's own contract or state, and a brand-new edge's far end is,
+    by definition, not yet a neighbour."""
+    out = []
+    tid = op.get("task")
+    deps = op.get("depends_on")
+    if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+        return [_rf("RF-02", "I3 §1.2", i, "depends_on", f"{op.get('op')}.depends_on must be a list of task ids")]
+    if tid not in scope["dependency"]:
+        out.append(_rf("RF-13", "I2 §1.2", i, "task", f"{op.get('op')} names {tid!r}, outside the plan's scope"))
+    t = tasks.get(tid)
+    if t is not None and t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
+        out.append(_rf("RF-14", "I2 §1.2", i, "task", f"{op.get('op')} edits {tid!r}, which is {t.status.value}"))
+    return out
+
+
+def _check_patch_contract(i: int, op: dict, tasks: dict[str, Task], scope: dict[str, set[str]]) -> list[Refusal]:
+    out = []
+    tid = op.get("task")
+    fields = op.get("fields")
+    if not isinstance(fields, dict):
+        return [_rf("RF-02", "I3 §1.2", i, "fields", "patch_contract.fields must be an object")]
+    if tid not in scope["narrow"]:
+        out.append(_rf("RF-13", "I2 §1.2", i, "task", f"patch_contract names {tid!r}, outside the plan's scope"))
+    t = tasks.get(tid)
+    if t is not None and t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
+        out.append(_rf("RF-14", "I2 §1.2", i, "task", f"patch_contract edits {tid!r}, which is {t.status.value}"))
+    for key in fields:
+        if key in AUTHORITY_FIELDS:
+            out.append(_rf("RF-15", "I2 §1.2", i, f"fields.{key}", f"patch_contract may not touch {key!r}"))
+        elif key == "acceptance":
+            out.append(_rf("RF-16", "I2 §1.2", i, "fields.acceptance", "patch_contract may not revise acceptance"))
+        elif key not in PATCH_ALLOWED_FIELDS:
+            out.append(_rf("RF-02", "I3 §1.2", i, f"fields.{key}",
+                           f"patch_contract.fields may not set {key!r} (through the dependency ops only, or not at all)"))
+    if out or t is None:
+        return out
+    out += _monotonicity_refusals(i, t, fields)
+    return out
+
+
+def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
+    out = []
+    for key in PATCH_ADD_ONLY_FIELDS:
+        if key not in fields:
+            continue
+        if key == "checks":
+            old = {c.command for c in t.checks}
+            new = {(c.get("command") if isinstance(c, dict) else c) for c in (fields[key] or [])}
+        else:
+            old = set(getattr(t, key) or [])
+            new = set(fields[key] or [])
+        if not old <= new:
+            out.append(_rf("RF-16", "I2 §1.2", i, f"fields.{key}",
+                           f"patch_contract removes or replaces an existing {key} entry ({sorted(old - new)})"))
+    if "evidence" in fields:
+        old_v = EVIDENCE_ORDER.get(t.evidence.value if hasattr(t.evidence, "value") else t.evidence)
+        new_val = EVIDENCE_ORDER.get(str(fields["evidence"]))
+        if old_v is None or new_val is None or new_val < old_v:
+            out.append(_rf("RF-16", "I2 §1.2", i, "fields.evidence", "patch_contract loosens evidence"))
+    if "owned_paths" in fields:
+        new_paths = fields["owned_paths"] or []
+        old_paths = t.owned_paths or []
+        if EXCLUSIVE in new_paths and EXCLUSIVE not in old_paths:
+            out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths", "patch_contract widens owned_paths to exclusive"))
+        elif old_paths and EXCLUSIVE not in old_paths:
+            from ._vendor.contract import contained
+            for p in new_paths:
+                if not contained(p, old_paths):
+                    out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths",
+                                   f"patch_contract widens owned_paths beyond {old_paths} ({p!r})"))
+                    break
+    return out
+
+
+def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], scope: dict[str, set[str]],
+                   created: set[str], templates: dict) -> list[Refusal]:
+    tid = op.get("task")
+    template_id = op.get("template")
+    params = op.get("params")
+    out = []
+    if not isinstance(params, dict):
+        return [_rf("RF-02", "I3 §1.2", i, "params", "set_job.params must be an object")]
+    if tid not in scope["narrow"]:
+        return [_rf("RF-12", "I2 §1.2", i, "task", f"set_job names {tid!r}, neither the subject nor created by this plan")]
+    t = tasks.get(tid)
+    if t is not None and t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
+        out.append(_rf("RF-14", "I2 §1.2", i, "task", f"set_job edits {tid!r}, which is {t.status.value}"))
+    tmpl = templates.get(str(template_id))
+    if tmpl is None:
+        out.append(_rf("RF-05", "I1 §1.2", i, "template", f"template {template_id!r} is not in config/job_templates.yaml"))
+        return out
+    may = tmpl.get("may_be_set_by") or []
+    if "plan" not in may:
+        out.append(_rf("RF-09", "I2 §1.2", i, "template", f"template {template_id!r} is not may_be_set_by: [plan]"))
+    if tid not in created and t is not None:
+        existing_job = (getattr(t, "model_extra", None) or {}).get("job")
+        if not isinstance(existing_job, dict) or not existing_job.get("adapter"):
+            out.append(_rf("RF-11", "I2 §1.2", i, "task", f"{tid!r} has no existing job; set_job may not give it a first one"))
+        else:
+            if existing_job.get("adapter") and tmpl.get("adapter") and existing_job["adapter"] != tmpl["adapter"]:
+                out.append(_rf("RF-11", "I2 §1.2", i, "template", f"set_job would change {tid!r}'s adapter"))
+            existing_template = existing_job.get("template")
+            if existing_template and existing_template != template_id:
+                out.append(_rf("RF-11", "I2 §1.2", i, "template",
+                               f"set_job would change {tid!r}'s template from {existing_template!r}"))
+    decl = tmpl.get("params") or {}
+    unknown = set(params) - set(decl)
+    if unknown:
+        out.append(_rf("RF-06", "I1 §1.2", i, "params", f"set_job.params names {', '.join(sorted(unknown))}, not declared by {template_id!r}"))
+    for name, value in params.items():
+        slot = decl.get(name)
+        if not isinstance(slot, dict):
+            continue
+        out += _param_refusals(i, name, value, slot, layout)
+    roots_ok = all(r.rule != "I1 §1.2" or r.code != "RF-07" for r in out)
+    if roots_ok:
+        executable = tmpl.get("argv", [None])[0] if tmpl.get("argv") else tmpl.get("executable")
+        if executable and not _resolve_executable(str(executable), layout.root):
+            out.append(_rf("RF-08", "I1 §1.2", i, "template", f"template {template_id!r}'s executable does not resolve"))
+    return out
+
+
+def _param_refusals(op_index: int, name: str, value: Any, slot: dict, layout: Layout) -> list[Refusal]:
+    out = []
+    field_path = f"params.{name}"
+    ptype = slot.get("type")
+    if isinstance(value, str) and value.startswith("-") and not slot.get("allow_leading_dash"):
+        out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} begins with '-', not allowed for this slot"))
+        return out
+    if ptype == "enum" and value not in (slot.get("values") or []):
+        out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} is not one of {slot.get('values')}"))
+    elif ptype == "int":
+        if not isinstance(value, int) or isinstance(value, bool):
+            out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} must be an int"))
+        else:
+            if slot.get("min") is not None and value < slot["min"]:
+                out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} is below min {slot['min']}"))
+            if slot.get("max") is not None and value > slot["max"]:
+                out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} is above max {slot['max']}"))
+    elif ptype == "path":
+        from ._vendor.contract import contained
+        roots = slot.get("roots") or []
+        if not isinstance(value, str) or not roots or not contained(value, roots, layout.root):
+            out.append(_rf("RF-07", "I1 §1.2", op_index, field_path, f"{field_path!r} does not resolve inside its declared roots"))
+        elif slot.get("must_exist") and not (layout.root / value).exists():
+            out.append(_rf("RF-08", "I1 §1.2", op_index, field_path, f"{field_path!r} does not exist"))
+    pattern = slot.get("pattern")
+    if pattern and isinstance(value, str):
+        import re
+        if not re.fullmatch(pattern, value):
+            out.append(_rf("RF-06", "I1 §1.2", op_index, field_path, f"{field_path!r} does not match the declared pattern"))
+    return out
+
+
+def _check_resume(i: int, op: dict, subject_id: str) -> list[Refusal]:
+    out = []
+    if op.get("task") != subject_id:
+        out.append(_rf("RF-13", "I2 §1.2", i, "task", "resume must name the subject"))
+    as_ = op.get("as", "ready")
+    if as_ not in ("ready", "blocked_on_dependencies"):
+        out.append(_rf("RF-02", "I3 §1.2", i, "as", f"resume.as {as_!r} is not ready or blocked_on_dependencies"))
+    return out
+
+
+def _graph_refusals(doc: dict, tasks: dict[str, Task]) -> list[Refusal]:
+    """Simulate every add_dependency/remove_dependency on a copy of the graph and check for a cycle, or a subject
+    left waiting on nothing (or only on tasks already COMPLETE) when `resume.as == blocked_on_dependencies`."""
+    out = []
+    graph = dict(tasks)
+    subject_id = (doc.get("subject") or {}).get("task")
+    subject = tasks.get(subject_id)
+    inherited = {"phase": subject.phase} if subject is not None else {"phase": 0}
+    for op in doc.get("operations") or []:
+        if not isinstance(op, dict):
+            continue
+        if op.get("op") == "create_task" and isinstance(op.get("task"), dict) and op["task"].get("id"):
+            try:
+                graph[op["task"]["id"]] = Task.model_validate({**inherited, **op["task"], "status": "NOT_STARTED",
+                                                               "attempts": [], "result": None, "paths": []})
+            except Exception:
+                continue
+    for op in doc.get("operations") or []:
+        if not isinstance(op, dict) or op.get("op") not in ("add_dependency", "remove_dependency"):
+            continue
+        tid = op.get("task")
+        if tid not in graph:
+            continue
+        deps = list(graph[tid].depends_on)
+        for d in op.get("depends_on") or []:
+            if op["op"] == "add_dependency" and d not in deps:
+                deps.append(d)
+            elif op["op"] == "remove_dependency" and d in deps:
+                deps.remove(d)
+        graph[tid] = graph[tid].model_copy(update={"depends_on": deps})
+    for e in tasks_mod.validate_graph(graph):
+        if "cycle" in e:
+            out.append(_rf("RF-17", "I3 §1.2", None, "operations", e))
+    resume_ops = [op for op in doc.get("operations") or [] if isinstance(op, dict) and op.get("op") == "resume"]
+    if resume_ops and resume_ops[-1].get("as") == "blocked_on_dependencies" and subject_id in graph:
+        waits = graph[subject_id].depends_on
+        live = [d for d in waits if d not in graph or graph[d].status != TaskStatus.COMPLETE]
+        if not live:
+            out.append(_rf("RF-17", "I3 §1.2", None, "operations",
+                           "resume.as is blocked_on_dependencies but the subject would wait on nothing unfinished"))
+    return out
+
+
+# ----------------------------------------------------------------------- the envelope and the entry point
+
+def _envelope_refusals(doc: Any) -> list[Refusal]:
+    if not isinstance(doc, dict):
+        return [_rf("RF-02", "I3 §1.2", None, None, "a plan must be a document (a mapping)")]
+    out = []
+    if not isinstance(doc.get("id"), str) or not doc.get("id", "").strip():
+        out.append(_rf("RF-02", "I3 §1.2", None, "id", "a plan must carry a non-empty id"))
+    subject = doc.get("subject")
+    if not isinstance(subject, dict) or not isinstance(subject.get("task"), str) or not subject.get("task"):
+        out.append(_rf("RF-02", "I3 §1.2", None, "subject", "a plan must carry subject.task"))
+    if not isinstance(doc.get("operations"), list):
+        out.append(_rf("RF-02", "I3 §1.2", None, "operations", "operations must be a list"))
+    if doc.get("plan_schema") != PLAN_SCHEMA:
+        out.append(_rf("RF-01", "I2 §1.2", None, "plan_schema", f"plan_schema {doc.get('plan_schema')!r} is not one this release knows"))
+    return out
+
+
+def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) -> tuple[PlanReport, list[dict]]:
+    """(report, refusals) for `doc` (a plan document, already loaded from YAML). `tasks` defaults to the live
+    store (`tasks_mod.load_all`); passing a snapshot lets a caller validate against the graph as it will be after
+    an earlier step of the same turn, exactly as `tasks.check_new` already allows. Never raises on a malformed
+    document — malformed is RF-02, not an exception — and never writes anything, anywhere: there is no applier in
+    this module. A plan tripping any refusal is reported refused whole: `refusals` is non-empty and nothing in
+    `report.graph_diff` should be read as describing an applied change."""
+    tasks = tasks_mod.load_all(layout) if tasks is None else tasks
+    refusals = _envelope_refusals(doc)
+    if refusals:
+        return PlanReport(), [r.as_dict() for r in refusals]
+
+    normalised_doc, normalised = normalise(doc, tasks)
+    ops = normalised_doc.get("operations") or []
+    templates = _load_templates(layout)
+    subject_id = normalised_doc["subject"]["task"]
+    scope = compute_scope(normalised_doc, tasks)
+    created = scope["narrow"] - {subject_id}
+
+    out: list[Refusal] = []
+    seen_owner_only = False
+    for i, op in enumerate(ops):
+        if not isinstance(op, dict) or not isinstance(op.get("op"), str):
+            out.append(_rf("RF-02", "I3 §1.2", i, "op", "every operation must be an object naming op"))
+            continue
+        name = op["op"]
+        if name in OWNER_ONLY_EFFECTS:
+            out.append(_rf("RF-26", "I2 §1.2", i, "op", f"{name!r} is an owner-only effect, never a plan operation"))
+            seen_owner_only = True
+            continue
+        if name not in OPERATIONS:
+            out.append(_rf("RF-01", "I2 §1.2", i, "op", f"{name!r} is outside the closed vocabulary"))
+            continue
+        try:
+            _OP_MODELS[name].model_validate(op)
+        except ValidationError as exc:
+            code = "RF-04" if name == "set_job" else "RF-02"
+            rule = "I1 §1.2" if code == "RF-04" else "I3 §1.2"
+            out.append(_rf(code, rule, i, None, f"{name} does not match its declared shape: {str(exc)[:300]}"))
+            continue
+        out += _command_shaped_refusals(i, op, templates)
+        out += _secret_shaped_refusals(i, op, layout)
+        if name == "create_task":
+            out += _check_create_task(i, op, layout, tasks, tasks.get(subject_id))
+        elif name in ("add_dependency", "remove_dependency"):
+            out += _check_dependency_op(i, op, tasks, scope)
+        elif name == "patch_contract":
+            out += _check_patch_contract(i, op, tasks, scope)
+        elif name == "set_job":
+            out += _check_set_job(i, op, layout, tasks, scope, created, templates)
+        elif name == "resume":
+            out += _check_resume(i, op, subject_id)
+
+    resume_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "resume"]
+    if not seen_owner_only:
+        if len(resume_ops) != 1:
+            out.append(_rf("RF-02", "I3 §1.2", None, "operations", "a plan must carry exactly one resume operation"))
+        set_job_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "set_job"]
+        creates = [op for op in ops if isinstance(op, dict) and op.get("op") == "create_task"]
+        cfg = _plan_limits(layout)
+        if len(ops) > cfg["max_ops"]:
+            out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(ops)} operations exceeds plan.max_ops ({cfg['max_ops']})"))
+        if len(creates) > cfg["max_creates"]:
+            out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(creates)} creates exceeds plan.max_creates ({cfg['max_creates']})"))
+        if len(set_job_ops) > 1:
+            out.append(_rf("RF-10", "I2 §1.2", None, "operations", "more than one set_job in a plan"))
+        out += _graph_refusals(normalised_doc, tasks)
+        out += _subject_refusals(normalised_doc, layout, tasks)
+
+    refusal_dicts = [r.as_dict() for r in out]
+    report = PlanReport(normalised=normalised, scope=sorted(scope["dependency"]))
+    if not refusal_dicts:
+        report.graph_diff = _graph_diff(normalised_doc, tasks)
+    return report, refusal_dicts
+
+
+def _plan_limits(layout: Layout) -> dict:
+    from . import gate as gate_mod
+    doc = gate_mod.routing_doc(layout).get("plan") or {}
+    return {"max_ops": int(doc.get("max_ops") or DEFAULT_MAX_OPS),
+            "max_creates": int(doc.get("max_creates") or DEFAULT_MAX_CREATES)}
+
+
+def _subject_refusals(doc: dict, layout: Layout, tasks: dict[str, Task]) -> list[Refusal]:
+    from . import jobs as jobs_mod
+    out = []
+    subject = doc["subject"]
+    subject_id = subject["task"]
+    t = tasks.get(subject_id)
+    if t is None:
+        return [_rf("RF-19", "I3 §1.2", None, "subject", f"subject {subject_id!r} no longer exists")]
+    if t.held:
+        out.append(_rf("RF-22", "I2 §1.2", None, "subject", f"subject {subject_id!r} is held by the owner"))
+    if t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
+        out.append(_rf("RF-20", "I3 §1.2", None, "subject", f"subject {subject_id!r} is {t.status.value}"))
+    elif any(r.get("phase") in jobs_mod.OPEN_PHASES for r in jobs_mod.for_task(layout, subject_id)):
+        out.append(_rf("RF-20", "I3 §1.2", None, "subject", f"subject {subject_id!r} has an open job"))
+    for tid, rev in (doc.get("expected_rev") or {}).items():
+        if tid not in tasks or tasks[tid].rev != rev:
+            out.append(_rf("RF-19", "I3 §1.2", None, "expected_rev",
+                           f"expected_rev names {tid!r} at rev {rev}, the store disagrees"))
+    current = tasks_mod.current_attempt(layout, subject_id)
+    if current is not None and subject.get("attempt") is not None and current != subject["attempt"]:
+        out.append(_rf("RF-19", "I3 §1.2", None, "subject.attempt",
+                       f"subject.attempt {subject['attempt']} is no longer the newest ({current})"))
+    return out
+
+
+def _graph_diff(doc: dict, tasks: dict[str, Task]) -> dict:
+    added, removed, patched, created = [], [], [], []
+    for op in doc.get("operations") or []:
+        if not isinstance(op, dict):
+            continue
+        if op.get("op") == "add_dependency":
+            for d in op.get("depends_on") or []:
+                added.append([op.get("task"), d])
+        elif op.get("op") == "remove_dependency":
+            for d in op.get("depends_on") or []:
+                removed.append([op.get("task"), d])
+        elif op.get("op") == "patch_contract":
+            t = tasks.get(op.get("task"))
+            before = {k: getattr(t, k) for k in (op.get("fields") or {})} if t else {}
+            patched.append({"task": op.get("task"), "before": before, "after": op.get("fields")})
+        elif op.get("op") == "create_task":
+            created.append((op.get("task") or {}).get("id"))
+    return {"edges_added": added, "edges_removed": removed, "contract_patches": patched, "created": created}
+
+
+# ----------------------------------------------------------------------- RF-23, RF-24, RF-25 — pure, ahead of
+# the approval lane (step 8) and the inbox's typed choices (step 7), which will call these once they exist.
+
+def self_approval_refusal(proposer_role: str, approver_role: str) -> dict | None:
+    """RF-23 `self_approval`: the approver resolved for a plan is never the role that proposed it."""
+    if proposer_role == approver_role:
+        return _rf("RF-23", "I2 §1.2", None, "approver", f"{approver_role!r} proposed this plan and may not approve it").as_dict()
+    return None
+
+
+def choice_not_offered_refusal(choice_ids: list[str], answered: str) -> dict | None:
+    """RF-24 `choice_not_offered`: an inbox answer naming a choice the item does not carry."""
+    if answered not in choice_ids:
+        return _rf("RF-24", "I3 §1.2", None, "choice", f"{answered!r} is not one of this item's choices {choice_ids}").as_dict()
+    return None
+
+
+def choice_stale_refusal(shown_digest: str, answered_digest: str) -> dict | None:
+    """RF-25 `choice_stale`: an answer whose choices_digest no longer matches the item as shown."""
+    if shown_digest != answered_digest:
+        return _rf("RF-25", "I3 §1.2", None, "choices_digest", "this item changed, reload").as_dict()
+    return None
+
+
+def choices_digest(choices: list[dict]) -> str:
+    return hashlib.sha256(yaml.safe_dump(choices, sort_keys=True).encode("utf-8")).hexdigest()
