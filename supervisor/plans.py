@@ -9,6 +9,19 @@ structural rather than a check (RF-04): the model declares exactly `op`, `task`,
 every other key, so there is no `argv`, `fn`, `cmd` or `shell` slot anywhere in the six operations for a value to
 reach. Every other refusal is ordinary deterministic code.
 
+R0 reaches past the operations' own fields into the *contract* the two writing operations carry, because a contract
+has executable content of its own: a check's `command` is a string verification re-runs, its `cwd` is where that
+runs, and a test root is what bounds the `cwd`. A template reference is not a command, but a check is one, so
+neither `create_task` nor `patch_contract` may author either, or a test root (`_executable_content_refusals`,
+RF-03). An allow-listed command *prefix* would not do: the arguments after it would still be the model's, and R0
+names an argument beside a program.
+
+A refusal never carries the value it refused. The refusal list is written to the store, rendered, and quoted into
+the correction turn's brief, so every message here is built from field paths and counts and run through
+`policy.redact` — never from the string representation of a validation error, which quotes the input. The two
+value scans (RF-03, RF-21) therefore run on every operation whatever the shape check decided about it: an
+operation refused for its shape is the one most likely to be carrying something that must not be logged.
+
 Three refusal codes (RF-23, RF-24, RF-25) belong, by RECOVERY_PLAN.md section 1's own preamble, to the approval
 lane and the inbox (steps 7-8 of the order of work) rather than to a plan document's own shape. Their rule is
 already fully determined by this step's inputs, so the pure functions that decide them (`self_approval_refusal`,
@@ -42,7 +55,7 @@ OWNER_ONLY_EFFECTS = frozenset({"apply_plan", "cancel_plan", "cancel_task", "hol
 # Every model forbids any key beyond the ones named: an operation is a selection from the vocabulary plus typed,
 # bounded parameters, never an open document. `SetJobOp` is the one R0 binds structurally rather than by a check
 # (RF-04) — it declares exactly `op`, `task`, `template`, `params`, so there is no `argv`, `fn`, `cmd` or `shell`
-# key anywhere for a value to reach; `test_no_job_fix_structural` constructs one to prove it.
+# key anywhere for a value to reach; `test_rf04_job_without_template_structural` constructs one to prove it.
 
 class CreateTaskOp(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -100,6 +113,11 @@ PATCH_ALLOWED_FIELDS = frozenset({"tests", "checks", "test_roots", "artifacts", 
                                   "owned_paths", "actions", "review_note"})
 PATCH_ADD_ONLY_FIELDS = frozenset({"tests", "checks", "test_roots", "artifacts", "reviewer"})
 
+# `checks` and `test_roots` stay *named* above — a `checks` key is how §1.3's `checks_to_tests` reaches the prose
+# it moves to `tests`, and emptying one of them is a loosening RF-16 has to be able to see — but no content a plan
+# proposes for either survives `_executable_content_refusals`. They are contract fields a human writes.
+EXECUTABLE_CONTRACT_FIELDS = ("checks", "test_roots")
+
 # What `create_task.task` may name (§2.3/§2.4 of D-027 decision 3): the four the created task must state, the four
 # inherited from the subject and therefore forbidden here, and everything else a contract may optionally carry.
 CREATE_REQUIRED_FIELDS = frozenset({"title", "objective", "owner_role", "cost_category"})
@@ -152,6 +170,23 @@ def _rf(code: str, rule: str, op_index: int | None, field_: str | None, message:
     return Refusal(code=code, op_index=op_index, field=field_, message=message, rule=rule)
 
 
+def _safe(message: str, layout: Layout) -> str:
+    """Any message built from a value rather than written here passes through this. A refusal is written to the
+    store, rendered, and quoted into the correction turn's brief (§2.5), so a credential that reached a message
+    would be published by the very path RF-21 exists to close."""
+    return str(policy_mod.redact(message, layout))[:300]
+
+
+def _shape_message(name: str, exc: ValidationError, layout: Layout) -> str:
+    """A shape refusal built from the error locations alone: `str(ValidationError)` quotes every `input_value`,
+    and the field is what a correction turn needs while the value is the thing that must not travel."""
+    parts = []
+    for e in exc.errors():
+        loc = ".".join(str(x) for x in (e.get("loc") or ()))
+        parts.append(f"{loc or '<operation>'} ({e.get('type')})")
+    return _safe(f"{name} does not match its declared shape: " + "; ".join(dict.fromkeys(parts)), layout)
+
+
 # ----------------------------------------------------------------------- scanning every string of every operation
 
 def _iter_strings(value: Any, path: str):
@@ -182,11 +217,47 @@ def _path_param_fields(op: dict, templates: dict) -> set[str]:
 
 def _is_contract_content(field_path: str) -> bool:
     """A string that lives inside `create_task.task` or `patch_contract.fields` — a contract field, already
-    legal to hold a path (`artifacts`, `owned_paths`, `test_roots`, a check's `command`) and already checked for
-    that by `tasks.check_new`/`_apply_patch`. RF-03's path-separator clause (unlike its metacharacter clause,
-    which still runs on this content too) is about a bare field growing a path it was never declared to carry —
-    a task id, a template id, a dependency id, a `set_job` parameter — not about the contract's own path fields."""
+    legal to hold a path (`artifacts`, `owned_paths`) and already checked for that by
+    `tasks.check_new`/`_apply_patch`. RF-03's path-separator clause (unlike its metacharacter clause, which still
+    runs on this content too) is about a bare field growing a path it was never declared to carry — a task id, a
+    template id, a dependency id, a `set_job` parameter — not about the contract's own path fields.
+
+    This is a narrowing of the R0 tripwire and so is stated with it: without it a `create_task` declaring
+    `artifacts: ["docs/x.md"]` would be refused for the separator in a field whose whole content is a path. The
+    two contract fields where a separator would have bounded or aimed an *execution* — `test_roots` and a check's
+    `cwd` — are not covered by the narrowing at all, because no plan may propose either
+    (`_executable_content_refusals`). `test_rf03_contract_path_fields_may_hold_a_path` and
+    `test_rf03_a_path_outside_contract_content_is_refused` pin each side of the line."""
     return field_path.startswith("task.") or field_path.startswith("fields.")
+
+
+def _executable_content_refusals(op_index: int, op: dict) -> list[Refusal]:
+    """RF-03 for the contract's own executable content: a check (a command verification re-runs, with its own
+    `cwd`) or a test root (the directory set a declared command may `cwd` into). §1.3's `checks_to_tests` has
+    already moved every prose entry out of `checks` by the time this runs, so what is left in it resolves to
+    something executable — which is exactly what R0 says a model's output never becomes. The refusal names the
+    field and how many entries it carried, never an entry."""
+    if op.get("op") == "create_task":
+        content, prefix = op.get("task"), "task"
+    elif op.get("op") == "patch_contract":
+        content, prefix = op.get("fields"), "fields"
+    else:
+        return []
+    if not isinstance(content, dict):
+        return []
+    out = []
+    for key in EXECUTABLE_CONTRACT_FIELDS:
+        if key not in content:
+            continue
+        entries = content[key]
+        entries = entries if isinstance(entries, list) else [entries]
+        if not entries:
+            continue                       # an empty list sets nothing executable; RF-16 judges what it removes
+        what = "check command" if key == "checks" else "test root"
+        out.append(_rf("RF-03", "I1 §1.2", op_index, f"{prefix}.{key}",
+                       f"{prefix}.{key} proposes {len(entries)} {what}(s); a command the supervisor runs, the "
+                       f"directory it runs in and the roots that bound it are human-written contract data"))
+    return out
 
 
 def _command_shaped_refusals(op_index: int, op: dict, templates: dict) -> list[Refusal]:
@@ -379,17 +450,20 @@ def _check_create_task(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
     full_doc = {**inherited, **task_doc}
     try:
         _, errors, warnings = tasks_mod.check_new(layout, full_doc, combined)
-    except Exception as exc:                                  # ValidationError or anything check_new raises
-        return [_rf("RF-02", "I3 §1.2", i, "task", f"create_task.task is not a valid task contract: {str(exc)[:300]}")]
+    except ValidationError as exc:
+        return [_rf("RF-02", "I3 §1.2", i, "task", _shape_message("create_task.task", exc, layout))]
+    except Exception as exc:                                  # anything else check_new raises
+        return [_rf("RF-02", "I3 §1.2", i, "task",
+                    _safe(f"create_task.task is not a valid task contract: {type(exc).__name__}", layout))]
     for e in errors:
         code = "RF-17" if "cycle" in e else "RF-02"
-        out.append(_rf(code, "I3 §1.2" if code == "RF-02" else "I2 §1.2", i, "task", e))
+        out.append(_rf(code, "I3 §1.2" if code == "RF-02" else "I2 §1.2", i, "task", _safe(e, layout)))
     if not out and warnings:
         task_obj = Task.model_validate({**full_doc, "status": "NOT_STARTED", "attempts": [], "result": None,
                                         "paths": []})
         refusals = tasks_mod.contract_warnings([task_obj], layout)
         for w in refusals:
-            out.append(_rf("RF-18", "I2 §1.2", i, "task", w))
+            out.append(_rf("RF-18", "I2 §1.2", i, "task", _safe(w, layout)))
     return out
 
 
@@ -411,7 +485,8 @@ def _check_dependency_op(i: int, op: dict, tasks: dict[str, Task], scope: dict[s
     return out
 
 
-def _check_patch_contract(i: int, op: dict, tasks: dict[str, Task], scope: dict[str, set[str]]) -> list[Refusal]:
+def _check_patch_contract(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
+                          scope: dict[str, set[str]]) -> list[Refusal]:
     out = []
     tid = op.get("task")
     fields = op.get("fields")
@@ -433,7 +508,27 @@ def _check_patch_contract(i: int, op: dict, tasks: dict[str, Task], scope: dict[
     if out or t is None:
         return out
     out += _monotonicity_refusals(i, t, fields)
+    if out:
+        return out
+    out += _patched_contract_refusals(i, t, fields, layout)
     return out
+
+
+def _patched_contract_refusals(i: int, t: Task, fields: dict, layout: Layout) -> list[Refusal]:
+    """RF-18 on the patch path, not only on a created task. `patch_contract` may add a `reviewer`, and a role
+    routing does not configure parks the patched task exactly as it would park a new one — the reason RF-18
+    exists. Only what this patch *adds* is refused: a task already carrying a warning (its own role was
+    deconfigured, a check a human wrote is outside the allow-list) is not made unpatchable by it.
+
+    The patched contract is built by validating it, which is also how `tasks.patch_task` would see it (§2.2), so a
+    patch whose value is of the wrong type is RF-02 here rather than a failure at apply time."""
+    try:
+        patched = Task.model_validate({**t.model_dump(mode="json"), **fields})
+    except ValidationError as exc:
+        return [_rf("RF-02", "I3 §1.2", i, "fields", _shape_message("patch_contract.fields", exc, layout))]
+    before = set(tasks_mod.contract_warnings([t], layout))
+    return [_rf("RF-18", "I2 §1.2", i, "fields", _safe(w, layout))
+            for w in tasks_mod.contract_warnings([patched], layout) if w not in before]
 
 
 def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
@@ -641,7 +736,6 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
     created = scope["narrow"] - {subject_id}
 
     out: list[Refusal] = []
-    seen_owner_only = False
     for i, op in enumerate(ops):
         if not isinstance(op, dict) or not isinstance(op.get("op"), str):
             out.append(_rf("RF-02", "I3 §1.2", i, "op", "every operation must be an object naming op"))
@@ -649,46 +743,52 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
         name = op["op"]
         if name in OWNER_ONLY_EFFECTS:
             out.append(_rf("RF-26", "I2 §1.2", i, "op", f"{name!r} is an owner-only effect, never a plan operation"))
-            seen_owner_only = True
             continue
         if name not in OPERATIONS:
             out.append(_rf("RF-01", "I2 §1.2", i, "op", f"{name!r} is outside the closed vocabulary"))
             continue
+        # The value scans first, and whatever the shape check then decides: RF-03 runs on every string of every
+        # operation (§1.2), which an operation skipped for its shape would not be, and an operation carrying a
+        # credential must reach RF-21 before anything builds a message out of it.
+        scanned = (_command_shaped_refusals(i, op, templates) + _secret_shaped_refusals(i, op, layout)
+                   + _executable_content_refusals(i, op))
+        out += scanned
         try:
             _OP_MODELS[name].model_validate(op)
         except ValidationError as exc:
             code = "RF-04" if name == "set_job" else "RF-02"
             rule = "I1 §1.2" if code == "RF-04" else "I3 §1.2"
-            out.append(_rf(code, rule, i, None, f"{name} does not match its declared shape: {str(exc)[:300]}"))
+            out.append(_rf(code, rule, i, None, _shape_message(name, exc, layout)))
             continue
-        out += _command_shaped_refusals(i, op, templates)
-        out += _secret_shaped_refusals(i, op, layout)
+        if scanned:
+            continue        # refused whole either way; its own checks would only read a value already refused
         if name == "create_task":
             out += _check_create_task(i, op, layout, tasks, tasks.get(subject_id))
         elif name in ("add_dependency", "remove_dependency"):
             out += _check_dependency_op(i, op, tasks, scope)
         elif name == "patch_contract":
-            out += _check_patch_contract(i, op, tasks, scope)
+            out += _check_patch_contract(i, op, layout, tasks, scope)
         elif name == "set_job":
             out += _check_set_job(i, op, layout, tasks, scope, created, templates)
         elif name == "resume":
             out += _check_resume(i, op, subject_id)
 
+    # The plan-level refusals run on every document, including one carrying an owner-only effect: §2.5 grants the
+    # proposer exactly one correction turn on this list, and a list truncated by the first refusal found spends it.
     resume_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "resume"]
-    if not seen_owner_only:
-        if len(resume_ops) != 1:
-            out.append(_rf("RF-02", "I3 §1.2", None, "operations", "a plan must carry exactly one resume operation"))
-        set_job_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "set_job"]
-        creates = [op for op in ops if isinstance(op, dict) and op.get("op") == "create_task"]
-        cfg = _plan_limits(layout)
-        if len(ops) > cfg["max_ops"]:
-            out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(ops)} operations exceeds plan.max_ops ({cfg['max_ops']})"))
-        if len(creates) > cfg["max_creates"]:
-            out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(creates)} creates exceeds plan.max_creates ({cfg['max_creates']})"))
-        if len(set_job_ops) > 1:
-            out.append(_rf("RF-10", "I2 §1.2", None, "operations", "more than one set_job in a plan"))
-        out += _graph_refusals(normalised_doc, tasks)
-        out += _subject_refusals(normalised_doc, layout, tasks)
+    if len(resume_ops) != 1:
+        out.append(_rf("RF-02", "I3 §1.2", None, "operations", "a plan must carry exactly one resume operation"))
+    set_job_ops = [op for op in ops if isinstance(op, dict) and op.get("op") == "set_job"]
+    creates = [op for op in ops if isinstance(op, dict) and op.get("op") == "create_task"]
+    cfg = _plan_limits(layout)
+    if len(ops) > cfg["max_ops"]:
+        out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(ops)} operations exceeds plan.max_ops ({cfg['max_ops']})"))
+    if len(creates) > cfg["max_creates"]:
+        out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(creates)} creates exceeds plan.max_creates ({cfg['max_creates']})"))
+    if len(set_job_ops) > 1:
+        out.append(_rf("RF-10", "I2 §1.2", None, "operations", "more than one set_job in a plan"))
+    out += _graph_refusals(normalised_doc, tasks)
+    out += _subject_refusals(normalised_doc, layout, tasks)
 
     refusal_dicts = [r.as_dict() for r in out]
     report = PlanReport(normalised=normalised, scope=sorted(scope["dependency"]))
@@ -718,7 +818,13 @@ def _subject_refusals(doc: dict, layout: Layout, tasks: dict[str, Task]) -> list
         out.append(_rf("RF-20", "I3 §1.2", None, "subject", f"subject {subject_id!r} is {t.status.value}"))
     elif any(r.get("phase") in jobs_mod.OPEN_PHASES for r in jobs_mod.for_task(layout, subject_id)):
         out.append(_rf("RF-20", "I3 §1.2", None, "subject", f"subject {subject_id!r} has an open job"))
-    for tid, rev in (doc.get("expected_rev") or {}).items():
+    expected = doc.get("expected_rev") or {}
+    if subject_id not in expected:
+        # A plan that declares no rev for its own subject got no staleness check at all. §2.1 annotates
+        # `expected_rev` "every task the plan reads or writes", and the subject is read and written by every plan.
+        out.append(_rf("RF-19", "I3 §1.2", None, "expected_rev",
+                       f"expected_rev does not name the subject {subject_id!r}, so nothing checks it is unchanged"))
+    for tid, rev in expected.items():
         if tid not in tasks or tasks[tid].rev != rev:
             out.append(_rf("RF-19", "I3 §1.2", None, "expected_rev",
                            f"expected_rev names {tid!r} at rev {rev}, the store disagrees"))
