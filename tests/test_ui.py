@@ -389,10 +389,11 @@ def test_now_running_lists_every_open_job_with_what_it_is_doing(layout, auth_cli
     runtime.heartbeat(layout, "RUNNING")
     jobs_mod.write(layout, {"attempt_id": "T0-07.a4", "task_id": "T0-07", "adapter": "claude_cli", "phase": "RUNNING",
                             "spec": {"kind": "delivery", "role": "image_engineer", "model": "sonnet", "effort": "high",
-                                     "timeout_s": 3600},
+                                     "timeout_s": 3600}, "attempt": 4, "kind": "delivery", "seq": 1,
                             "handle": {"started": "2026-01-01T00:00:00+00:00"}, "created": "2026-01-01T00:00:00+00:00"})
     jobs_mod.write(layout, {"attempt_id": "T0-07.a5", "task_id": "T0-07", "adapter": "codex_cli", "phase": "SUBMITTED",
                             "review_role": "code_review", "spec": {"kind": "review"}, "handle": {},
+                            "attempt": 4, "kind": "review", "seq": 1, "parent": "T0-07.a4",
                             "created": "2026-01-01T00:00:00+00:00"})
     jobs_mod.write(layout, {"attempt_id": "T0-08.a1", "task_id": "T0-08", "adapter": "human", "phase": "SUBMITTED",
                             "spec": {}, "handle": {}, "created": "2026-01-01T00:00:00+00:00"})

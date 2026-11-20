@@ -67,10 +67,12 @@ def agents_list(request: Request, layout: Layout = Depends(require_auth)):
 
 
 def _find_job(layout: Layout, attempt_id: str) -> dict:
-    try:
-        return jobs_mod.read(layout, attempt_id)
-    except (OSError, ValueError):
+    """The named job, from the live directory or the archive (R-23) — an old `/agents/<id>` URL must still
+    resolve once its task is terminal and its record has moved."""
+    rec = jobs_mod.resolve(layout, attempt_id)
+    if rec is None:
         raise HTTPException(status_code=404, detail="no such attempt")
+    return rec
 
 
 @router.get("/agents/{attempt_id}")

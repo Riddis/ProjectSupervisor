@@ -34,9 +34,13 @@ def _submitted_by(actor: str, job_id: str | None) -> dict:
     never inferred from the calling process's own environment, which a job's `SUPERVISOR_ATTEMPT` can leak into
     unrelated work, R-24), else the interactive actor that submitted it. A job's result is not ingested as complete
     while one of its own commands is still unresolved (supervisor.loop.ingest); an interactive submission is simply
-    reported back to whoever is watching the page. The one caller that genuinely runs as a job's own command —
-    `supervisor cmd`, the CLI a process job's own argv invokes — reads `SUPERVISOR_ATTEMPT` itself and passes it
-    on, deliberately, as `job_id`."""
+    reported back to whoever is watching the page. Every CLI verb that can queue a command reads
+    `SUPERVISOR_ATTEMPT` once, at the CLI boundary (`cli._job_id()`), and passes it on, deliberately, as `job_id`
+    (P2-1) — not only `supervisor cmd`, the one verb a process job's own argv invokes.
+
+    Three escapes stay interactive even with `SUPERVISOR_ATTEMPT` set in the shell: running the CLI with the
+    variable blanked or unset (`SUPERVISOR_ATTEMPT=`); the Control Center's own `act()`, which never reads it;
+    and calling this module, or the plugin API's `submit_command()`, directly with no `job_id` (P3-R2-2)."""
     return {"kind": "job", "id": job_id} if job_id else {"kind": "interactive", "actor": actor}
 
 
@@ -44,8 +48,9 @@ def submit(layout: Layout, kind: str, payload: dict, actor: str = "cli", command
           job_id: str | None = None) -> Path:
     """Queue a command. `command_id` (default: a new id) names the command file and becomes `payload["_id"]`: a
     caller that resubmits with the same id gets the command applied once, because apply_all() skips a pending file
-    whose applied record already exists. `job_id` names the job attempt this command is part of (default: the
-    `SUPERVISOR_ATTEMPT` of the calling process, if any) — see `_submitted_by`."""
+    whose applied record already exists. `job_id` names the job attempt this command is part of (default: `None`,
+    tagging the command interactive) — this library reads no environment variable itself (R-24); the CLI is what
+    reads `SUPERVISOR_ATTEMPT` and passes it in, at its own boundary — see `_submitted_by`."""
     layout.commands.mkdir(parents=True, exist_ok=True)
     cid = command_id or new_id()
     p = layout.commands / f"{cid}.json"
@@ -277,7 +282,7 @@ def _deliver(layout, payload, actor):
     if cid and t.delivery and t.delivery.digest == payload["digest"]:
         return {"skipped": "already delivered", "status": t.status.value}
     t = tasks_mod.record_delivery(layout, payload["task_id"], payload["digest"], actor=actor, result=payload.get("result"),
-                                  paths=payload.get("paths") or [])
+                                  paths=payload.get("paths") or [], findings_response=payload.get("findings_response"))
     return {"status": t.status.value}
 
 
@@ -558,12 +563,21 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
     for p in pending(layout):
         done = layout.commands_applied / p.name
         if done.exists():                          # crash after applied-file write, before unlink
-            p.unlink(missing_ok=True)
+            if p.is_file():
+                p.unlink(missing_ok=True)
+            continue
+        if p.is_dir():
+            # A directory named like a command file (F8): there are no bytes to quarantine and nothing here
+            # to apply, so report it once, the same as any other rejected envelope, and leave it in place —
+            # unlink() raises on a directory (PermissionError on Windows, IsADirectoryError on POSIX), which
+            # must not be the thing that stops every command queued behind it.
+            atomic_json(done, {"id": p.stem, "ok": False,
+                                "error": "rejected command envelope: a directory, not a file", "applied": now_iso()})
             continue
         raw = None
         try:
-            raw = p.read_text(encoding="utf-8")
-            cmd = json.loads(raw)
+            raw = p.read_bytes()
+            cmd = json.loads(raw.decode("utf-8"))
             if not isinstance(cmd, dict):
                 raise ValueError(f"a command envelope must be an object, not {type(cmd).__name__}")
             if not isinstance(cmd.get("kind"), str):
@@ -573,10 +587,12 @@ def apply_all(layout: Layout, actor_override: str | None = None) -> list[dict]:
         except (OSError, ValueError) as exc:
             # The envelope itself is rejected, not one handler's work inside it (R-02): quarantine the file with
             # its bytes intact, so the owner can see what a plugin or a hand-edit actually wrote, and move on —
-            # one bad file must not stop every command queued behind it, loop.pause among them.
+            # one bad file must not stop every command queued behind it, loop.pause among them. `raw` is read as
+            # bytes before any UTF-8 decode is attempted (F9), so a file that is not valid UTF-8 is quarantined
+            # too, not only one whose bytes decode but fail to parse as JSON.
             if raw is not None:
                 quarantine_dir.mkdir(parents=True, exist_ok=True)
-                (quarantine_dir / p.name).write_text(raw, encoding="utf-8")
+                (quarantine_dir / p.name).write_bytes(raw)
             atomic_json(done, {"id": p.stem, "ok": False, "error": f"rejected command envelope: {exc}", "applied": now_iso()})
             p.unlink(missing_ok=True)
             continue

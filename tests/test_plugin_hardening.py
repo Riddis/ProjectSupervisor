@@ -194,7 +194,7 @@ def test_a_throwing_adapter_fails_its_attempt_and_the_loop_goes_on(layout, stage
         assert sup.once() == "RUN"
     assert sup.errors == []                                              # the loop's error budget is untouched
     assert runtime.read(layout)["status"] == "RUNNING"
-    rec = jobs.read(layout, "X.a1")
+    rec = jobs.read(layout, "X.a1.s1")
     assert rec["phase"] == "DONE" and rec["result"] == "FAILED" and f"{stage} exploded" in rec["error"]
     task = tasks.load(layout, "X")
     assert task.status == TaskStatus.FAILED

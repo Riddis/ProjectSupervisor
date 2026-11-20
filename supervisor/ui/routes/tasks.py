@@ -37,14 +37,57 @@ def _get_task(layout: Layout, task_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str | None, run_dir: str | None,
+            note: str | None, result: str | None) -> dict:
+    """One Attempts-table row for one job, on either `Attempt` shape (ATTEMPT_MODEL.md §2.7): the stored entry
+    (an un-migrated `Attempt`'s own dump, or one of a migrated `Attempt`'s `jobs[]`) gives the static fields; the
+    live job record, when it still exists, gives the kind as a fallback, the current phase/result and the model
+    (§4.6 — the model is read only from the job record here, never from the task document)."""
+    job = jobs_mod.resolve(layout, job_id) if job_id else None
+    spec = (job or {}).get("spec") or {}
+    return {
+        "job_id": job_id, "kind": kind or (jobs_mod.kind_of(job) if job else "delivery"),
+        "resource": resource, "note": note or "",
+        "run_dir": run_dir or spec.get("run_dir"),
+        "model": (job or {}).get("model") or spec.get("model"),
+        "result": (job or {}).get("result") or result,
+        "phase": (job or {}).get("phase"),
+    }
+
+
+def attempt_groups(layout: Layout, t) -> list[dict]:
+    """The Attempts table's rows, grouped by delivery attempt, read from each stored entry's own dump
+    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone (ATTEMPT_MODEL.md
+    §4.6, step 15). A migrated document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
+    un-migrated document's one entry per job is named by whatever `id` key it was written under — tolerated,
+    never typed, used only as the fallback when `jobs[]` is empty (never on a migrated document, which never
+    carries an entry without `n` set). Each migrated group's `n` is the attempt number. An un-migrated entry's id
+    suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id whose kind is whatever happened to be
+    dispatched nth"), so that group names its job instead of asserting a delivery-attempt count (`n: None`,
+    `job_id` set — the design's interim remedy, §6). Each row carries the job's own kind either way, so a
+    verification, a review or a diagnosis is never shown as if it were a fresh attempt at the deliverable."""
+    groups = []
+    for a in t.attempts:
+        ad = a.model_dump()
+        jobs = ad.get("jobs") or []
+        if jobs:
+            rows = [_job_row(layout, e.get("id"), e.get("kind"), e.get("resource"), e.get("run_dir"),
+                             e.get("note"), e.get("result")) for e in jobs]
+            groups.append({"n": ad.get("n"), "job_id": None, "opened": ad.get("opened"), "outcome": ad.get("outcome"),
+                          "rows": rows})
+        else:
+            groups.append({"n": None, "job_id": ad.get("id"), "opened": ad.get("at"), "outcome": ad.get("outcome"),
+                          "rows": [_job_row(layout, ad.get("id"), None, ad.get("resource"), ad.get("run_dir"),
+                                            ad.get("note"), None)]})
+    return groups
+
+
 @router.get("/tasks/{task_id}")
 def task_detail(task_id: str, request: Request, layout: Layout = Depends(require_auth)):
     t = _get_task(layout, task_id)
-    jobs_by_id = {r["attempt_id"]: r for r in jobs_mod.for_task(layout, task_id)}
-    attempts = [{"attempt": a, "job": jobs_by_id.get(a.id)} for a in t.attempts]
     dv = delivery_view.view(layout, t) if t.delivery.digest else None
     action_reasons = {a: tasks_mod.action_blocked_reason(a, t.status) for a in tasks_mod.PAGE_ACTIONS}
-    return render(request, "task_detail.html", {"t": t, "attempts": attempts, "dv": dv,
+    return render(request, "task_detail.html", {"t": t, "attempt_groups": attempt_groups(layout, t), "dv": dv,
                                                 "broken_jobs": jobs_mod.unreadable(layout, task_id),
                                                 "action_reasons": action_reasons,
                                                 "flash": decode_flash(request)})
@@ -81,19 +124,19 @@ def task_file(task_id: str, index: int, digest: str = "", layout: Layout = Depen
 @router.post("/tasks/{task_id}/attempts/{attempt_id}/open-run-dir")
 def open_run_dir(task_id: str, attempt_id: str, request: Request, csrf_token: str = Form(...),
                  layout: Layout = Depends(require_auth)):
-    """Opens the attempt's own run directory in the OS file explorer — the client supplies only an attempt id that
-    must belong to this task; the real path is resolved server-side from the job record, never from the request."""
+    """Opens a job's own run directory in the OS file explorer — the client supplies only a job id, of either
+    shape (an old flat id or a new `<task>.a<n>.<k><seq>` one), that must belong to this task; the real path is
+    resolved server-side from the job entry, never from the request."""
     require_csrf(request, csrf_token)
     import os
     t = _get_task(layout, task_id)
-    attempt = next((a for a in t.attempts if a.id == attempt_id), None)
-    if attempt is None:
+    row = next((r for g in attempt_groups(layout, t) for r in g["rows"] if r["job_id"] == attempt_id), None)
+    if row is None:
         raise HTTPException(status_code=404, detail="no such attempt")
     from fastapi.responses import RedirectResponse
 
     from ..deps import encode_flash
-    recs = [r for r in jobs_mod.for_task(layout, task_id) if r.get("attempt_id") == attempt_id]
-    run_dir = ((recs[0].get("spec") or {}).get("run_dir") if recs else None) or attempt.run_dir
+    run_dir = row["run_dir"]
     opened = bool(run_dir and os.path.isdir(run_dir) and hasattr(os, "startfile"))
     if opened:
         os.startfile(run_dir)

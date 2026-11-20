@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -386,6 +387,28 @@ def active(tasks: dict[str, Task]) -> list[Task]:
     return [t for t in tasks.values() if t.status != TaskStatus.CANCELLED]
 
 
+_DOCUMENT_ONLY_SUFFIXES = frozenset({".md", ".txt", ".rst"})
+
+
+def _document_only(doc: dict) -> bool:
+    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13,
+    ATTEMPT_MODEL.md section 4.4, step 13): the common planning/record task dispatched on a model lane, where
+    the pydantic default (`evidence: auto`) demands a command the moment its own prose `tests` say anything —
+    most of R-13's "no test evidence" failures were exactly this shape."""
+    artifacts = doc.get("artifacts") or []
+    if doc.get("checks") or not artifacts:
+        return False
+    return all(Path(str(a)).suffix.lower() in _DOCUMENT_ONLY_SUFFIXES for a in artifacts)
+
+
+def _default_evidence(doc: dict) -> dict:
+    """A seed or a direct `create()` row that never mentions `evidence` gets the document-only default (step
+    13) instead of silently inheriting `auto`; a row that does name it is never touched here."""
+    if "evidence" not in doc and _document_only(doc):
+        doc["evidence"] = "review"
+    return doc
+
+
 def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:
     """(the stored document, errors, warnings) for a task `create()` would add: the contract (pydantic), the graph
     with it in place, its ownership and its artifacts; `contract_warnings` stay warnings. `combined` (default: the
@@ -393,7 +416,8 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract."""
     doc = dict(doc)
     doc.setdefault("status", "NOT_STARTED")
-    doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+    doc.update({"attempts": [], "result": None, "paths": []})
+    doc = _default_evidence(doc)
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
@@ -412,7 +436,8 @@ def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     doc, errors, warnings = check_new(layout, doc)
     if errors:
         raise TaskError("; ".join(errors))
-    store.write_new(path, doc)
+    written = store.write_new(path, doc)
+    _sync_turn_snapshot(Task.model_validate(written))     # a task created mid-turn must be visible inside it too
     log(layout, "task_created", actor, task=doc["id"], **({"warnings": warnings} if warnings else {}))
     out = {"id": doc["id"], "status": doc["status"]}
     if warnings:
@@ -451,7 +476,8 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
                 continue
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
-            doc.update({"attempts": [], "result": None, "paths": [], "decisions": []})
+            doc.update({"attempts": [], "result": None, "paths": []})
+            doc = _default_evidence(doc)
             task = Task.model_validate(doc)                              # fail before touching the graph or the disk
             resulting[tid], new_docs[tid] = task, doc
             changed.append(task)
@@ -474,11 +500,13 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
 
     if not dry_run:
         for tid in created:
-            store.write_new(path_for(layout, tid), new_docs[tid])
+            written = store.write_new(path_for(layout, tid), new_docs[tid])
+            _sync_turn_snapshot(Task.model_validate(written))
         for t in seed:
             if t["id"] in updated:
-                store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
-                            lock_path=layout.state / ".tasks.lock")
+                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
+                                       lock_path=layout.state / ".tasks.lock")
+                _sync_turn_snapshot(Task.model_validate(written))
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
 
     out = {"created": created, "updated": updated, "untouched": untouched, "ignored": ignored}
@@ -616,6 +644,7 @@ def log(layout: Layout, event: str, actor: str = "system", **fields):
               "actor": policy_mod.screen_log_identity(actor, layout),
               "event": policy_mod.screen_log_identity(event, layout),
               **policy_mod.redact_fields(fields, layout)}
+    store.rotate_log(layout.log)                                             # R-23: before, not after — bounded
     store.append_line(layout.log, json.dumps(record, ensure_ascii=False))     # the log's own line endings
 
 
@@ -671,10 +700,18 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")
     t = Task.model_validate(doc)
-    snap = _TURN_SNAPSHOT.get()
-    if snap is not None:              # this turn's snapshot, if one is open: later steps must see this write (R-09)
-        snap[t.id] = t
+    _sync_turn_snapshot(t)
     return t
+
+
+def _sync_turn_snapshot(task: Task) -> None:
+    """This turn's snapshot, if one is open, kept in step with a write `_update()` did not make — `create()` and
+    `import_seed()`'s own new-row branch write with `store.write_new()` directly, not through `_update()`, so
+    without this a task created mid-turn stayed invisible to `load_all()` for the rest of that turn even though
+    `_update()`'s own writes were already promised to be seen by it (astra: load_all/turn-snapshot visibility)."""
+    snap = _TURN_SNAPSHOT.get()
+    if snap is not None:
+        snap[task.id] = task
 
 
 def _record_history(doc: dict, to: TaskStatus, by: str, note: str, forced: bool = False):
@@ -732,6 +769,7 @@ def set_status(layout: Layout, task_id: str, status: TaskStatus | str, actor: st
         closed = jobs_mod.retire(layout, task_id, reason=f"task moved to {status.value}", actor=actor)
         if closed:
             log(layout, "jobs_retired", actor, task=task_id, jobs=closed, to=status.value)
+        jobs_mod.archive_terminal(layout, task_id)        # R-23: after retire, so a just-closed record moves too
     return t
 
 
@@ -781,9 +819,13 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
     """Allocate the task's next job number from its own counter and record the attempt, in the same locked
     update, so the job record and the task's own attempt list can never disagree (R-03). `seed` covers a task
     with no counter yet (one written before this field existed): pass the highest attempt number already on
-    disk (`jobs.highest_attempt_no`, filenames only, so this works even with an unreadable record among them) so
-    the number allocated here is never one already used. Returns the updated task and the id it chose; `note`
-    gets that id appended."""
+    disk so the number allocated here is never one already used. Returns the updated task and the id it chose;
+    `note` gets that id appended.
+
+    Superseded, for a fresh dispatch, by `allocate_job` (ATTEMPT_MODEL.md §2.3/§9, the writer switch) — this
+    function and the id shape it writes (`<task>.a<n>`, one flat counter) are kept only because an un-migrated
+    document and a handful of narrow, unrelated tests still read and write it; `loop.dispatch` no longer calls
+    it."""
     allocated: dict[str, str] = {}
 
     def fn(doc):
@@ -798,15 +840,111 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
     return t, allocated["id"]
 
 
+# ---- the attempt-identity allocator (§2.2, §2.3 of the attempt-identity design) — not yet called from the loop.
+# A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
+# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job (today
+# only a diagnosis raised before any delivery ever exists, §2.5).
+_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d"}
+
+
+@dataclass(frozen=True)
+class JobId:
+    """A job's identity exactly as `allocate_job` minted it. `id` is derived for a file name, a URL, a log line
+    and a human — never parsed back into these fields; every reader takes them from the job record instead."""
+    task_id: str
+    kind: str
+    seq: int
+    attempt: Optional[int] = None
+    scope: Optional[str] = None
+    cause: Optional[str] = None
+
+    @property
+    def id(self) -> str:
+        k = _JOB_KIND_LETTERS[self.kind]
+        if self.attempt is None:
+            return f"{self.task_id}.{k}{self.seq}"
+        return f"{self.task_id}.a{self.attempt}.{k}{self.seq}"
+
+
+def allocate_job(layout: Layout, task_id: str, kind: str, *, attempt: int | None = None,
+                 cause: str | None = None, new_attempt: bool = False, resource: str | None = None,
+                 parent: str | None = None, note: str | None = None) -> JobId:
+    """The one function that may invent a job id (§2.3): a seq drawn from the task's own `counters` block,
+    allocated under the task lock in the same update that advances it. Counters are monotonic — nothing ever
+    decrements them — so a job record lost between two allocations (a torn write, an antivirus lock, a manual
+    cleanup, R-03) can never cause the next one to reuse an id. `attempt` names the delivery attempt this job
+    belongs to; omitted (with `new_attempt=False`), the job is task-scoped (`scope="task"`), which today only a
+    diagnosis raised before any delivery uses (§2.5). `new_attempt=True` (only ever a fresh delivery) opens the
+    next attempt number instead (`counters.attempt + 1`), ignoring whatever `attempt` was passed.
+
+    Called by `loop.dispatch` (step 9, the writer switch). In the SAME locked update, when this job belongs to
+    an attempt, the task's own `attempts[]` gains the delivery-attempt entry (opened now, if this is the first
+    job of a fresh `attempt` number) and this job's row inside its `jobs[]` (§2.7) — never a second, separate
+    write a crash between the two could tear apart. A task-scoped job (diagnosis before any delivery) is never
+    added to `attempts[]`: §2.5 shows it as a task-level row above Attempt 1, not inside one."""
+    if kind not in _JOB_KIND_LETTERS:
+        raise ValueError(f"unknown job kind: {kind!r}")
+    allocated: dict[str, int] = {}
+
+    def fn(doc):
+        nonlocal attempt
+        counters = doc.setdefault("counters", {})
+        if new_attempt:
+            attempt = int(counters.get("attempt") or 0) + 1
+        if attempt is None:
+            task_jobs = counters.setdefault("task_jobs", {})
+            seq = int(task_jobs.get(kind, 0)) + 1
+            task_jobs[kind] = seq
+        else:
+            counters["attempt"] = max(int(counters.get("attempt") or 0), int(attempt))
+            per_attempt = counters.setdefault("jobs", {}).setdefault(attempt, {})
+            seq = int(per_attempt.get(kind, 0)) + 1
+            per_attempt[kind] = seq
+        allocated["seq"] = seq
+        if attempt is not None:
+            job_id = JobId(task_id=task_id, kind=kind, seq=seq, attempt=attempt, cause=cause).id
+            attempts = doc.setdefault("attempts", [])
+            entry = next((a for a in attempts if a.get("n") == attempt), None)
+            if entry is None:
+                entry = {"n": attempt, "opened": store.now_iso(), "closed": None, "cause": cause,
+                         "outcome": "open", "jobs": []}
+                attempts.append(entry)
+            entry.setdefault("jobs", []).append({"id": job_id, "kind": kind, "seq": seq, "resource": resource,
+                                                 "parent": parent, "result": None, "note": note or ""})
+
+    _update(layout, task_id, fn)
+    return JobId(task_id=task_id, kind=kind, seq=allocated["seq"], attempt=attempt,
+                scope=None if attempt is not None else "task", cause=cause)
+
+
 def annotate_attempt(layout: Layout, task_id: str, attempt_id: str, **fields) -> Task:
-    """Fill in fields (`run_dir`, once it is known) on an attempt already recorded by `add_attempt` — never
-    reallocates its number or id."""
+    """Fill in fields (`run_dir`, once it is known) on a job already recorded by `add_attempt` (the old,
+    one-entry-per-job shape: `a.id == attempt_id`) or by `allocate_job` (the new shape: `attempt_id` inside one
+    attempt's `jobs[]`) — never reallocates a number or an id, either shape."""
     def fn(doc):
         for a in doc.get("attempts", []):
             if a.get("id") == attempt_id:
                 a.update(fields)
-                break
+                return
+            for j in a.get("jobs") or []:
+                if j.get("id") == attempt_id:
+                    j.update(fields)
+                    return
     return _update(layout, task_id, fn)
+
+
+def current_attempt(layout: Layout, task_id: str) -> int | None:
+    """The highest attempt number this task's own `counters` block has ever opened, or `None` when it has none
+    yet — the task document's own record, never a job-id suffix parse. Used only as the bounded fallback for a
+    diagnosis whose triggering event does not name a resolvable job (a stall key, or one from before this
+    field existed): the live writer places such a diagnosis on the task's newest attempt rather than
+    reconstructing "the newest attempt open at the time", which only the migration (§8.2) needs to do, from
+    historical evidence this call has no reason to re-read."""
+    try:
+        n = load(layout, task_id).counters.get("attempt")
+    except TaskError:
+        return None
+    return int(n) if n else None
 
 
 def add_note(layout: Layout, task_id: str, note: str, actor: str = "owner", command_id: str | None = None,
@@ -853,9 +991,13 @@ def volatile_state(rel: str) -> bool:
 
 
 def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "system", result: str | None = None,
-                    paths: Iterable[str] = ()) -> Task:
+                    paths: Iterable[str] = (), findings_response: list[dict] | None = None) -> Task:
     """A new artifact digest: earlier verification/reviews/approvals are superseded (kept in history). A task that was
-    waiting on review/approval of the old digest returns to IN_PROGRESS."""
+    waiting on review/approval of the old digest returns to IN_PROGRESS.
+
+    `findings_response` (R-15, ATTEMPT_MODEL.md 4.3 point 3): the producer's own optional, per-finding reply
+    to the previous round's own findings, kept the same way `result` already is — set when given, left as the
+    last delivery's own value otherwise, so a producer that forgot to repeat it does not lose the one it gave."""
     def fn(doc):
         d = doc.setdefault("delivery", {}) or {}
         doc["delivery"] = d
@@ -874,6 +1016,8 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
         d["digest"] = digest
         if result is not None:
             doc["result"] = result
+        if findings_response is not None:
+            doc["findings_response"] = findings_response
         if paths:
             # the delivery's own paths replace the previous delivery's (a review freezes on them; accumulated stale
             # entries — e.g. a state/ file listed once — kept invalidating reviews). state/ and projections never
@@ -976,20 +1120,25 @@ HASH_AT_RECORD = object()        # record_review(report_sha256=...) default: no 
 
 
 def record_review(layout: Layout, task_id: str, digest: str, role: str, verdict: str, vendor: str | None = None,
-                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD) -> Task:
+                  report: str | None = None, actor: str = "review", report_sha256=HASH_AT_RECORD,
+                  findings: list[dict] | None = None) -> Task:
     """`report_sha256`: the hash of the report as the reviewer produced it, when the caller holds those bytes (the
     loop's snapshot of the job's result, a CLI review hashed at submission). An explicit None means the caller had no
     verifiable bytes: it is kept as None (the report is never shown as the reviewer's) and the file is NOT hashed
     later in its place. Omitted, the file is hashed now, at record time — which says what the file held then, not
-    what the reviewer wrote."""
+    what the reviewer wrote.
+
+    `findings` (R-15): the reviewer's own findings, already carrying `id` (contract.review_result's fallback),
+    kept on the ReviewRecord itself so a later review pass can read this pass's findings from the task
+    document alone, never from a run directory."""
     verdict_e = ReviewVerdict(verdict)              # strict: ACCEPT/REVISE/REJECT/BLOCKED only
     sha = report_file_sha256(layout, report) if report_sha256 is HASH_AT_RECORD else report_sha256
 
     def fn(doc):
         d = _require_digest(doc, task_id, digest, "review")
         d.setdefault("reviews", []).append(ReviewRecord(digest=digest, role=role, verdict=verdict_e, at=store.now_iso(),
-                                                        vendor=vendor, report=report,
-                                                        report_sha256=sha).model_dump(mode="json"))
+                                                        vendor=vendor, report=report, report_sha256=sha,
+                                                        findings=findings or []).model_dump(mode="json"))
     t = _update(layout, task_id, fn)
     log(layout, "review", actor, task=task_id, role=role, verdict=verdict_e.value, digest=digest)
     return t
@@ -1008,10 +1157,28 @@ def record_approval(layout: Layout, task_id: str, digest: str, response: str, by
     return t
 
 
+def _close_current_attempt(doc: dict, outcome: str) -> None:
+    """Write `Attempt.outcome` (ATTEMPT_MODEL.md §4.6 — 0 of ~1,400 records carried a real value before this):
+    the migrated shape's most recently opened `attempts[]` entry (`n` set, still `outcome: "open"`) gets its
+    `outcome` and `closed` here, by the one place that knows the current try is over. An un-migrated entry (no
+    `n`) has nothing here to close; it stays exactly as the old writer left it."""
+    for a in reversed(doc.get("attempts") or []):
+        if a.get("n") is not None and a.get("outcome") == "open":
+            a["outcome"] = outcome
+            a["closed"] = store.now_iso()
+            return
+
+
 def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: str | None = None) -> Task:
     """The only path to COMPLETE. Decides from the locked, freshly read document. `attempt_id`, when the caller
     knows which delivery attempt produced the digest now completing (loop.record_outcome does), is recorded on
-    any issue this task's completion recovers (R-21, escalation.recover_issues_for_task)."""
+    any issue this task's completion recovers (R-21, escalation.recover_issues_for_task).
+
+    Three of the transitions here close the attempt that produced the current digest (§2.4, §4.6): verified and
+    accepted, verification failed, or a review that was not ACCEPT sends the task back to IN_PROGRESS for a
+    revision. A review-BLOCKED stop and a worker's own FAILED/BLOCKED result (classified before this ever runs,
+    `loop.record_outcome`/escalation) are not covered here — the next release's supersede mechanism is where
+    those close (left to 2.9.0, ATTEMPT_MODEL.md "Deliberately left to 2.9.0")."""
     outcome = {}
 
     def fn(doc):
@@ -1022,6 +1189,12 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
         if target == task.status:
             raise _NoChange()
         outcome.update({"from": task.status.value, "to": target.value, "note": note})
+        if target == TaskStatus.COMPLETE:
+            _close_current_attempt(doc, "accepted")
+        elif target == TaskStatus.FAILED:
+            _close_current_attempt(doc, "failed")
+        elif target == TaskStatus.IN_PROGRESS and task.status == TaskStatus.WAITING_FOR_REVIEW:
+            _close_current_attempt(doc, "rejected")
         _record_history(doc, target, actor, note)
     try:
         t = _update(layout, task_id, fn)
@@ -1030,7 +1203,9 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
     log(layout, "task_status", actor, task=task_id, **outcome)
     if outcome.get("to") == TaskStatus.COMPLETE.value:
         from . import escalation as escalation_mod
+        from . import jobs as jobs_mod
         escalation_mod.recover_issues_for_task(layout, task_id, attempt_id, t.delivery.digest or "")
+        jobs_mod.archive_terminal(layout, task_id)        # R-23: out of the loop's own scans from here on
     return t
 
 

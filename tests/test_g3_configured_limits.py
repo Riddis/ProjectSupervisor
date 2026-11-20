@@ -28,7 +28,7 @@ def test_inline_path_clamps_a_larger_configured_limit_to_the_built_in_ceiling(la
     task = tasks.load(layout, "T")
     captured = {}
 
-    def fake(root, declared, allowed=None, tag="verify", roots=(), timeout_s=None, budget_s=None, max_commands=None):
+    def fake(root, declared, allowed=None, tag="verify", roots=(), timeout_s=None, budget_s=None, max_commands=None, layout=None):
         captured.update(timeout_s=timeout_s, budget_s=budget_s)
         return True, []
     monkeypatch.setattr(verify, "run_declared_tests", fake)
@@ -47,7 +47,7 @@ def test_the_tracked_verify_job_honours_the_configured_limits_without_clamping(l
     from supervisor import verify_job
     captured = {}
 
-    def fake(root, declared, allowed=None, tag="verify", roots=(), timeout_s=None, budget_s=None, max_commands=None):
+    def fake(root, declared, allowed=None, tag="verify", roots=(), timeout_s=None, budget_s=None, max_commands=None, layout=None):
         captured.update(timeout_s=timeout_s, budget_s=budget_s)
         return True, []
     monkeypatch.setattr(verify, "run_declared_tests", fake)

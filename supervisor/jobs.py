@@ -58,22 +58,76 @@ def _sync_turn_snapshot(record: dict) -> None:
         snap.append(record)
 
 
+def _current_path(layout: Layout, attempt_id: str) -> Path:
+    """Where this id's record is right now: the main dir, unless only the archive has it. The one place a write
+    must land (R-23) — without this, updating an already-archived record (set_phase called on it again, say a
+    reroute's second call) would write a fresh duplicate at the top level while the archived copy sat there
+    stale, instead of there being exactly one file per id."""
+    p = path(layout, attempt_id)
+    if p.exists():
+        return p
+    ap = archive_path(layout, attempt_id)
+    return ap if ap.exists() else p
+
+
 def write(layout: Layout, record: dict) -> dict:
     record["updated"] = now_iso()
-    atomic_json(path(layout, record["attempt_id"]), record)
+    atomic_json(_current_path(layout, record["attempt_id"]), record)
     _sync_turn_snapshot(record)
     return record
 
 
 def read(layout: Layout, attempt_id: str) -> dict:
-    return read_json(path(layout, attempt_id))
+    """The record this id names: the main dir, falling back to the archive on a miss there (R-23) — the one
+    resolver a by-id lookup goes through, so production code (loop.dispatch/reroute/launch all read a record
+    straight back after a set_phase that can itself have just archived it, once its task went terminal in the
+    meantime) never has to choose between raising on an id that in fact still exists and a second, archive-blind
+    lookup. `resolve()` below is this with the miss turned into `None` instead of raised. Raises FileNotFoundError
+    when neither location has it; a corrupt (not missing) file at either one raises straight through — no
+    fallback is attempted for that, only for an outright miss."""
+    try:
+        return _cached_read(path(layout, attempt_id))
+    except FileNotFoundError:
+        pass
+    return _cached_read(archive_path(layout, attempt_id))
 
 
-def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, **extra) -> dict:
+def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, *,
+           kind: str | None = None, attempt: int | None = None, seq: int | None = None, parent: str | None = None,
+           cause: str | None = None, scope: str | None = None, env_digest: str | None = None, **extra) -> dict:
     """One durable record before the job is launched; `extra` (review_role, review_digest, ...) belongs in the same
-    write, never in a second one a crash could lose."""
+    write, never in a second one a crash could lose. `kind`/`attempt`/`seq`/`parent`/`cause`/`scope`/`env_digest`
+    are the identity fields the attempt model adds (§2.6); each is omitted (not written as null) when not given,
+    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet."""
+    identity = {"kind": kind, "attempt": attempt, "seq": seq, "parent": parent, "cause": cause, "scope": scope,
+               "env_digest": env_digest}
+    extra = {**{k: v for k, v in identity.items() if v is not None}, **extra}
     return write(layout, {"attempt_id": attempt_id, "task_id": task_id, "adapter": adapter, "phase": "PREPARED",
                           "spec": spec, "handle": None, "gpu": gpu, "created": now_iso(), **extra})
+
+
+def _task_id_of(job_id: str) -> str:
+    """The task id a job id names: `job_id` up to its own `.a<n>` suffix — the same split `all_grouped`'s stub
+    already uses for a record it cannot read."""
+    return job_id.rsplit(".a", 1)[0]
+
+
+def archive_dir(layout: Layout, task_id: str) -> Path:
+    return layout.jobs / "archive" / task_id
+
+
+def archive_path(layout: Layout, job_id: str) -> Path:
+    return archive_dir(layout, _task_id_of(job_id)) / f"{job_id}.json"
+
+
+def resolve(layout: Layout, job_id: str) -> dict | None:
+    """The job record named `job_id`, or `None` when it does not exist, instead of raising. `read()`'s own
+    archive fallback (R-23, §4.5) is what makes a terminal task's old id or URL still resolve — this is that,
+    with a miss turned into `None` for a caller (a URL, a past digest) that expects one instead of a raise."""
+    try:
+        return read(layout, job_id)
+    except (OSError, ValueError):
+        return None
 
 
 def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
@@ -82,7 +136,22 @@ def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
     rec = read(layout, attempt_id)
     rec["phase"] = phase
     rec.update(fields)
-    return write(layout, rec)
+    out = write(layout, rec)
+    if phase in ("DONE", "FAILED"):
+        # R-23: the job that is itself completing a task's final transition is still PREPARED/SUBMITTED/RUNNING
+        # at the moment advance()/set_status() archives everything else of this task (archive_terminal only
+        # moves already-terminal records, on purpose — see there); once IT reaches DONE/FAILED too, sweep it
+        # into the archive if its task has in the meantime gone terminal, so nothing is left behind forever.
+        from . import tasks as tasks_mod            # local: tasks.py already imports jobs.py at call time
+        task_id = rec.get("task_id")
+        if task_id:
+            try:
+                terminal = tasks_mod.load(layout, task_id).status in tasks_mod.TERMINAL
+            except tasks_mod.TaskError:
+                terminal = False
+            if terminal:
+                archive_terminal(layout, task_id)
+    return out
 
 
 # A read shared by every caller in the process, not only one turn's own snapshot (C-1): keyed by path, kept only
@@ -173,23 +242,30 @@ def unreadable(layout: Layout, task_id: str | None = None) -> dict[str, str]:
     return out
 
 
-def attempt_no(attempt_id: str) -> int:
-    """The attempt number of `<task>.a<n>` (0 when the id has no such suffix)."""
-    try:
-        return int(str(attempt_id).rsplit(".a", 1)[1])
-    except (IndexError, ValueError):
-        return 0
+KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3}
 
 
-def highest_attempt_no(layout: Layout, task_id: str) -> int:
-    """The highest attempt number among this task's job files, from the file names alone — never opens a
-    record, so it is unaffected by one being unreadable (R-03). Seeds the task's own counter the first time a
-    task dispatches after this change, so a project with no `job_seq` yet never reuses a number already on
-    disk."""
-    best = 0
-    for p in layout.jobs.glob(f"{task_id}.a*.json"):
-        best = max(best, attempt_no(p.stem))
-    return best
+def kind_of(rec: dict) -> str:
+    """This job's kind: the promoted `kind` field (§2.6 of the attempt-identity design) when set, `spec["kind"]`
+    otherwise, `"delivery"` when neither is — the shape every record before this field existed is read as."""
+    return rec.get("kind") or (rec.get("spec") or {}).get("kind") or "delivery"
+
+
+def attempt_of(rec: dict) -> int | None:
+    """This job's attempt number (`None` for a task-scoped job): the `attempt` field, taken as-is. The writer
+    switch (ATTEMPT_MODEL.md §8.6's start-up guard) is what makes this safe to read with no fallback — every
+    record on disk by then is either migration-stamped or allocator-written, so it always carries this field."""
+    return rec.get("attempt")
+
+
+def sort_key(rec: dict) -> tuple:
+    """Oldest first: `(attempt, kind order, seq)`, fields only — a task-scoped job (`attempt` is `None`) sorts
+    before attempt 1, matching §2.8's "displayed as a task-level row above Attempt 1". No id-suffix fallback
+    (§6): the start-up guard already refuses to dispatch on a store holding a record without these fields, so
+    every record this ever sorts carries them."""
+    attempt = attempt_of(rec)
+    return (attempt if attempt is not None else -1, KIND_ORDER.get(kind_of(rec), 99),
+           rec.get("seq") or 0, str(rec.get("attempt_id", "")))
 
 
 CLOSED_RESULT = "CANCELLED"
@@ -217,23 +293,66 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
 
 
 def _oldest_first(records: list[dict]) -> list[dict]:
-    return sorted(records, key=lambda r: (attempt_no(r.get("attempt_id", "")), str(r.get("attempt_id", ""))))
+    return sorted(records, key=sort_key)
 
 
 def for_task(layout: Layout, task_id: str) -> list[dict]:
-    """The task's job records, oldest attempt first by attempt NUMBER: file names sort `T.a10` before `T.a9`, and
-    callers take `[-1]` as the newest. Read-only (R-03): an unreadable record is reported once and represented
-    by a stub, never rewritten on disk."""
+    """The task's job records, oldest first by `(attempt, kind, seq)` (`sort_key`) — no id-suffix fallback (§6):
+    the start-up guard already refuses to dispatch on a store holding a record without these fields, so every
+    record this reads carries them, and callers take `[-1]` as the newest. Read-only (R-03): an unreadable
+    record is reported once and represented by a stub, never rewritten on disk.
+
+    Reads the archive too (R-23): a terminal task's records have moved to `archive_dir(layout, task_id)`, but the
+    Task page's own Attempts table is this function — archiving must stop the *loop's* bulk scans from seeing a
+    finished record, never make a task's own history disappear from the one place that still asks for it by id."""
     out = []
-    for p in layout.jobs.glob(f"{task_id}.*.json"):
-        try:
-            r = _cached_read(p)
-        except (OSError, ValueError) as exc:
-            msg = _report_unreadable(layout, p, exc)
-            r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
-        if r.get("task_id") == task_id:
-            out.append(r)
+    for base in (layout.jobs, archive_dir(layout, task_id)):
+        for p in base.glob(f"{task_id}.*.json"):
+            try:
+                r = _cached_read(p)
+            except (OSError, ValueError) as exc:
+                msg = _report_unreadable(layout, p, exc)
+                r = {"attempt_id": p.stem, "task_id": task_id, "phase": "FAILED", "error": msg}
+            if r.get("task_id") == task_id:
+                out.append(r)
     return _oldest_first(out)
+
+
+def archive_terminal(layout: Layout, task_id: str) -> list[str]:
+    """Move every already-DONE/FAILED job record of now-terminal `task_id` from `state/runtime/jobs/` into
+    `state/runtime/jobs/archive/<task_id>/` (R-23): the loop's own scans (`_scan_open`, `all_records`,
+    `all_grouped`) glob only the top level, non-recursively, so this is what makes a finished task's records stop
+    costing every turn a stat, however many tasks have finished. `resolve()` and `for_task()` still find them
+    there. Deliberately skips a record still PREPARED/SUBMITTED/RUNNING: the job that is itself completing this
+    task's final transition can be exactly that, mid-call, one line above its own `jobs.set_phase(..., "DONE")`
+    (`loop.ingest`'s delivery branch advances the task before closing its own job record) — moving it out from
+    under that write would turn the next read into a FileNotFoundError. `set_phase` sweeps it in once it, too,
+    reaches DONE/FAILED. Returns the attempt ids moved; a task with none movable, or already archived, is a
+    no-op."""
+    dest = archive_dir(layout, task_id)
+    moved = []
+    for p in sorted(layout.jobs.glob(f"{task_id}.*.json")):
+        try:
+            if _cached_read(p).get("phase") not in ("DONE", "FAILED"):
+                continue
+        except (OSError, ValueError):
+            continue
+        dest.mkdir(parents=True, exist_ok=True)
+        p.replace(dest / p.name)
+        moved.append(p.stem)
+        with _RECORD_CACHE_LOCK:
+            _RECORD_CACHE.pop(str(p), None)
+    return moved
+
+
+def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
+    """The delivery attempt a past review digest belongs to, read from this task's own review job records (the
+    store, never a run directory): the newest review job whose `review_digest` matches it names its own
+    `attempt` — the same join `review._delivery_for_digest` uses from a verify job, available here too because
+    every review job already carries `attempt` once dispatched through the allocator (ATTEMPT_MODEL.md step 9).
+    `None` when no such record exists (a digest reviewed before this field existed, or never reviewed at all)."""
+    matches = [r for r in for_task(layout, task_id) if kind_of(r) == "review" and r.get("review_digest") == digest]
+    return attempt_of(matches[-1]) if matches else None
 
 
 def all_grouped(layout: Layout) -> dict[str, list[dict]]:

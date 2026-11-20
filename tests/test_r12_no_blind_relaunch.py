@@ -57,7 +57,7 @@ def test_a_deterministic_exit_is_not_relaunched_and_diagnosis_carries_the_output
     process_task(layout, "T", [sys.executable, "-c", "import sys; sys.stderr.write('boom\\n'); sys.exit(3)"])
     run_to_failed(layout, "T")
     assert len(delivery_records(layout, "T")) == 1
-    assert process_outcome_retryable(layout, "T", "T.a1") is False       # classified at the time it failed
+    assert process_outcome_retryable(layout, "T", "T.a1.s1") is False       # classified at the time it failed
     sup = Recorder(layout)
     assert sup.sweep_stalled(now=time.time() + 15 * 60) == ["T"]
     assert [s[1] for s in sup.sent] == ["diagnosis"]                     # not a second delivery
@@ -74,14 +74,14 @@ def test_a_zero_exit_without_result_json_is_captured_not_lost(layout):
     from supervisor.escalation import process_outcome_retryable
     process_task(layout, "T", [sys.executable, "-c", "pass"])      # exits 0, writes no result.json
     run_to_failed(layout, "T")
-    assert process_outcome_retryable(layout, "T", "T.a1") is False
+    assert process_outcome_retryable(layout, "T", "T.a1.s1") is False
 
 
 def test_a_declared_retryable_exit_still_gets_one_retry_after_the_grace_period(layout):
     from supervisor.escalation import process_outcome_retryable
     process_task(layout, "T", [sys.executable, "-c", "import sys; sys.exit(7)"], retry_on=[7])
     run_to_failed(layout, "T")
-    assert process_outcome_retryable(layout, "T", "T.a1") is True
+    assert process_outcome_retryable(layout, "T", "T.a1.s1") is True
     sup = Recorder(layout)
     assert sup.sweep_stalled(now=time.time() + 15 * 60) == ["T"]
     assert sup.sent and sup.sent[0][1] == "delivery" and "revision after stalled" in sup.sent[0][2]
@@ -94,12 +94,12 @@ def test_a_lost_process_is_still_retried_not_diagnosed(layout):
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(30)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
-    rec = jobs.read(layout, "T.a1")
+    rec = jobs.read(layout, "T.a1.s1")
     REGISTRY["process"].terminate(rec["handle"])
     time.sleep(0.5)
     Supervisor(layout, sleep_s=0).once()
     assert tasks.load(layout, "T").status == TaskStatus.FAILED
-    assert process_outcome_retryable(layout, "T", "T.a1") is True
+    assert process_outcome_retryable(layout, "T", "T.a1.s1") is True
 
 
 def test_a_running_attempt_is_superseded_when_its_job_changes(layout):
@@ -110,16 +110,16 @@ def test_a_running_attempt_is_superseded_when_its_job_changes(layout):
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(5)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
-    rec = jobs.read(layout, "T.a1")
+    rec = jobs.read(layout, "T.a1.s1")
     assert rec["phase"] in ("SUBMITTED", "RUNNING")
     handle = rec["handle"]
     commands.apply_job(layout, "T", {"adapter": "process", "argv": [sys.executable, "-c", "pass"]}, actor="owner")
     sup.once()
-    rec = jobs.read(layout, "T.a1")
+    rec = jobs.read(layout, "T.a1.s1")
     assert rec["phase"] == "DONE" and rec.get("result") == "SUPERSEDED"
     assert not REGISTRY["process"].alive(handle)                         # actually terminated, not just marked
     assert not (layout.runtime / "escalation" / "T.json").exists()       # no retry budget spent
-    rec2 = jobs.read(layout, "T.a2")                                     # released and dispatched, not parked
+    rec2 = jobs.read(layout, "T.a2.s1")                                  # released and dispatched, not parked
     assert rec2["spec"]["argv"][-1] == "pass"                            # ...under the NEW job, not the old one
     assert tasks.load(layout, "T").status == TaskStatus.IN_PROGRESS
 
@@ -132,10 +132,10 @@ def test_a_running_attempt_is_superseded_when_a_dependency_is_added(layout):
     process_task(layout, "T", [sys.executable, "-c", "import time; time.sleep(5)"])
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
-    assert jobs.read(layout, "T.a1")["phase"] in ("SUBMITTED", "RUNNING")
+    assert jobs.read(layout, "T.a1.s1")["phase"] in ("SUBMITTED", "RUNNING")
     tasks.patch_task(layout, "T", {"add_dependency": "DEP"}, actor="owner")
     sup.once()
-    rec = jobs.read(layout, "T.a1")
+    rec = jobs.read(layout, "T.a1.s1")
     assert rec["phase"] == "DONE" and rec.get("result") == "SUPERSEDED"
     assert tasks.load(layout, "T").status == TaskStatus.READY            # released, not parked IN_PROGRESS
     sup.once()

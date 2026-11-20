@@ -58,9 +58,13 @@ Only `tasks.advance()` reaches COMPLETE: verification ok ∧ every required revi
 approvals. An owner may force a status with a note (`supervisor task set-status --force --actor owner`); it is
 persisted and rendered as *(forced)*.
 
-Retry budget: two automatic revisions per failure source (verification, review), the second on the role's
-`senior_model`; then one bounded diagnosis by the manager role (`routing.yaml escalation`) which can requeue with
-guidance, defer, hand to the architect, or open an owner inbox item.
+Retry budget: automatic revisions by cause (`substance`, `infra`, `stall`, plus a `total` across all of them;
+limits and the cause table are data in `routing.yaml escalation.budget`), the second revision of a distinct
+failure on the role's `senior_model`. Once a cause's counter (or `total`) is spent, or a failure repeats a
+signature already seen, retries stop: a verification, worker or stall exhaustion gets one bounded diagnosis by
+the manager role (`routing.yaml escalation`) which can requeue with guidance, defer, hand to the architect, or
+open an owner inbox item; a review escalation that happens because `substance` is spent skips the diagnosis —
+another round would only repeat what the review already found — and opens the owner inbox item directly.
 
 A **defer** names what releases the task, structurally: `new_task`, the contract of work that does not exist yet
 (the fields `supervisor task create` takes; `phase` and `priority` default to the deferred task's; never a `job` or a

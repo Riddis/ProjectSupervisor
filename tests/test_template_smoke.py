@@ -13,9 +13,9 @@ from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 from supervisor.paths import Layout
 
-CHILD = ("import json, os, pathlib; a = os.environ['SUPERVISOR_ATTEMPT']; t = a.rsplit('.', 1)[0]; "
+CHILD = ("import json, os, pathlib; run = pathlib.Path(os.environ['SUPERVISOR_RUN_DIR']); "
          "pathlib.Path('hello.txt').write_text('hi', encoding='utf-8'); "
-         "pathlib.Path('runs', t, a, 'result.json').write_text(json.dumps("
+         "(run / 'result.json').write_text(json.dumps("
          "{'status': 'COMPLETE', 'artifacts': ['hello.txt'], 'notes': 'smoke'}), encoding='utf-8')")
 
 

@@ -61,7 +61,8 @@ def test_requeue_resets_the_review_budget_and_salvages_the_verdict_on_disk(layou
     assert not any(jobs.read(layout, f"T.r{n}").get("failed_review") for n in (1, 2))
     assert inbox.load(layout, item["id"])["applied"]["resumed"] == "review"
     failures = []
-    monkeypatch.setattr(escalation, "record_failure", lambda sup, tid, src, detail, event=None: failures.append((tid, src, event)))
+    monkeypatch.setattr(escalation, "record_failure",
+                        lambda sup, tid, src, detail, event=None, **kw: failures.append((tid, src, event)))
     dispatched = []
     monkeypatch.setattr(review, "dispatch", lambda *a, **k: dispatched.append(a))
     sup.dispatch_reviews()

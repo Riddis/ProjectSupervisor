@@ -16,14 +16,17 @@ from pathlib import Path
 import yaml
 
 from .. import capacity
+from .. import handoff
+from .. import jobs as jobs_mod
 from .. import policy
 from .. import progress as progress_mod
+from .. import tasks as tasks_mod
 from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
 from .base import Result, register
-from .process import ProcessAdapter, job_spec, scrub_env
+from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
 
 AUTH_FAILURE_RE = re.compile(r"failed to authenticate|oauth (session|token).{0,40}expired|invalid api key|please run /login|"
                              r'"type":\s*"authentication_error"', re.IGNORECASE)
@@ -55,14 +58,136 @@ def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw
                   raw={**(raw or {}), "measured_window": measured}, reset_epoch=until)
 
 
-def prior_handoff(layout: Layout, task_id: str, attempt_id: str):
-    """Newest HANDOFF.md of an earlier attempt of this task (continuation after capacity/partial handoff)."""
-    base = layout.runs / task_id
-    if not base.exists():
-        return None
-    cands = sorted((d / "HANDOFF.md" for d in base.iterdir() if d.is_dir() and d.name != attempt_id and (d / "HANDOFF.md").exists()),
-                   key=lambda f: f.stat().st_mtime)
-    return str(cands[-1]) if cands else None
+_NOTE_KINDS = (("review:", "review"), ("diagnosis:", "diagnosis"), ("verify delivery", "verify"))
+
+
+def _kind_from_note(note: str) -> str:
+    """The kind an attempt note alone suggests — the fallback of `_entry_kind`, and never better than a guess:
+    a note says what caused a job, not what kind of job it is."""
+    for prefix, kind in _NOTE_KINDS:
+        if note.startswith(prefix):
+            return kind
+    return "delivery"
+
+
+def _entry_kind(layout: Layout, entry) -> str:
+    """One attempt-list entry's job kind, taken from its own durable job record: `jobs.kind_of` reads the
+    promoted `kind` field, else the `spec["kind"]` that `loop.dispatch` writes on every dispatch, and nothing
+    ever deletes a job record. The note decides only for an entry whose record is missing or names no kind at
+    all (a store written before the field existed), because a note cannot tell the kinds apart: a review's and a
+    diagnosis's own continuation is dispatched with the same "continuation after <reason>" note a delivery's
+    is, and a rerouted job of any kind with the same "rerouted from <lane>"."""
+    rec = jobs_mod.resolve(layout, entry.id)
+    if rec is not None and (rec.get("kind") or (rec.get("spec") or {}).get("kind")):
+        return jobs_mod.kind_of(rec)
+    return _kind_from_note(entry.note or "")
+
+
+def _kinds(layout: Layout, entries) -> list[str]:
+    return [_entry_kind(layout, e) for e in entries]
+
+
+def _delivery_identity(entries, kinds, idx: int) -> tuple[int, int]:
+    """(attempt, seq) for the delivery entry at `idx`, counted from `entries` (every job this task has ever had,
+    in dispatch order) and their `kinds`: an entry of another kind does not affect the count at all; among the
+    delivery entries, a 'continuation after' note joins the open attempt as its next session and a plain
+    dispatch or a revision opens the next one — within one kind the note is unambiguous, which is why the count
+    reads it only after the kind is settled. This is the live-store reading of the mapping rule the
+    attempt-identity design's migration (§8.2) will apply formally once the writer switch allocates these fields
+    directly — nothing here persists a number, it is recomputed from the store on every call."""
+    attempt = seq = 0
+    for e, kind in zip(entries[:idx + 1], kinds[:idx + 1]):
+        if kind != "delivery":
+            continue
+        if attempt and (e.note or "").startswith("continuation after"):
+            seq += 1
+        else:
+            attempt += 1
+            seq = 1
+    return attempt, seq
+
+
+def _last_delivery_index(kinds, idx: int) -> int | None:
+    """The index of the most recent delivery entry before `idx` (skipping every other kind), or None."""
+    for j in range(idx - 1, -1, -1):
+        if kinds[j] == "delivery":
+            return j
+    return None
+
+
+def _produced_delivery(layout: Layout, entries, kinds, delivery_idx: int, idx: int) -> bool:
+    """Whether the delivery entry at `delivery_idx` ever passed verification, looking only at the entries
+    between it and `idx` (exclusive): its own verification, or any review of this task — `tasks._evaluate` only
+    ever moves a task to WAITING_FOR_REVIEW once verification has already said ok for the current digest, so a
+    review entry is proof by itself. A task that declares no test commands is verified the same tick its worker
+    claims COMPLETE (verify.verify() returns ok with nothing to track) and so gains no verification entry of its
+    own; the review is then the only record in the store that such a delivery ever happened (§4.1 of the
+    attempt-identity design). A verification is tied to this session by the verify job's own `verify_delivery`
+    field, by its note when its record is missing."""
+    session_id = entries[delivery_idx].id
+    for e, kind in zip(entries[delivery_idx + 1:idx], kinds[delivery_idx + 1:idx]):
+        if kind == "review":
+            return True
+        if kind == "verify":
+            rec = jobs_mod.resolve(layout, e.id)
+            if rec is not None and rec.get("verify_delivery") == session_id:
+                return True
+            if rec is None and (e.note or "") == f"verify delivery {session_id}":
+                return True
+    return False
+
+
+def _new_shape_identity(entries, attempt_id: str) -> tuple[int, str, int, str | None] | None:
+    """(attempt, kind, seq, parent) for `attempt_id`, when the task's own `attempts[]` already carries it in the
+    allocator-written shape (ATTEMPT_MODEL.md §2.7: a numbered attempt's own `jobs[]`, written by
+    `tasks.allocate_job` before `prepare()` ever runs) — the direct read every new job gets, no reconstruction
+    needed because the fields were never derived from a note or a suffix in the first place. `None` when
+    `attempt_id` is not there (a legacy entry from before the writer switch, §6's "readers first, writers
+    second": the old per-job-entry shape below is still what such an id resolves against)."""
+    for a in entries:
+        if a.n is None:
+            continue
+        for j in a.jobs or []:
+            if j.get("id") == attempt_id:
+                return a.n, j.get("kind"), j.get("seq"), j.get("parent")
+    return None
+
+
+def resolve_handoff(layout: Layout, task_id: str, attempt_id: str, kind: str = "delivery"):
+    """(attempt, seq, parent) for `attempt_id`, then `handoff.select`'s answer for them. A job the allocator
+    wrote (§2.7) is read straight off its own `attempts[]` entry (`_new_shape_identity`); only a legacy job
+    dispatched before the writer switch falls through to the task's older, flat attempt history —
+    `tasks.add_attempt` wrote that job's own entry before `prepare()` ran, so a fresh load still sees it. Review
+    and diagnosis jobs never reach the delivery branch below; a diagnosis's parent is simply the entry
+    immediately before its own. A kind that is neither delivery nor diagnosis is given nothing either way
+    (`handoff.select` returns `None` for it regardless of attempt/seq/parent) — checked before the load below,
+    not after, because a conversation's `task_id` names a chat thread, never a Task document on disk."""
+    if kind not in ("delivery", "diagnosis"):
+        return handoff.select(layout, task_id, None, kind, None, None)
+    entries = tasks_mod.load(layout, task_id).attempts
+    new_shape = _new_shape_identity(entries, attempt_id)
+    if new_shape is not None:
+        attempt, job_kind, seq, parent = new_shape
+        return handoff.select(layout, task_id, attempt, job_kind or kind, seq, parent)
+    entries = [e for e in entries if e.n is None]      # the old reconstruction only ever walked flat, per-job entries
+    idx = next((i for i in range(len(entries) - 1, -1, -1) if entries[i].id == attempt_id), None)
+    if idx is None:
+        return handoff.select(layout, task_id, None, kind, None, None)
+    if kind == "diagnosis":
+        parent = entries[idx - 1].id if idx > 0 else None
+        return handoff.select(layout, task_id, None, kind, None, parent)
+    if kind != "delivery":
+        return handoff.select(layout, task_id, None, kind, None, None)
+    kinds = _kinds(layout, entries)
+    kinds[idx] = kind         # this job's own kind comes from its brief: its record is written after prepare()
+    attempt, seq = _delivery_identity(entries, kinds, idx)
+    prior_idx = _last_delivery_index(kinds, idx)
+    if seq > 1:
+        return handoff.select(layout, task_id, attempt, kind, seq, entries[prior_idx].id if prior_idx is not None else None)
+    parent = None
+    if attempt > 1 and prior_idx is not None and not _produced_delivery(layout, entries, kinds, prior_idx, idx):
+        parent = entries[prior_idx].id
+    return handoff.select(layout, task_id, attempt, kind, seq, parent)
 DEFAULT_TOOLS = {
     "writer": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
     "reader": ["Read", "Glob", "Grep"],
@@ -200,7 +325,9 @@ class ClaudeCliAdapter(ProcessAdapter):
             prompt_text = job.get("prompt") or self.default_brief(layout, task, run_dir)
         from .. import packets as packets_mod
         prompt_text = packets_mod.worker_prompt(task, job, prompt_text)     # owner/diagnosis guidance, any prompt source
-        prompt_text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
+        rk = job.get("result_kind", "delivery")
+        kind = rk if rk in packets_mod.NON_DELIVERY_KINDS else "delivery"
+        prompt_text += "\n\n" + handoff_instructions(run_dir, prior=resolve_handoff(layout, task.id, attempt_id, kind))
         if job.get("result_kind", "delivery") != "conversation":   # a one-shot chat turn has nothing to check between steps
             from .. import conversations as conversations_mod
             note = conversations_mod.owner_note_instructions(layout, run_dir)
@@ -257,7 +384,7 @@ class ClaudeCliAdapter(ProcessAdapter):
     def env(self, spec):
         env = scrub_env(dict(os.environ))                 # subscription login, never API keys; never a nested session
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-        env["SUPERVISOR_ATTEMPT"] = str(spec.get("attempt_id", ""))
+        env.update(job_identity_env(spec))
         env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 

@@ -63,7 +63,13 @@
         "evidence": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "Where it is: file:line, a test name and its output, or a quoted requirement. A finding without evidence is not a finding."},
         "severity": {"enum": ["low", "medium", "high"]},
         "path": {"type": "string", "minLength": 1},
-        "suggestion": {"type": "string", "maxLength": 2000}
+        "suggestion": {"type": "string", "maxLength": 2000},
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Stable id for this finding. Name the same id again when it repeats from a previous round shown in the packet; omit it on a new finding and contract.review_result() derives one from a hash of the message, so a result that gives none is still accepted."
+        }
       }
     }
   }

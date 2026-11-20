@@ -122,7 +122,7 @@ def test_human_task_fails_on_more_like_with_feedback_recorded(layout):
     inbox.answer(layout, item["id"], "REDO #2")
     sup.once()
     assert tasks.load(layout, "H").status == TaskStatus.FAILED
-    rec = jobs.read(layout, "H.a1")
+    rec = jobs.read(layout, "H.a1.s1")
     assert rec["result"] == "FAILED"
 
 
@@ -147,14 +147,14 @@ def test_a_human_job_offering_approve_completes_on_it_after_migrate(layout, answ
     sup = Supervisor(layout, sleep_s=0)
     sup.once()
     item = inbox.open_items(layout, "owner")[0]
-    assert item["attempt_id"] == "H.a1"
+    assert item["attempt_id"] == "H.a1.s1"
     migrations._approval_responses(layout, dry_run=False)
     offered = inbox.load(layout, item["id"])["allowed_responses"]
     assert offered == ["APPROVE", "REJECT", "MODIFY"]
     inbox.answer(layout, item["id"], offered[0] if answer == "first" else answer)
     sup.once()
     assert tasks.load(layout, "H").status == status
-    assert jobs.read(layout, "H.a1")["result"] == status.value
+    assert jobs.resolve(layout, "H.a1.s1")["result"] == status.value   # R-23: a terminal task's record may be archived
 
 
 # --------------------------------------------------------------------------- F2 regressions: resumable retirement
@@ -236,7 +236,7 @@ def test_owner_requeue_replay_after_new_continuations_already_exist_retires_only
     sup = Supervisor(layout, sleep_s=0)
     n = len(jobs.for_task(layout, "T")) + 1
     rec2 = jobs.write(layout, {"attempt_id": f"T.a{n}", "task_id": "T", "adapter": "python", "phase": "RUNNING",
-                              "spec": {"kind": "delivery"}, "handle": {}})
+                              "spec": {"kind": "delivery"}, "handle": {}, "attempt": 2, "kind": "delivery", "seq": 1})
     sup.requeue(rec2, Result(status="DEFERRED", error="still waiting"), "capacity limit")
     fresh = old_markers(layout, "T")
     assert len(fresh) == 1                                           # the fresh chain's own continuation

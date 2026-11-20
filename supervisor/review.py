@@ -136,6 +136,22 @@ def _skip_once(layout, task: Task, role: str) -> None:
     tasks_mod.log(layout, "review_skip", "loop", task=task.id, role=role, reason=gate.inactive_reason(role))
 
 
+def _delivery_for_digest(layout, task_id: str, digest: str | None) -> tuple[int | None, str | None]:
+    """(attempt, delivery job id) for the digest under review: the most recently dispatched verify job whose
+    `verify_digest` matches names its own `verify_delivery` and carries the same `attempt` — the same join
+    §8.2's migration uses to place a review, read live instead of from history. `None, None` when no verify
+    job has ever recorded this digest (a task that declares no test commands is verified without one, §4.1 of
+    the attempt-identity design — in that case the review simply carries no attempt/parent of its own)."""
+    if not digest:
+        return None, None
+    verifies = [r for r in jobs_mod.for_task(layout, task_id)
+               if jobs_mod.kind_of(r) == "verify" and r.get("verify_digest") == digest]
+    if not verifies:
+        return None, None
+    v = verifies[-1]          # for_task is oldest-first; the latest verify of this digest is the one still live
+    return v.get("attempt"), v.get("verify_delivery")
+
+
 def dispatch(supervisor, task: Task, role: str) -> dict | None:
     """Dispatch one review attempt, or None if the lane's capacity is out and there is no fallback (token-free
     wait, exactly like a primary dispatch deferral — nothing is consumed). Logged once per (task, role) so the
@@ -156,16 +172,40 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     fell_back = bool(overrides) or adapter_name != prof.get("adapter", "claude_cli")
     digest = task.delivery.digest
     artifacts = task.paths or task.artifacts
-    brief = packets_mod.review_brief(layout, task, digest, artifacts, role)
+    # Computed once: review_brief() needs it for the packet text, this function needs the same result again for
+    # the dispatch extra (prior_round/digest_diff, below) — a frozen manifest, a text snapshot and a unified diff
+    # built twice per dispatch would be wasted work on every review, not only one with a prior round to show.
+    prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
+    brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
     review_task = _review_task_view(layout, task, role, adapter_name, brief, overrides)
     note = f"review:{role}" + (" (same-vendor fallback)" if fell_back and same_vendor else "")
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the
     # content hashes an artifact edited under the reviewer would still collect an ACCEPT for bytes that are gone
     #. loop.dispatch writes it next to the run as frozen_inputs.json for the audit.
-    extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts)}
+    # review_text_snapshot (R-15, ATTEMPT_MODEL.md 4.3) rides the same durable record: a capped text copy of these
+    # artifacts, so the NEXT round's review_brief() can diff against this one without ever reading a run directory.
+    extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts),
+            "review_text_snapshot": packets_mod.text_snapshot(layout, artifacts)}
     if fell_back:
         extra["same_vendor"] = same_vendor
-    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review", extra=extra)
+    if prior_ctx["rounds"]:
+        # Written beside this review's own run (loop.dispatch) for audit — never read back from there: every
+        # input that built them already came from the store (prior_round_context's own docstring).
+        extra["prior_round"] = {"task_id": task.id, "digest": digest, "rounds": prior_ctx["rounds"],
+                                "claim": prior_ctx["claim"], "responses": prior_ctx["responses"],
+                                "change_list": prior_ctx["change_list"]}
+        if prior_ctx["diff_text"]:
+            extra["digest_diff"] = prior_ctx["diff_text"]
+    prior_round = any(jobs_mod.kind_of(r) == "review" and r.get("review_role") == role and r.get("review_digest") == digest
+                      for r in jobs_mod.for_task(layout, task.id))
+    attempt, delivery_id = _delivery_for_digest(layout, task.id, digest)
+    if attempt is None:
+        # No tracked verify job for this digest (a task with no declared test commands, §4.1 of the
+        # attempt-identity design): the review still belongs to the task's current attempt, it is only the
+        # exact delivery job id that cannot be named this way — never task-scoped (§2.5 is diagnosis-only).
+        attempt = tasks_mod.current_attempt(layout, task.id)
+    return supervisor.dispatch(review_task, adapter_name, note=note, kind="review", extra=extra,
+                               cause="rereview" if prior_round else None, attempt=attempt, parent=delivery_id)
 
 
 def rebuild(layout, rec: dict) -> Task | None:
@@ -269,7 +309,7 @@ def ingest(supervisor, rec: dict, result) -> None:
     report, report_hash = tasks_mod.review_snapshot(layout, run_dir, obj) if run_dir else (None, None)
     try:
         tasks_mod.record_review(layout, task_id, digest, role, verdict, vendor=vendor, report=report, actor="loop",
-                                report_sha256=report_hash)
+                                report_sha256=report_hash, findings=[f for f in obj.get("findings") or [] if isinstance(f, dict)])
     except tasks_mod.TaskError:
         # the digest moved on in the instant between our check above and the lock-protected write: discard, same
         # as the ordinary invalidation path above.
@@ -294,7 +334,10 @@ def ingest(supervisor, rec: dict, result) -> None:
     if not bad:
         return                                             # the round completed clean; advance() already applied it
     combined = "\n\n".join(f"{r.role} ({r.verdict.value}): {_findings_text(layout, r)}" for r in bad)
-    escalation_mod.record_failure(supervisor, task_id, "review", combined, event=rec["attempt_id"])
+    # R-14, trigger 4: a REJECT is a verdict on the approach, not a list of repairs — it escalates at once,
+    # regardless of how much of the review budget remains.
+    rejected = any(r.verdict == ReviewVerdict.REJECT for r in bad)
+    escalation_mod.record_failure(supervisor, task_id, "review", combined, event=rec["attempt_id"], immediate=rejected)
 
 
 UNAVAILABLE = {"none": "no review report was recorded",
@@ -309,9 +352,20 @@ def _findings_text(layout, review) -> str:
     obj, state = tasks_mod.review_report(layout, review)
     if obj is None:
         return f"verdict {review.verdict.value}; rationale unavailable: {UNAVAILABLE.get(state, state)}"
-    findings = "; ".join(f"[{f.get('category')}] {f.get('message')} ({f.get('evidence')})"
+    # The id (R-15): carried here too, not only in a later round's own packet, so the next delivery can name a
+    # specific finding in its own optional findings_response instead of only one undifferentiated paragraph.
+    findings = "; ".join(f"[{f.get('category')}] {f.get('id', '')}: {f.get('message')} ({f.get('evidence')})"
                          for f in obj.get("findings") or [] if isinstance(f, dict))
     return findings or str(obj.get("summary") or "") or f"verdict {review.verdict.value} (the report gives no text)"
+
+
+def _salvage_sort_key(r: dict) -> tuple:
+    """Newest first: `jobs.sort_key`'s own `(attempt, kind order, seq)` fields, no id-suffix fallback (§6) —
+    the same rule every reader of this step shares, not a second one of its own. `seq` alone cannot order
+    these records: it is only the ordinal of a kind inside one attempt (ATTEMPT_MODEL.md §6), so two attempts'
+    review jobs for the same role and digest (a revision that re-delivers a byte-identical answer keeps the
+    digest) can both carry `seq == 1`, and only the `attempt` field tells them apart."""
+    return jobs_mod.sort_key(r)
 
 
 def salvage(supervisor, task: Task, role: str) -> bool:
@@ -328,8 +382,7 @@ def salvage(supervisor, task: Task, role: str) -> bool:
     recs = [r for r in jobs_mod.for_task(layout, task.id)
             if (r.get("spec") or {}).get("kind") == "review" and r.get("review_role") == role
             and r.get("review_digest") == digest and r.get("phase") in ("DONE", "FAILED") and not r.get("salvaged")]
-    import re as _re
-    recs.sort(key=lambda r: int((_re.search(r"(\d+)$", str(r["attempt_id"])) or [0, 0])[1]), reverse=True)   # newest first
+    recs.sort(key=_salvage_sort_key, reverse=True)   # newest first
     for r in recs:
         run_dir = Path((r.get("spec") or {}).get("run_dir") or "")
         if not str(run_dir) or not run_dir.is_dir() or (run_dir / "result.json").exists():

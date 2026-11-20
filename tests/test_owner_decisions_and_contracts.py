@@ -279,12 +279,12 @@ def test_owner_requeue_restores_the_revision_budget(layout, monkeypatch):
     from supervisor import escalation
     failed_task(layout)
     state = escalation._load(layout, "T")
-    state.update(revisions=3, signatures=["a", "b", "c"])
+    state.update(counters={"substance": 3, "infra": 0, "stall": 0, "total": 3}, signatures=["a", "b", "c"])
     escalation._save(layout, "T", state)
     out = diagnosis.route_to_owner(layout, tasks.load(layout, "T"), {}, "s", "q", "why")
     inbox.answer(layout, out["inbox"], "REQUEUE")
     state = escalation._load(layout, "T")
-    assert state["revisions"] == 0 and state["signatures"] == [] and state["resets"] == 1
+    assert state["counters"]["substance"] == 0 and state["signatures"] == [] and state["resets"] == 1
     monkeypatch.setattr(escalation, "_apply", lambda sup, task, source, detail, decision: decision)   # no dispatch
     tasks.set_status(layout, "T", "IN_PROGRESS")
     sup = Supervisor(layout, sleep_s=0)

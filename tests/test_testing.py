@@ -54,7 +54,7 @@ def test_a_fake_lane_completes_a_task_through_the_loop(tmp_path):
         testing.make_task(lay, "A", job={"adapter": "fake_done"}, artifacts=["out/a.txt"])
         testing.drive(lay, until=lambda: tasks.load(lay, "A").status == TaskStatus.COMPLETE)
     assert tasks.load(lay, "A").status == TaskStatus.COMPLETE
-    assert fake.submitted == ["A.a1"] and (lay.root / "out" / "a.txt").is_file()
+    assert fake.submitted == ["A.a1.s1"] and (lay.root / "out" / "a.txt").is_file()
     from supervisor.adapters import REGISTRY
     assert "fake_done" not in REGISTRY                         # the lane is gone after the block
 
@@ -169,8 +169,8 @@ def test_a_planted_open_job_record_holds_the_slot_until_a_settle_pass_collects_i
     testing.settle(lay)
     assert testing.job(lay, "A.a1")["phase"] == "DONE" and testing.job(lay, "A.a1")["result"] == "COMPLETE"
     assert testing.task(lay, "A").status == "COMPLETE"
-    assert [r["attempt_id"] for r in testing.jobs(lay, "A")] == ["A.a1"]
-    assert [r["attempt_id"] for r in testing.jobs(lay)] == ["A.a1"]
+    assert [r["attempt_id"] for r in testing.jobs(lay, "A")] == ["A.a1"]          # per-task: reads the archive too
+    assert testing.jobs(lay) == []          # R-23: A is COMPLETE, so its only record just left the unfiltered scan
     assert testing.plan(lay) == [("B", "slow_lane")]                # the slot is free again
     testing.reset()
 

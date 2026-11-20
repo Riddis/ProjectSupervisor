@@ -1563,6 +1563,12 @@
           "default": "None",
           "kind": "positional_or_keyword",
           "name": "command_id"
+        },
+        {
+          "annotation": "str | None",
+          "default": "None",
+          "kind": "positional_or_keyword",
+          "name": "job_id"
         }
       ],
       "returns": "dict"

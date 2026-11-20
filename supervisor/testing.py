@@ -193,28 +193,34 @@ def task(layout: Layout, tid: str):
     return tasks.load(layout, tid)
 
 
-def job(layout: Layout, attempt_id: str) -> dict:
+def job(layout: Layout, attempt_id: str) -> dict | None:
     """One job record (state/jobs/<attempt>.json): `phase` (PREPARED, SUBMITTED, RUNNING, DONE, FAILED), `result`
-    once done, `spec`, `handle`, `error`."""
+    once done, `spec`, `handle`, `error`. `None` when there is none, under either id shape (ATTEMPT_MODEL.md
+    section 7) -- the lookup is a plain file read either way, so a plugin's own test never has to catch an
+    exception just to find out."""
     from . import jobs as _jobs
-    return _jobs.read(layout, attempt_id)
+    return _jobs.resolve(layout, attempt_id)
 
 
 def jobs(layout: Layout, task_id: str | None = None) -> list[dict]:
-    """The task's job records, oldest attempt first (every record without `task_id`)."""
+    """The task's job records, oldest first by `(attempt, kind, seq)` (`jobs.sort_key`, ATTEMPT_MODEL.md section
+    7), or every record in that order when `task_id` is omitted."""
     from . import jobs as _jobs
-    return _jobs.for_task(layout, task_id) if task_id is not None else _jobs.all_records(layout)
+    return _jobs.for_task(layout, task_id) if task_id is not None else sorted(_jobs.all_records(layout), key=_jobs.sort_key)
 
 
 def running_job(layout: Layout, task_id: str, adapter: str, spec: dict, handle: dict, *,
-                attempt_id: str | None = None, gpu: bool = False, **fields) -> dict:
+                attempt_id: str | None = None, gpu: bool = False, kind: str | None = None,
+                attempt: int | None = None, seq: int | None = None, **fields) -> dict:
     """Plant an open job record the way the loop leaves one after a lane's submit(): phase RUNNING with `spec` and
     `handle` (and any other record field), the task IN_PROGRESS. The attempt id defaults to the task's next one
-    (`<task>.a<n>`). `gpu=True` makes it hold the resource slot. Returns the record."""
+    (`<task>.a<n>`). `gpu=True` makes it hold the resource slot. `kind`, `attempt` and `seq` are the
+    attempt-identity fields (ATTEMPT_MODEL.md section 2.6); omitted (not written as null) by default, exactly as
+    before this release. Returns the record."""
     from . import jobs as _jobs
     from . import tasks
     attempt_id = attempt_id or f"{task_id}.a{len(_jobs.for_task(layout, task_id)) + 1}"
-    _jobs.prepare(layout, task_id, attempt_id, adapter, spec, gpu=gpu)
+    _jobs.prepare(layout, task_id, attempt_id, adapter, spec, gpu=gpu, kind=kind, attempt=attempt, seq=seq)
     rec = _jobs.set_phase(layout, attempt_id, "RUNNING", handle=handle, **fields)
     if tasks.load(layout, task_id).status in ("NOT_STARTED", "READY"):
         tasks.set_status(layout, task_id, "IN_PROGRESS", actor="loop", note=f"{attempt_id} planted by a test")

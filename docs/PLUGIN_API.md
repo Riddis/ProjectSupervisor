@@ -197,6 +197,20 @@ it. Raises `ValueError` when a path traverses a symbolic link or junction: conta
 A plugin adds a lane with `registry.adapter(...)` from its `setup(registry)` (`docs/FRAMEWORK_VS_PLUGIN.md`).
 The loop calls the methods below; it never calls them concurrently for one job.
 
+Since 2.8.0 (R-24), a process job's child does not inherit the loop's own environment: `ProcessAdapter.env()`'s
+default is the declared allow-list (`config/routing.yaml`'s `env.base`, or `DEFAULT_BASE` when a project's
+`routing.yaml` predates this release) plus this lane's own `env.lanes.<name>.add`/`.secrets`, keyed by the
+adapter's own `name` — a project names an unusual variable there and every lane of that name gets it with no
+code change. A vendor variable the loop's own launching environment happens to carry is not handed down unless
+a project names it. A subclass that defines no `env()` gets this default, not the pre-2.8.0 full environment;
+one whose child needs something the allow-list cannot express overrides `env()` (see `ProcessAdapter.env` below).
+
+A dispatched job's own child process (`ProcessAdapter.env()` and its subclasses) carries `SUPERVISOR_ATTEMPT` as
+before, `SUPERVISOR_JOB` added with the same value under its own name, and `SUPERVISOR_ATTEMPT_NO` added with the
+integer the id's `.a<n>` suffix carries (`0` when it has none). `SUPERVISOR_ATTEMPT` keeps its value for one more
+major version; code that still parses it, or a job id, for the attempt number should move to
+`SUPERVISOR_ATTEMPT_NO` instead, since an id is no longer promised to carry that number in its own text.
+
 ### `Adapter`
 
 The base class of every lane, for in-process or HTTP work (subclass `ProcessAdapter` for a subprocess).
@@ -205,7 +219,7 @@ The base class of every lane, for in-process or HTTP work (subclass `ProcessAdap
 |---|---|
 | `name` | the lane's name: the adapter tasks and routing refer to (`job: {adapter: <name>}`) |
 | `gpu` | `True` holds the project's single heavy-resource slot while a job runs (`limits.max_resource_jobs`) |
-| `prepare(layout, task, attempt_id) -> dict` | the job's spec: a JSON-serialisable dict saved in the job record before launch. It must contain `adapter`, `task_id`, `attempt_id` and `run_dir` (usually `layout.runs / task.id / attempt_id`, created here) |
+| `prepare(layout, task, attempt_id) -> dict` | the job's spec: a JSON-serialisable dict saved in the job record before launch. It must contain `adapter`, `task_id`, `attempt_id` and `run_dir` (usually `layout.runs / task.id / attempt_id`, created here). `attempt_id` is this job's own id, as before; it is no longer promised to parse as `<task>.a<n>`, so take `run_dir` from the spec `prepare()` itself built rather than rebuilding it from the id |
 | `submit(spec) -> dict` | start the job; return a JSON-serialisable handle. Raise `CapacityDeferred` when it cannot start for now |
 | `alive(handle) -> bool` | whether the job is still running |
 | `collect(spec, handle) -> Result \| None` | `None` while running, else the `Result` |
@@ -228,7 +242,7 @@ Output goes to `run_dir/stdout.jsonl` and `run_dir/stderr.txt`; the job ends whe
 | Member | Meaning |
 |---|---|
 | `command(spec) -> list[str]` | the argv to run. Default `spec["argv"]` |
-| `env(spec) -> dict` | the child's environment. Default: the loop's, plus the attempt id the recovery uses; keep those keys when overriding |
+| `env(spec) -> dict` | the child's environment. Default (R-24, 2.8.0): the declared allow-list (`env.base` plus this lane's own `env.lanes.<name>`, never the loop's own environment), plus the attempt id the recovery uses; keep those keys when overriding, and declare a name the allow-list does not carry in `env.lanes.<name>` rather than reading it from the loop's own environment |
 | `parse_result(spec, handle) -> Result` | the `Result` after the child exits. Default: read `result.json`, or `FAILED` without one |
 | `on_timeout(spec, handle) -> None` | salvage partial output before a timeout's `FAILED` result. Default: nothing |
 | `limits(spec, handle) -> tuple` | `(hard-cap deadline epoch, idle seconds or None, idle CPU-seconds threshold)` |
@@ -245,7 +259,7 @@ A dataclass, what `collect()` returns.
 | Field | Meaning |
 |---|---|
 | `status: str` | `COMPLETE`, `PARTIAL`, `BLOCKED`, `FAILED`, or `DEFERRED` (re-queued, no attempt consumed) |
-| `digest: str \| None` | the artifact digest the lane computed; the loop re-verifies it |
+| `digest: str \| None` | **reserved, unset; deprecated.** The loop computes a delivery's digest itself from `artifacts`; nothing reads this field, and no lane need set it. Removal is announced for the next major version |
 | `artifacts: list[str]` | root-relative paths of the files the job produced |
 | `notes: str` | free text for the owner |
 | `model`, `session_id: str \| None` | what ran, when a lane knows it |
@@ -389,16 +403,22 @@ A `ValueError`: an inbox item that does not exist, is not the caller's, or canno
 
 ### `submit_command`
 
-`submit_command(layout, kind, payload, actor="owner-ui", command_id=None) -> dict`: submit an owner command, the
-way every Control Center action changes state: applied now when no loop holds the state lock, otherwise queued for
-the loop, which applies it within one iteration. Returns the applied record (`{"id", "ok", "result"}` or
-`{"id", "ok": False, "error"}`) or `{"id", "queued": True}`. The handler (registered with `registry.command`) gets
-`payload` plus `_id`, the command id, and must be idempotent by it.
+`submit_command(layout, kind, payload, actor="owner-ui", command_id=None, job_id=None) -> dict`: submit an owner
+command, the way every Control Center action changes state: applied now when no loop holds the state lock,
+otherwise queued for the loop, which applies it within one iteration. Returns the applied record (`{"id", "ok",
+"result"}` or `{"id", "ok": False, "error"}`) or `{"id", "queued": True}`. The handler (registered with
+`registry.command`) gets `payload` plus `_id`, the command id, and must be idempotent by it.
 
 `command_id` makes a resubmission harmless, a form posted twice say: a command whose id was already submitted is not
 applied again, and the answer is that command's record (or `queued`) with `"replayed": True`, whatever the second
 `kind` and `payload` were. An id is letters, digits, `_`, `.` and `-`, at most 80 characters, not starting with `.`
 or `-` (`ValueError` otherwise). Without `command_id` every call is a new command.
+
+`job_id` names the job this call is part of (default `None`: the command stays interactive, as before 2.8.0) --
+pass the id a lane's own `prepare()` was given, from a `python_job` function or a plugin-provided CLI a job runs,
+so its failure reaches an owner issue and the job's own result waits on it, exactly as every framework CLI verb
+has since R-19 (2.7.0 round 2, P3-R2-3). Never inferred from the calling process's own environment, since a job's
+`SUPERVISOR_ATTEMPT` can leak into unrelated work the same process starts (R-24): name it explicitly.
 
 ### `log_event`
 
@@ -512,8 +532,9 @@ nothing in it is promised. It is promoted from the framework's own test fixtures
 | `load(layout)` | set the project's plugins up as the loop does; returns the loader's registry (`.loaded`, `.errors`) |
 | `registered_lane(name) -> Adapter` | the lane registered under `name`, the object the loop calls (KeyError when none) |
 | `task(layout, tid)` | the task as stored, the object a lane's `prepare()` is handed (`.status`, `.job`) |
-| `job(layout, attempt_id) -> dict`, `jobs(layout, task_id=None) -> list[dict]` | a job record (`phase`, `result`, `spec`, `handle`); a task's records oldest first, or all of them |
-| `running_job(layout, task_id, adapter, spec, handle, *, attempt_id=None, gpu=False, **fields) -> dict` | plant an open job record as the loop leaves one after `submit()` (RUNNING, the task IN_PROGRESS); `gpu=True` holds the resource slot |
+| `job(layout, attempt_id) -> dict \| None` | one job record (`phase`, `result`, `spec`, `handle`), under either id shape; `None` on a miss instead of raising |
+| `jobs(layout, task_id=None) -> list[dict]` | a task's records, oldest first by `(attempt, kind, seq)` with the id suffix as the fallback, or every record in that order when `task_id` is omitted |
+| `running_job(layout, task_id, adapter, spec, handle, *, attempt_id=None, gpu=False, kind=None, attempt=None, seq=None, **fields) -> dict` | plant an open job record as the loop leaves one after `submit()` (RUNNING, the task IN_PROGRESS); `gpu=True` holds the resource slot; `kind`, `attempt` and `seq` are the attempt-identity fields, omitted (not written as null) by default |
 | `settle(layout)` | one settle pass without dispatching: each open job record collected or adopted through its lane |
 | `plan(layout) -> list[tuple[str, str]]` | what the loop would dispatch now, as (task id, lane), after the gate's checks |
 | `inbox_item(layout, item_id) -> dict` | an inbox item as stored, any kind (InboxError when none) |

@@ -7,14 +7,17 @@ the producer's delivered artifacts — never the producer's own notes/self-asses
 actual evidence, not a paraphrase."""
 from __future__ import annotations
 
+import difflib
 import json
 
 import yaml
 
+from . import jobs as jobs_mod
 from . import policy, verify
 from ._vendor.contract import manifest
 from .models.task import Task
 from .paths import Layout
+from .verify import normalise_command  # the one normaliser the allow-list and this brief both decide with (R-13)
 
 
 def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True) -> str:
@@ -42,7 +45,10 @@ def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True
         "finish inside that is saved as a log under your run directory and cited in `notes` — never declared as a "
         "command.\n"
         f"Only these commands are re-run, matched by prefix: {allowed}. A helper script is never a command — wrap "
-        "what it asserts in a pytest.\n")
+        "what it asserts in a pytest.\n"
+        "Spelling does not matter for an allow-listed tool: `<tool>`, `python -m <tool>` and the task's own "
+        "venv's `python.exe -m <tool>` are one lane (the same normaliser decides both what is allowed here and "
+        f"what actually runs; `pytest` and `python -m pytest` both reduce to `{' '.join(normalise_command('python -m pytest'))}`).\n")
 
 
 def role_card(layout: Layout, role: str) -> str:
@@ -76,7 +82,12 @@ def _checks_block(task: Task) -> str:
 
 def _test_roots_note(layout: Layout, task: Task) -> str:
     """Where a declared test command re-runs (G2, 2.4.0): named roots when the task sets any, else the one
-    sentence that is true when it does not."""
+    sentence that is true when it does not. Either way, the pinned (interpreter, cwd, PATH) default triple
+    (`verify.declared_environment`, step 13) is stated verbatim — the same values `verification.json` records —
+    so a disagreement between what the brief promises and what actually ran is visible, not inferred."""
+    env = verify.declared_environment(layout)
+    pinned = (f"Pinned and recorded in `verification.json`: interpreter `{env['interpreter']}`, cwd "
+             f"`{env['cwd']}`, PATH `{env['path']}`.")
     if task.test_roots:
         example = task.test_roots[0]
         return ("\n\n**Where your test commands re-run.** Verification re-runs each command you report from "
@@ -84,8 +95,10 @@ def _test_roots_note(layout: Layout, task: Task) -> str:
                 "its own entry, and only these are allowed: " + ", ".join(task.test_roots) + ". The interpreter is "
                 "chosen here — that directory's `.venv` if it has one, otherwise the supervisor's own — so what "
                 "you write as the first word of the command does not select it.\n"
-                '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`')
-    return f"\n\nVerification re-runs each command from `{layout.root}` with the supervisor's own interpreter."
+                '`{"command": "python -m pytest tests/test_widget.py", "cwd": ' + json.dumps(example) + ', "exit_code": 0}`'
+                f"\nFor a command with no `cwd` of its own: {pinned}")
+    return (f"\n\nVerification re-runs each command from `{layout.root}` with the supervisor's own interpreter. "
+            f"{pinned}")
 
 
 def _ownership_block(layout: Layout, task: Task) -> str:
@@ -207,11 +220,163 @@ def _verification_summary(layout: Layout, task: Task, digest: str) -> str:
 # category spelling the contract refuses.
 FINDING_CATEGORY_LIST = "correctness | requirement | regression | architecture | quality | advisory"
 
+# The cap bounding which text artifacts a review pass snapshots for a later diff (ATTEMPT_MODEL.md 4.3): a mid-task
+# attempt is never committed to git (only a COMPLETE task's bytes are checkpointed, checkpoint.py), so the only
+# durable copy of what a prior pass actually saw is the one its own job record keeps — kept small on purpose.
+TEXT_SNAPSHOT_CAP = 20_000
+# The cap bounding how much of the combined unified diff a review packet quotes; a pass that changed more than
+# this is still named in the artifact-level change list, just not diffed line by line in the prompt itself.
+DIGEST_DIFF_CAP = 8_000
 
-def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], role: str) -> str:
+ROUND_1_INSTRUCTION = ("This is the first review pass for this delivery's current digest. Report every blocking "
+                      "finding you find in this pass, not only the first one you hit — stopping early just "
+                      "costs another pass to find the next defect.")
+
+
+def _text_or_none(layout: Layout, rel: str, cap: int) -> str | None:
+    p = layout.root / rel
+    try:
+        if not p.is_file() or p.stat().st_size > cap:
+            return None
+        return p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def text_snapshot(layout: Layout, artifacts: list[str]) -> dict:
+    """path -> text, for every listed artifact that exists, is a plain file, decodes as UTF-8 and is within
+    `TEXT_SNAPSHOT_CAP`. Kept on the dispatching review's own job record (review.dispatch) so a later round can
+    diff against it without ever reading a run directory."""
+    return {rel: text for rel in artifacts if (text := _text_or_none(layout, rel, TEXT_SNAPSHOT_CAP)) is not None}
+
+
+def _change_list(prior_manifest: dict, current_manifest: dict) -> list[dict]:
+    """Added/removed/changed, by path, between two frozen_inputs() manifests (hash+size — never file content)."""
+    out = []
+    for path in sorted(set(prior_manifest) | set(current_manifest)):
+        before, after = prior_manifest.get(path), current_manifest.get(path)
+        if before is None:
+            out.append({"path": path, "change": "added"})
+        elif after is None:
+            out.append({"path": path, "change": "removed"})
+        elif before != after:
+            out.append({"path": path, "change": "changed"})
+    return out
+
+
+def _unified_diffs(layout: Layout, prior_snapshot: dict, change_list: list[dict]) -> str:
+    """A unified diff per changed artifact for which both the previous round's own text snapshot and a current,
+    in-cap text reading exist — never for a path only one side can show as text (binary, oversized, or added/
+    removed, which the change list already names on its own)."""
+    changed = [c["path"] for c in change_list if c["change"] == "changed" and c["path"] in prior_snapshot]
+    parts = []
+    for rel in changed:
+        current = _text_or_none(layout, rel, TEXT_SNAPSHOT_CAP)
+        if current is None:
+            continue
+        diff = "".join(difflib.unified_diff(prior_snapshot[rel].splitlines(keepends=True),
+                                            current.splitlines(keepends=True),
+                                            fromfile=f"a/{rel}", tofile=f"b/{rel}"))
+        if diff:
+            parts.append(diff)
+    return "".join(parts)
+
+
+def _prior_rounds(task: Task, digest: str) -> list[tuple[str, list]]:
+    """(digest, ReviewRecords) for every digest this task's history (`task.delivery.reviews`, the store) has ever
+    reviewed, oldest first, excluding the digest now under review — a round groups every role's verdict for the
+    same past digest, however many roles were required."""
+    order: list[str] = []
+    by_digest: dict[str, list] = {}
+    for r in task.delivery.reviews:
+        if r.digest == digest:
+            continue
+        by_digest.setdefault(r.digest, []).append(r)
+        if r.digest not in order:
+            order.append(r.digest)
+    return [(d, by_digest[d]) for d in order]
+
+
+def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list[str]) -> dict:
+    """Everything a review packet needs about earlier rounds of this task (ATTEMPT_MODEL.md 4.3, points 2-4): the
+    findings and verdict of every previous round, what the producer's own delivery result claims about them, the
+    artifact-level change list and a size-capped unified diff against the immediately preceding round — entirely
+    from the task document and this task's job records (both the store), plus the current working tree; never a
+    run directory. `snapshot` is this round's own text snapshot, for the round after THIS one to diff against."""
+    rounds = [{"round": n, "attempt": jobs_mod.attempt_for_digest(layout, task.id, past_digest), "digest": past_digest,
+              "reviews": [{"role": r.role, "verdict": r.verdict.value, "findings": list(r.findings)} for r in records]}
+             for n, (past_digest, records) in enumerate(_prior_rounds(task, digest), start=1)]
+    # The producer's own account of THIS delivery is the response to the round immediately before it; an earlier
+    # round's own notes do not survive being superseded (task.result is overwritten on every delivery, R-15) — so
+    # only the latest previous round ever has one, and it is said plainly rather than invented for the rest.
+    claim = task.result if rounds else None
+    # `responses`: the producer's own optional, per-finding reply (point 3), keyed by the finding id it answers —
+    # `claim` (task.result) stays the one free-text account read for a finding this carries none of, or when a
+    # producer gives none of these at all.
+    responses = {str(r["id"]): {"status": r.get("status"), "note": r.get("note")}
+                for r in (task.findings_response or []) if isinstance(r, dict) and r.get("id")} if rounds else {}
+    change_list: list[dict] = []
+    diff_text = ""
+    if rounds:
+        prior_digest = rounds[-1]["digest"]
+        prior_manifest, prior_snapshot = {}, {}
+        for rec in jobs_mod.for_task(layout, task.id):
+            if jobs_mod.kind_of(rec) == "review" and rec.get("review_digest") == prior_digest:
+                prior_manifest = rec.get("review_frozen") or prior_manifest
+                prior_snapshot = rec.get("review_text_snapshot") or prior_snapshot
+        change_list = _change_list(prior_manifest, frozen_inputs(layout, artifacts))
+        diff_text = _unified_diffs(layout, prior_snapshot, change_list)
+    return {"rounds": rounds, "claim": claim, "responses": responses, "change_list": change_list,
+            "diff_text": diff_text, "snapshot": text_snapshot(layout, artifacts)}
+
+
+def _finding_line(f: dict, responses: dict | None = None) -> str:
+    tag = "blocking" if f.get("blocking") else "advisory"
+    resp = (responses or {}).get(f.get("id"))
+    reply = ""
+    if resp:
+        reply = f" — producer: {resp.get('status')}" + (f" ({resp['note']})" if resp.get("note") else "")
+    return (f"  - `{f.get('id', '')}` [{f.get('category', '')}, {tag}]: {f.get('message', '')} "
+            f"(evidence: {f.get('evidence', '')}){reply}")
+
+
+def prior_round_block(ctx: dict) -> str:
+    """The text ATTEMPT_MODEL.md 4.3 adds to a review packet from `prior_round_context()`."""
+    if not ctx["rounds"]:
+        return f"\n\n## Round 1\n{ROUND_1_INSTRUCTION}\n"
+    lines = ["\n\n## Previous rounds of this task (read before judging this delivery)"]
+    for rnd in ctx["rounds"]:
+        attempt = rnd["attempt"] if rnd["attempt"] is not None else "—"
+        lines.append(f"\n### Round {rnd['round']} (attempt {attempt}, digest {rnd['digest'][:12]})")
+        for rv in rnd["reviews"]:
+            lines.append(f"- **{rv['role']}** verdict {rv['verdict']}")
+            lines.extend(_finding_line(f, ctx["responses"]) for f in rv["findings"])
+    lines.append("\n**What the producer's current delivery result claims about the above:**\n"
+                 + (ctx["claim"] or "no notes were recorded."))
+    if ctx["change_list"]:
+        lines.append("\n**Artifact-level changes since the previous round:**\n"
+                     + "\n".join(f"- {c['path']}: {c['change']}" for c in ctx["change_list"]))
+    if ctx["diff_text"]:
+        capped = ctx["diff_text"][:DIGEST_DIFF_CAP]
+        note = "" if len(ctx["diff_text"]) <= DIGEST_DIFF_CAP else "\n(truncated at the packet's own size cap)"
+        lines.append(f"\n**Unified diff of changed text artifacts:**\n```diff\n{capped}{note}\n```")
+    return "\n".join(lines)
+
+
+def _review_note_block(task: Task) -> str:
+    if not task.review_note:
+        return ""
+    return f"\n\n## Owner's guidance for reviewers\n{task.review_note}\n"
+
+
+def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], role: str, ctx: dict | None = None) -> str:
+    """`ctx`, when given, is this call's own `prior_round_context()` result, already computed by the caller (e.g.
+    `review.dispatch()`, which also needs it for the dispatch extra) — passed through rather than built again here
+    a second time for the same dispatch. Built fresh when omitted, as every existing caller still does."""
     card = role_card(layout, role)
     example = json.dumps({"kind": "review", "schema_version": 1, "verdict": "ACCEPT|REVISE|REJECT|BLOCKED",
                           "findings": [], "summary": "...", "reviewed": artifacts, "digest": digest})
+    ctx = ctx if ctx is not None else prior_round_context(layout, task, digest, artifacts)
     return policy.assert_packet_clean(((card + "\n\n") if card else "") + (
         f"# Review {task.id}: {task.title}\n\nRepository: {layout.root}\n\n"
         f"You are reviewing frozen inputs bound to digest `{digest}`. If any of the listed files change before "
@@ -230,10 +395,13 @@ def review_brief(layout: Layout, task: Task, digest: str, artifacts: list[str], 
         "\n## Delivered artifacts (frozen inputs — read these, not the producer's notes)\n"
         + "\n".join(f"- {a}" for a in artifacts) +
         _verification_summary(layout, task, digest) + review_guidance_block(task, digest) +
+        _review_note_block(task) + prior_round_block(ctx) +
         "\n\n## Result contract\nEnd your answer with exactly one fenced JSON block:\n```json\n" + example + "\n```\n"
         "Each entry in `findings` is an object {\"category\": one of " + FINDING_CATEGORY_LIST + ", \"blocking\": "
-        "true|false, \"message\": \"...\", \"evidence\": \"file:line, command output or quote\"}. Use exactly those "
-        "category names. `advisory` findings are never blocking; an ACCEPT carries no blocking finding.\n"),
+        "true|false, \"message\": \"...\", \"evidence\": \"file:line, command output or quote\", \"id\": \"...\"}. "
+        "Use exactly those category names. `advisory` findings are never blocking; an ACCEPT carries no blocking "
+        "finding. `id` is optional — name the same id again when a finding repeats from a previous round shown "
+        "above; omit it on a new finding and one is derived for you.\n"),
         layout, f"review packet {task.id}")
 
 

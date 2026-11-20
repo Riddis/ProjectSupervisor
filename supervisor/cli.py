@@ -140,9 +140,19 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
                "then `supervisor doctor` and `supervisor task import`.")
 
 
-@app.command()
-def migrate(dry_run: bool = typer.Option(False, help="report what would change without writing")):
+migrate_app = typer.Typer(help="bring a project's state and config up to the installed framework version "
+                              "(idempotent); `attempts` derives the attempt-identity migration's mapping "
+                              "(ATTEMPT_MODEL.md section 8, --dry-run), writes a reviewed one onto the store "
+                              "(--apply) or checks an applied store against it (--check)")
+app.add_typer(migrate_app, name="migrate")
+
+
+@migrate_app.callback(invoke_without_command=True)
+def migrate(ctx: typer.Context,
+           dry_run: bool = typer.Option(False, help="report what would change without writing")):
     """Bring a project's state and config up to the installed framework version (idempotent)."""
+    if ctx.invoked_subcommand is not None:
+        return
     from . import migrations
     layout = _writer(load=False)
     try:
@@ -153,6 +163,64 @@ def migrate(dry_run: bool = typer.Option(False, help="report what would change w
         typer.echo(n)
     if not notes:
         typer.echo("nothing to migrate")
+
+
+@migrate_app.command("attempts")
+def migrate_attempts(
+       dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; writes nothing "
+                                     "else"),
+       apply: bool = typer.Option(False, "--apply", help="write a reviewed mapping's identity fields onto the "
+                                  "store (ATTEMPT_MODEL.md section 8.4); refuses without --mapping"),
+       check: bool = typer.Option(False, "--check", help="section 8.5's seven assertions against the store and "
+                                  "the mapping's own report.json, read-only; refuses without --mapping"),
+       out: Path = typer.Option(..., "--out", help="directory for this run's own files: mapping.json/report.json/"
+                                "summary.md for --dry-run, apply_report.json for --apply, check_report.json for "
+                                "--check"),
+       mapping: Path = typer.Option(None, "--mapping", help="a reviewed dry run's mapping.json; required for "
+                                    "--apply and --check"),
+       overrides: Path = typer.Option(None, "--overrides", help="a YAML file of job id -> cause, forcing the "
+                                      "mapping's detected cause for the named jobs (--dry-run only)"),
+       compare: Path = typer.Option(None, "--compare", help="an earlier run's mapping.json; fails if a row "
+                                    "changed, after writing this run's own files (--dry-run only)")):
+    """ATTEMPT_MODEL.md section 8: derive the attempt-identity mapping from the store as it stands, for a human
+    to read before anything is migrated (--dry-run); write a reviewed one onto the store (--apply); or check an
+    applied store against it (--check). Exactly one of the three is required; apply and check both refuse
+    without --mapping, and apply never derives a mapping of its own."""
+    modes = [name for name, flag in (("dry_run", dry_run), ("apply", apply), ("check", check)) if flag]
+    if len(modes) != 1:
+        raise typer.BadParameter("pass exactly one of --dry-run, --apply, --check")
+    from . import migrations
+    layout = _writer(load=False)
+    try:
+        if dry_run:
+            report = migrations.dry_run_attempts(layout, out, overrides_path=overrides, compare_path=compare)
+        elif apply:
+            if mapping is None:
+                raise typer.BadParameter("--apply refuses without --mapping")
+            report = migrations.apply_attempts(layout, mapping, out)
+        else:
+            if mapping is None:
+                raise typer.BadParameter("--check refuses without --mapping")
+            report = migrations.check_attempts(layout, mapping, out)
+    except migrations.MigrationError as exc:
+        raise typer.BadParameter(str(exc))
+
+    if dry_run:
+        t = report["totals"]
+        typer.echo(f"wrote mapping.json, report.json, summary.md to {out}")
+        typer.echo(f"placed {t['placed']} of {t['records']} job record(s), {t['unplaced']} unplaced")
+        if report["flags"]:
+            typer.echo(f"flagged {len(report['flags'])}: see report.json")
+        if "compare" in report:
+            c = report["compare"]
+            typer.echo(f"compared with {c['baseline']}: {c['unchanged']} unchanged, {len(c['added'])} added")
+    elif apply:
+        typer.echo(f"wrote apply_report.json to {out}")
+        typer.echo(f"wrote {len(report['written'])}, already migrated {len(report['already_migrated'])}" +
+                   (f", backed up to {report['backup']}" if report["backup"] else ""))
+    else:
+        typer.echo(f"wrote check_report.json to {out}")
+        typer.echo("check passed" if report["ok"] else "check FAILED: see check_report.json")
 
 
 @app.command()
@@ -174,7 +242,7 @@ def status():
 @app.command("render")
 def render_cmd():
     """Render every markdown projection from the store."""
-    for p in render.render_all(_layout()):
+    for p in render.render_all(_layout(), force=True):          # an explicit ask always does the full pass (R-22)
         typer.echo(f"rendered {p.name}")
 
 
@@ -525,8 +593,15 @@ def _launch_update_check(layout: Layout, interactive: bool) -> None:
 def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unattended: bool = False,
         no_update_check: bool = typer.Option(False, help="skip the origin check at launch")):
     """Run the supervisor loop (holds state/.lock). Exit code 3 = reload requested."""
-    from .loop import Supervisor
+    from .loop import ForeignEnvironmentError, Supervisor, UnmigratedJobsError, _check_launch_environment_guard, \
+        _check_writer_guard
     layout = _layout()
+    try:
+        _check_launch_environment_guard()   # ATTEMPT_MODEL.md §4.4: refuse a foreign job's own identity first
+        _check_writer_guard(layout)       # ATTEMPT_MODEL.md §8.6: before anything below can ever dispatch
+    except (ForeignEnvironmentError, UnmigratedJobsError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
     if not no_update_check and not once and not max_iterations:
         _launch_update_check(layout, interactive=False)     # the loop never blocks on a prompt: the UI asks
     sup = Supervisor(layout, sleep_s=sleep, unattended=unattended)

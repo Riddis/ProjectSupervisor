@@ -183,6 +183,29 @@ def test_a_login_failure_on_an_engine_less_lane_waits_instead_of_rerouting_to_it
     assert not list(layout.issues.glob("I-*.yaml"))
 
 
+def test_a_login_failure_on_a_diagnosis_lane_reroutes_without_raising_when_the_task_file_is_unreadable(layout):
+    """F10 (2.6.1 round 3, carried through 2.7.0 and 2.8.0): reroute() closes the refused record DONE/REROUTED
+    and logs lane_rerouted, then writes a task note on the same task before it rebuilds a successor - an
+    unguarded tasks_mod.add_note() call on a task file that turned unreadable in that same window raised the
+    raw parser error straight out of once() (one loop error charged per occurrence), one line before
+    diagnosis.rebuild()'s own guard (F7) was ever reached. The note must not raise past this turn; the record
+    still closes, with no successor since the broken file cannot be read to rebuild one."""
+    write_routing(layout, {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"})
+    own_task(layout, "E")
+    sup = Supervisor(layout, sleep_s=0)
+    rec = jobs.write(layout, {"attempt_id": "E.a1", "task_id": "E", "adapter": "codex_cli", "phase": "RUNNING",
+                             "spec": {"kind": "diagnosis"}, "handle": {}, "diag_role": "code_review",
+                             "diag_level": "manager", "diag_signature": "sig1", "diag_source": "worker_failed",
+                             "diag_detail": "it broke", "diag_issue": None, "diag_grant": 0})
+    (layout.tasks / "E.yaml").write_text("id: E\nphase: [unclosed\n", encoding="utf-8")
+    sup._lane_login_failed(rec, Result(status="FAILED", error="login_required: run `codex login` on the workstation"),
+                           "diagnosis")
+    recs = jobs.for_task(layout, "E")
+    assert len(recs) == 1          # diagnosis.rebuild() cannot rebuild a successor from an unreadable file
+    assert recs[0]["result"] == "REROUTED" and recs[0]["adapter"] == "codex_cli"
+    assert recs[0]["phase"] == "DONE" and recs[0].get("continued") is True
+
+
 def test_a_login_failure_on_an_engine_less_lane_still_notifies_the_owner_with_another_item_open(layout):
     """_notify_login_required's dedupe keys off `extra['login_engine'] == engine`; with `engine` None that
     matched ANY open owner item whose extra never carried the key at all, silently swallowing the

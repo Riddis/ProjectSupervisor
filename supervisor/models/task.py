@@ -67,15 +67,24 @@ class CostCategory(str, Enum):
 
 
 class Attempt(BaseModel):
-    id: str
-    resource: str
-    at: str
+    """ATTEMPT_MODEL.md §4.6 (step 15): `id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
+    first three, and the fourth was never written either; a reader now takes the model from the job record
+    (§2.7), never from this document. `at` is gone too, renamed to `opened` (closed sits beside it, §2.3's
+    delivery-attempt shape). `model_config` stays `extra: allow` so a document written before this release —
+    whose `attempts[]` entries still carry `id`/`at`/`model`/`session_id`/`extra` on disk — still loads; those
+    bytes are tolerated, never read back through a declared field."""
+    resource: Optional[str] = None      # per §4.6, moved onto the job entry in the migrated shape (`jobs[].resource`)
+                                          # — optional so a document already on that shape still parses
     outcome: str = ""
     note: str = ""
-    model: Optional[str] = None
-    session_id: Optional[str] = None
     run_dir: Optional[str] = None
-    extra: dict[str, Any] = Field(default_factory=dict)
+
+    # the delivery-attempt shape the migration writes (§2.7): additive here, unused until the writer switch
+    n: Optional[int] = None
+    opened: Optional[str] = None
+    closed: Optional[str] = None
+    cause: Optional[str] = None
+    jobs: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "allow"}
 
@@ -111,6 +120,10 @@ class ReviewRecord(BaseModel):
     report: Optional[str] = None
     report_sha256: Optional[str] = None    # the report's bytes when the review was recorded (1.10.0); the approval view
                                            # shows its summary/findings only while the file still hashes to this
+    findings: list[dict[str, Any]] = Field(default_factory=list)   # R-15: the reviewer's own findings (with
+                                                                     # findings[].id), kept on the task document
+                                                                     # itself so a later review pass can read them
+                                                                     # without ever reaching into a run directory
     superseded: bool = False
 
 
@@ -169,6 +182,9 @@ class Task(BaseModel):
     attempts: list[Attempt] = Field(default_factory=list)      # dispatch attempts only (retry budgets, §2.6)
     job_seq: int = 0                                           # highest job number allocated (R-03); 0 on a task
                                                                  # written before this field existed
+    counters: dict[str, Any] = Field(default_factory=dict)     # §2.3: {attempt, jobs: {<n>: {s,v,r,d}},
+                                                                 # task_jobs: {<k>: n}} — tasks.allocate_job's own
+                                                                 # block, monotonic, {} on a task with none yet
 
     history: list[dict[str, Any]] = Field(default_factory=list)  # status changes {at, by, from, to, note, forced?}
     forced: Optional[dict[str, Any]] = None                     # set when the owner forced a status; rendered
@@ -178,8 +194,14 @@ class Task(BaseModel):
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
     result: Optional[str] = None
+    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:
+                                                                               # the producer's own optional, per-
+                                                                               # finding reply {id, status, note?} to
+                                                                               # the previous round's own findings —
+                                                                               # additive beside `result`, the one
+                                                                               # free-text account read when a
+                                                                               # finding has none of these
     paths: list[str] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
     owned_paths: list[str] = Field(default_factory=list)
     priority: int = 0
     delivery: Delivery = Field(default_factory=Delivery)

@@ -18,9 +18,9 @@ from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
 from .base import Result, register
-from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits, prior_handoff,
-                         role_profile, routing)
-from .process import ProcessAdapter, job_spec, scrub_env
+from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits,
+                         resolve_handoff, role_profile, routing)
+from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
 
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 
@@ -84,7 +84,9 @@ class CodexCliAdapter(ProcessAdapter):
             text = job.get("prompt") or f"# Task {task.id}: {task.title}\n\n{task.objective}\n\nEnd with exactly one fenced JSON `{job.get('result_kind', 'delivery')}` object (schema_version 1)."
         from .. import packets as packets_mod
         text = packets_mod.worker_prompt(task, job, text)                    # owner/diagnosis guidance, any prompt source
-        text += "\n\n" + handoff_instructions(run_dir, prior=prior_handoff(layout, task.id, attempt_id))
+        rk = job.get("result_kind", "delivery")
+        kind = rk if rk in packets_mod.NON_DELIVERY_KINDS else "delivery"
+        text += "\n\n" + handoff_instructions(run_dir, prior=resolve_handoff(layout, task.id, attempt_id, kind))
         if job.get("result_kind", "delivery") == "delivery":     # only work that can run long reports progress
             text += "\n\n" + progress_mod.instructions(run_dir)
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
@@ -109,7 +111,7 @@ class CodexCliAdapter(ProcessAdapter):
 
     def env(self, spec):
         env = codex_env()
-        env["SUPERVISOR_ATTEMPT"] = str(spec.get("attempt_id", ""))
+        env.update(job_identity_env(spec))
         env.update(progress_mod.env(spec))                    # scripts the session starts report progress (supervisor.progress)
         return env
 

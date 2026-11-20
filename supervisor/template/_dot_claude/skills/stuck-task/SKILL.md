@@ -5,8 +5,10 @@ description: Decide what to do with one task that is BLOCKED, FAILED, escalated 
 
 # A stuck task
 
-The supervisor already retried what it could: up to two revisions per failure source (fewer when the same failure
-repeats exactly), then a diagnosis by the manager role. When a task still stops, the decision is the owner's. This
+The supervisor already retried what it could: a revision budget by cause (fewer when the same failure repeats
+exactly, or sooner on a REJECT), then usually a diagnosis by the manager role — except a review escalation whose
+`substance` budget is spent, which skips the diagnosis and opens the owner item directly, since another round
+would only repeat what the review already found. When a task still stops, the decision is the owner's. This
 skill reads, recommends, and acts only through the same commands the Control Center uses.
 
 ## 1. Read why it stopped

@@ -133,7 +133,7 @@ def test_dispatch_delivery_flags_a_same_vendor_fallback_with_its_own_model_and_e
     rec = sup.dispatch_delivery(task, name)
     assert rec["adapter"] == "claude_cli" and rec.get("same_vendor") is True
     assert rec["spec"]["model"] == "fable" and rec["spec"]["effort"] == "high"
-    note = tasks.load(layout, "A3").attempts[-1].note
+    note = tasks.load(layout, "A3").attempts[-1].jobs[-1]["note"]   # §4.6: note moved to jobs[]
     assert "same-vendor fallback" in note
 
 

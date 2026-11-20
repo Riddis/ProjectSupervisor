@@ -67,7 +67,7 @@ def test_releasing_the_hold_lets_the_retry_proceed_within_the_same_budget(layout
     tasks.set_status(layout, "T", "FAILED")
     rec = _prepared_retry(layout, "T")
     tasks.hold(layout, "T", "owner-ui", "investigating")
-    revisions_before = escalation._load(layout, "T").get("revisions", 0)
+    revisions_before = escalation._load(layout, "T")["counters"]["total"]
 
     tasks.set_status(layout, "T", "READY", actor="owner-ui", note="re-queued by owner")   # the owner's release
 
@@ -77,7 +77,7 @@ def test_releasing_the_hold_lets_the_retry_proceed_within_the_same_budget(layout
          patch.object(REGISTRY["process"], "submit", return_value={"kind": "fake", "pid": 0}):
         launched = Supervisor(layout, sleep_s=0).launch(jobs.read(layout, rec["attempt_id"]))
     assert launched["phase"] == "SUBMITTED"           # the same record now launches
-    assert escalation._load(layout, "T").get("revisions", 0) == revisions_before   # no extra revision spent
+    assert escalation._load(layout, "T")["counters"]["total"] == revisions_before   # no extra revision spent
 
 
 # ------------------------------------------------------------------ only legal actions, for every status

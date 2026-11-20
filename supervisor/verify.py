@@ -58,17 +58,39 @@ LARGE_FILE_BYTES = 32 * 1024 * 1024
 # verification counted that edit as the running delivery's undeclared write, and the retry reverted it.
 OWN_WRITES = "own_writes.jsonl"
 # A dispatched job (or the loop process itself, via supervisor.launcher) carries these on its own os.environ:
-# SUPERVISOR_ATTEMPT/SUPERVISOR_RUN_DIR name *this* verification's own job (adapters/process.py),
-# SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE points at this job's own
-# PROGRESS.json (progress.py). None of them are a declared command's business (R-13, T3-06.a9: a tool's self-tests
-# wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had leaked into it).
-JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_RUN_DIR", "SUPERVISOR_ROOT", "SUPERVISOR_PROGRESS_FILE")
+# SUPERVISOR_ATTEMPT/SUPERVISOR_JOB/SUPERVISOR_ATTEMPT_NO/SUPERVISOR_RUN_DIR name *this* verification's own job
+# (adapters/process.py), SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE
+# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business (R-13,
+# T3-06.a9: a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
+# leaked into it). Kept for the names it already documents and for the plugin API (supervisor.testing checks the
+# two it still carries); the actual filter below drops every `SUPERVISOR_*` name, not only these six, so a
+# marker this release never named still cannot reach a declared command (step 13).
+JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTEMPT_NO", "SUPERVISOR_RUN_DIR",
+                        "SUPERVISOR_ROOT", "SUPERVISOR_PROGRESS_FILE")
 
 
-def declared_test_env() -> dict[str, str]:
-    """The environment a declared command runs under: this process's own, minus JOB_CONTROL_ENV_VARS."""
-    return {**{k: v for k, v in os.environ.items() if k not in JOB_CONTROL_ENV_VARS},
-            "PYTHONDONTWRITEBYTECODE": "1"}
+def declared_test_env(layout: Layout | None = None) -> dict[str, str]:
+    """The environment a declared command runs under (ATTEMPT_MODEL.md section 4.4, step 13): the same declared
+    *base* allow-list a process job's own subprocess starts from (`envconfig.base_names`, step 12) — never this
+    process's whole `os.environ`, which is how a vendor variable the project never named in `config/routing.yaml`
+    used to reach a declared command just because the loop's own launching session happened to carry it — with
+    every `SUPERVISOR_*` name dropped regardless of whether it is on the base (the loop's own identity markers
+    are never a declared command's business, R-13)."""
+    from . import envconfig
+    base = envconfig.base_names(layout)
+    env = {k: os.environ[k] for k in base if k in os.environ and not k.startswith("SUPERVISOR_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env
+
+
+def declared_environment(layout: Layout | None = None) -> dict[str, str]:
+    """The pinned (interpreter, cwd, PATH) a declared command with no `cwd` override runs under by default —
+    the one triple `run_declared_tests` actually uses for that case, recorded on `verification.json` and stated
+    verbatim in the worker's own brief (`packets.result_contract_delivery`), so a disagreement between what ran
+    and what was promised is visible instead of inferred (R-13, ATTEMPT_MODEL.md section 4.4)."""
+    root = str(layout.root) if layout is not None else os.getcwd()
+    env = declared_test_env(layout)
+    return {"interpreter": sys.executable, "cwd": root, "path": env.get("PATH", "")}
 
 
 def record_own_write(layout: Layout, rel: str, before: bytes | None, after: bytes | None, actor: str,
@@ -286,6 +308,13 @@ def _normalised(argv: list[str]) -> list[str]:
     return _module_form(norm)
 
 
+def normalise_command(command: str) -> list[str]:
+    """The one normaliser `permitted()` matches an allow-list with and `packets.py` states the brief with (step
+    13): `<tool>`, `python -m <tool>` and `<venv>/python.exe -m <tool>` all reduce to the same argv, so the two
+    can never silently disagree about what spelling is admitted — there is only this one function to ask."""
+    return _normalised(test_argv(command))
+
+
 def permitted(command: str, allowed: list[str]) -> bool:
     """True when the command's argv matches an allow-listed prefix, with the interpreter compared by basename so
     `.venv/Scripts/python.exe -m pytest tests` and `python -m pytest tests` are the same lane, and the module-
@@ -294,10 +323,9 @@ def permitted(command: str, allowed: list[str]) -> bool:
     argv = test_argv(command)
     if not argv or any(re.search(r"[;&|<>`$]", a) for a in argv):   # no shell operators, even though no shell runs it
         return False
-    norm = _normalised(argv)
+    norm = normalise_command(command)
     for entry in allowed:
-        entry_argv = test_argv(entry)
-        want = _normalised(entry_argv) if entry_argv else []
+        want = normalise_command(entry) if test_argv(entry) else []
         if want and norm[:len(want)] == want:
             return True
     return False
@@ -358,20 +386,21 @@ def _cwd_allowed(resolved: Path, root: Path, roots: tuple[str, ...]) -> bool:
 
 def run_declared_tests(root: Path, declared: list[dict], allowed: list[str] | None = None, tag: str = "verify",
                        roots: tuple[str, ...] = (), timeout_s: int = TEST_TIMEOUT_S, budget_s: int = TEST_BUDGET_S,
-                       max_commands: int = MAX_TEST_COMMANDS) -> tuple[bool, list[dict]]:
+                       max_commands: int = MAX_TEST_COMMANDS, layout: Layout | None = None) -> tuple[bool, list[dict]]:
     """Re-run each declared command; returns (all passed, observations). Bounded by `max_commands`, `timeout_s`
     per command and `budget_s` overall (G3, 2.4.0 — defaults are the pre-2.4.0 constants). Each entry's own `cwd`,
     when given, must resolve inside `roots` (the task's own `test_roots`, G2, 2.4.0) or the project root itself;
     otherwise the command is refused and never run. The supervisor is single-threaded and the owner's PAUSE/STOP
-    cannot be applied while this runs. Every command runs under `declared_test_env()` (never this process's own
-    job-control variables) and its own observation names the interpreter, cwd and PATH it ran with (R-13). A
-    pytest command's own `--basetemp` scratch directory is removed once every command has passed; a failing
-    verification keeps each command's directory, named by its own `obs["basetemp"]`."""
+    cannot be applied while this runs. Every command runs under `declared_test_env(layout)` (the declared base of
+    step 12, never this process's own job-control variables) and its own observation names the interpreter, cwd
+    and PATH it ran with (R-13). A pytest command's own `--basetemp` scratch directory is removed once every
+    command has passed; a failing verification keeps each command's directory, named by its own
+    `obs["basetemp"]`."""
     allowed = allowed if allowed is not None else list(ALLOWED_TEST_COMMANDS)
     root = Path(root).resolve()
     ok, results = True, []
     scratch_dirs: list[Path] = []
-    env = declared_test_env()
+    env = declared_test_env(layout)
     deadline = time.monotonic() + budget_s
     for entry in declared[:max_commands]:
         command = str((entry or {}).get("command", "")).strip() if isinstance(entry, dict) else ""
@@ -490,8 +519,40 @@ def as_job(layout: Layout) -> bool:
     return True
 
 
-def commands_outcome(ok: bool, results: list[dict], fixed: list[str], checks_declared: bool) -> Outcome:
-    """The Outcome for a finished command run — shared by the inline path and the verify job (supervisor.verify_job)."""
+# A command result with no exit_code never ran to a verdict (not allow-listed, a bad cwd, an unparsable or
+# malformed entry, the test budget exhausted, more commands than the cap) — a verifier-condition failure,
+# R-14's `infra` cause, never one on the work itself. These two detail substrings are the same kind of
+# failure outside the command path (verify()'s own pre/post snapshot).
+_INFRA_DETAIL_MARKERS = ("pre-dispatch snapshot failed", "post-delivery snapshot failed")
+
+
+def failure_reason(outcome: Outcome) -> str | None:
+    """Classify a failed Outcome for escalation.record_failure's `reason` (R-14): `"infra"` for a
+    verifier-condition failure (interpreter, cwd, PATH, allow-list, basetemp, a malformed entry, a lost
+    command, the test budget) that says nothing about the delivered work; `None` (the default,
+    `escalation.classify`'s "substance") once a declared command actually ran and disagreed, or the
+    delivery itself failed a structural check (missing artifact, undeclared write). A passing Outcome
+    classifies as `None` too — the caller only asks this of a failure."""
+    if outcome.ok:
+        return None
+    tests = (outcome.report or {}).get("tests")
+    if tests:
+        failed = [r for r in tests if r.get("exit_code") != 0]
+        if failed and all(r.get("exit_code") is None for r in failed):
+            return "infra"
+        return None
+    if any(marker in outcome.detail for marker in _INFRA_DETAIL_MARKERS):
+        return "infra"
+    return None
+
+
+def commands_outcome(ok: bool, results: list[dict], fixed: list[str], checks_declared: bool,
+                     environment: dict[str, str] | None = None) -> Outcome:
+    """The Outcome for a finished command run — shared by the inline path and the verify job (supervisor.verify_job).
+    `environment` (declared_environment(), step 13), when given, is carried on the report as-is: the same pinned
+    (interpreter, cwd, PATH) triple the worker's own brief states, so verification.json and the brief can be
+    compared directly instead of inferred to agree."""
+    report_extra = {"environment": environment} if environment is not None else {}
     if not ok:
         failed = [r for r in results if r.get("exit_code") != 0]
         fixed_set = {c.strip() for c in fixed}
@@ -499,9 +560,9 @@ def commands_outcome(ok: bool, results: list[dict], fixed: list[str], checks_dec
         return Outcome(False, label
                        + "; ".join(f"{r['command']} -> {r.get('exit_code') if r.get('exit_code') is not None else r.get('error')}"
                                    for r in failed),
-                       report={"tests": results})
+                       report={"tests": results, **report_extra})
     return Outcome(True, "artifacts present; " + ("required checks and " if checks_declared else "") + "declared tests passed",
-                   report={"tests": results})
+                   report={"tests": results, **report_extra})
 
 
 def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[dict] | None = None,
@@ -560,6 +621,7 @@ def verify(layout: Layout, task: Task, files: list[str], declared_tests: list[di
         lim = limits(layout)              # the inline path clamps the two time limits (G3): it holds state/.lock
         ok, results = run_declared_tests(layout.root, to_run, allowed_test_commands(layout), tag=f"verify_{task.id}",
                                          roots=tuple(task.test_roots), timeout_s=min(lim["per_command_timeout_s"], TEST_TIMEOUT_S),
-                                         budget_s=min(lim["budget_s"], TEST_BUDGET_S), max_commands=lim["max_commands"])
-        return commands_outcome(ok, results, fixed, bool(checks))
+                                         budget_s=min(lim["budget_s"], TEST_BUDGET_S), max_commands=lim["max_commands"],
+                                         layout=layout)
+        return commands_outcome(ok, results, fixed, bool(checks), environment=declared_environment(layout))
     return Outcome(True, "artifacts present" if files else "no artifacts declared")
