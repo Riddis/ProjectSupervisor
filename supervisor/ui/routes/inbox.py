@@ -190,16 +190,26 @@ def inbox_page(request: Request, tab: str = "open", layout: Layout = Depends(req
 
 @router.post("/inbox/{item_id}/answer")
 def answer_item(item_id: str, request: Request, response: str = Form(""), text: str = Form(""),
-                note: str = Form(""), digest: str = Form(""), csrf_token: str = Form(...),
+                note: str = Form(""), digest: str = Form(""), choice: str = Form(""),
+                choices_digest: str = Form(""), csrf_token: str = Form(...),
                 layout: Layout = Depends(require_auth)):
     """`digest` is the approval card's own digest, carried by its hidden field when the item is one (empty for any
     other kind of item): bound to what the card showed, so a newer delivery landing while the page was open makes
-    this answer refused rather than approving it unseen (R-05, the same rule as the task page's approve form)."""
+    this answer refused rather than approving it unseen (R-05, the same rule as the task page's approve form).
+
+    `choice`/`choices_digest` (RECOVERY_PLAN.md section 4.1): the typed-choice card's own button and hidden field —
+    bound to what the card showed the same way, refused (RF-24/RF-25) rather than silently falling through to a
+    free-text answer the item never asked for."""
     require_csrf(request, csrf_token)
     item = _get_item(layout, item_id)
     refusal = inbox_mod.owned_by_plugin(layout, item)
     if refusal:                                          # the plugin's page is the door; name it in the error
         raise HTTPException(status_code=400, detail=refusal)
+    if choice:
+        return act(request, layout, "inbox.answer", {"item_id": item_id, "choice": choice,
+                                                      "choices_digest": choices_digest or None,
+                                                      "note": note or text.strip(), "digest": digest or None},
+                   "/inbox")
     text = text.strip()
     if response and text:
         final = f"{response} {text}"

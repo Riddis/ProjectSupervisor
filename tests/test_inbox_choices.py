@@ -34,10 +34,11 @@ def test_choices_digest_and_allowed_responses_are_derived(layout):
 
 def test_two_operation_choice_applies_as_one_journalled_transaction(layout):
     from supervisor import tasks as tasks_mod
-    make_task(layout, "T1", status="BLOCKED")
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
     choices = [_two_op_choice()]
     item = inbox.create(layout, for_role="owner", subject="s", summary="body", task_id="T1", choices=choices)
-    answered = inbox.answer(layout, item["id"], choice="fix_and_requeue", choices_digest=item["choices_digest"])
+    inbox.answer(layout, item["id"], choice="fix_and_requeue", choices_digest=item["choices_digest"])
+    answered = inbox.load(layout, item["id"])
     assert answered["choice_applied"]["ok"], answered.get("choice_applied")
     t1 = tasks_mod.load(layout, "T1")
     assert t1.status.value == "READY"
@@ -81,7 +82,8 @@ def test_free_text_still_opens_a_fresh_item_now_carrying_the_same_choices(layout
     item = inbox.create(layout, for_role="owner", subject="Decision needed: T1", summary="pick one",
                         kind=inbox.DECISION_KIND, allowed_responses=None, choices=choices, free_text=True,
                         from_="loop", task_id="T1")
-    answered = inbox.answer(layout, item["id"], "please look at this again")
+    inbox.answer(layout, item["id"], "please look at this again")
+    answered = inbox.load(layout, item["id"])
     assert answered["applied"]["skipped"] == "deferred"
     reopened_id = answered["applied"]["reopened"]
     reopened = inbox.load(layout, reopened_id)
@@ -95,6 +97,7 @@ def test_legacy_keyword_answer_still_applies_the_matching_choice(layout):
     item = inbox.create(layout, for_role="owner", subject="s", summary="body", task_id="T1",
                         choices=[{"id": "requeue", "label": "Re-run it",
                                   "effect": {"op": "resume", "task": "T1", "as": "ready"}}])
-    answered = inbox.answer(layout, item["id"], "REQUEUE")
+    inbox.answer(layout, item["id"], "REQUEUE")
+    answered = inbox.load(layout, item["id"])
     assert answered["choice_applied"]["ok"], answered.get("choice_applied")
     assert tasks_mod.load(layout, "T1").status.value == "READY"

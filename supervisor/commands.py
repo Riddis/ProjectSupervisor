@@ -169,8 +169,9 @@ def _approve(layout, payload, actor):
 @handler("inbox.answer")
 def _inbox_answer(layout, payload, actor):
     cid = payload.get("_id")
-    item = inbox_mod.answer(layout, payload["item_id"], payload["response"], payload.get("note", ""), actor,
-                            command_id=cid, digest=payload.get("digest"))
+    item = inbox_mod.answer(layout, payload["item_id"], payload.get("response", ""), payload.get("note", ""), actor,
+                            command_id=cid, digest=payload.get("digest"), choice=payload.get("choice"),
+                            choices_digest=payload.get("choices_digest"))
     out = {"status": item.get("status")}
     try:
         t = tasks_mod.load(layout, item["task_id"]) if item.get("task_id") else None

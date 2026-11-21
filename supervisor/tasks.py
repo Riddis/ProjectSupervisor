@@ -922,6 +922,23 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
     return t
 
 
+def release_hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
+    """The owner's `release_hold` effect (RECOVERY_PLAN.md section 4.1): clear a Hold without otherwise moving
+    the task. Distinct from `set_status()`'s own implicit clearing on a move off BLOCKED — a same-status call
+    there raises `_NoChange` before it ever reaches that line, so a held task with nowhere else to go has, until
+    now, had no way to be unheld without being moved. Idempotent: releasing a Hold that is not there is a no-op."""
+    def fn(doc):
+        if not doc.get("held"):
+            raise _NoChange()
+        doc["held"] = None
+    try:
+        t = _update(layout, task_id, fn)
+    except _NoChange:
+        return load(layout, task_id)
+    log(layout, "task_hold_released", actor, task=task_id, note=note)
+    return t
+
+
 PAGE_ACTIONS = ("hold", "cancel", "requeue")
 
 

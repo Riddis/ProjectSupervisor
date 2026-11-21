@@ -68,7 +68,18 @@
     {% endif %}
 
     {% if item.status == 'open' %}
-    {% if item.ext_answerable %}
+    {% if item.ext_answerable and item.choices %}
+    <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form choice-form">
+      {% include "partials/csrf.html" %}
+      {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}
+      <input type="hidden" name="choices_digest" value="{{ item.choices_digest }}">
+      {% for c in item.choices %}
+      <button type="submit" name="choice" value="{{ c.id }}" title="{{ c.detail or '' }}">{{ c.label }}</button>
+      {% endfor %}
+      <input type="text" name="text" placeholder="Free-text answer instead">
+      <button type="submit">Send free text</button>
+    </form>
+    {% elif item.ext_answerable %}
     <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form">
       {% include "partials/csrf.html" %}
       {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}

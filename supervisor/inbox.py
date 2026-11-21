@@ -3,7 +3,13 @@ Two rules the loop depends on: no more than `MAX_OPEN_PER_ROLE` open items per r
 the scarce resource), and a human gate never times out — items wait until answered, however long that takes.
 Answers accept the structured keywords (ACCEPT/REJECT/MODIFY/REDO, optionally followed by an
 argument, e.g. `MODIFY shorter summary`) or, unless an item disables it, free text — the owner's own words count as a
-valid answer, not only the keywords. `HUMAN_INBOX.md` is rendered from this store (render.render_inbox), never parsed."""
+valid answer, not only the keywords. `HUMAN_INBOX.md` is rendered from this store (render.render_inbox), never parsed.
+
+An item may also carry typed `choices` (RECOVERY_PLAN.md section 4.1): each one a label rendered from a validated
+effect, never prose a button only pretends to act on. `create()` derives the legacy keyword list from them,
+`answer()` refuses an unoffered one or a stale `choices_digest`, and `apply_choice()` applies the chosen effect —
+one or several plan operations as a single journalled plan, or one owner-only effect — through the same applier
+`plans.py` uses for a plan. An item with no `choices` key is unaffected by any of this."""
 from __future__ import annotations
 
 import re
@@ -98,7 +104,8 @@ def _next_id(layout: Layout) -> str:
 def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: str = "question",
           allowed_responses: list[str] | None = None, free_text: bool = True, from_: str = "system",
           task_id: str | None = None, attempt_id: str | None = None, approval_digest: str | None = None,
-          extra: dict | None = None, detail: str | None = None, dedup_key: str | None = None) -> dict:
+          extra: dict | None = None, detail: str | None = None, dedup_key: str | None = None,
+          choices: list[dict] | None = None) -> dict:
     """Write a new open item. Enforces the per-role cap and the prose budget (summary ≤ MAX_SUMMARY_CHARS; the
     optional `detail` — the full text, see fit() — ≤ MAX_DETAIL_CHARS); the cap check and id allocation happen
     under one lock so concurrent creates never collide or overshoot. `extra` adds fields without overriding any.
@@ -111,11 +118,20 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
 
     `allowed_responses=[]`, given explicitly (not the default None), means the item takes no structured keyword at
     all — only free text (an alert naming problems nobody can fix with ACCEPT/REJECT/MODIFY/REDO, R-06/R-17). `None`
-    still means "the four defaults"; only an explicit empty list opts out of them."""
+    still means "the four defaults"; only an explicit empty list opts out of them.
+
+    `choices` (RECOVERY_PLAN.md section 4.1): typed buttons, each `{id, label, effect, ...}` — see `answer()` and
+    `apply_choice()`. When given, `choices_digest` is computed from it (`plans.choices_digest`) and, unless the
+    caller also names its own `allowed_responses`, that list is derived from the choice ids (one keyword — the
+    id, upper-cased — per choice) instead of the four defaults, so the keyword path and the typed-choice path
+    name the same thing. An item built with no `choices` at all carries neither field and is exactly today's
+    item."""
     if len(summary) > MAX_SUMMARY_CHARS:
         raise InboxError(f"summary is {len(summary)} characters; limit is {MAX_SUMMARY_CHARS}")
     if detail is not None and len(detail) > MAX_DETAIL_CHARS:
         raise InboxError(f"detail is {len(detail)} characters; limit is {MAX_DETAIL_CHARS}")
+    if choices and allowed_responses is None:
+        allowed_responses = [str(c["id"]).upper() for c in choices if isinstance(c, dict) and c.get("id")]
     with FileLock(layout.state / ".inbox.lock", owner="inbox", timeout=5.0):
         if dedup_key is not None:
             for item in all_items(layout):
@@ -132,6 +148,10 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
             doc["approval_digest"] = approval_digest
         if detail and detail.strip() != summary.strip():
             doc["detail"] = detail
+        if choices:
+            from . import plans as plans_mod
+            doc["choices"] = list(choices)
+            doc["choices_digest"] = plans_mod.choices_digest(doc["choices"])
         payload = dict(extra or {})
         if dedup_key is not None:
             payload.setdefault("dedup_key", dedup_key)
@@ -181,8 +201,9 @@ def owned_by_plugin(layout: Layout | None, doc: dict) -> str | None:
             + (f" (open {page})" if page else "") + ", not answered directly")
 
 
-def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str = "owner",
-          command_id: str | None = None, internal: bool = False, digest: str | None = None) -> dict:
+def answer(layout: Layout, item_id: str, response: str = "", note: str = "", by: str = "owner",
+          command_id: str | None = None, internal: bool = False, digest: str | None = None,
+          choice: str | None = None, choices_digest: str | None = None) -> dict:
     """Validate and record an answer; idempotent by command_id (a retried command must not raise "already answered").
 
     `internal=True` is for the code of the plugin that owns the item's kind (registry.inbox_kind with
@@ -192,7 +213,18 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
 
     `digest`, when given, must be the item's own `approval_digest`: the approval card's hidden field carries back
     what it showed, so an item left open through a newer delivery is refused here, under the same lock, before the
-    item is spent — not left to fail later inside record_approval() with the item already marked answered (R-05)."""
+    item is spent — not left to fail later inside record_approval() with the item already marked answered (R-05).
+
+    `choice`, when given, names one of the item's own `choices[].id` (RECOVERY_PLAN.md section 4.1): refused with
+    RF-24 (`plans.choice_not_offered_refusal`) when the item carries no such choice, and with RF-25
+    (`plans.choice_stale_refusal`) — "reload" — when `choices_digest` no longer equals the item's own
+    `choices_digest`, the approval-digest rule generalised to a button rather than a delivery. `response` then
+    defaults to the choice's own id, so the stored answer and its derived keyword (`allowed_responses`) agree
+    with what gets applied below. The chosen effect — or, with no `choice` given, a legacy keyword that happens to
+    name one of the item's choices (`inbox.answer REQUEUE` on an item whose choice id is `requeue`) — is applied
+    once this answer is durable (`apply_choice`), through the same journalled applier a plan uses."""
+    if choice:
+        response = response.strip() or choice
     response = (response or "").strip()
     if not response:
         raise InboxError(f"{item_id}: empty response")
@@ -214,6 +246,14 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
             if current != digest:
                 raise InboxError(f"{item_id}: the delivery changed since this item was shown "
                                  f"(shown {digest[:12]}, now {(current or 'none')[:12]}); reload and review it again")
+        if choice:
+            from . import plans as plans_mod
+            carried = [c.get("id") for c in (doc.get("choices") or []) if isinstance(c, dict)]
+            refusal = plans_mod.choice_not_offered_refusal(carried, choice)
+            if refusal is None:
+                refusal = plans_mod.choice_stale_refusal(doc.get("choices_digest") or "", choices_digest or "")
+            if refusal is not None:
+                raise InboxError(f"{item_id}: {refusal['code']} {refusal['message']}")
         if not internal:
             refusal = owned_by_plugin(layout, doc)
             if refusal:
@@ -236,6 +276,7 @@ def answer(layout: Layout, item_id: str, response: str, note: str = "", by: str 
         tasks_mod.log(layout, "inbox_answer", by, item=item_id, response=outcome.get("kind"), task=doc.get("task_id"))
         apply_approval(layout, doc, by=by, command_id=command_id)
         apply_decision(layout, doc, by=by)
+        apply_choice(layout, doc, by=by)
     return doc
 
 
@@ -430,12 +471,13 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
             # succeeds) as a resolved stop, so a stall still escalated on its own schedule even when the cap
             # leaves this reopen with nowhere to go (R-06).
             try:
+                choices = item.get("choices")
                 reopened = create(layout, for_role="owner", subject=item.get("subject") or f"Decision needed: {task_id}",
                                   summary=f"{item['id']} was answered ({out['response']}): recorded as a comment; "
                                           f"{task_id} has not moved and is still stopped. REQUEUE = re-run it; "
                                           "CANCEL = cancel it; DEFER = leave it stopped.",
-                                  kind=DECISION_KIND, allowed_responses=list(DECISION_RESPONSES), free_text=True,
-                                  from_="loop", task_id=task_id,
+                                  kind=DECISION_KIND, allowed_responses=(None if choices else list(DECISION_RESPONSES)),
+                                  choices=choices, free_text=True, from_="loop", task_id=task_id,
                                   extra={"resume": item.get("resume") or "task", "blocked_at": item.get("blocked_at"),
                                          "reopened_from": item["id"]})
                 out["reopened"] = reopened["id"]
@@ -449,4 +491,106 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
         return doc
     store.update(path_for(layout, item["id"]), mark, lock_path=layout.state / ".inbox.lock")
     tasks_mod.log(layout, "decision_applied", by, item=item["id"], task=task_id, **out)
+    return out
+
+
+# ------------------------------------------------------------------ typed choices (RECOVERY_PLAN.md section 4.1)
+#
+# A choice's `effect` is one plan-tier operation, a list of them (the "two-step instruction becomes one choice"
+# rule — `set_job` then `resume`, applied as a single journalled plan), or one owner-only effect
+# (`plans.OWNER_ONLY_EFFECTS`) on its own: the two tiers are never mixed in one choice, because a plan document
+# may never carry an owner-only effect at all (RF-26) and an owner-only effect is not itself journalled through
+# the plan applier — it is the one call the framework already makes for an owner's command (hold, a cancel, the
+# existing plan applier called directly for apply_plan/cancel_plan).
+
+def _effect_ops(choice: dict) -> list[dict]:
+    effect = choice.get("effect")
+    if isinstance(effect, list):
+        return [e for e in effect if isinstance(e, dict)]
+    if isinstance(effect, dict):
+        return [effect]
+    return []
+
+
+def _apply_owner_effect(layout: Layout, op: dict, by: str, item: dict) -> dict:
+    """The five owner-only effects this release can apply synchronously: `apply_plan`/`cancel_plan` call the plan
+    applier directly (the same one a plan-tier choice's own operations go through, §4.1's "same applier"), and
+    `cancel_task`/`hold`/`release_hold` call the one existing function each already is. `diagnose_now` dispatches
+    a diagnosis job through the running loop (`diagnosis.dispatch`), which this synchronous answer path has no
+    handle on — refused here rather than silently doing nothing; wiring it is `why_not_runnable`'s own step
+    (RECOVERY_PLAN.md section 9, step 10), where the alert that offers the choice holds the loop already."""
+    from . import plans as plans_mod
+    name = op.get("op")
+    note = f"{item['id']}: owner choice"
+    if name == "apply_plan":
+        return plans_mod.apply(layout, op["plan"])
+    if name == "cancel_plan":
+        return plans_mod.cancel_plan(layout, op["plan"], by=by)
+    if name == "cancel_task":
+        t = tasks_mod.set_status(layout, op["task"], "CANCELLED", actor=by, note=note)
+        return {"status": t.status.value}
+    if name == "hold":
+        t = tasks_mod.hold(layout, op["task"], by, note=note)
+        return {"status": t.status.value}
+    if name == "release_hold":
+        t = tasks_mod.release_hold(layout, op["task"], by, note=note)
+        return {"status": t.status.value}
+    raise InboxError(f"{name!r} cannot be applied without the running loop (not yet wired; "
+                     f"see docs/releases/2.9.0/step7-typed-inbox-choices.md)")
+
+
+def _apply_plan_tier_effect(layout: Layout, item: dict, choice: dict, ops: list[dict], by: str) -> dict:
+    """Both operations of a two-step choice (or the one operation of a single-step choice) applied as one plan,
+    through the same `plans.propose`/`plans.apply` the diagnosis lane uses — never a second, ad hoc writer."""
+    from . import plans as plans_mod
+    task_id = item.get("task_id")
+    task = tasks_mod.load(layout, task_id)
+    plan_id = f"choice-{item['id']}-{choice['id']}"
+    doc = {"plan_schema": plans_mod.PLAN_SCHEMA, "id": plan_id, "subject": {"task": task_id},
+          "reason": f"owner choice {choice['id']!r} on inbox item {item['id']}",
+          "expected_rev": {task_id: task.rev}, "operations": ops}
+    plans_mod.propose(layout, doc, by=by)
+    applied = plans_mod.apply(layout, plan_id)
+    if applied.get("status") != "applied":
+        raise InboxError(f"choice {choice['id']!r} did not apply cleanly ({applied.get('status')}: "
+                         f"{[r.get('code') for r in applied.get('refusals', [])] or applied.get('last_error')})")
+    return {"plan": plan_id, "status": applied.get("status")}
+
+
+def resolve_choice(item: dict, choice_id: str) -> dict | None:
+    return next((c for c in (item.get("choices") or []) if isinstance(c, dict) and c.get("id") == choice_id), None)
+
+
+def apply_choice(layout: Layout, item: dict, by: str = "owner") -> dict | None:
+    """Apply the effect of an answered item's chosen choice, once (RECOVERY_PLAN.md section 4.1). `None` when the
+    item carries no `choices`, or the answer's token names none of them (ordinary free text, or a legacy keyword
+    with no matching choice) — the comment-only path is unaffected either way. Idempotent: an item already
+    carrying `choice_applied` is never acted on twice, the same guarantee `apply_decision`'s own `applied` marker
+    gives the decision path."""
+    if item.get("status") != "answered" or item.get("choice_applied"):
+        return None
+    choices = item.get("choices")
+    if not choices:
+        return None
+    token = str((item.get("answer") or {}).get("kind") or "")
+    choice = resolve_choice(item, token.lower()) or next(
+        (c for c in choices if isinstance(c, dict) and str(c.get("id", "")).upper() == token.upper()), None)
+    if choice is None:
+        return None
+    from . import plans as plans_mod
+    ops = _effect_ops(choice)
+    try:
+        if len(ops) == 1 and ops[0].get("op") in plans_mod.OWNER_ONLY_EFFECTS:
+            result = _apply_owner_effect(layout, ops[0], by, item)
+        else:
+            result = _apply_plan_tier_effect(layout, item, choice, ops, by)
+        out = {"ok": True, "choice": choice["id"], "result": result}
+    except Exception as exc:                              # noqa: BLE001 - recorded on the item, never raised past
+        out = {"ok": False, "choice": choice["id"], "error": str(exc)[:300]}
+
+    def mark(doc):
+        doc["choice_applied"] = {"at": store.now_iso(), "by": by, **out}
+        return doc
+    store.update(path_for(layout, item["id"]), mark, lock_path=layout.state / ".inbox.lock")
+    tasks_mod.log(layout, "inbox_choice_applied", by, item=item["id"], **out)
     return out
