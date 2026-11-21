@@ -44,7 +44,8 @@ issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in 
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
-plan_app = typer.Typer(help="recovery plans (RECOVERY_PLAN.md) - step 1 validates only, nothing is applied")
+plan_app = typer.Typer(help="recovery plans (RECOVERY_PLAN.md): validate, apply (the journalled, resumable "
+                            "applier of step 2) and inspect state/plans/*.yaml")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
@@ -476,7 +477,8 @@ def boundary_words(targets: list[str] = typer.Argument(..., help="folders or bui
 @plan_app.command("validate")
 def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
     """Validate a plan document against the store: refuses whole on any of the 26 named codes (RECOVERY_PLAN.md
-    section 1.2); applies nothing (there is no applier yet). Exit 0 with an empty refusal list, 1 refused."""
+    section 1.2); writes nothing (`plans.propose` writes it; `plan apply` applies it). Exit 0 with an empty
+    refusal list, 1 refused."""
     from . import plans as plans_mod
     doc = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
     report, refusals = plans_mod.validate(doc, _reader())
@@ -491,6 +493,44 @@ def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help=
             loc = f"op {r['op_index']}" if r["op_index"] is not None else "plan"
             typer.echo(f"{r['code']}: {loc} {r['field'] or ''} -- {r['message']}")
     raise typer.Exit(1 if refusals else 0)
+
+
+@plan_app.command("apply")
+def plan_apply(plan_id: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
+    """Progress the named plan as far as it can go: proposes nothing (use `plan validate` plus
+    `supervisor.plans.propose` to write one first) — this is the applier of RECOVERY_PLAN.md section 2.6, called
+    directly here rather than through the approval lane (steps 7-8). Exit 0 unless the plan ends `stuck`."""
+    from . import plans as plans_mod
+    try:
+        doc = plans_mod.apply(_layout(), plan_id)
+    except plans_mod.PlanError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if as_json:
+        typer.echo(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo(f"{plan_id}: {doc['status']} (done {sorted(doc.get('done') or [])})")
+    raise typer.Exit(1 if doc["status"] == "stuck" else 0)
+
+
+@plan_app.command("show")
+def plan_show(plan_id: str):
+    """The stored plan document: status, journal (`done`, `order`), history and (once `stuck`) its owner item."""
+    from . import plans as plans_mod
+    doc = plans_mod.load_plan(_layout(load=False), plan_id)
+    if doc is None:
+        raise typer.BadParameter(f"no such plan {plan_id!r}")
+    typer.echo(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+
+
+@plan_app.command("cancel")
+def plan_cancel(plan_id: str):
+    """The owner's cancel_plan: abandon a `stuck` plan, keeping what already applied. Refused on any other status."""
+    from . import plans as plans_mod
+    try:
+        doc = plans_mod.cancel_plan(_layout(), plan_id, by="cli")
+    except plans_mod.PlanError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"{plan_id}: {doc['status']}")
 
 
 @skills_app.command("status")

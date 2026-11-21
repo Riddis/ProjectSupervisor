@@ -31,6 +31,7 @@ vocabulary of refusals has exactly one home.
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,7 +40,9 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from . import inbox as inbox_mod
 from . import policy as policy_mod
+from . import store
 from . import tasks as tasks_mod
 from .models.task import Check, Task, TaskStatus
 from .paths import Layout
@@ -138,6 +141,14 @@ EVIDENCE_ORDER = {"review": 0, "auto": 1, "commands": 2}
 
 DEFAULT_MAX_OPS = 8
 DEFAULT_MAX_CREATES = 2
+DEFAULT_MAX_RESUMES = 3
+
+PLAN_STATUSES = ("proposed", "refused", "awaiting_approval", "applying", "applied", "stuck", "abandoned")
+TERMINAL_PLAN_STATUSES = frozenset({"applied", "abandoned", "refused"})
+
+
+class PlanError(RuntimeError):
+    """A plan document cannot be found, or an operation (`apply`, `cancel_plan`) was asked of it out of turn."""
 
 
 @dataclass(frozen=True)
@@ -879,7 +890,8 @@ def _plan_limits(layout: Layout) -> dict:
     from . import gate as gate_mod
     doc = gate_mod.routing_doc(layout).get("plan") or {}
     return {"max_ops": int(doc.get("max_ops") or DEFAULT_MAX_OPS),
-            "max_creates": int(doc.get("max_creates") or DEFAULT_MAX_CREATES)}
+            "max_creates": int(doc.get("max_creates") or DEFAULT_MAX_CREATES),
+            "max_resumes": int(doc.get("max_resumes") or DEFAULT_MAX_RESUMES)}
 
 
 def _subject_refusals(doc: dict, layout: Layout, tasks: dict[str, Task]) -> list[Refusal]:
@@ -959,3 +971,305 @@ def choice_stale_refusal(shown_digest: str, answered_digest: str) -> dict | None
 
 def choices_digest(choices: list[dict]) -> str:
     return hashlib.sha256(yaml.safe_dump(choices, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+# ======================================================================= the journal and the applier (step 2 of
+# RECOVERY_PLAN.md's order of work, §2.6): the store holds one document per task and no multi-file transaction, so
+# the plan is its own journal instead — written before the first mutation, applied in the applier's own fixed
+# order (never the plan's), each operation individually idempotent, its index appended to `done` before the next
+# one starts. `resume` is always last, so a crash at any point leaves the subject exactly where it already was:
+# stopped. Nothing here decides WHO may call apply() on a given plan (the authority classes of §2.7 are step 8);
+# this module only guarantees that whoever does, the result is ordered, idempotent and visibly stuck rather than
+# half-applied.
+#
+# Status machine: proposed -> refused | awaiting_approval -> applying -> applied | stuck -> abandoned. `refused`
+# and `applied` are reached from validation alone; `abandoned` is reached from `stuck` alone, and only by
+# cancel_plan — the one terminal state that records a deliberate stop instead of a finish.
+
+def plans_dir(layout: Layout) -> Path:
+    return layout.state / "plans"
+
+
+def path_for(layout: Layout, plan_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(plan_id))
+    return plans_dir(layout) / f"{safe}.yaml"
+
+
+def load_plan(layout: Layout, plan_id: str) -> dict | None:
+    p = path_for(layout, plan_id)
+    return store.read(p) if p.exists() else None
+
+
+def all_plans(layout: Layout) -> list[dict]:
+    d = plans_dir(layout)
+    return [store.read(p) for p in sorted(d.glob("*.yaml"))] if d.exists() else []
+
+
+def _history(doc: dict, by: str, to: str) -> list[dict]:
+    hist = list(doc.get("history") or [])
+    hist.append({"at": store.now_iso(), "by": by, "from": doc.get("status"), "to": to})
+    return hist
+
+
+def propose(layout: Layout, doc: dict, by: str = "diagnosis") -> dict:
+    """Write the plan a proposing job's result names, exactly once for its whole life (§2.6, D-027 decision 5): a
+    repeat call with the same id — a replayed ingest — returns the plan already on disk, unchanged, never a
+    second validation and never a second write. What is stored as `operations` is the normalised form (§1.3): the
+    applier later executes exactly what was checked, never the raw proposal. The correction turn of §2.5 (a
+    `revisions[]` entry replacing a refused `operations`) is T8-10's; this function always writes a fresh plan
+    once and leaves `revisions` empty."""
+    plan_id = str(doc.get("id") or "").strip()
+    if not plan_id:
+        raise PlanError("a plan must carry a non-empty id")
+    existing = load_plan(layout, plan_id)
+    if existing is not None:
+        return existing
+    tasks_now = tasks_mod.load_all(layout)
+    normalised_doc, _ = normalise(doc, tasks_now)
+    report, refusals = validate(doc, layout, tasks=tasks_now)
+    base = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
+            "reason": doc.get("reason"), "expected_rev": doc.get("expected_rev"),
+            "operations": normalised_doc.get("operations"), "revisions": []}
+    to = "refused" if refusals else "awaiting_approval"
+    base["history"] = [{"at": store.now_iso(), "by": by, "from": None, "to": to}]
+    if refusals:
+        base["status"], base["refusals"] = "refused", refusals
+    else:
+        base.update({"status": "awaiting_approval", "refusals": [], "report": report.as_dict(),
+                     "done": [], "resume_count": 0})
+    store.write_new(path_for(layout, plan_id), base)
+    tasks_mod.log(layout, "plan_refused" if refusals else "plan_proposed", by, plan=plan_id,
+                  **({"refusals": [r["code"] for r in refusals]} if refusals else {"scope": report.scope}))
+    return load_plan(layout, plan_id)
+
+
+# ----------------------------------------------------------------------- the applier's own fixed order (§2.6 rule 2)
+
+_EXEC_CATEGORY = {"create_task": 0, "add_dependency": 1, "remove_dependency": 1, "patch_contract": 2,
+                  "set_job": 3, "resume": 4}
+
+
+def _execution_order(ops: list[dict]) -> list[int]:
+    """The original index of every operation, sorted by the applier's own category — never the plan's listed
+    order — and stable within a category, so two operations of the same kind keep the order the plan gave them."""
+    return sorted(range(len(ops)), key=lambda i: (_EXEC_CATEGORY.get(ops[i].get("op"), 99), i))
+
+
+# ----------------------------------------------------------------------- one operation's effect, each idempotent
+# by construction (reusing the store's own idempotent writers): a create whose id exists is a no-op
+# (tasks.create), a dependency edit is a set operation (tasks.patch_task), a contract patch is an assignment
+# (tasks.patch_task), set_job writes the same block again, resume is a status transition that is already a
+# no-op from the target status (tasks.set_status's _NoChange).
+
+def _effect_create_task(layout: Layout, op: dict, plan_doc: dict) -> None:
+    subject_id = (plan_doc.get("subject") or {}).get("task")
+    try:
+        # model_dump(mode="json"): plain strings, never the enum members Task.phase/human_approval/... are typed
+        # as — this document is about to be written through to YAML (tasks.create -> store.write_new), unlike
+        # validate()'s own _check_create_task/_build_created_tasks, which only ever hand it to pydantic.
+        subject = tasks_mod.load(layout, subject_id).model_dump(mode="json")
+        inherited = {k: subject[k] for k in ("phase", "human_approval", "escalation", "priority")}
+    except tasks_mod.TaskError:
+        inherited = {"phase": 0}
+    full_doc = {**inherited, **(op.get("task") or {})}
+    tasks_mod.create(layout, full_doc, actor="plan")
+
+
+def _effect_add_dependency(layout: Layout, op: dict, plan_doc: dict) -> None:
+    tasks_mod.patch_task(layout, op["task"], {"add_dependency": list(op.get("depends_on") or [])}, actor="plan")
+
+
+def _effect_remove_dependency(layout: Layout, op: dict, plan_doc: dict) -> None:
+    tasks_mod.patch_task(layout, op["task"], {"remove_dependency": list(op.get("depends_on") or [])}, actor="plan")
+
+
+def _effect_patch_contract(layout: Layout, op: dict, plan_doc: dict) -> None:
+    tasks_mod.patch_task(layout, op["task"], dict(op.get("fields") or {}), actor="plan")
+
+
+def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
+    """The one place a plan's `set_job` becomes a stored job block: a template id and typed params only — RF-04
+    already refuses anything else at validate() time, so there is nothing else here to write. The adapter is the
+    one the task's existing job already names (a parameter diff, RF-11), or — on a task this plan created — the
+    template's own declared adapter (its first job)."""
+    templates = _load_templates(layout)
+    tmpl = templates.get(str(op.get("template"))) or {}
+
+    def fn(doc):
+        existing = dict(doc.get("job") or {})
+        doc["job"] = {**existing, "adapter": existing.get("adapter") or tmpl.get("adapter"),
+                     "template": op.get("template"), "params": dict(op.get("params") or {})}
+    tasks_mod._update(layout, op["task"], fn)
+
+
+def _effect_resume(layout: Layout, op: dict, plan_doc: dict) -> None:
+    subject_id = (plan_doc.get("subject") or {}).get("task")
+    target = TaskStatus.BLOCKED if op.get("as", "ready") == "blocked_on_dependencies" else TaskStatus.READY
+    tasks_mod.set_status(layout, subject_id, target, actor="plan", note=f"released by plan {plan_doc.get('id')}")
+
+
+_EFFECTS = {"create_task": _effect_create_task, "add_dependency": _effect_add_dependency,
+           "remove_dependency": _effect_remove_dependency, "patch_contract": _effect_patch_contract,
+           "set_job": _effect_set_job, "resume": _effect_resume}
+
+
+# ----------------------------------------------------------------------- the applier itself
+
+def _fail_refused(layout: Layout, plan_id: str, refusals: list[dict]) -> dict:
+    def fn(d):
+        d["history"] = _history(d, "applier", "refused")
+        d["status"] = "refused"
+        d["refusals"] = refusals
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_refused", "applier", plan=plan_id, refusals=[r["code"] for r in refusals])
+    return doc
+
+
+def _promote_to_applying(layout: Layout, plan_id: str, order: list[int], report: dict) -> dict:
+    def fn(d):
+        d["history"] = _history(d, "applier", "applying")
+        d["status"] = "applying"
+        d["done"] = []
+        d["order"] = order
+        d["resume_count"] = 0
+        d["report"] = report
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_applying", "applier", plan=plan_id)
+    return doc
+
+
+def _append_done(layout: Layout, plan_id: str, idx: int) -> dict:
+    def fn(d):
+        done = list(d.get("done") or [])
+        if idx not in done:
+            done.append(idx)
+        d["done"] = done
+        return d
+    return store.update(path_for(layout, plan_id), fn)
+
+
+def _finish_applied(layout: Layout, plan_id: str) -> dict:
+    def fn(d):
+        d["history"] = _history(d, "applier", "applied")
+        d["status"] = "applied"
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_applied", "applier", plan=plan_id)
+    return doc
+
+
+def _open_stuck_item(layout: Layout, plan_id: str, doc: dict) -> dict:
+    ops = doc.get("operations") or []
+    completed = [f"{ops[i].get('op')}#{i}" for i in sorted(doc.get("done") or []) if i < len(ops)]
+    err = doc.get("last_error") or {}
+    summary, detail = inbox_mod.fit(
+        f"Plan {plan_id} is stuck after {doc.get('resume_count')} attempt(s). Completed: "
+        f"{', '.join(completed) or 'none'}. Failed at operation {err.get('op_index')} ({err.get('op')}): "
+        f"{err.get('message')}")
+    subject_id = (doc.get("subject") or {}).get("task")
+    item = inbox_mod.create(layout, for_role="owner", subject=f"Plan {plan_id} is stuck", summary=summary,
+                            detail=detail, kind=inbox_mod.DECISION_KIND, allowed_responses=[], free_text=True,
+                            from_="applier", task_id=subject_id, dedup_key=f"plan:{plan_id}")
+
+    def fn(d):
+        d["history"] = _history(d, "applier", "stuck")
+        d["status"] = "stuck"
+        d["owner_item"] = item["id"]
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_stuck", "applier", plan=plan_id, owner_item=item["id"],
+                  op_index=err.get("op_index"))
+    return doc
+
+
+def _record_stall(layout: Layout, plan_id: str, idx: int, op: dict, exc: Exception) -> dict:
+    message = _safe(f"operation {idx} ({op.get('op')}) failed: {exc}", layout)
+
+    def fn(d):
+        d["resume_count"] = int(d.get("resume_count") or 0) + 1
+        d["last_error"] = {"op_index": idx, "op": op.get("op"), "message": message}
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    limits = _plan_limits(layout)
+    if doc["resume_count"] >= limits["max_resumes"]:
+        return _open_stuck_item(layout, plan_id, doc)
+    tasks_mod.log(layout, "plan_apply_stalled", "applier", plan=plan_id, op_index=idx,
+                  resume_count=doc["resume_count"])
+    return doc
+
+
+def apply(layout: Layout, plan_id: str) -> dict:
+    """Progress one plan as far as it can go in one call: `awaiting_approval` is re-validated fresh against the
+    current store before the journal is written (a stale `expected_rev`, or any other refusal, is RF-19/etc.
+    here, before the first mutation — §2.6 rule 1); `applying` resumes from `done`; `stuck` is retried the same
+    way (the one effect `apply_plan` would have, §2.7). `applied`, `abandoned` and `refused` are terminal and this
+    is a no-op on them — calling apply() twice, or replaying the proposing job's ingest, changes nothing the
+    second time. An operation's own failure (a store write that raises) is never let out of this call: it is
+    recorded (`resume_count`, `last_error`) and, past `plan.max_resumes`, turned into exactly one owner item
+    (`stuck`) — never re-raised, so one bad plan can never take an entire turn down with it."""
+    doc = load_plan(layout, plan_id)
+    if doc is None:
+        raise PlanError(f"no such plan {plan_id!r}")
+    status = doc.get("status")
+    if status in TERMINAL_PLAN_STATUSES:
+        return doc
+    if status not in ("awaiting_approval", "applying", "stuck"):
+        raise PlanError(f"plan {plan_id!r} is {status!r}, not ready to apply")
+    if status == "awaiting_approval":
+        tasks_now = tasks_mod.load_all(layout)
+        probe = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
+                "reason": doc.get("reason"), "expected_rev": doc.get("expected_rev"),
+                "operations": doc.get("operations")}
+        report, refusals = validate(probe, layout, tasks=tasks_now)
+        if refusals:
+            return _fail_refused(layout, plan_id, refusals)
+        order = _execution_order(doc.get("operations") or [])
+        doc = _promote_to_applying(layout, plan_id, order, report.as_dict())
+
+    ops = doc.get("operations") or []
+    done = set(doc.get("done") or [])
+    for idx in doc.get("order") or []:
+        if idx in done:
+            continue
+        op = ops[idx]
+        try:
+            _EFFECTS[op["op"]](layout, op, doc)
+        except Exception as exc:                      # noqa: BLE001 - any op may fail; recorded, never silent
+            return _record_stall(layout, plan_id, idx, op, exc)
+        doc = _append_done(layout, plan_id, idx)
+        done.add(idx)
+    return _finish_applied(layout, plan_id)
+
+
+def cancel_plan(layout: Layout, plan_id: str, by: str = "owner") -> dict:
+    """The owner's one terminal exit from `stuck` (§2.6 rule 6, §4.1): what is in `done` stays applied, the rest
+    is never attempted, and nothing is undone. Refused off any status but `stuck` — there is nothing to abandon
+    on a plan that already finished, was refused, or has not started."""
+    doc = load_plan(layout, plan_id)
+    if doc is None:
+        raise PlanError(f"no such plan {plan_id!r}")
+    if doc.get("status") != "stuck":
+        raise PlanError(f"plan {plan_id!r} is {doc.get('status')!r}, not stuck; cancel_plan only abandons a "
+                        f"stuck plan")
+
+    def fn(d):
+        d["history"] = _history(d, by, "abandoned")
+        d["status"] = "abandoned"
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_abandoned", by, plan=plan_id, done=sorted(doc.get("done") or []))
+    return doc
+
+
+def resume_plans(layout: Layout) -> list[str]:
+    """The loop's own turn (§2.6 rule 5): continue every plan still `applying` from its own journal. A `stuck`
+    plan is left alone — only the owner's apply_plan/cancel_plan choice decides what happens to it next, never an
+    automatic retry that would keep reopening the question the owner item already asked."""
+    acted = []
+    for doc in all_plans(layout):
+        if doc.get("status") == "applying":
+            apply(layout, doc["id"])
+            acted.append(doc["id"])
+    return acted

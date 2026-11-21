@@ -10,6 +10,8 @@ import pytest
 from supervisor import inbox as inbox_mod
 from supervisor import plans, store
 from supervisor import tasks as tasks_mod
+from supervisor import testing
+from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 
 PLAN_ID = "T1.d1"
@@ -26,7 +28,7 @@ def _setup(layout, rev=1):
     same order, so each operation's original index equals its category rank: 0 create_task, 1 add_dependency,
     2 patch_contract, 3 set_job (the task this same plan creates, its first job), 4 resume."""
     from tests.conftest import make_task
-    make_task(layout, "T1", status="BLOCKED")
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
     _write_template(layout)
     ops = [
         {"op": "create_task", "task": {"id": "T2", "title": "T2", "objective": "o", "owner_role": "engineer",
@@ -214,3 +216,45 @@ def test_resume_plans_leaves_a_stuck_plan_for_the_owner(layout, monkeypatch):
     acted = plans.resume_plans(layout)
     assert acted == [], "the sweep auto-retried a stuck plan instead of leaving it for the owner"
     assert store.read(plans.path_for(layout, PLAN_ID))["status"] == "stuck"
+
+
+def test_the_loops_own_turn_resumes_an_applying_plan(layout, monkeypatch):
+    doc = _setup(layout)
+    plans.propose(layout, doc)
+    real = plans._EFFECTS["resume"]
+    calls = {"n": 0}
+
+    def flaky(layout_, op, plan_doc):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash")
+        return real(layout_, op, plan_doc)
+    monkeypatch.setitem(plans._EFFECTS, "resume", flaky)
+
+    plans.apply(layout, PLAN_ID)                                         # stops with resume still pending
+    assert store.read(plans.path_for(layout, PLAN_ID))["status"] == "applying"
+
+    Supervisor(layout, sleep_s=0).once()
+    assert store.read(plans.path_for(layout, PLAN_ID))["status"] == "applied"
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.READY
+
+
+def test_the_control_center_plans_page_shows_the_current_status(layout):
+    doc = _setup(layout)
+    plans.propose(layout, doc)
+    client = testing.ui_client(layout)
+
+    listing = client.get("/plans")
+    assert listing.status_code == 200
+    assert PLAN_ID in listing.text
+
+    detail = client.get(f"/plans/{PLAN_ID}")
+    assert detail.status_code == 200
+    assert "awaiting_approval" in detail.text
+
+    plans.apply(layout, PLAN_ID)
+    detail = client.get(f"/plans/{PLAN_ID}")
+    assert "applied" in detail.text
+
+    missing = client.get("/plans/nope")
+    assert missing.status_code == 404

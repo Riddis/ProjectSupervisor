@@ -15,6 +15,7 @@ from pathlib import Path
 from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, conversations as conversations_mod
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
+from . import plans as plans_mod
 from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
@@ -1440,6 +1441,12 @@ class Supervisor:
 
     # ------------------------------------------------------------ nothing stops silently
 
+    def resume_plans(self) -> list[str]:
+        """RECOVERY_PLAN.md §2.6 rule 5: every plan still `applying` (a crash, or an operation that stalled and
+        has not yet exhausted `plan.max_resumes`) is continued from its own journal. A `stuck` plan is left alone
+        here — only the owner's apply_plan/cancel_plan choice decides what happens to it next."""
+        return plans_mod.resume_plans(self.layout)
+
     STALL_GRACE_S = 600
 
     def _stall_grace(self) -> float:
@@ -1722,6 +1729,7 @@ class Supervisor:
                 self.settle()                                             # synchronous adapters finish at once
                 self.request_approvals()
                 self.request_owner_decisions()
+                self.resume_plans()                                       # a crashed or stalled plan finishes here
                 self.sweep_stalled()                                      # nothing stops silently
                 self.alert_if_idle()
                 done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted
