@@ -499,7 +499,8 @@ def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help=
 def plan_apply(plan_id: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
     """Progress the named plan as far as it can go: proposes nothing (use `plan validate` plus
     `supervisor.plans.propose` to write one first) — this is the applier of RECOVERY_PLAN.md section 2.6, called
-    directly here rather than through the approval lane (steps 7-8). Exit 0 unless the plan ends `stuck`."""
+    directly here rather than through the approval lane (section 2.7): a human running this command is the
+    approval, exactly as the owner's own `apply_plan` choice is. Exit 0 unless the plan ends `stuck`."""
     from . import plans as plans_mod
     try:
         doc = plans_mod.apply(_layout(), plan_id)

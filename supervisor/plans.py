@@ -398,11 +398,18 @@ def _normalise_fields(fields: dict, op_index: int, normalised: list[dict],
 def _normalise_dependency_op(op: dict, op_index: int, tasks: dict[str, Task], normalised: list[dict]) -> dict:
     """`dedupe_dependencies`: a dependency already present, or listed twice. `drop_complete_waits`: a dependency
     naming a task already COMPLETE is dropped — the caller (`_graph_refusals`) is responsible for RF-17 when
-    dropping would empty the release, which is checked AFTER normalisation, not here."""
+    dropping would empty the release, which is checked AFTER normalisation, not here.
+
+    "Already present" is seeded from the target's own `depends_on` for `add_dependency` only (re-adding an edge
+    that is already there would be the duplicate): seeding `remove_dependency` the same way would dedupe away
+    the one id a removal exists to name — every id worth removing is, by definition, already present. A
+    `remove_dependency` therefore only dedupes a repeated id *within its own list* (incidental fix, step 8: the
+    four-category fixed-order fixture this module's own tests exercise had never removed a real edge before)."""
     deps = list(op.get("depends_on") or [])
     target = tasks.get(op.get("task"))
     existing = set(target.depends_on) if target is not None else set()
-    out, seen, dropped_dupe, dropped_complete = [], set(existing), [], []
+    seed = existing if op.get("op") == "add_dependency" else set()
+    out, seen, dropped_dupe, dropped_complete = [], set(seed), [], []
     for d in deps:
         if d in seen:
             dropped_dupe.append(d)
@@ -1096,14 +1103,112 @@ def render_choice(effect: Any) -> tuple[str | None, str | None]:
     return "; then ".join(sentences), "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
 
 
+# ----------------------------------------------------------------------- the authority classes and the approval
+# lane (RECOVERY_PLAN.md §2.7, D-027 decision 6, step 8 of the order of work): validation proves a plan is
+# permitted, never that it is the right one, so a second, cheap reader sits between a validated plan and the
+# applier for everything but routine repair. Three classes, the mapping held in `config/routing.yaml` under
+# `plan.authority` so a project may tighten it without a release (never loosen: `_tightened` only ever raises an
+# operation's class, never lowers one the vocabulary itself fixed).
+
+CLASS_A, CLASS_B, CLASS_OWNER = "A", "B", "owner"
+_CLASS_RANK = {CLASS_A: 0, CLASS_B: 1, CLASS_OWNER: 2}
+# The four dependency/contract/release operations are routine repair (A); create_task is shaping work (B) unless
+# the lane it names is metered, which raises it to the owner class (§2.4); set_job is a parameter diff on an
+# existing task (A, RF-11 having already refused anything else) or takes the class of the create_task it
+# accompanies on a task this same plan creates (§2.7: "set_job ... takes the class of the create_task it
+# accompanies on a created one"). An operation outside this table is not this release's to classify.
+_BASE_OPERATION_CLASS = {"add_dependency": CLASS_A, "remove_dependency": CLASS_A, "patch_contract": CLASS_A,
+                         "resume": CLASS_A, "create_task": CLASS_B, "set_job": CLASS_A}
+# "Metered", restated from §2.4: paid (API credits) and human (the owner's own hours) always are; anything else a
+# project lists under `limits.resource_cost_categories` (the project's single resource slot) is too.
+BUILTIN_METERED_CATEGORIES = frozenset({"paid", "human"})
+
+
+def metered(layout: Layout | None, cost_category: Any) -> bool:
+    cat = str(getattr(cost_category, "value", cost_category) or "")
+    if cat in BUILTIN_METERED_CATEGORIES:
+        return True
+    if layout is None:
+        return False
+    from . import gate as gate_mod
+    return cat in gate_mod.limits(layout)["resource_cost_categories"]
+
+
+def _configured_class(layout: Layout | None, op_name: str) -> str | None:
+    if layout is None:
+        return None
+    from . import gate as gate_mod
+    cfg = (gate_mod.routing_doc(layout).get("plan") or {}).get("authority") or {}
+    cls = cfg.get(op_name) if isinstance(cfg, dict) else None
+    return cls if cls in _CLASS_RANK else None
+
+
+def _tightened(layout: Layout | None, op_name: str, cls: str) -> str:
+    configured = _configured_class(layout, op_name)
+    return configured if configured is not None and _CLASS_RANK[configured] > _CLASS_RANK[cls] else cls
+
+
+def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) -> str:
+    """A | B | owner: the highest class of `plan`'s own operations (§2.7). Total over the closed, six-operation
+    vocabulary — an operation this table does not name (a seventh operation, or one of the owner-only effects
+    `validate()` already refuses as RF-26) fires the assertion rather than falling through to a default class, so
+    nothing a `validate()` bug let through reaches the applier unclassified. `tasks` is accepted for the same
+    shape every other reader of a plan takes, though no operation's class depends on the store today; `layout`,
+    when given, resolves a project's metered lanes and any configured tightening — omitted, every create_task is
+    judged against the built-in metered categories alone."""
+    ops = [op for op in (plan.get("operations") or []) if isinstance(op, dict)]
+    assert ops, "plans.authority: a plan with no operations cannot be classified"
+    created_class: dict[str, str] = {}
+    for op in ops:
+        if op.get("op") == "create_task" and isinstance(op.get("task"), dict):
+            tid = op["task"].get("id")
+            cls = CLASS_OWNER if metered(layout, op["task"].get("cost_category")) else CLASS_B
+            if tid:
+                created_class[tid] = _tightened(layout, "create_task", cls)
+    classes = []
+    for op in ops:
+        name = op.get("op")
+        assert name in _BASE_OPERATION_CLASS, f"plans.authority cannot classify operation {name!r}"
+        if name == "create_task":
+            tid = (op.get("task") or {}).get("id")
+            classes.append(created_class.get(tid, CLASS_B))
+        elif name == "set_job":
+            classes.append(_tightened(layout, "set_job", created_class.get(op.get("task"), CLASS_A)))
+        else:
+            classes.append(_tightened(layout, name, _BASE_OPERATION_CLASS[name]))
+    return max(classes, key=lambda c: _CLASS_RANK[c])
+
+
+def approver_role(layout: Layout, proposer_role: str | None) -> tuple[str | None, str | None]:
+    """(role, None) for class B's one approval session: the first role in `config/routing.yaml` `plan.approver`
+    (an ordered list) that is not `proposer_role` (RF-23) and whose lane is not configured inactive. (None,
+    reason) when no candidate qualifies — the caller raises the plan to the owner with that reason named (§2.7),
+    never silently."""
+    from . import gate as gate_mod
+    candidates = [str(r) for r in ((gate_mod.routing_doc(layout).get("plan") or {}).get("approver") or [])]
+    tried = []
+    for role in candidates:
+        refusal = self_approval_refusal(proposer_role, role) if proposer_role else None
+        if refusal is not None:
+            tried.append(f"{role} ({refusal['code']})")
+            continue
+        if gate_mod.role_inactive(layout, role):
+            tried.append(f"{role} (inactive)")
+            continue
+        return role, None
+    reason = f"no configured approver available ({'; '.join(tried)})" if tried else \
+        "no configured approver available (plan.approver is empty)"
+    return None, reason
+
+
 # ======================================================================= the journal and the applier (step 2 of
 # RECOVERY_PLAN.md's order of work, §2.6): the store holds one document per task and no multi-file transaction, so
 # the plan is its own journal instead — written before the first mutation, applied in the applier's own fixed
 # order (never the plan's), each operation individually idempotent, its index appended to `done` before the next
 # one starts. `resume` is always last, so a crash at any point leaves the subject exactly where it already was:
-# stopped. Nothing here decides WHO may call apply() on a given plan (the authority classes of §2.7 are step 8);
-# this module only guarantees that whoever does, the result is ordered, idempotent and visibly stuck rather than
-# half-applied.
+# stopped. WHO may call apply() on a given plan is `authority()` above (§2.7, step 8): the loop calls it directly
+# for class A, holds it for a `plan_review` verdict or an owner's own `apply_plan` choice otherwise; this module
+# only guarantees that whoever does, the result is ordered, idempotent and visibly stuck rather than half-applied.
 #
 # Status machine: proposed -> refused | awaiting_approval -> applying -> applied | stuck -> abandoned. `refused`
 # and `applied` are reached from validation alone; `abandoned` is reached from `stuck` alone, and only by
@@ -1134,13 +1239,17 @@ def _history(doc: dict, by: str, to: str) -> list[dict]:
     return hist
 
 
-def propose(layout: Layout, doc: dict, by: str = "diagnosis") -> dict:
+def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str | None = None) -> dict:
     """Write the plan a proposing job's result names, exactly once for its whole life (§2.6, D-027 decision 5): a
     repeat call with the same id — a replayed ingest — returns the plan already on disk, unchanged, never a
     second validation and never a second write. What is stored as `operations` is the normalised form (§1.3): the
     applier later executes exactly what was checked, never the raw proposal. The correction turn of §2.5 (a
     `revisions[]` entry replacing a refused `operations`) is T8-10's; this function always writes a fresh plan
-    once and leaves `revisions` empty."""
+    once and leaves `revisions` empty.
+
+    `proposer_role` is stored on the plan (§2.7): the role `approver_role()` must never resolve to for this plan
+    (RF-23), carried here rather than re-derived later so a plan's own approval lane always answers "never the
+    proposer" from one recorded fact instead of whoever happens to call `open_plan_review()`."""
     plan_id = str(doc.get("id") or "").strip()
     if not plan_id:
         raise PlanError("a plan must carry a non-empty id")
@@ -1152,7 +1261,7 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis") -> dict:
     report, refusals = validate(doc, layout, tasks=tasks_now)
     base = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
             "reason": doc.get("reason"), "expected_rev": doc.get("expected_rev"),
-            "operations": normalised_doc.get("operations"), "revisions": [],
+            "operations": normalised_doc.get("operations"), "revisions": [], "proposer_role": proposer_role,
             # Written whether or not the plan validates: a `set_job` refused for a failed preflight (RF-08) is
             # refused *because* this ran, and the approver of a plan that does validate needs the same transcript
             # for the one that passed (D-027 decision 6) — neither reader gets it from a run directory.
@@ -1503,21 +1612,176 @@ def cancel_plan(layout: Layout, plan_id: str, by: str = "owner") -> dict:
     return doc
 
 
+# ----------------------------------------------------------------------- routing a freshly validated plan by its
+# own authority class (§2.7): class A is applied on the spot (below, in `resume_plans`); class B opens exactly
+# one `plan_review` job and waits for its typed verdict; the owner class opens exactly one inbox item carrying
+# the `apply_plan` choice and waits for the owner. Each of the three entry points here is idempotent on the field
+# it writes (`plan_review`, `owner_item`), so calling any of them again once that field is set is a no-op — the
+# sweep that drives them may run every turn without ever opening a second job or a second item.
+
+def _open_owner_choice(layout: Layout, plan_id: str, doc: dict, *, reason: str | None = None) -> dict:
+    """Exactly one inbox item carrying the owner-only `apply_plan` choice (§2.7's owner class, §4.1's typed
+    choices) — a typed button, never prose. Reached by a plan whose own class is `owner` (a metered
+    `create_task`), and by a class B plan for which `approver_role()` found nobody available (§2.7: "if none is,
+    the plan goes to the owner with the reason named")."""
+    if doc.get("owner_item"):
+        return doc
+    effect = {"op": "apply_plan", "plan": plan_id}
+    label, _ = render_choice(effect)
+    assert label is not None, "apply_plan is in OPERATIONS/OWNER_ONLY_EFFECTS; render_choice must name it"
+    why = f" ({reason})" if reason else ""
+    summary, detail = inbox_mod.fit(f"Plan {plan_id} needs the owner's approval{why}. {doc.get('reason') or ''}")
+    subject_id = (doc.get("subject") or {}).get("task")
+    try:
+        item = inbox_mod.create(layout, for_role="owner", subject=f"Approve plan {plan_id}", summary=summary,
+                                detail=detail, kind=inbox_mod.DECISION_KIND, choices=[{"id": "apply_plan",
+                                "effect": effect}], free_text=True, from_="applier", task_id=subject_id,
+                                dedup_key=f"plan-approval:{plan_id}")
+    except inbox_mod.InboxFull:
+        _log_quiet(layout, "inbox_full", reason="plan_owner_approval", plan=plan_id)
+        return doc
+
+    def fn(d):
+        d["owner_item"] = item["id"]
+        return d
+    try:
+        doc = store.update(path_for(layout, plan_id), fn)
+    except Exception:                                  # noqa: BLE001 - the item exists (dedup_key) either way
+        _log_quiet(layout, "plan_apply_stall_unrecorded", plan=plan_id)
+        return doc
+    _log_quiet(layout, "plan_owner_item_opened", plan=plan_id, owner_item=item["id"])
+    return doc
+
+
+def _open_owner_question(layout: Layout, plan_id: str, doc: dict, role: str, question: str) -> dict:
+    """RECOVERY_PLAN.md §2.7's other owner path: a `plan_review` verdict of `OWNER` is a question, never an
+    effect — distinct from `_open_owner_choice`'s typed `apply_plan` button. Free text on the item it opens is an
+    ordinary comment (§4.1); the plan itself is left `awaiting_approval`, exactly where the review found it."""
+    if doc.get("owner_item"):
+        return doc
+    summary, detail = inbox_mod.fit(question or f"{role} has a question about plan {plan_id}")
+    subject_id = (doc.get("subject") or {}).get("task")
+    try:
+        item = inbox_mod.create(layout, for_role="owner", subject=f"{role}'s question on plan {plan_id}",
+                                summary=summary, detail=detail, kind=inbox_mod.DECISION_KIND,
+                                allowed_responses=[], free_text=True, from_=role, task_id=subject_id,
+                                dedup_key=f"plan-review-question:{plan_id}")
+    except inbox_mod.InboxFull:
+        _log_quiet(layout, "inbox_full", reason="plan_review_owner", plan=plan_id)
+        return doc
+
+    def fn(d):
+        d["owner_item"] = item["id"]
+        d["plan_review"] = {**(d.get("plan_review") or {}), "verdict": "OWNER"}
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    _log_quiet(layout, "plan_review_owner_question", plan=plan_id, role=role, owner_item=item["id"])
+    return doc
+
+
+def open_plan_review(layout: Layout, plan_id: str, *, by: str = "loop") -> dict:
+    """Class B's one approval session (§2.7): resolve `plan.approver` (never the proposer, RF-23) and mint
+    exactly one `plan_review` job id against the plan's subject task — a new job kind, additive to the existing
+    id derivation (`tasks.JobId`/`tasks.allocate_job`). No approver available escalates to the owner instead,
+    with the reason named, never silently dropped. Idempotent: a plan that already carries `plan_review` or
+    `owner_item` is returned unchanged, so a repeated call from the sweep never opens a second job."""
+    doc = load_plan(layout, plan_id)
+    if doc is None:
+        raise PlanError(f"no such plan {plan_id!r}")
+    if doc.get("plan_review") or doc.get("owner_item"):
+        return doc
+    subject_id = (doc.get("subject") or {}).get("task")
+    role, reason = approver_role(layout, doc.get("proposer_role"))
+    if role is None:
+        return _open_owner_choice(layout, plan_id, doc, reason=reason)
+    job_id = tasks_mod.allocate_job(layout, subject_id, "plan_review", note=f"plan_review of {plan_id}").id
+    # allocate_job's own write bumps the subject's rev (its job counter lives there) — a mutation this function
+    # makes, not one the store owner made, so it must never read back as RF-19 staleness when the review's own
+    # APPROVE later promotes this plan. The plan's frozen expected_rev is refreshed to the post-allocation rev
+    # it already reflects, the same way the journal's own `done` stays truthful across a write between steps.
+    new_rev = tasks_mod.load(layout, subject_id).rev
+
+    def fn(d):
+        d["plan_review"] = {"job": job_id, "role": role}
+        expected = dict(d.get("expected_rev") or {})
+        if subject_id in expected:
+            expected[subject_id] = new_rev
+        d["expected_rev"] = expected
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_review_opened", by, plan=plan_id, job=job_id, role=role)
+    return doc
+
+
+def apply_plan_review(layout: Layout, plan_id: str, verdict: str, role: str, *,
+                      findings: list[dict] | None = None, question: str | None = None,
+                      by: str | None = None) -> dict:
+    """The `plan_review` job's typed result (§2.7), applied: `APPROVE` runs the same applier an owner's
+    `apply_plan` choice uses; `REVISE` records refusal-shaped `findings` and returns the plan to `refused`,
+    exactly as a validator's own refusal would; `OWNER` opens one free-text item carrying the approver's
+    `question` (`_open_owner_question`), never an effect. Refuses (RF-23) a verdict from any role but the one
+    `open_plan_review` actually sent this plan to — self-approval under a borrowed role name is the same refusal
+    as self-approval under the proposer's own."""
+    doc = load_plan(layout, plan_id)
+    if doc is None:
+        raise PlanError(f"no such plan {plan_id!r}")
+    review = doc.get("plan_review") or {}
+    if review.get("role") != role:
+        raise PlanError(f"plan {plan_id!r} was not sent to {role!r} for review")
+    refusal = self_approval_refusal(doc.get("proposer_role"), role) if doc.get("proposer_role") else None
+    if refusal is not None:
+        raise PlanError(refusal["message"])
+    by = by or f"plan_review:{role}"
+    if verdict == "APPROVE":
+        tasks_mod.log(layout, "plan_review_approved", by, plan=plan_id, role=role)
+        return apply(layout, plan_id)
+    if verdict == "REVISE":
+        refusals = list(findings or [])
+
+        def fn(d):
+            d["history"] = _history(d, by, "refused")
+            d["status"] = "refused"
+            d["refusals"] = refusals
+            d["plan_review"] = {**review, "verdict": "REVISE"}
+            return d
+        doc = store.update(path_for(layout, plan_id), fn)
+        tasks_mod.log(layout, "plan_refused", by, plan=plan_id, refusals=[r.get("code") for r in refusals])
+        return doc
+    if verdict == "OWNER":
+        return _open_owner_question(layout, plan_id, doc, role, question or "")
+    raise PlanError(f"plan_review verdict {verdict!r} is not APPROVE, REVISE or OWNER")
+
+
 def resume_plans(layout: Layout) -> list[str]:
-    """The loop's own turn (§2.6 rule 5): continue every plan still `applying` from its own journal. A `stuck`
-    plan's operations are left alone — only the owner's apply_plan/cancel_plan choice decides what happens to
-    them next, never an automatic retry that would keep reopening the question the owner item already asked —
-    but a `stuck` plan still missing its owner item (F1: the inbox was full when it first tried) gets one more
-    attempt to open it, independent of and never re-running any operation. One plan's own exception (a lock
-    timeout `apply()` itself did not already contain) is logged and never stops the sweep through the rest."""
+    """The loop's own turn (§2.6 rule 5, extended by §2.7/step 8): route every plan still `awaiting_approval` and
+    not yet routed by its own authority class (class A applied on the spot; class B and the owner class each
+    open exactly one approval record and wait — see the routing functions above), then continue every plan still
+    `applying` from its own journal. A `stuck` plan's operations are left alone — only the owner's
+    apply_plan/cancel_plan choice decides what happens to them next, never an automatic retry that would keep
+    reopening the question the owner item already asked — but a `stuck` plan still missing its owner item (F1:
+    the inbox was full when it first tried) gets one more attempt to open it, independent of and never re-running
+    any operation. One plan's own exception (a lock timeout `apply()` itself did not already contain) is logged
+    and never stops the sweep through the rest."""
     acted = []
+    tasks_now = None
     for doc in all_plans(layout):
         plan_id = doc.get("id")
         try:
-            if doc.get("status") == "applying":
+            status = doc.get("status")
+            if status == "awaiting_approval" and not doc.get("plan_review") and not doc.get("owner_item"):
+                tasks_now = tasks_mod.load_all(layout) if tasks_now is None else tasks_now
+                cls = authority(doc, tasks_now, layout)
+                if cls == CLASS_A:
+                    apply(layout, plan_id)
+                elif cls == CLASS_B:
+                    open_plan_review(layout, plan_id)
+                else:
+                    _open_owner_choice(layout, plan_id, doc)
+                acted.append(plan_id)
+            elif status == "applying":
                 apply(layout, plan_id)
                 acted.append(plan_id)
-            elif doc.get("status") == "stuck" and not doc.get("owner_item"):
+            elif status == "stuck" and not doc.get("owner_item"):
                 _try_open_stuck_item(layout, plan_id, doc)
         except Exception:                              # noqa: BLE001 - one plan's own failure, never the sweep's
             _log_quiet(layout, "plan_resume_error", plan=plan_id)

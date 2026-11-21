@@ -192,6 +192,11 @@ limits:
   max_resource_jobs: 1              # concurrent holders of the single heavy local resource (plugin lanes with gpu=True)
   resource_cost_categories: []      # cost categories whose DELIVERY also holds that resource slot, on any lane — e.g. [local]
                                     # when an agent session does the resource's own engineering work (installs, runs, benchmarks it)
+plan:                                # recovery plans (RECOVERY_PLAN.md §2.7): who approves what a plan proposes
+  approver: [chief_architect, senior_pm]   # ordered; the first role that is not the plan's own proposer and is
+                                            # active reviews a plan that creates work on an unmetered lane (class B)
+  # authority: {}                    # per-operation class override (add_dependency/remove_dependency/patch_contract/
+                                      # resume/create_task/set_job -> A|B|owner); tightens only, never loosens
 # Two more sections, added when they are needed:
 #   resources:     shared resource policy plugins read with supervisor.plugin.resources(), e.g.
 #     gpu: {usable_vram_floor_mb: 6500, single_job: true}

@@ -50,12 +50,13 @@ def _disk(layout: Layout) -> dict:
 
 # What each kind of job is doing, in the owner's words (spec.kind; a missing kind is a delivery).
 JOB_ACTIVITY = {"delivery": "Working", "review": "Reviewing", "diagnosis": "Diagnosing a failure",
-                "conversation": "Answering chat", "verify": "Verifying"}
+                "conversation": "Answering chat", "verify": "Verifying", "plan_review": "Reviewing a plan"}
 
 # The word shown beside "attempt N" (ATTEMPT_MODEL.md §6, "Control Center"): a bare "attempt N" reads as a fresh
 # try at the deliverable even for a job that is a verification, a review or a diagnosis of that attempt, so the
 # label always names the kind too.
-KIND_LABEL = {"delivery": "delivery", "verify": "verification", "review": "review", "diagnosis": "diagnosis"}
+KIND_LABEL = {"delivery": "delivery", "verify": "verification", "review": "review", "diagnosis": "diagnosis",
+             "plan_review": "plan review"}
 
 
 def _iso_epoch(value) -> float | None:

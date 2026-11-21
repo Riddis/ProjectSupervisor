@@ -242,7 +242,7 @@ def unreadable(layout: Layout, task_id: str | None = None) -> dict[str, str]:
     return out
 
 
-KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3}
+KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3, "plan_review": 4}
 
 
 def kind_of(rec: dict) -> str:

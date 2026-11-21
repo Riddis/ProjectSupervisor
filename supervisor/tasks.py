@@ -988,7 +988,7 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
 # A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
 # that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job (today
 # only a diagnosis raised before any delivery ever exists, §2.5).
-_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d"}
+_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d", "plan_review": "p"}
 
 
 @dataclass(frozen=True)
