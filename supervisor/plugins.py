@@ -212,6 +212,13 @@ class Registry:
         # what it registered, (manifest kind, identifier), checked against its manifest. None outside setup().
         self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
         self._registered: list[tuple[str, str]] | None = None
+        # A built-in lane's own job_schema (RECOVERY_PLAN.md section 3.2): declared next to the lane itself
+        # (adapters/base.register_job_schema), not through setup(), so it is here before any plugin's. A plugin
+        # naming the same adapter through registry.job_schema() is refused by that method's own check (the owner
+        # recorded here, "framework", never matches a plugin's identity).
+        from .adapters.base import JOB_SCHEMAS
+        self.job_schemas.update(JOB_SCHEMAS)
+        self.job_schema_owners.update({name: "framework" for name in JOB_SCHEMAS})
 
     @property
     def identity(self) -> str | None:

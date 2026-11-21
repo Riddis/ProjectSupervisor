@@ -231,10 +231,12 @@ def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category
     """One of the owner's own writers of a task's `job` block (RECOVERY_PLAN.md section 3.4, D-027 decision 7 —
     amends D-018 decision 2): `task.set_job` (the Control Center's re-route), never state/ directly. A diagnosis
     cannot change a task's job (D-018 decision 1, restated as R0); a wrong process command reaches the owner as a
-    question naming this command instead. Returns (the task, warnings) — an unknown key for an adapter with no
-    declared schema is kept and warned, never refused (`tasks.job_schema_problems`)."""
+    question naming this command instead. `tasks._write_job` refuses `actor` here exactly as it does for a seed
+    import or a patch — this always carries a literal `argv`, so nothing but the owner may reach it. Returns (the
+    task, warnings) — an unknown key for an adapter with no declared schema is kept and warned, never refused
+    (`tasks.job_schema_problems`)."""
     def fn(doc):
-        doc["job"] = dict(job)
+        tasks_mod._write_job(doc, job, actor)
         if cost_category:
             doc["cost_category"] = cost_category
     t = tasks_mod._update(layout, task_id, fn)

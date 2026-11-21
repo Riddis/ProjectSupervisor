@@ -442,7 +442,7 @@ def test_a_seed_task_without_status_runs_through_the_loop(fresh, monkeypatch):
         "id": "T0-01", "phase": 0, "title": "Hello", "objective": "o", "owner_role": "engineer", "actions": ["a"],
         "artifacts": ["hello.txt"], "acceptance": "hello.txt exists", "cost_category": "deterministic",
         "job": {"adapter": "python", "fn": "write_seed_hello"}}]}), encoding="utf-8")
-    r = tasks_mod.import_seed(layout, fresh / "state" / "tasks_seed.yaml")
+    r = tasks_mod.import_seed(layout, fresh / "state" / "tasks_seed.yaml", actor="owner")
     assert r["created"] == ["T0-01"]
     assert yaml.safe_load((layout.tasks / "T0-01.yaml").read_text(encoding="utf-8"))["status"] == "NOT_STARTED"
     monkeypatch.setenv("SUPERVISOR_ROOT", str(fresh))

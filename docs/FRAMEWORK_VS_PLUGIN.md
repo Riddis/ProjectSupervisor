@@ -65,7 +65,7 @@ plugins:
 
 ```python
 # plugins/render_farm.py
-from supervisor.plugin import Check, ProcessAdapter
+from supervisor.plugin import Check, ProcessAdapter, job_spec
 
 class RenderAdapter(ProcessAdapter):
     name = "render"
@@ -75,7 +75,7 @@ class RenderAdapter(ProcessAdapter):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
-                "root": str(layout.root), "argv": ["render", "--scene", task.model_extra["job"]["scene"]],
+                "root": str(layout.root), "argv": ["render", "--scene", job_spec(task)["scene"]],
                 "timeout_s": 1800}
 
 def setup(registry):

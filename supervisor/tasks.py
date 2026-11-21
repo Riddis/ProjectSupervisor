@@ -42,14 +42,16 @@ REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_ro
 # `job` is a contract field too (what a task runs), carried by import, refresh and patch (RECOVERY_PLAN.md 3.4,
 # D-027 decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
 # CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
-# always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's.
-JOB_OWNER_ACTORS = frozenset({"owner", "cli"})      # seed import, task.set_job, the Control Center
+# always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's. Owner
+# identity is `gates.is_owner_actor` — the framework's one such rule, not a second copy of it — so a bare queued
+# command or a default parameter value (neither of which asserts an identity) never inherits it.
 
 
 def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
-    """RECOVERY_PLAN.md section 3.4: the owner may write any job block, including a literal `argv`; a plan may
-    write only a template id and typed params (RF-04); nothing else may write one at all."""
-    if actor in JOB_OWNER_ACTORS:
+    """RECOVERY_PLAN.md section 3.4: the owner (`gates.is_owner_actor`: the CLI's `owner`, the Control Center's
+    `owner-ui`, or any `owner-<channel>`) may write any job block, including a literal `argv`; a plan may write
+    only a template id and typed params (RF-04); nothing else may write one at all."""
+    if gates_mod.is_owner_actor(actor):
         return []
     if actor == "plan":
         extra = set(job_value) - {"template", "params"}
@@ -57,6 +59,17 @@ def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
             return [f"a plan may set job.template and job.params only, not {', '.join(sorted(extra))}"]
         return []
     return [f"actor {actor!r} may not write a job block; only the owner or a plan may (RECOVERY_PLAN.md section 3.4)"]
+
+
+def _write_job(doc: dict, job_value: dict | None, actor: str) -> None:
+    """The one chokepoint that sets `doc['job']` from a writer-controlled value, under the rule above. A plan's
+    own `set_job` effect (`plans._effect_set_job`) is not routed through this: its shape (an adapter inherited
+    from the existing job or the template, never the writer's own choice) is pre-vetted by RF-04 at promotion
+    time and is not the literal value this rule judges."""
+    errors = _job_writer_errors(actor, job_value or {})
+    if errors:
+        raise TaskError("; ".join(errors))
+    doc["job"] = dict(job_value) if job_value else None
 
 
 def job_schema_problems(layout: Layout, job) -> tuple[list[str], list[str]]:
@@ -573,10 +586,7 @@ def _refresh_contract(doc: dict, t: dict, actor: str = "cli") -> dict:
     CONTRACT_FIELDS key at all); when the seed row names one, the writer-authority rule of section 3.4 decides
     whether it may be applied."""
     if "job" in t:
-        errors = _job_writer_errors(actor, t["job"] or {})
-        if errors:
-            raise TaskError("; ".join(errors))
-        doc["job"] = dict(t["job"]) if t["job"] else None
+        _write_job(doc, t["job"], actor)
     for k in CONTRACT_FIELDS:
         if k in t:
             doc[k] = t[k]
@@ -606,10 +616,7 @@ def _apply_patch(doc: dict, fields: dict, actor: str = "cli") -> dict:
     if "add_dependency" in fields or "remove_dependency" in fields:
         doc["depends_on"] = deps
     if "job" in fields:
-        errors = _job_writer_errors(actor, fields["job"] or {})
-        if errors:
-            raise TaskError("; ".join(errors))
-        doc["job"] = dict(fields["job"]) if fields["job"] else None
+        _write_job(doc, fields["job"], actor)
     for k, v in fields.items():
         if k in CONTRACT_FIELDS:
             doc[k] = v

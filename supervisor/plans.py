@@ -1091,7 +1091,10 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
     """The one place a plan's `set_job` becomes a stored job block: a template id and typed params only — RF-04
     already refuses anything else at validate() time, so there is nothing else here to write. The adapter is the
     one the task's existing job already names (a parameter diff, RF-11), or — on a task this plan created — the
-    template's own declared adapter (its first job)."""
+    template's own declared adapter (its first job). This does not go through `tasks._write_job` (RECOVERY_PLAN.md
+    3.4): that chokepoint judges a writer-supplied value, and `adapter` here is never one — it is carried over
+    from the existing job or the template, not chosen by this op — so a plan's own writer-authority bound is RF-04
+    itself, already enforced before this effect ever runs."""
     templates = _load_templates(layout)
     tmpl = templates.get(str(op.get("template"))) or {}
 

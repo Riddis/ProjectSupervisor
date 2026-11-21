@@ -25,15 +25,27 @@ import time
 from datetime import datetime, timezone
 UTC = timezone.utc
 from pathlib import Path
+from typing import Optional
 
 import requests
+from pydantic import BaseModel
 
 from .. import policy
 from .._vendor.contract import LaneUnavailable, atomic_json, read_json, structured_result
 from ..paths import Layout
 from ..store import now_iso
-from .base import Adapter, Result, register
+from .base import Adapter, Result, register, register_job_schema
 from .claude_cli import classify_status, job_spec, role_profile, routing
+
+
+class ClaudeApiJobExtra(BaseModel):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md)."""
+    role: Optional[str] = None
+    api_credits: Optional[bool] = None
+    max_tokens: Optional[int] = None
+
+
+register_job_schema("claude_api", ClaudeApiJobExtra)
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"

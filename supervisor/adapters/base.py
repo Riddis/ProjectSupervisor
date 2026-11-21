@@ -63,3 +63,14 @@ def register(adapter: Adapter) -> Adapter:
     return adapter
 
 
+# A built-in lane's own job_schema (RECOVERY_PLAN.md section 3.2), keyed by adapter name like REGISTRY itself:
+# populated by each adapter module next to its own `register()` call, and copied into every project's
+# `plugins.Registry.job_schemas` (`plugins.Registry.__post_init__`) so a misspelled key on a framework lane is
+# refused exactly like one on a plugin lane that declared a schema, never left to the no-schema warning.
+JOB_SCHEMAS: dict[str, Any] = {}
+
+
+def register_job_schema(name: str, model: Any) -> None:
+    JOB_SCHEMAS[name] = model
+
+

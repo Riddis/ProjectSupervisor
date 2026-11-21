@@ -301,7 +301,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     if dry_run:
         layout = _reader()                         # reads only: no plugin set up, nothing created (review 1.13.0)
         try:
-            res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
+            res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True, actor="owner")
         except (ValueError, tasks_mod.TaskError) as exc:
             raise typer.BadParameter(str(exc))
         typer.echo(f"dry run: would create {len(res['created'])} ({', '.join(res['created']) or '-'}), "

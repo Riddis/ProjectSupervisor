@@ -35,7 +35,7 @@ def project(tmp_path, *seed):
 
 
 def warnings_of(lay) -> list[str]:
-    return tasks.import_seed(lay, lay.state / "tasks_seed.yaml", dry_run=True).get("warnings", [])
+    return tasks.import_seed(lay, lay.state / "tasks_seed.yaml", dry_run=True, actor="owner").get("warnings", [])
 
 
 def test_an_unknown_owner_or_reviewer_is_warned(tmp_path):
@@ -64,7 +64,7 @@ def test_a_sound_contract_has_no_warning(tmp_path):
 
 def test_supervisor_check_reports_them_and_still_passes(tmp_path, monkeypatch):
     lay = project(tmp_path, contract("T0-01", owner_role="nobody"), contract("T0-02", owner_role="sleeper"))
-    tasks.import_seed(lay, lay.state / "tasks_seed.yaml")
+    tasks.import_seed(lay, lay.state / "tasks_seed.yaml", actor="owner")
     monkeypatch.setenv("SUPERVISOR_ROOT", str(lay.root))
     out = CliRunner().invoke(app, ["check"])
     assert out.exit_code == 0, out.output
@@ -161,7 +161,7 @@ def test_dry_run_and_check_write_nothing_even_when_a_plugin_fails(tmp_path, monk
         assert out.exit_code == 0, out.output
         assert "nothing written" in out.output and "'missing'" in out.output, out.output
         assert snapshot(lay.root) == before
-        tasks.import_seed(lay, lay.state / "tasks_seed.yaml")
+        tasks.import_seed(lay, lay.state / "tasks_seed.yaml", actor="owner")
         testing.reset()
         before = snapshot(lay.root)
         out = CliRunner().invoke(app, ["check"])

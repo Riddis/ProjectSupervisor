@@ -8,6 +8,9 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Optional
+
+from pydantic import BaseModel
 
 from .. import capacity
 from .. import policy
@@ -17,10 +20,22 @@ from .._vendor import usage_policy as up
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
-from .base import Result, register
+from .base import Result, register, register_job_schema
 from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits,
                          resolve_handoff, role_profile, routing)
 from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
+
+
+class CodexCliJobExtra(BaseModel):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md)."""
+    role: Optional[str] = None
+    prompt_file: Optional[str] = None
+    sandbox: Optional[str] = None
+    images: Optional[list[str]] = None
+    executable: Optional[str] = None
+
+
+register_job_schema("codex_cli", CodexCliJobExtra)
 
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 

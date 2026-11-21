@@ -8,17 +8,24 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 - **Plugin API: `Registry.job_schema(adapter, model)` (RECOVERY_PLAN.md section 3, R-11).** Additive. A plugin
   adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
   fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no
-  schema declared at all, so an installed plugin from before this release keeps working unchanged.
+  schema declared at all, so an installed plugin from before this release keeps working unchanged. Every
+  built-in lane but `process` (`claude_cli`, `claude_api`, `codex_cli`, `human`) now declares its own, so a
+  misspelled key on one of those is refused the same way, not only warned. **Behaviour change a plugin's own
+  code can rely on, not only its registration:** `task.job` is a declared field now (next entry), not a key of
+  `task.model_extra` — a lane that read `task.model_extra["job"]` reads nothing there any more; `job_spec(task)`
+  (`supervisor.plugin.job_spec`, unchanged) is and remains the one documented way to read it.
 
 - **Fixed: `job` was not a declared field, so a misspelled key was silently ignored and a seed could not carry
   one (R-11).** `Task.job` is now a typed `Job` model (`adapter`, `template`, `params`, `argv`, `fn`, `timeout_s`,
   `idle_timeout_s`, `retry_on`, `stdin_file`, `model`, `effort`, `prompt`, `result_kind`); a wrong type is refused
   the moment a document carrying it is written. `job` now joins the contract fields that import, refresh and
   patch carry (`tasks.CONTRACT_FIELDS`'s sibling list), under a rule on who is writing rather than on the field
-  (D-027 decision 7, amending D-018 decision 2): the owner (a seed import, `task.set_job`, the Control Center)
-  may write any job block, including a literal `argv`; a plan may write only a template id and typed params;
-  nothing else may write one at all. A seed row updating an existing task now applies the job it carries like any
-  other field instead of reporting `job_not_applied`, which is gone from the tree.
+  (D-027 decision 7, amending D-018 decision 2): the owner — any actor `gates.is_owner_actor` recognizes (the
+  CLI's `owner`, the Control Center's `owner-ui`, or any `owner-<channel>`), through a seed import, `task.set_job`
+  or a patch — may write any job block, including a literal `argv`; a plan may write only a template id and typed
+  params; nothing else may write one at all, `task.set_job` included. A seed row updating an existing task now
+  applies the job it carries like any other field instead of reporting `job_not_applied`, which is gone from the
+  tree.
 
 ## 2.8.0 — 2026-11-16
 

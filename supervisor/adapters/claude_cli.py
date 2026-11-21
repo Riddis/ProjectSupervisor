@@ -12,8 +12,10 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 import yaml
+from pydantic import BaseModel
 
 from .. import capacity
 from .. import handoff
@@ -25,8 +27,21 @@ from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
-from .base import Result, register
+from .base import Result, register, register_job_schema
 from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
+
+
+class ClaudeCliJobExtra(BaseModel):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md)."""
+    role: Optional[str] = None
+    prompt_file: Optional[str] = None
+    write_scope: Optional[str] = None
+    executable: Optional[str] = None
+    add_dirs: Optional[list[str]] = None
+    tools: Optional[str | list[str]] = None
+
+
+register_job_schema("claude_cli", ClaudeCliJobExtra)
 
 AUTH_FAILURE_RE = re.compile(r"failed to authenticate|oauth (session|token).{0,40}expired|invalid api key|please run /login|"
                              r'"type":\s*"authentication_error"', re.IGNORECASE)
