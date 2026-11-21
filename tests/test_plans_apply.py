@@ -266,13 +266,14 @@ def test_a_full_owner_inbox_does_not_crash_apply_and_the_plan_still_goes_stuck(l
     assert still["status"] == "stuck"
     assert not still.get("owner_item")
 
-    first_item = inbox_mod.all_items(layout)[0]
-    inbox_mod.answer(layout, first_item["id"], "ACCEPT", by="owner")       # the owner clears room
+    for item in inbox_mod.open_items(layout, "owner"):
+        inbox_mod.answer(layout, item["id"], "ACCEPT", by="owner")        # the owner clears the inbox
     plans.resume_plans(layout)
     final = store.read(plans.path_for(layout, PLAN_ID))
     assert final.get("owner_item"), "the owner item was never opened once the inbox had room"
-    open_owner_items = [i for i in inbox_mod.all_items(layout) if i.get("status") == "open" and i.get("for") == "owner"]
+    open_owner_items = inbox_mod.open_items(layout, "owner")
     assert len(open_owner_items) == 1
+    assert open_owner_items[0]["id"] == final["owner_item"]
 
 
 def test_a_subject_held_after_promotion_is_never_released_by_resume(layout, monkeypatch):
