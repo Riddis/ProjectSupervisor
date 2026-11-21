@@ -31,6 +31,7 @@ vocabulary of refusals has exactly one home.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -166,15 +167,20 @@ class Refusal:
 
 @dataclass
 class PlanReport:
-    """What `validate()` returns beside the refusal list: the normalisations applied, the computed scope, and
-    (only for a plan with no refusals) the graph diff — edges added/removed and contract fields before/after,
-    per task. Never includes anything an applier would need beyond what is already here (there is no applier)."""
+    """What `validate()` returns beside the refusal list: the normalisations applied, the computed scope, (only
+    for a plan with no refusals) the graph diff — edges added/removed and contract fields before/after, per task
+    — and `preflight`: one entry per `set_job` operation actually preflighted (`{op_index, ok, digest}`), run
+    whether the operation is refused on another ground or not, and stored on the plan document regardless of
+    whether the plan as a whole validates — the approver reading a `set_job` needs the transcript it was refused
+    or passed on, not only the ones that passed (D-027 decision 6)."""
     normalised: list[dict] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
     graph_diff: dict[str, Any] = field(default_factory=dict)
+    preflight: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
-        return {"normalised": self.normalised, "scope": self.scope, "graph_diff": self.graph_diff}
+        return {"normalised": self.normalised, "scope": self.scope, "graph_diff": self.graph_diff,
+                "preflight": self.preflight}
 
 
 def _rf(code: str, rule: str, op_index: int | None, field_: str | None, message: str) -> Refusal:
@@ -458,14 +464,6 @@ def _load_templates(layout: Layout) -> dict:
     return templates if isinstance(templates, dict) else {}
 
 
-def _resolve_executable(executable: str, root: Path) -> bool:
-    if not executable:
-        return False
-    if shutil.which(executable):
-        return True
-    return (root / executable).exists()
-
-
 # ----------------------------------------------------------------------- the scope rule (§2.3) — from the store
 
 def compute_scope(doc: dict, tasks: dict[str, Task]) -> dict[str, set[str]]:
@@ -639,23 +637,56 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
     return out
 
 
+def _job_adapter_for_preflight(tid: str, t: Task | None, created: set[str], tmpl: dict) -> str | None:
+    """The adapter the simulated preflight block should carry: the existing job's own adapter for a parameter
+    diff (class A — RF-11 already refuses a template that would change it), or the template's declared adapter
+    for a task this plan created (class B, the first job it will ever have)."""
+    if tid not in created and t is not None and t.job is not None and t.job.adapter:
+        return t.job.adapter
+    return tmpl.get("adapter")
+
+
+def _preflight_transcript_entry(i: int, layout: Layout, adapter: str | None, template_id: str,
+                                params: dict) -> tuple[Refusal | None, dict]:
+    """Runs the real preflight (`supervisor.preflight.run`, the same check a write-time job block gets) against
+    the block this operation would write, never the weaker standalone checks this validator used to run on its
+    own: a template whose declared probe fails, or whose argv does not resolve, is otherwise invisible until the
+    applier's own write triggers it — a stall, not a named refusal (RF-08). The transcript is never stored
+    whole (it can carry a probe's own stdout); only its digest travels, onto `PlanReport.preflight` and from
+    there onto the plan document itself, so the record `RECOVERY_PLAN.md` 2.2's row promises survives a refusal
+    as well as a pass."""
+    from . import preflight as preflight_mod
+    simulated = {"adapter": adapter, "template": template_id, "params": dict(params)}
+    pf = preflight_mod.run(layout, simulated)
+    digest = hashlib.sha256(json.dumps(pf, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    entry = {"op_index": i, "ok": bool(pf.get("ok")), "digest": digest}
+    if pf.get("ok"):
+        return None, entry
+    detail = pf.get("detail") or {}
+    refusal = _rf("RF-08", "I1 §1.2", i, "template",
+                 _safe(f"set_job's preflight failed ({detail.get('code', 'unknown')}): {detail.get('message', '')}",
+                       layout))
+    return refusal, entry
+
+
 def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], scope: dict[str, set[str]],
-                   created: set[str], templates: dict) -> list[Refusal]:
+                   created: set[str], templates: dict) -> tuple[list[Refusal], dict | None]:
     tid = op.get("task")
     template_id = op.get("template")
     params = op.get("params")
     out = []
     if not isinstance(params, dict):
-        return [_rf("RF-02", "I3 §1.2", i, "params", "set_job.params must be an object")]
+        return [_rf("RF-02", "I3 §1.2", i, "params", "set_job.params must be an object")], None
     if tid not in scope["narrow"]:
-        return [_rf("RF-12", "I2 §1.2", i, "task", f"set_job names {tid!r}, neither the subject nor created by this plan")]
+        return ([_rf("RF-12", "I2 §1.2", i, "task",
+                     f"set_job names {tid!r}, neither the subject nor created by this plan")], None)
     t = tasks.get(tid)
     if t is not None and t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
         out.append(_rf("RF-14", "I2 §1.2", i, "task", f"set_job edits {tid!r}, which is {t.status.value}"))
     tmpl = templates.get(str(template_id))
     if tmpl is None:
         out.append(_rf("RF-05", "I1 §1.2", i, "template", f"template {template_id!r} is not in config/job_templates.yaml"))
-        return out
+        return out, None
     may = tmpl.get("may_be_set_by") or []
     if "plan" not in may:
         out.append(_rf("RF-09", "I2 §1.2", i, "template", f"template {template_id!r} is not may_be_set_by: [plan]"))
@@ -681,12 +712,16 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
         if not isinstance(slot, dict):
             continue
         out += _param_refusals(i, name, value, slot, layout)
-    roots_ok = all(r.rule != "I1 §1.2" or r.code != "RF-07" for r in out)
-    if roots_ok:
-        executable = tmpl.get("argv", [None])[0] if tmpl.get("argv") else tmpl.get("executable")
-        if executable and not _resolve_executable(str(executable), layout.root):
-            out.append(_rf("RF-08", "I1 §1.2", i, "template", f"template {template_id!r}'s executable does not resolve"))
-    return out
+    preflight_entry = None
+    if not out:
+        # Every earlier check in this function passed, so this is the one shape worth the cost of actually
+        # running the preflight: an operation already refused on another ground (RF-06, RF-07, RF-09, RF-11,
+        # RF-14) would only have that same underlying problem reported twice, under two codes, for one cause.
+        adapter = _job_adapter_for_preflight(tid, t, created, tmpl)
+        refusal, preflight_entry = _preflight_transcript_entry(i, layout, adapter, str(template_id), params)
+        if refusal is not None:
+            out.append(refusal)
+    return out, preflight_entry
 
 
 def _param_refusals(op_index: int, name: str, value: Any, slot: dict, layout: Layout) -> list[Refusal]:
@@ -825,6 +860,7 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
     created_tasks = _build_created_tasks(normalised_doc, tasks)
 
     out: list[Refusal] = []
+    preflight_entries: list[dict] = []
     for i, op in enumerate(ops):
         if not isinstance(op, dict) or not isinstance(op.get("op"), str):
             out.append(_rf("RF-02", "I3 §1.2", i, "op", "every operation must be an object naming op"))
@@ -858,7 +894,10 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
         elif name == "patch_contract":
             out += _check_patch_contract(i, op, layout, tasks, scope, created_tasks)
         elif name == "set_job":
-            out += _check_set_job(i, op, layout, tasks, scope, created, templates)
+            job_refusals, pf_entry = _check_set_job(i, op, layout, tasks, scope, created, templates)
+            out += job_refusals
+            if pf_entry is not None:
+                preflight_entries.append(pf_entry)
         elif name == "resume":
             out += _check_resume(i, op, subject_id)
 
@@ -880,7 +919,7 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
     out += _subject_refusals(normalised_doc, layout, tasks)
 
     refusal_dicts = [r.as_dict() for r in out]
-    report = PlanReport(normalised=normalised, scope=sorted(scope["dependency"]))
+    report = PlanReport(normalised=normalised, scope=sorted(scope["dependency"]), preflight=preflight_entries)
     if not refusal_dicts:
         report.graph_diff = _graph_diff(normalised_doc, tasks)
     return report, refusal_dicts
@@ -1029,14 +1068,17 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis") -> dict:
     report, refusals = validate(doc, layout, tasks=tasks_now)
     base = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
             "reason": doc.get("reason"), "expected_rev": doc.get("expected_rev"),
-            "operations": normalised_doc.get("operations"), "revisions": []}
+            "operations": normalised_doc.get("operations"), "revisions": [],
+            # Written whether or not the plan validates: a `set_job` refused for a failed preflight (RF-08) is
+            # refused *because* this ran, and the approver of a plan that does validate needs the same transcript
+            # for the one that passed (D-027 decision 6) — neither reader gets it from a run directory.
+            "report": report.as_dict()}
     to = "refused" if refusals else "awaiting_approval"
     base["history"] = [{"at": store.now_iso(), "by": by, "from": None, "to": to}]
     if refusals:
         base["status"], base["refusals"] = "refused", refusals
     else:
-        base.update({"status": "awaiting_approval", "refusals": [], "report": report.as_dict(),
-                     "done": [], "resume_count": 0})
+        base.update({"status": "awaiting_approval", "refusals": [], "done": [], "resume_count": 0})
     store.write_new(path_for(layout, plan_id), base)
     tasks_mod.log(layout, "plan_refused" if refusals else "plan_proposed", by, plan=plan_id,
                   **({"refusals": [r["code"] for r in refusals]} if refusals else {"scope": report.scope}))
@@ -1162,11 +1204,13 @@ def _log_quiet(layout: Layout, event: str, **fields) -> None:
         pass
 
 
-def _fail_refused(layout: Layout, plan_id: str, refusals: list[dict]) -> dict:
+def _fail_refused(layout: Layout, plan_id: str, refusals: list[dict], report: dict | None = None) -> dict:
     def fn(d):
         d["history"] = _history(d, "applier", "refused")
         d["status"] = "refused"
         d["refusals"] = refusals
+        if report is not None:
+            d["report"] = report               # re-validation at promotion: the same preflight transcript rule
         return d
     doc = store.update(path_for(layout, plan_id), fn)
     _log_quiet(layout, "plan_refused", plan=plan_id, refusals=[r["code"] for r in refusals])
@@ -1324,7 +1368,7 @@ def _apply_pending(layout: Layout, plan_id: str, doc: dict, status: str) -> dict
                 "operations": doc.get("operations")}
         report, refusals = validate(probe, layout, tasks=tasks_now)
         if refusals:
-            return _fail_refused(layout, plan_id, refusals)
+            return _fail_refused(layout, plan_id, refusals, report.as_dict())
         doc = _promote_to_applying(layout, plan_id, order, report.as_dict())
     elif status == "stuck":
         doc = _try_open_stuck_item(layout, plan_id, doc)       # retry a deferred item before trying an effect
