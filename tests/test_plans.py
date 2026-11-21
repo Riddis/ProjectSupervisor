@@ -367,6 +367,21 @@ def test_normalise_dedupe_dependencies(layout):
     assert report.graph_diff["edges_added"] == [["T1", "T2"]]
 
 
+def test_normalise_remove_dependency_keeps_an_id_that_is_already_present(layout):
+    """`dedupe_dependencies` must not treat the one id a removal names — necessarily already present, or there
+    is nothing to remove — as a duplicate of itself. A repeated id within the same remove_dependency op is still
+    deduped (step 8's incidental fix: the seed for "already present" is add_dependency's own, not shared)."""
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(subject="T1", rev=1,
+                    ops=[{"op": "remove_dependency", "task": "T1", "depends_on": ["T0", "T0"]}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["dedupe_dependencies"]
+    assert report.graph_diff["edges_removed"] == [["T1", "T0"]]
+
+
 def test_normalise_drop_complete_waits(layout):
     from tests.conftest import make_task
     make_task(layout, "T0", status="COMPLETE")
