@@ -110,17 +110,22 @@ def inactive_reason(role: str) -> str:
     return f"role {role} is inactive (routing.yaml roles.{role}.active: false)"
 
 
-def preflight_reason(task: Task | None, adapter_name: str) -> str | None:
-    """None when a `process`/`python` job's stored preflight clears it to launch (RECOVERY_PLAN.md section 3.3,
-    invariant 7); else why not. A job with no `task` (a conversation turn) or on any other adapter never reaches
-    this at all -- the rule binds the two adapters that execute a project's own command or function, not every
-    launch (`supervisor.preflight.PREFLIGHT_ADAPTERS`, the one place that set is named)."""
-    from . import preflight as preflight_mod
-    if adapter_name not in preflight_mod.PREFLIGHT_ADAPTERS or task is None:
+def preflight_reason(task: Task | None, adapter_name: str, kind: str) -> str | None:
+    """None when a `process`/`python` *delivery* job's stored preflight clears it to launch (RECOVERY_PLAN.md
+    section 3.3, invariant 7); else why not. Bound to `kind == "delivery"` and to the task's own `job.adapter`
+    matching this launch's adapter, not to the record's adapter alone: a verify, review or diagnosis job never
+    runs the task's own stored `job` block at all -- each builds its own spec and launches it on whatever
+    adapter that needs, `process` among them -- so a task whose own delivery is a model lane's (never
+    preflighted, by design: `preflight.attach` skips every adapter outside `PREFLIGHT_ADAPTERS`) must not have
+    that unrelated, preflight-less block borrowed and refused the moment one of those launches for it."""
+    if kind != "delivery" or task is None:
         return None
     job = task.job
-    if job is None:
-        return None            # nothing written to preflight: the adapter's own default argv/fn is unaffected
+    if job is None or job.adapter != adapter_name:
+        return None            # not the task's own job block running right now: nothing here to check
+    from . import preflight as preflight_mod
+    if adapter_name not in preflight_mod.PREFLIGHT_ADAPTERS:
+        return None            # the adapter's own default argv/fn is unaffected by this rule
     pf = job.preflight
     if pf is None:
         return "preflight missing: write the job block again to record one"
@@ -201,7 +206,7 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
         role = task.owner_role
     if role and role_inactive(layout, role):
         return inactive_reason(role)
-    reason = preflight_reason(task, adapter_name)
+    reason = preflight_reason(task, adapter_name, kind)
     if reason:
         return reason
     ad = REGISTRY.get(adapter_name)

@@ -243,12 +243,27 @@ def attach(layout: Layout, doc: dict) -> None:
     lower-level mutation that leaves the job's content (`preflight` excluded) different from what it was, so
     the stored preflight is always run against the exact block it ends up recorded on, however it got there.
     Left untouched (`None`) for any adapter the gate's own rule does not bind (`PREFLIGHT_ADAPTERS`) -- a model
-    lane's job carries no preflight to go stale, so there is nothing here for it to record."""
+    lane's job carries no preflight to go stale, so there is nothing here for it to record.
+
+    The block is canonicalised through the `Job` model (validate, then dump the same way `gate.preflight_reason`
+    dumps the one it reads back at launch: `mode="json", exclude_none=True, exclude_unset=True`) before anything
+    here digests or checks it -- the writer's own raw dict (an explicit null for a declared key, a numeric
+    string a lax-mode parse would coerce) and the block the gate recomputes from `task.job` later must be the
+    same bytes, or an unchanged block is held as stale forever (RECOVERY_PLAN.md section 3.3). A block too
+    broken even to canonicalise is a failed preflight, same as one `run()` itself cannot classify -- never an
+    exception that would abort the write that carries it."""
     job = doc.get("job")
     if not job or job.get("adapter") not in PREFLIGHT_ADAPTERS:
         return
-    job = dict(job)
-    job.pop("preflight", None)
-    result = run(layout, job)
-    job["preflight"] = result
-    doc["job"] = job
+    raw = {k: v for k, v in dict(job).items() if k != "preflight"}
+    from .models.task import Job
+    try:
+        canonical = Job.model_validate(raw).model_dump(mode="json", exclude_none=True, exclude_unset=True)
+    except Exception as exc:                                   # noqa: BLE001 - uncanonicalisable is a failed preflight
+        canonical = dict(raw)
+        canonical["preflight"] = _fail("preflight_error", f"{type(exc).__name__}: {exc}",
+                                       template=raw.get("template"), digest=block_digest(raw))
+        doc["job"] = canonical
+        return
+    canonical["preflight"] = run(layout, canonical)
+    doc["job"] = canonical
