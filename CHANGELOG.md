@@ -39,6 +39,25 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   two callers that build a document themselves (a plan's `create_task`, a diagnosis's `new_task`) may not name
   `job` at all.
 
+- **`config/job_templates.yaml`, the preflight, and a launch gate that requires one (RECOVERY_PLAN.md section
+  3.3, R-11/R-20).** A project's own template file declares the executable line a `process`/`python` job may
+  reference (`supervisor.templates`): an argv whose slots are one argv element each, typed parameters, a probe,
+  `may_be_set_by`, a timeout cap and a `needs` block — the framework ships none of its own, and a template
+  whose `argv[0]` is a shell (`sh`, `bash`, `cmd`, `powershell`, `pwsh`, `zsh`) is refused unless it is marked
+  `may_be_set_by: [owner]`. Whenever a `process`/`python` job block is written — by a create, a seed, a patch,
+  `task.set_job`, or a plan — `supervisor.preflight` checks it once (a wrong path, a wrong port, an
+  unregistered `python` `fn`, a parameter that does not match its declared type or its callable's signature, an
+  executable that does not resolve, a `timeout_s` above the lane's or the template's own cap, a `timeout_s`
+  below the template's `needs.duration_min`, a secret-shaped value, or a failing/escaping probe — each its own
+  code) and stores the result on the task as `job.preflight: {ok, at, template, probe_digest, detail}`; the
+  gate refuses to launch a `process`/`python` job whose stored preflight is absent, failed, or was recorded
+  against a different job block than the one on disk. A job block carrying a literal `argv`/`fn` declares no
+  parameter slots at all, so nothing in it is required to exist. The probe (when a template declares one) runs
+  under the same declared base environment (R-24) the launch itself would get. **Behaviour change:** a
+  pre-existing `process`/`python` job block with no stored preflight does not launch after this release; the
+  backfill that preflights one at the gate on its first launch, until a one-time sweep is recorded complete,
+  ships in a follow-on step of the same release.
+
 ## 2.8.0 — 2026-11-16
 
 - **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**

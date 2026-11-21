@@ -1102,6 +1102,7 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
         existing = dict(doc.get("job") or {})
         doc["job"] = {**existing, "adapter": existing.get("adapter") or tmpl.get("adapter"),
                      "template": op.get("template"), "params": dict(op.get("params") or {})}
+        # RECOVERY_PLAN.md section 3.3: `tasks_mod._update` preflights the changed block itself.
     tasks_mod._update(layout, op["task"], fn)
 
 

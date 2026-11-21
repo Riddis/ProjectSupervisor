@@ -8,7 +8,7 @@ import sys
 
 import yaml
 
-from supervisor import envconfig, gate, preflight, tasks as tasks_mod
+from supervisor import envconfig, gate, preflight, store, tasks as tasks_mod
 from supervisor.adapters.python import JOBS, job as register_job
 from tests.conftest import make_task
 
@@ -190,8 +190,12 @@ def test_gate_refuses_a_process_job_with_a_failed_preflight(layout):
 
 
 def test_gate_refuses_a_process_job_whose_block_changed_since_its_preflight(layout):
+    """Every path this release gives a job block -- `tasks._write_job`'s callers and `tasks._update`'s own
+    generic mutation -- re-preflights a block it actually changes; staleness is what is left for a write that
+    bypasses both (a store write below either, as only a direct YAML edit or an older release's row could)."""
     make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "timeout_s": 60})
-    tasks_mod._update(layout, "T1", lambda d: d["job"].update(timeout_s=999))   # drifts without re-preflighting
+    path = tasks_mod.path_for(layout, "T1")
+    store.update(path, lambda d: d["job"].update(timeout_s=999), lock_path=layout.state / ".tasks.lock")
     t = tasks_mod.load(layout, "T1")
     reason = gate.check(layout, t, "process", "delivery", running=[])
     assert reason and "stale" in reason

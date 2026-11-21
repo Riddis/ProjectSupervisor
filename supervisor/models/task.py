@@ -158,6 +158,20 @@ class Check(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class JobPreflight(BaseModel):
+    """`supervisor.preflight`'s own record of one write-time check (RECOVERY_PLAN.md section 3.3): `ok` is the
+    one `supervisor.gate` reads; `detail['block_digest']` is the job block's own content, `preflight` excluded,
+    the moment this result was recorded -- a mismatch against the block now on disk means it changed since, and
+    the gate refuses exactly as it would an absent or failed one."""
+    ok: bool
+    at: str
+    template: Optional[str] = None
+    probe_digest: Optional[str] = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
 class Job(BaseModel):
     """What a lane's `prepare()` reads (RECOVERY_PLAN.md section 3.2): the framework-known keys, typed — a wrong
     type is refused the moment a document carrying it is validated. An adapter's own keys beyond these (a
@@ -179,6 +193,8 @@ class Job(BaseModel):
     effort: Optional[str] = None
     prompt: Optional[str] = None
     result_kind: Optional[str] = None
+    preflight: Optional[JobPreflight] = None                   # RECOVERY_PLAN.md section 3.3: written at the
+                                                                 # same time as the rest of the block, never by hand
 
     model_config = {"extra": "allow"}
 

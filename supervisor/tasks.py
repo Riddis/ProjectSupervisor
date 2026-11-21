@@ -61,17 +61,23 @@ def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
     return [f"actor {actor!r} may not write a job block; only the owner or a plan may (RECOVERY_PLAN.md section 3.4)"]
 
 
-def _write_job(doc: dict, job_value: dict | None, actor: str) -> None:
+def _write_job(layout: Layout, doc: dict, job_value: dict | None, actor: str) -> None:
     """The one chokepoint that sets `doc['job']` from a writer-controlled value, under the rule above: every write
     path whose job is the writer's own literal choice goes through here — a created row (`check_new`, which every
     `create()` and the queued `task.create` reach), a seed's create and refresh branches, a patch and
     `task.set_job`. A plan's own `set_job` effect (`plans._effect_set_job`) is not routed through this: its shape
     (an adapter inherited from the existing job or the template, never the writer's own choice) is pre-vetted by
-    RF-04 at promotion time and is not the literal value this rule judges."""
+    RF-04 at promotion time and is not the literal value this rule judges.
+
+    RECOVERY_PLAN.md section 3.3: the block this write ends up carrying is preflighted here, once, against
+    exactly what is about to be stored -- never left for the gate to discover wrong at the first launch."""
     errors = _job_writer_errors(actor, job_value or {})
     if errors:
         raise TaskError("; ".join(errors))
     doc["job"] = dict(job_value) if job_value else None
+    if doc["job"] is not None:
+        from . import preflight as preflight_mod
+        preflight_mod.attach(layout, doc)
 
 
 def job_schema_problems(layout: Layout, job) -> tuple[list[str], list[str]]:
@@ -485,7 +491,7 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     doc.update({"attempts": [], "result": None, "paths": []})
     doc = _default_evidence(doc)
     if doc.get("job"):
-        _write_job(doc, doc["job"], actor)                # before pydantic: authority first, then the shape
+        _write_job(layout, doc, doc["job"], actor)        # before pydantic: authority first, then the shape
     elif "job" in doc:
         doc["job"] = None
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
@@ -551,7 +557,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
                 continue
             doc = dict(t)
             if "job" in doc:
-                _write_job(doc, doc["job"], actor)                       # the same chokepoint a refresh goes through
+                _write_job(layout, doc, doc["job"], actor)               # the same chokepoint a refresh goes through
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": []})
             doc = _default_evidence(doc)
@@ -560,7 +566,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             changed.append(task)
             created.append(tid)
         elif tid in update_ids:
-            merged = _refresh_contract(dict(store.read(path_for(layout, tid))), t, actor)   # validates in memory
+            merged = _refresh_contract(layout, dict(store.read(path_for(layout, tid))), t, actor)   # validates in memory
             resulting[tid] = Task.model_validate(merged)
             changed.append(resulting[tid])
             updated.append(tid)
@@ -583,7 +589,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             _sync_turn_snapshot(Task.model_validate(written))
         for t in seed:
             if t["id"] in updated:
-                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t, actor),
+                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(layout, doc, t, actor),
                                        lock_path=layout.state / ".tasks.lock")
                 _sync_turn_snapshot(Task.model_validate(written))
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
@@ -596,14 +602,14 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     return out
 
 
-def _refresh_contract(doc: dict, t: dict, actor: str = "cli") -> dict:
+def _refresh_contract(layout: Layout, doc: dict, t: dict, actor: str = "cli") -> dict:
     """Copy the seed's contract fields onto a stored task document and validate the result. Whole-contract
     replace except REFRESH_STICKY_FIELDS (R-07d): an omitted key elsewhere is cleared, an omitted sticky one is
     left at whatever the document already had. `job` is never cleared by omission either (it is not a
     CONTRACT_FIELDS key at all); when the seed row names one, the writer-authority rule of section 3.4 decides
     whether it may be applied."""
     if "job" in t:
-        _write_job(doc, t["job"], actor)
+        _write_job(layout, doc, t["job"], actor)
     for k in CONTRACT_FIELDS:
         if k in t:
             doc[k] = t[k]
@@ -616,7 +622,7 @@ def _refresh_contract(doc: dict, t: dict, actor: str = "cli") -> dict:
 PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency", "job"}
 
 
-def _apply_patch(doc: dict, fields: dict, actor: str = "cli") -> dict:
+def _apply_patch(layout: Layout, doc: dict, fields: dict, actor: str = "cli") -> dict:
     """Apply one patch's fields onto a stored task document (mutates and returns it, validated): a direct
     CONTRACT_FIELDS assignment, `add_dependency`/`remove_dependency` (an id, or a list) against the document's
     OWN current `depends_on` — never a caller's possibly-stale copy of it, so two concurrent dependency edits
@@ -633,7 +639,7 @@ def _apply_patch(doc: dict, fields: dict, actor: str = "cli") -> dict:
     if "add_dependency" in fields or "remove_dependency" in fields:
         doc["depends_on"] = deps
     if "job" in fields:
-        _write_job(doc, fields["job"], actor)
+        _write_job(layout, doc, fields["job"], actor)
     for k, v in fields.items():
         if k in CONTRACT_FIELDS:
             doc[k] = v
@@ -652,7 +658,7 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     existing = load_all(layout)
     if task_id not in existing:
         raise TaskError(f"no such task {task_id}")
-    merged = _apply_patch(dict(store.read(path_for(layout, task_id))), fields, actor)
+    merged = _apply_patch(layout, dict(store.read(path_for(layout, task_id))), fields, actor)
     task = Task.model_validate(merged)
     combined = dict(existing)
     combined[task_id] = task
@@ -664,7 +670,7 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
     if errors:
         raise TaskError("patch invalid: " + "; ".join(errors))
-    store.update(path_for(layout, task_id), lambda doc: _apply_patch(doc, fields, actor), lock_path=layout.state / ".tasks.lock")
+    store.update(path_for(layout, task_id), lambda doc: _apply_patch(layout, doc, fields, actor), lock_path=layout.state / ".tasks.lock")
     log(layout, "task_patch", actor, task=task_id, fields=sorted(fields))
     out = {"id": task_id}
     if warnings:
@@ -780,8 +786,19 @@ def completion_check(task: Task) -> str | None:
 # ------------------------------------------------------------------ mutation helpers (all decide on the locked doc)
 
 def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
+    """`fn` mutates the locked document; a `job` block it leaves changed (content other than `preflight` itself
+    differs from what was there before `fn` ran) is preflighted here before the write lands (RECOVERY_PLAN.md
+    section 3.3) -- the one chokepoint every lower-level job mutation shares with `_write_job`'s own callers, so
+    a diagnosis's or a plan's direct `doc['job'] = ...` is covered the same as a patch. An `fn` that leaves the
+    job untouched never re-runs the probe: `tasks.hold`, a status transition and anything else that reaches
+    `_update` without a job of its own interest pays nothing for it."""
     def wrapped(doc):
+        from . import preflight as preflight_mod
+        before = preflight_mod.block_digest(doc.get("job") or {})
         fn(doc)
+        job = doc.get("job") or {}
+        if job and preflight_mod.block_digest(job) != before:
+            preflight_mod.attach(layout, doc)
         Task.model_validate(doc)      # never persist an invalid task
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")

@@ -97,6 +97,13 @@ def make_task(layout: Layout, tid: str, phase: int = 0, deps=(), reviewer=(), hu
            "acceptance": "ok", "escalation": "none", "human_approval": human, "cost_category": "deterministic",
            "status": status}
     doc.update(fields)
+    if doc.get("job") and "preflight" not in doc["job"]:
+        # Mirrors the real write path (RECOVERY_PLAN.md section 3.3): a fixture that hands `job={"adapter":
+        # "process"/"python", ...}` gets the same freshly-run preflight a real write would attach, so a test
+        # exercising the gate or the loop still launches without naming one itself. A test that wants an
+        # absent/failed/stale preflight writes `job={..., "preflight": {...}}` explicitly instead.
+        from . import preflight as preflight_mod
+        preflight_mod.attach(layout, doc)
     return store.write_new(layout.tasks / f"{tid}.yaml", doc)
 
 

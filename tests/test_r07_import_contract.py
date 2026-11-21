@@ -63,7 +63,9 @@ def test_refresh_stores_evidence_test_roots_and_the_seeds_own_job(layout):
     assert doc["title"] == "t2"
     assert doc.get("evidence") == "review"
     assert doc.get("test_roots") == ["sub"]
-    assert doc.get("job") == {"adapter": "process", "argv": ["x"]}
+    # `preflight` (RECOVERY_PLAN.md section 3.3) is attached by the same write; "x" is not an executable, so it
+    # fails, which does not block the write -- only naming the field it was writing, never its value.
+    assert {k: v for k, v in doc.get("job", {}).items() if k != "preflight"} == {"adapter": "process", "argv": ["x"]}
     assert "job_not_applied" not in r
 
 

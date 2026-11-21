@@ -236,7 +236,7 @@ def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category
     task, warnings) — an unknown key for an adapter with no declared schema is kept and warned, never refused
     (`tasks.job_schema_problems`)."""
     def fn(doc):
-        tasks_mod._write_job(doc, job, actor)
+        tasks_mod._write_job(layout, doc, job, actor)
         if cost_category:
             doc["cost_category"] = cost_category
     t = tasks_mod._update(layout, task_id, fn)

@@ -110,6 +110,30 @@ def inactive_reason(role: str) -> str:
     return f"role {role} is inactive (routing.yaml roles.{role}.active: false)"
 
 
+def preflight_reason(task: Task | None, adapter_name: str) -> str | None:
+    """None when a `process`/`python` job's stored preflight clears it to launch (RECOVERY_PLAN.md section 3.3,
+    invariant 7); else why not. A job with no `task` (a conversation turn) or on any other adapter never reaches
+    this at all -- the rule binds the two adapters that execute a project's own command or function, not every
+    launch (`supervisor.preflight.PREFLIGHT_ADAPTERS`, the one place that set is named)."""
+    from . import preflight as preflight_mod
+    if adapter_name not in preflight_mod.PREFLIGHT_ADAPTERS or task is None:
+        return None
+    job = task.job
+    if job is None:
+        return None            # nothing written to preflight: the adapter's own default argv/fn is unaffected
+    pf = job.preflight
+    if pf is None:
+        return "preflight missing: write the job block again to record one"
+    if not pf.ok:
+        detail = pf.detail or {}
+        return f"preflight failed ({detail.get('code', 'unknown')}): {detail.get('message', detail)}"
+    current = job.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+    current.pop("preflight", None)
+    if preflight_mod.block_digest(current) != (pf.detail or {}).get("block_digest"):
+        return "preflight stale: the job block changed since it was recorded"
+    return None
+
+
 # Job kinds whose agent is the task's owner role; a review's agent is its `review_role`, a verify job runs
 # deterministic commands and a diagnosis/conversation names its own role in the spec.
 OWNER_ROLE_KINDS = ("delivery",)
@@ -177,6 +201,9 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
         role = task.owner_role
     if role and role_inactive(layout, role):
         return inactive_reason(role)
+    reason = preflight_reason(task, adapter_name)
+    if reason:
+        return reason
     ad = REGISTRY.get(adapter_name)
     if ad is None:
         return f"adapter {adapter_name} not registered"

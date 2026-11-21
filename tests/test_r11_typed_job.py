@@ -53,7 +53,9 @@ def test_a_refresh_carries_a_job_change(layout):
     assert r["updated"] == ["A"]
     assert "job_not_applied" not in r
     doc = store.read(layout.tasks / "A.yaml")
-    assert doc.get("job") == {"adapter": "process", "argv": ["y"]}
+    # `preflight` (RECOVERY_PLAN.md section 3.3) is attached by the same write; "y" is not an executable, so it
+    # fails, which does not block the write -- only naming the field it was writing, never its value.
+    assert {k: v for k, v in doc.get("job", {}).items() if k != "preflight"} == {"adapter": "process", "argv": ["y"]}
 
 
 def test_a_refresh_omitting_job_leaves_an_earlier_one_alone(layout):
@@ -65,7 +67,7 @@ def test_a_refresh_omitting_job_leaves_an_earlier_one_alone(layout):
     tasks.import_seed(layout, p, update_ids=["A"])
 
     doc = store.read(layout.tasks / "A.yaml")
-    assert doc.get("job") == {"adapter": "process", "argv": ["keep"]}
+    assert {k: v for k, v in doc.get("job", {}).items() if k != "preflight"} == {"adapter": "process", "argv": ["keep"]}
 
 
 # ---------------------------------------------------------------- a task.patch carries a job change too
