@@ -248,6 +248,21 @@ def test_a_misspelled_key_is_refused_for_a_built_in_lane_with_a_schema(layout):
         tasks.patch_task(layout, "A", {"job": {"adapter": "claude_cli", "prompt_fiel": "x.md"}}, actor="owner")
 
 
+@pytest.mark.parametrize("adapter", ["claude_cli", "claude_api", "codex_cli"])
+def test_the_review_lanes_own_confinement_keys_draw_no_refusal_on_any_review_lane(layout, adapter):
+    """The framework composes its review lane (`tools`, `sandbox`, `write_scope`) into the job of whichever lane
+    reviews, and documents all three as data a role may override. An owner writing that shape by hand must
+    therefore not be refused by the lane's own schema for a key the framework itself puts there — whichever of
+    them that lane actually reads (a per-path write mode, a sandbox mode, or neither)."""
+    make_task(layout, "A", cost_category="deterministic", owned_paths=["."])
+
+    r = tasks.patch_task(layout, "A", {"job": {"adapter": adapter, "tools": "reviewer",
+                                               "sandbox": "read-only", "write_scope": "run_dir"}}, actor="owner")
+
+    assert r.get("warnings", []) == []
+    assert tasks.load(layout, "A").job.model_extra.get("sandbox") == "read-only"
+
+
 def test_the_human_lanes_own_documented_keys_draw_no_warning(layout):
     make_task(layout, "A", cost_category="deterministic")
 
@@ -255,6 +270,89 @@ def test_the_human_lanes_own_documented_keys_draw_no_warning(layout):
                                                "allowed_responses": ["ACCEPT"]}}, actor="owner")
 
     assert r.get("warnings", []) == []
+
+
+# ------------------------------------------- the create path is a job write path too (section 3.4, decision 7)
+
+def test_a_non_owner_create_may_not_carry_a_literal_argv(layout):
+    """A created row's job is the writer's own literal choice exactly like a refresh's or a patch's, so the same
+    rule decides it: the create path must not be the one way around the authority check."""
+    with pytest.raises(tasks.TaskError, match="may not write a job"):
+        tasks.create(layout, _row("NEW", job={"adapter": "process", "argv": ["sneaky"]}), actor="worker")
+
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+def test_a_create_naming_no_actor_at_all_may_not_carry_a_job(layout):
+    """Authority is asserted, never inherited from a default parameter value."""
+    with pytest.raises(tasks.TaskError, match="may not write a job"):
+        tasks.create(layout, _row("NEW", job={"adapter": "process", "argv": ["z"]}))
+
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+def test_a_plan_creating_a_task_may_not_carry_a_literal_argv(layout):
+    """The one actor decision 7 forbids an `argv`: a plan creating a task may name a template and typed params
+    only, whichever write path it reaches."""
+    with pytest.raises(tasks.TaskError, match="template and job.params only"):
+        tasks.create(layout, _row("NEW", job={"adapter": "process", "argv": ["sneaky"]}), actor="plan")
+
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+def test_the_owners_create_may_carry_a_literal_argv(layout):
+    r = tasks.create(layout, _row("NEW", job={"adapter": "process", "argv": ["ok"]}), actor="owner")
+
+    assert r["id"] == "NEW"
+    assert tasks.load(layout, "NEW").job.argv == ["ok"]
+
+
+def test_a_queued_task_create_from_a_non_owner_carries_no_job(layout):
+    """A queued command envelope names its own actor (a plugin's `submit_command(..., actor=...)`, a hand-written
+    file): applying it must not create a task whose job the loop would then run."""
+    commands.submit(layout, "task.create", {"task": _row("NEW", job={"adapter": "process", "argv": ["sneaky"]})},
+                    actor="worker")
+
+    out = commands.apply_all(layout)
+
+    assert out[0]["ok"] is False and "may not write a job" in out[0]["error"]
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+def test_a_queued_task_create_from_the_owner_carries_its_job(layout):
+    commands.submit(layout, "task.create", {"task": _row("NEW", job={"adapter": "process", "argv": ["ok"]})},
+                    actor="owner")
+
+    out = commands.apply_all(layout)
+
+    assert out[0]["ok"] is True, out[0].get("error")
+    assert tasks.load(layout, "NEW").job.argv == ["ok"]
+
+
+def test_a_create_carrying_an_empty_job_is_no_write_and_needs_no_authority(layout):
+    """A document built from a whole task names every declared field, `job` among them: saying a new row runs
+    nothing is not a job write, and there is nothing on a new row to clear."""
+    r = tasks.create(layout, _row("NEW", job=None))
+
+    assert r["id"] == "NEW"
+    assert tasks.load(layout, "NEW").job is None
+
+
+def test_a_misspelled_key_on_a_created_row_is_refused_for_an_adapter_with_a_schema(tmp_path):
+    lay = plugins.load(testing.project(tmp_path, modules={"schema": SCHEMA_PLUGIN})).layout
+
+    with pytest.raises(tasks.TaskError, match="worfklow_typo"):
+        tasks.create(lay, _row("NEW", job={"adapter": "widget", "workflow": "a", "worfklow_typo": "b"}),
+                     actor="owner")
+
+    assert not (lay.tasks / "NEW.yaml").exists()
+
+
+def test_a_misspelled_key_on_a_created_row_is_warned_for_an_adapter_with_no_schema(layout):
+    r = tasks.create(layout, _row("NEW", job={"adapter": "process", "argvv_typo": ["x"]}), actor="owner")
+
+    assert any("argvv_typo" in w for w in r.get("warnings", []))
+    assert tasks.load(layout, "NEW").job.model_extra.get("argvv_typo") == ["x"]
 
 
 # -------------------------------------------------- job is a declared field, not model_extra (plugin API, 3.2)
