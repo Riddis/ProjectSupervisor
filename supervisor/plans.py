@@ -41,7 +41,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from . import policy as policy_mod
 from . import tasks as tasks_mod
-from .models.task import Task, TaskStatus
+from .models.task import Check, Task, TaskStatus
 from .paths import Layout
 
 PLAN_SCHEMA = 1
@@ -190,11 +190,17 @@ def _shape_message(name: str, exc: ValidationError, layout: Layout) -> str:
 # ----------------------------------------------------------------------- scanning every string of every operation
 
 def _iter_strings(value: Any, path: str):
+    """Every string an operation carries, value and key alike: a credential- or command-shaped field *name* is as
+    unscreened as a value in the same position would be, and RF-21/RF-03 bind "every string of every operation",
+    not "every value"."""
     if isinstance(value, str):
         yield path, value
     elif isinstance(value, dict):
         for k, v in value.items():
-            yield from _iter_strings(v, f"{path}.{k}" if path else str(k))
+            child = f"{path}.{k}" if path else str(k)
+            if isinstance(k, str):
+                yield child, k
+            yield from _iter_strings(v, child)
     elif isinstance(value, list):
         for i, v in enumerate(value):
             yield from _iter_strings(v, f"{path}[{i}]")
@@ -231,16 +237,38 @@ def _is_contract_content(field_path: str) -> bool:
     return field_path.startswith("task.") or field_path.startswith("fields.")
 
 
-def _executable_content_refusals(op_index: int, op: dict) -> list[Refusal]:
+def _check_tuple(c: Any) -> tuple:
+    """A check entry's whole content (command, cwd, timeout_s), whatever shape it arrives in — the task's own
+    `Check` model, a plan's dict, or a bare command string — so a restatement is recognised by content and not by
+    representation."""
+    if isinstance(c, Check):
+        return (c.command, c.cwd, c.timeout_s)
+    if isinstance(c, dict):
+        return (c.get("command"), c.get("cwd"), c.get("timeout_s"))
+    return (c, None, None)
+
+
+def _existing_contract(op: dict, tasks: dict[str, Task], created_tasks: dict[str, Task]) -> Task | None:
+    tid = op.get("task")
+    return tasks.get(tid) if tid in tasks else created_tasks.get(tid)
+
+
+def _executable_content_refusals(op_index: int, op: dict, tasks: dict[str, Task],
+                                 created_tasks: dict[str, Task]) -> list[Refusal]:
     """RF-03 for the contract's own executable content: a check (a command verification re-runs, with its own
     `cwd`) or a test root (the directory set a declared command may `cwd` into). §1.3's `checks_to_tests` has
     already moved every prose entry out of `checks` by the time this runs, so what is left in it resolves to
-    something executable — which is exactly what R0 says a model's output never becomes. The refusal names the
-    field and how many entries it carried, never an entry."""
+    something executable — which is exactly what R0 says a model's output never becomes.
+
+    What counts as *authored* is a diff against the contract the task already carries (its own on the store, or
+    the one this same plan is creating): an entry identical to one already there is a restatement, never refused;
+    an entry the plan adds is authored, and refused whole regardless of how many of its siblings are old. A
+    `create_task` has no existing contract to restate, so every entry it proposes is authored. The refusal names
+    the field and how many entries it added, never an entry."""
     if op.get("op") == "create_task":
-        content, prefix = op.get("task"), "task"
+        content, prefix, existing = op.get("task"), "task", None
     elif op.get("op") == "patch_contract":
-        content, prefix = op.get("fields"), "fields"
+        content, prefix, existing = op.get("fields"), "fields", _existing_contract(op, tasks, created_tasks)
     else:
         return []
     if not isinstance(content, dict):
@@ -253,27 +281,41 @@ def _executable_content_refusals(op_index: int, op: dict) -> list[Refusal]:
         entries = entries if isinstance(entries, list) else [entries]
         if not entries:
             continue                       # an empty list sets nothing executable; RF-16 judges what it removes
+        if key == "checks":
+            old = {_check_tuple(c) for c in (existing.checks if existing is not None else [])}
+            authored = [e for e in entries if _check_tuple(e) not in old]
+        else:
+            old = set(existing.test_roots) if existing is not None else set()
+            authored = [e for e in entries if e not in old]
+        if not authored:
+            continue                       # every entry restates one the task's own contract already carries
         what = "check command" if key == "checks" else "test root"
         out.append(_rf("RF-03", "I1 §1.2", op_index, f"{prefix}.{key}",
-                       f"{prefix}.{key} proposes {len(entries)} {what}(s); a command the supervisor runs, the "
-                       f"directory it runs in and the roots that bound it are human-written contract data"))
+                       f"{prefix}.{key} proposes {len(authored)} new {what}(s); a command the supervisor runs, "
+                       f"the directory it runs in and the roots that bound it are human-written contract data"))
     return out
 
 
-def _command_shaped_refusals(op_index: int, op: dict, templates: dict) -> list[Refusal]:
+def _command_shaped_refusals(op_index: int, op: dict, templates: dict, layout: Layout) -> list[Refusal]:
+    """`field_path` walks every key and value an operation carries (`_iter_strings`), so it is itself built from
+    data a plan controls — a credential-shaped *key* makes `field_path` the thing that must not travel, exactly
+    as much as a value would. Both the message and the refusal's own `field` go through `_safe`, never the raw
+    path, for that reason."""
     allowed_path_fields = _path_param_fields(op, templates)
     out = []
     for field_path, s in _iter_strings(op, ""):
         if field_path == "op":
             continue
+        safe_field = _safe(field_path, layout)
         if any(c in s for c in _SHELL_META):
-            out.append(_rf("RF-03", "I1 §1.2", op_index, field_path,
-                           f"{field_path!r} contains a shell metacharacter or control character"))
+            out.append(_rf("RF-03", "I1 §1.2", op_index, safe_field,
+                           _safe(f"{field_path!r} contains a shell metacharacter or control character", layout)))
             continue
         if (any(c in s for c in _PATH_SEP) and field_path not in allowed_path_fields
                 and not _is_contract_content(field_path)):
-            out.append(_rf("RF-03", "I1 §1.2", op_index, field_path,
-                           f"{field_path!r} contains a path separator outside a parameter declared as a path"))
+            out.append(_rf("RF-03", "I1 §1.2", op_index, safe_field,
+                           _safe(f"{field_path!r} contains a path separator outside a parameter declared as a "
+                                 f"path", layout)))
     return out
 
 
@@ -283,7 +325,8 @@ def _secret_shaped_refusals(op_index: int, op: dict, layout: Layout) -> list[Ref
         if field_path == "op":
             continue
         if policy_mod.find_secrets(s, layout):
-            out.append(_rf("RF-21", "I1 §1.2", op_index, field_path, f"{field_path!r} holds a secret-shaped value"))
+            out.append(_rf("RF-21", "I1 §1.2", op_index, _safe(field_path, layout),
+                           _safe(f"{field_path!r} holds a secret-shaped value", layout)))
     return out
 
 
@@ -298,11 +341,17 @@ def _resolves(first_token: str) -> bool:
 
 
 def _normalise_fields(fields: dict, op_index: int, normalised: list[dict],
-                      existing_tests: list[str] | None = None) -> dict:
+                      existing_tests: list[str] | None = None,
+                      existing_checks: list[Check] | None = None) -> dict:
     """`checks_to_tests`: a `checks` entry whose first token resolves to nothing executable moves to `tests`.
     `existing_tests` (the task's current contract, for `patch_contract` only) is the base the moved entries join
     when the operation's own `fields` does not already state `tests` — so the move itself never trips RF-16 by
-    discarding what the contract already carries."""
+    discarding what the contract already carries.
+
+    `existing_checks` is the same correction for the field the move empties: a plan correcting prose it put in
+    `checks` did not ask to remove the real command already there, so a check the task already carries and this
+    operation does not otherwise restate is merged back into what the move leaves behind — the move itself is
+    never read as the one correction turn §2.5 grants being spent on an entry nobody touched."""
     checks = fields.get("checks")
     if not checks:
         return fields
@@ -313,6 +362,11 @@ def _normalise_fields(fields: dict, op_index: int, normalised: list[dict],
         (moved if not _resolves(first) else kept).append(c)
     if not moved:
         return fields
+    seen = {_check_tuple(c) for c in kept}
+    for ec in existing_checks or []:
+        if _check_tuple(ec) not in seen:
+            kept.append(ec.model_dump(mode="json"))
+            seen.add(_check_tuple(ec))
     fields = dict(fields)
     fields["checks"] = kept
     base_tests = fields["tests"] if "tests" in fields else (existing_tests or [])
@@ -368,7 +422,8 @@ def normalise(doc: dict, tasks: dict[str, Task]) -> tuple[dict, list[dict]]:
         if op.get("op") == "patch_contract" and isinstance(op.get("fields"), dict):
             target = tasks.get(op.get("task"))
             op["fields"] = _normalise_fields(op["fields"], i, normalised,
-                                             existing_tests=list(target.tests) if target is not None else None)
+                                             existing_tests=list(target.tests) if target is not None else None,
+                                             existing_checks=list(target.checks) if target is not None else None)
         if op.get("op") == "create_task" and isinstance(op.get("task"), dict):
             op["task"] = _normalise_fields(op["task"], i, normalised)
         out_ops.append(op)
@@ -438,7 +493,8 @@ def _check_create_task(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
     unknown = keys - CREATE_ALLOWED_FIELDS - CREATE_FORBIDDEN_FIELDS
     if unknown:
         out.append(_rf("RF-02", "I3 §1.2", i, "task",
-                       f"create_task.task carries {', '.join(sorted(unknown))}, not a contract field"))
+                       _safe(f"create_task.task carries {', '.join(sorted(unknown))}, not a contract field",
+                             layout)))
     if out:
         return out
     tid = task_doc.get("id")
@@ -486,7 +542,11 @@ def _check_dependency_op(i: int, op: dict, tasks: dict[str, Task], scope: dict[s
 
 
 def _check_patch_contract(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
-                          scope: dict[str, set[str]]) -> list[Refusal]:
+                          scope: dict[str, set[str]], created_tasks: dict[str, Task]) -> list[Refusal]:
+    """A patch to a task this same plan creates is checked against the contract the plan is creating it with —
+    monotonicity, the RF-02 shape check and RF-18 all see the task as it would exist once applied, not as `None`
+    (a created task parked forever on an unconfigured role is exactly what RF-18 refuses on `create_task` itself;
+    the patch path offers the same stall through a second operation)."""
     out = []
     tid = op.get("task")
     fields = op.get("fields")
@@ -495,6 +555,8 @@ def _check_patch_contract(i: int, op: dict, layout: Layout, tasks: dict[str, Tas
     if tid not in scope["narrow"]:
         out.append(_rf("RF-13", "I2 §1.2", i, "task", f"patch_contract names {tid!r}, outside the plan's scope"))
     t = tasks.get(tid)
+    if t is None:
+        t = created_tasks.get(tid)
     if t is not None and t.status in (TaskStatus.COMPLETE, TaskStatus.CANCELLED):
         out.append(_rf("RF-14", "I2 §1.2", i, "task", f"patch_contract edits {tid!r}, which is {t.status.value}"))
     for key in fields:
@@ -504,7 +566,8 @@ def _check_patch_contract(i: int, op: dict, layout: Layout, tasks: dict[str, Tas
             out.append(_rf("RF-16", "I2 §1.2", i, "fields.acceptance", "patch_contract may not revise acceptance"))
         elif key not in PATCH_ALLOWED_FIELDS:
             out.append(_rf("RF-02", "I3 §1.2", i, f"fields.{key}",
-                           f"patch_contract.fields may not set {key!r} (through the dependency ops only, or not at all)"))
+                           _safe(f"patch_contract.fields may not set {key!r} (through the dependency ops only, "
+                                 f"or not at all)", layout)))
     if out or t is None:
         return out
     out += _monotonicity_refusals(i, t, fields)
@@ -599,7 +662,9 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
     decl = tmpl.get("params") or {}
     unknown = set(params) - set(decl)
     if unknown:
-        out.append(_rf("RF-06", "I1 §1.2", i, "params", f"set_job.params names {', '.join(sorted(unknown))}, not declared by {template_id!r}"))
+        out.append(_rf("RF-06", "I1 §1.2", i, "params",
+                       _safe(f"set_job.params names {', '.join(sorted(unknown))}, not declared by {template_id!r}",
+                             layout)))
     for name, value in params.items():
         slot = decl.get(name)
         if not isinstance(slot, dict):
@@ -655,23 +720,35 @@ def _check_resume(i: int, op: dict, subject_id: str) -> list[Refusal]:
     return out
 
 
-def _graph_refusals(doc: dict, tasks: dict[str, Task]) -> list[Refusal]:
-    """Simulate every add_dependency/remove_dependency on a copy of the graph and check for a cycle, or a subject
-    left waiting on nothing (or only on tasks already COMPLETE) when `resume.as == blocked_on_dependencies`."""
-    out = []
-    graph = dict(tasks)
+def _build_created_tasks(doc: dict, tasks: dict[str, Task]) -> dict[str, Task]:
+    """Every `create_task` operation's task, built once as the `Task` it would be once applied — the same object
+    a patch to it (RF-18, monotonicity, RF-02) and the dependency graph (`_graph_refusals`) both need, built once
+    so the two never disagree about what a created task's contract holds. An operation whose own `task` does not
+    validate contributes nothing here; `_check_create_task` is what refuses it."""
     subject_id = (doc.get("subject") or {}).get("task")
     subject = tasks.get(subject_id)
-    inherited = {"phase": subject.phase} if subject is not None else {"phase": 0}
+    inherited = {"phase": subject.phase, "human_approval": subject.human_approval, "escalation": subject.escalation,
+                "priority": subject.priority} if subject is not None else {"phase": 0}
+    created: dict[str, Task] = {}
     for op in doc.get("operations") or []:
         if not isinstance(op, dict):
             continue
         if op.get("op") == "create_task" and isinstance(op.get("task"), dict) and op["task"].get("id"):
             try:
-                graph[op["task"]["id"]] = Task.model_validate({**inherited, **op["task"], "status": "NOT_STARTED",
-                                                               "attempts": [], "result": None, "paths": []})
+                created[op["task"]["id"]] = Task.model_validate({**inherited, **op["task"], "status": "NOT_STARTED",
+                                                                  "attempts": [], "result": None, "paths": []})
             except Exception:
                 continue
+    return created
+
+
+def _graph_refusals(doc: dict, tasks: dict[str, Task], created_tasks: dict[str, Task]) -> list[Refusal]:
+    """Simulate every add_dependency/remove_dependency on a copy of the graph and check for a cycle, or a subject
+    left waiting on nothing (or only on tasks already COMPLETE) when `resume.as == blocked_on_dependencies`."""
+    out = []
+    graph = dict(tasks)
+    graph.update(created_tasks)
+    subject_id = (doc.get("subject") or {}).get("task")
     for op in doc.get("operations") or []:
         if not isinstance(op, dict) or op.get("op") not in ("add_dependency", "remove_dependency"):
             continue
@@ -734,6 +811,7 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
     subject_id = normalised_doc["subject"]["task"]
     scope = compute_scope(normalised_doc, tasks)
     created = scope["narrow"] - {subject_id}
+    created_tasks = _build_created_tasks(normalised_doc, tasks)
 
     out: list[Refusal] = []
     for i, op in enumerate(ops):
@@ -750,8 +828,8 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
         # The value scans first, and whatever the shape check then decides: RF-03 runs on every string of every
         # operation (§1.2), which an operation skipped for its shape would not be, and an operation carrying a
         # credential must reach RF-21 before anything builds a message out of it.
-        scanned = (_command_shaped_refusals(i, op, templates) + _secret_shaped_refusals(i, op, layout)
-                   + _executable_content_refusals(i, op))
+        scanned = (_command_shaped_refusals(i, op, templates, layout) + _secret_shaped_refusals(i, op, layout)
+                   + _executable_content_refusals(i, op, tasks, created_tasks))
         out += scanned
         try:
             _OP_MODELS[name].model_validate(op)
@@ -767,7 +845,7 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
         elif name in ("add_dependency", "remove_dependency"):
             out += _check_dependency_op(i, op, tasks, scope)
         elif name == "patch_contract":
-            out += _check_patch_contract(i, op, layout, tasks, scope)
+            out += _check_patch_contract(i, op, layout, tasks, scope, created_tasks)
         elif name == "set_job":
             out += _check_set_job(i, op, layout, tasks, scope, created, templates)
         elif name == "resume":
@@ -787,7 +865,7 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
         out.append(_rf("RF-10", "I2 §1.2", None, "operations", f"{len(creates)} creates exceeds plan.max_creates ({cfg['max_creates']})"))
     if len(set_job_ops) > 1:
         out.append(_rf("RF-10", "I2 §1.2", None, "operations", "more than one set_job in a plan"))
-    out += _graph_refusals(normalised_doc, tasks)
+    out += _graph_refusals(normalised_doc, tasks, created_tasks)
     out += _subject_refusals(normalised_doc, layout, tasks)
 
     refusal_dicts = [r.as_dict() for r in out]
