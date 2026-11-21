@@ -5,6 +5,7 @@ cannot pass, and a run-on-absent window at the gate that closes the moment the m
 store survives the upgrade with no manual rewrite and no `supervisor migrate` step."""
 from __future__ import annotations
 
+import json
 import sys
 import time
 
@@ -64,9 +65,11 @@ def test_the_sweep_records_its_own_completion_exactly_once(layout, monkeypatch):
     sup = Supervisor(layout, sleep_s=0)
     sup.preflight_backfill()                          # turn 1: T0, T1
     assert not preflight.backfill_complete(layout)
+    assert preflight.backfill_progress(layout) == 2            # the running total, not just this turn's batch
     sup.preflight_backfill()                           # turn 2: T2, nothing left -> marked complete
     assert preflight.backfill_complete(layout)
     marked_at = preflight._backfill_state_path(layout).read_text(encoding="utf-8")
+    assert json.loads(marked_at)["swept"] == 3          # the sweep's own total across both turns, not turn 2 alone
     sup.preflight_backfill()                           # turn 3: already complete, a no-op
     assert preflight._backfill_state_path(layout).read_text(encoding="utf-8") == marked_at
 
@@ -115,6 +118,73 @@ def test_a_block_that_fails_the_backfill_never_launches_and_gets_exactly_one_own
     assert t1.job.preflight.ok is False
     assert gate.check(layout, t1, "process", "delivery", running=[]) == \
           "preflight failed (executable_not_allowed): " + f"{BAD_ARGV[0]!r} does not resolve"
+
+
+# ------------------------------------------------------------------- a block whose task can never launch again
+
+def test_a_terminal_tasks_failing_backfill_is_stored_but_opens_no_owner_item(layout):
+    """Shaped like a real store's own worst case: a `COMPLETE` task whose job block names an interpreter from an
+    environment that no longer exists (a worktree torn down since, a drive unmounted) -- `pending_backfill`
+    does not filter by status, so this is still swept and its failure still stored, but `ALLOWED[COMPLETE]`
+    (models/task.py) is empty: the task can never launch again to act on an owner item, so the sweep opens
+    none. `gate.check` refuses it on status alone (R-04), never reaching the preflight at all."""
+    dead_interpreter = "/no/such/worktree/anymore/.venv/bin/python"
+    job = {"adapter": "process", "argv": [dead_interpreter], "preflight": None}
+    make_task(layout, "T1", status="COMPLETE", job=job, created="2026-05-10T00:00:00Z")
+    sup = Supervisor(layout, sleep_s=0)
+    while not preflight.backfill_complete(layout):
+        sup.preflight_backfill()
+    t1 = tasks_mod.load(layout, "T1")
+    assert t1.job.preflight is not None and t1.job.preflight.ok is False
+    assert gate.check(layout, t1, "process", "delivery", running=[]) == "task is COMPLETE"
+    assert [i for i in inbox.all_items(layout) if i.get("kind") == "preflight_failed"] == []
+    assert inbox.open_items(layout, "owner") == []
+
+
+def test_a_cancelled_tasks_failing_backfill_is_stored_with_no_owner_item_and_no_lockout(layout):
+    """`CANCELLED` is terminal too (no owner item, same as `COMPLETE`), but `ALLOWED[CANCELLED]` is not empty: it
+    can return to `NOT_STARTED` later. It must still be swept now, not skipped, or it would be permanently
+    refused (`preflight missing`) once the mark closes the run-on-absent window, with no route back in even
+    after it returns to a status that can launch."""
+    job = {"adapter": "process", "argv": BAD_ARGV, "preflight": None}
+    make_task(layout, "T1", status="CANCELLED", job=job, created="2026-05-11T00:00:00Z")
+    sup = Supervisor(layout, sleep_s=0)
+    while not preflight.backfill_complete(layout):
+        sup.preflight_backfill()
+    t1 = tasks_mod.load(layout, "T1")
+    assert t1.job.preflight is not None and t1.job.preflight.ok is False       # swept, not skipped
+    assert [i for i in inbox.all_items(layout) if i.get("kind") == "preflight_failed"] == []     # none while cancelled
+    tasks_mod.set_status(layout, "T1", "NOT_STARTED", actor="owner", note="retry")
+    t1 = tasks_mod.load(layout, "T1")
+    assert gate.check(layout, t1, "process", "delivery", running=[]) == \
+          "preflight failed (executable_not_allowed): " + f"{BAD_ARGV[0]!r} does not resolve"    # not "preflight missing"
+
+
+# ------------------------------------------------------------------- the python lane, not only process
+
+def test_legacy_python_blocks_are_swept_the_same_as_process_ones(layout):
+    _legacy_task(layout, "T1", argv=None, adapter="python", fn="noop", created="2026-05-20T00:00:00Z")
+    sup = Supervisor(layout, sleep_s=0)
+    while not preflight.backfill_complete(layout):
+        sup.preflight_backfill()
+    t1 = tasks_mod.load(layout, "T1")
+    assert t1.job.preflight.ok is True
+    assert gate.check(layout, t1, "python", "delivery", running=[]) is None
+    assert inbox.open_items(layout, "owner") == []
+
+
+def test_a_legacy_python_block_naming_an_unresolvable_fn_fails_with_exactly_one_owner_item(layout):
+    _legacy_task(layout, "T1", argv=None, adapter="python", fn="not-a-registered-fn",
+                created="2026-05-21T00:00:00Z")
+    sup = Supervisor(layout, sleep_s=0)
+    while not preflight.backfill_complete(layout):
+        sup.preflight_backfill()
+    t1 = tasks_mod.load(layout, "T1")
+    assert t1.job.preflight.ok is False
+    assert gate.check(layout, t1, "python", "delivery", running=[]) == \
+          "preflight failed (fn_unregistered): python job 'not-a-registered-fn' is not registered in JOBS"
+    items = [i for i in inbox.all_items(layout) if i.get("kind") == "preflight_failed"]
+    assert [i["task_id"] for i in items] == ["T1"]
 
 
 # ------------------------------------------------------------------- the gate's run-on-absent window (invariant 7)
