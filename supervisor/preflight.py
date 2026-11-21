@@ -17,7 +17,6 @@ import json
 import shutil
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
 from . import envconfig
@@ -152,7 +151,8 @@ def _run_probe(probe: list[str], layout: Layout, env: dict[str, str], cap_s: int
     before = {p.name for p in layout.root.iterdir()} if layout.root.exists() else set()
     try:
         try:
-            proc = subprocess.run(probe, cwd=str(scratch), env=env, capture_output=True, timeout=cap_s)
+            proc = subprocess.run(probe, cwd=str(scratch), env=env, capture_output=True, timeout=cap_s,
+                                  check=False)        # a non-zero exit is this function's own finding, not a raise
         except subprocess.TimeoutExpired:
             return {"code": "probe_failed", "message": f"probe timed out after {cap_s}s"}
         except OSError as exc:
@@ -230,8 +230,7 @@ def _timeout_checks(layout: Layout, timeout_s: Any, tmpl: dict, adapter: str | N
     owner-authored one above all) may declare whatever deadline its work needs, exactly as before this release:
     a lane's *default* duration is not a ceiling, and turning one into a ceiling would refuse blocks that have
     been running correctly."""
-    from . import gate
-    from . import timeouts
+    from . import gate, timeouts
     caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(gate.routing_doc(layout), adapter))
             if isinstance(c, int) and not isinstance(c, bool)]
     if timeout_s is not None and caps and timeout_s > min(caps):
