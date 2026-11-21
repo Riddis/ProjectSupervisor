@@ -42,6 +42,7 @@ Plugins never construct one.
 | `config_sections(*names)` | the `config/routing.yaml` sections this plugin reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
+| `job_schema(adapter, model)` | a pydantic model for the keys a job for `adapter` adds beyond `job_spec`'s framework-known fields (RECOVERY_PLAN.md section 3.2): refused when unknown and a schema is declared for the adapter, warned when none is declared at all |
 | `doctor_check(fn)` | `fn(layout) -> Check` |
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}` on the Overview |
 | `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)`, raising to refuse a brief |
@@ -54,8 +55,8 @@ Plugins never construct one.
 | `static_dir(path, prefix)` | static files at `/static/<prefix>/...` |
 
 `docs/FRAMEWORK_VS_PLUGIN.md` describes each hook in full. Names are unique: `adapter()` refuses a lane name
-another lane already has, built in or another plugin's, and `python_job()`, `command()`, `inbox_kind()` and
-`config_sections()` refuse a taken name the same way. A refusal is a `PluginError` from `setup()`: the plugin
+another lane already has, built in or another plugin's, and `python_job()`, `command()`, `inbox_kind()`,
+`config_sections()` and `job_schema()` refuse a taken name the same way. A refusal is a `PluginError` from `setup()`: the plugin
 does not load, and a required one blocks the loop. Registering the same object a second time is harmless, so an
 plugin that still registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)`
 from the internal modules still work and are deprecated from 1.11.0.

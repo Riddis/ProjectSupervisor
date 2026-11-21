@@ -27,6 +27,11 @@ class Registry(Protocol):
         """A deterministic job `fn(root, run_dir, **params) -> dict` for `job: {adapter: python, fn: <name>}`."""
         ...
 
+    def job_schema(self, adapter: str, model: Any) -> None:
+        """A pydantic model for the keys a job for this `adapter` adds beyond `Job`'s framework-known fields:
+        refused when unknown and a schema is declared for the adapter, warned when none is declared at all."""
+        ...
+
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this plugin reads with `supervisor.plugin.config()`; one owner per section."""
         ...

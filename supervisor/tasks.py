@@ -39,8 +39,50 @@ CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "a
 # owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
 # refresh touching only an unrelated field would have silently reset them to their defaults.
 REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
-# `job` is a contract field too (what a task runs), but it keeps its own writer (apply_job/task.set_job, D-018):
-# never copied by a refresh or a patch. A seed or patch row that carries one is reported, not silently dropped.
+# `job` is a contract field too (what a task runs), carried by import, refresh and patch (RECOVERY_PLAN.md 3.4,
+# D-027 decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
+# CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
+# always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's.
+JOB_OWNER_ACTORS = frozenset({"owner", "cli"})      # seed import, task.set_job, the Control Center
+
+
+def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
+    """RECOVERY_PLAN.md section 3.4: the owner may write any job block, including a literal `argv`; a plan may
+    write only a template id and typed params (RF-04); nothing else may write one at all."""
+    if actor in JOB_OWNER_ACTORS:
+        return []
+    if actor == "plan":
+        extra = set(job_value) - {"template", "params"}
+        if extra:
+            return [f"a plan may set job.template and job.params only, not {', '.join(sorted(extra))}"]
+        return []
+    return [f"actor {actor!r} may not write a job block; only the owner or a plan may (RECOVERY_PLAN.md section 3.4)"]
+
+
+def job_schema_problems(layout: Layout, job) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for one already-typed `Job`'s adapter-specific keys (RECOVERY_PLAN.md section 3.2): an
+    unknown key is refused when `job.adapter` declared a schema through `registry.job_schema()`, and is only ever
+    a warning when it did not — so a plugin written before this release still works unchanged."""
+    if job is None or not job.adapter:
+        return [], []
+    extra = job.model_extra or {}
+    if not extra:
+        return [], []
+    from . import plugins as plugins_mod
+    reg = plugins_mod.load(layout)
+    schema = reg.job_schemas.get(job.adapter)
+    if schema is None:
+        return [], [f"job for adapter {job.adapter!r} carries {', '.join(sorted(extra))}, which no schema "
+                    f"declares (registry.job_schema); kept, but check for a misspelled key"]
+    unknown = set(extra) - set(schema.model_fields)       # refused whatever the schema's own `extra` setting is
+    if unknown:
+        return [f"job for adapter {job.adapter!r} carries {', '.join(sorted(unknown))}, not declared by its "
+                f"job_schema ({', '.join(sorted(schema.model_fields)) or 'no keys'})"], []
+    try:
+        schema.model_validate(extra)
+    except ValidationError as exc:
+        return [f"job for adapter {job.adapter!r}: {exc}"], []
+    return [], []
 
 
 class TaskError(ValueError):
@@ -298,16 +340,16 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     out = []
     loaded = None
     for t in tasks:
-        job = (getattr(t, "model_extra", None) or {}).get("job")
-        if isinstance(job, dict) and job.get("adapter"):
+        job = t.job
+        if job is not None and job.adapter:
             if loaded is None:
                 loaded = _registered_lanes(layout)
             lanes, python_jobs, unloaded = loaded
-            if job["adapter"] not in lanes:
-                out.append(f"{t.id}: job adapter {job['adapter']!r} is not a registered lane{unloaded}; the job "
+            if job.adapter not in lanes:
+                out.append(f"{t.id}: job adapter {job.adapter!r} is not a registered lane{unloaded}; the job "
                            f"would fail when it ran")
-            elif job["adapter"] == "python" and job.get("fn", "noop") not in python_jobs:
-                out.append(f"{t.id}: job fn {job.get('fn')!r} is not a registered python job{unloaded}; the job "
+            elif job.adapter == "python" and (job.fn or "noop") not in python_jobs:
+                out.append(f"{t.id}: job fn {job.fn!r} is not a registered python job{unloaded}; the job "
                            f"would fail when it ran")
         named = [("owner_role", t.owner_role)] + [("reviewer", r) for r in t.reviewer]
         for field_name, role in named:
@@ -455,8 +497,9 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     because of a row it will not actually write. Current contract rules (artifacts, ownership, routing warnings)
     apply only to rows this call creates or changes, so an old row that predates a rule added since it was written
     is neither refused nor warned about just for being named in the seed. All or nothing: every row is validated
-    before any row is written. `job` has its own writer (`task.set_job`, D-018) and is never copied by a refresh;
-    a seed row that carries one for a row being updated is named in `job_not_applied`, not silently dropped.
+    before any row is written. `job` is a contract field too (RECOVERY_PLAN.md section 3.4): a created row carries
+    it like any other field; a seed row updating an existing task carries a job change only when `actor` is the
+    owner's — anything else (a plan never imports a seed) is refused, named in `TaskError`, not silently dropped.
 
     `dry_run` runs the same validation and reports what would be created and updated, writing and logging
     nothing — safe while a supervisor runs."""
@@ -466,7 +509,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     resulting = dict(existing)            # the real graph this call will leave on disk, built up below
     changed: list[Task] = []              # rows being created or refreshed: only these take current contract rules
     new_docs: dict[str, dict] = {}        # id -> the document a create() would write
-    created, updated, untouched, ignored, job_not_applied = [], [], [], [], []
+    created, updated, untouched, ignored = [], [], [], []
 
     for t in seed:
         tid = t["id"]
@@ -474,6 +517,10 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             if not create:
                 ignored.append(tid)
                 continue
+            if "job" in t:
+                job_errors = _job_writer_errors(actor, t["job"] or {})
+                if job_errors:
+                    raise TaskError("; ".join(job_errors))
             doc = dict(t)
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": []})
@@ -483,17 +530,19 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             changed.append(task)
             created.append(tid)
         elif tid in update_ids:
-            merged = _refresh_contract(dict(store.read(path_for(layout, tid))), t)   # validates in memory
+            merged = _refresh_contract(dict(store.read(path_for(layout, tid))), t, actor)   # validates in memory
             resulting[tid] = Task.model_validate(merged)
             changed.append(resulting[tid])
             updated.append(tid)
-            if "job" in t:
-                job_not_applied.append(tid)
         else:
             untouched.append(tid)
 
     art_errors, warnings = artifact_problems(changed, root=layout.root)
     warnings += contract_warnings(changed, layout)
+    for task in changed:
+        job_errors, job_warnings = job_schema_problems(layout, task.job)
+        art_errors += job_errors
+        warnings += job_warnings
     errors = validate_graph(resulting) + ownership_errors(changed, layout) + art_errors
     if errors:
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
@@ -504,14 +553,12 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             _sync_turn_snapshot(Task.model_validate(written))
         for t in seed:
             if t["id"] in updated:
-                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
+                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t, actor),
                                        lock_path=layout.state / ".tasks.lock")
                 _sync_turn_snapshot(Task.model_validate(written))
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
 
     out = {"created": created, "updated": updated, "untouched": untouched, "ignored": ignored}
-    if job_not_applied:
-        out["job_not_applied"] = job_not_applied
     if dry_run:
         out["dry_run"] = True
     if warnings:
@@ -519,10 +566,17 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     return out
 
 
-def _refresh_contract(doc: dict, t: dict) -> dict:
+def _refresh_contract(doc: dict, t: dict, actor: str = "cli") -> dict:
     """Copy the seed's contract fields onto a stored task document and validate the result. Whole-contract
     replace except REFRESH_STICKY_FIELDS (R-07d): an omitted key elsewhere is cleared, an omitted sticky one is
-    left at whatever the document already had."""
+    left at whatever the document already had. `job` is never cleared by omission either (it is not a
+    CONTRACT_FIELDS key at all); when the seed row names one, the writer-authority rule of section 3.4 decides
+    whether it may be applied."""
+    if "job" in t:
+        errors = _job_writer_errors(actor, t["job"] or {})
+        if errors:
+            raise TaskError("; ".join(errors))
+        doc["job"] = dict(t["job"]) if t["job"] else None
     for k in CONTRACT_FIELDS:
         if k in t:
             doc[k] = t[k]
@@ -532,14 +586,14 @@ def _refresh_contract(doc: dict, t: dict) -> dict:
     return doc
 
 
-PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency"}
+PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency", "job"}
 
 
-def _apply_patch(doc: dict, fields: dict) -> dict:
+def _apply_patch(doc: dict, fields: dict, actor: str = "cli") -> dict:
     """Apply one patch's fields onto a stored task document (mutates and returns it, validated): a direct
-    CONTRACT_FIELDS assignment, or `add_dependency`/`remove_dependency` (an id, or a list) against the document's
+    CONTRACT_FIELDS assignment, `add_dependency`/`remove_dependency` (an id, or a list) against the document's
     OWN current `depends_on` — never a caller's possibly-stale copy of it, so two concurrent dependency edits
-    cannot race each other."""
+    cannot race each other — or `job`, under the writer-authority rule of section 3.4."""
     deps = list(doc.get("depends_on") or [])
     for dep in ([fields["add_dependency"]] if isinstance(fields.get("add_dependency"), str)
                 else list(fields.get("add_dependency") or [])):
@@ -551,6 +605,11 @@ def _apply_patch(doc: dict, fields: dict) -> dict:
             deps.remove(dep)
     if "add_dependency" in fields or "remove_dependency" in fields:
         doc["depends_on"] = deps
+    if "job" in fields:
+        errors = _job_writer_errors(actor, fields["job"] or {})
+        if errors:
+            raise TaskError("; ".join(errors))
+        doc["job"] = dict(fields["job"]) if fields["job"] else None
     for k, v in fields.items():
         if k in CONTRACT_FIELDS:
             doc[k] = v
@@ -564,21 +623,24 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     contract rules applied only to this one task."""
     bad = set(fields) - PATCH_FIELDS
     if bad:
-        raise TaskError(f"{task_id}: patch may set only a contract field, add_dependency or remove_dependency, "
-                        f"not {', '.join(sorted(bad))}")
+        raise TaskError(f"{task_id}: patch may set only a contract field, add_dependency, remove_dependency or "
+                        f"job, not {', '.join(sorted(bad))}")
     existing = load_all(layout)
     if task_id not in existing:
         raise TaskError(f"no such task {task_id}")
-    merged = _apply_patch(dict(store.read(path_for(layout, task_id))), fields)
+    merged = _apply_patch(dict(store.read(path_for(layout, task_id))), fields, actor)
     task = Task.model_validate(merged)
     combined = dict(existing)
     combined[task_id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
     warnings += contract_warnings([task], layout)
+    job_errors, job_warnings = job_schema_problems(layout, task.job)
+    art_errors += job_errors
+    warnings += job_warnings
     errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
     if errors:
         raise TaskError("patch invalid: " + "; ".join(errors))
-    store.update(path_for(layout, task_id), lambda doc: _apply_patch(doc, fields), lock_path=layout.state / ".tasks.lock")
+    store.update(path_for(layout, task_id), lambda doc: _apply_patch(doc, fields, actor), lock_path=layout.state / ".tasks.lock")
     log(layout, "task_patch", actor, task=task_id, fields=sorted(fields))
     out = {"id": task_id}
     if warnings:

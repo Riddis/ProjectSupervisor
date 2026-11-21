@@ -200,6 +200,8 @@ class Registry:
     unmanifested: list[str] = field(default_factory=list)       # loaded without a manifest (1.12.x: a warning)
     manifests: dict[str, Any] = field(default_factory=dict)     # plugin -> its Manifest, when it has one
     config_schemas: dict[str, Any] = field(default_factory=dict)  # plugin -> the pydantic model of its section
+    job_schemas: dict[str, Any] = field(default_factory=dict)   # adapter name -> the pydantic model of its own job keys
+    job_schema_owners: dict[str, str] = field(default_factory=dict)  # adapter name -> the plugin that declared it
 
     _setting_up: str | None = None                              # the plugin whose setup(registry) is running
 
@@ -359,6 +361,24 @@ class Registry:
                 raise PluginError(f"config section {name!r} is already declared by plugin {self.config_owners[name]!r}")
         for name in names:
             self.config_owners[name] = owner
+
+    def job_schema(self, adapter: str, model: Any) -> None:
+        """A pydantic model for the keys this plugin's own `adapter` lane adds to a job beyond the framework's
+        typed `Job` fields (RECOVERY_PLAN.md section 3.2, docs/plugin_api.json): checked (`tasks.job_schema_problems`)
+        at every write that carries a job for this adapter. An unknown key is refused once a schema is declared for
+        the adapter; with none declared at all, an unknown key is only ever a warning, so a plugin that predates
+        this release keeps working unchanged. One schema per adapter name, like `adapter()`'s own lane name."""
+        if not isinstance(adapter, str) or not adapter:
+            raise PluginError(f"job_schema needs a non-empty adapter name, got {adapter!r}")
+        if not hasattr(model, "model_validate"):
+            raise PluginError(f"job_schema({adapter!r}, ...): model must be a pydantic model, got {model!r}")
+        owner = self._setting_up or "?"
+        current = self.job_schemas.get(adapter)
+        if current is not None and current is not model and self.job_schema_owners.get(adapter) != owner:
+            raise PluginError(f"job schema for adapter {adapter!r} is already registered by plugin "
+                             f"{self.job_schema_owners[adapter]!r}")
+        self.job_schemas[adapter] = model
+        self.job_schema_owners[adapter] = owner
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it

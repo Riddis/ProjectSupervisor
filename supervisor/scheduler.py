@@ -64,9 +64,9 @@ def _skip_once(layout: Layout, task: Task, reason: str) -> None:
 
 
 def job_spec(task) -> dict:
-    """The task's `job` block (adapter, fn/argv, params) — an extra field on the task document."""
-    extra = getattr(task, "model_extra", None) or {}
-    return dict(extra.get("job") or {})
+    """The task's `job` block (adapter, fn/argv, params) — a typed field on the task document."""
+    job = getattr(task, "job", None)
+    return job.model_dump(exclude_none=True) if job is not None else {}
 
 
 def adapter_name(task: Task, layout: Layout | None = None) -> str:

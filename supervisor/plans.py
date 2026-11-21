@@ -660,7 +660,7 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
     if "plan" not in may:
         out.append(_rf("RF-09", "I2 §1.2", i, "template", f"template {template_id!r} is not may_be_set_by: [plan]"))
     if tid not in created and t is not None:
-        existing_job = (getattr(t, "model_extra", None) or {}).get("job")
+        existing_job = t.job.model_dump(exclude_none=True) if t.job is not None else None
         if not isinstance(existing_job, dict) or not existing_job.get("adapter"):
             out.append(_rf("RF-11", "I2 §1.2", i, "task", f"{tid!r} has no existing job; set_job may not give it a first one"))
         else:

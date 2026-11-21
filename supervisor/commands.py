@@ -224,27 +224,35 @@ def _task_import(layout, payload, actor):
     seed = seed_path(layout, payload.get("seed"))
     ids = [str(i) for i in (payload.get("update_contracts") or [])]
     r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
-    return {k: r[k] for k in ("created", "updated", "ignored", "job_not_applied", "warnings") if k in r}
+    return {k: r[k] for k in ("created", "updated", "ignored", "warnings") if k in r}
 
 
-def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
-    """The only writer of a task's `job` block: `task.set_job` (the Control Center's re-route), never state/
-    directly. A diagnosis cannot change a task's job (D-018); a wrong process command reaches the owner as a
-    question naming this command instead."""
+def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None) -> tuple:
+    """One of the owner's own writers of a task's `job` block (RECOVERY_PLAN.md section 3.4, D-027 decision 7 —
+    amends D-018 decision 2): `task.set_job` (the Control Center's re-route), never state/ directly. A diagnosis
+    cannot change a task's job (D-018 decision 1, restated as R0); a wrong process command reaches the owner as a
+    question naming this command instead. Returns (the task, warnings) — an unknown key for an adapter with no
+    declared schema is kept and warned, never refused (`tasks.job_schema_problems`)."""
     def fn(doc):
         doc["job"] = dict(job)
         if cost_category:
             doc["cost_category"] = cost_category
     t = tasks_mod._update(layout, task_id, fn)
+    errors, warnings = tasks_mod.job_schema_problems(layout, t.job)
+    if errors:
+        raise tasks_mod.TaskError("; ".join(errors))
     tasks_mod.log(layout, "task_job_set", actor, task=task_id, job=job)
-    return t
+    return t, warnings
 
 
 @handler("task.set_job")
 def _set_job(layout, payload, actor):
     """Replace a task's `job` block (adapter/fn/params/model/...): how the Control Center re-routes a task."""
-    t = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
-    return {"status": t.status.value}
+    t, warnings = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
+    out = {"status": t.status.value}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 @handler("checkpoint.retry")

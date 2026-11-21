@@ -31,14 +31,14 @@ def diag_rec(layout, tid, attempt="T.a9"):
 def test_a_requeue_job_fix_changes_nothing_about_the_job_and_logs_nothing(layout):
     argv = [sys.executable, "run.py", "--mode", "fail"]
     process_task(layout, "T", argv, fix_params={"mode": {"index": 3, "pattern": r"^[a-z]+$"}})
-    before = dict((tasks.load(layout, "T").model_extra or {}).get("job"))
+    before = tasks.load(layout, "T").job.model_dump(exclude_none=True)
     sup = Supervisor(layout, sleep_s=0)
     rec = diag_rec(layout, "T")
     out = diagnosis.ingest(sup, rec, Result(status="COMPLETE", raw={"kind": "diagnosis", "action": "requeue",
                                                                       "summary": "its mode was wrong",
                                                                       "guidance": "the job itself needed --mode succeed",
                                                                       "job_fix": {"params": {"mode": "succeed"}}}))
-    after = (tasks.load(layout, "T").model_extra or {}).get("job")
+    after = tasks.load(layout, "T").job.model_dump(exclude_none=True)
     assert after == before                                  # the job block is byte-identical
     assert "job_fix" not in out
     assert out["action"] == "requeue" and out["guidance"] == "the job itself needed --mode succeed"

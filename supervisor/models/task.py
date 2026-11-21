@@ -158,6 +158,31 @@ class Check(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class Job(BaseModel):
+    """What a lane's `prepare()` reads (RECOVERY_PLAN.md section 3.2): the framework-known keys, typed — a wrong
+    type is refused the moment a document carrying it is validated. An adapter's own keys beyond these (a
+    plugin lane's `workflow`, `base_url`, ...) are not declared here, since this model does not know which
+    adapter it belongs to; they are kept (`extra: allow`) and checked separately, against whatever schema the
+    adapter declared through `registry.job_schema()` (`tasks.job_schema_problems`) — refused for a declared
+    schema's unknown key, only ever warned for one with no schema at all, so a plugin from before this release
+    keeps working unchanged."""
+    adapter: Optional[str] = None
+    template: Optional[str] = None                             # a plan's own writer: a reference, never a command
+    params: dict[str, Any] = Field(default_factory=dict)
+    argv: Optional[list[str]] = None                            # the owner's own writer only (RECOVERY_PLAN.md 3.4)
+    fn: Optional[str] = None
+    timeout_s: Optional[int] = None
+    idle_timeout_s: Optional[int] = None
+    retry_on: list[int] = Field(default_factory=list)          # exit codes worth one retry (loop.py's own check)
+    stdin_file: Optional[str] = None
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    prompt: Optional[str] = None
+    result_kind: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
 class Task(BaseModel):
     id: str
     phase: int
@@ -193,6 +218,7 @@ class Task(BaseModel):
                                                                  # owner's own later status change (round-4 F9) -
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
+    job: Optional[Job] = None                                   # RECOVERY_PLAN.md 3.2/3.4: typed, under a writer rule
     result: Optional[str] = None
     findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:
                                                                                # the producer's own optional, per-

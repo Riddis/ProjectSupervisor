@@ -3,7 +3,7 @@ configuration with today's constants as defaults; the inline verification path (
 limits to the built-in ceiling because it runs inside the loop, holding state/.lock."""
 import yaml
 
-from supervisor import packets, tasks, verify
+from supervisor import packets, scheduler, tasks, verify
 from supervisor.loop import Supervisor
 from tests.conftest import make_task
 
@@ -69,7 +69,7 @@ def test_dispatch_verify_computes_the_process_timeout_from_the_configured_budget
     captured = {}
 
     def fake_dispatch(view, name, **kw):
-        captured["timeout_s"] = (view.model_extra or {}).get("job", {}).get("timeout_s")
+        captured["timeout_s"] = scheduler.job_spec(view).get("timeout_s")
         return {"attempt_id": "T.verify1"}
     monkeypatch.setattr(sup, "dispatch", fake_dispatch)
     run_dir = layout.runs / "T" / "T.a1"

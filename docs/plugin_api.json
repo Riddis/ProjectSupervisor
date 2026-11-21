@@ -776,6 +776,26 @@
           ],
           "returns": "None"
         },
+        "job_schema": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "model"
+            }
+          ],
+          "returns": "None"
+        },
         "layout": {
           "annotation": "Layout",
           "kind": "field"

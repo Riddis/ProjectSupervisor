@@ -3,6 +3,23 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## Unreleased
+
+- **Plugin API: `Registry.job_schema(adapter, model)` (RECOVERY_PLAN.md section 3, R-11).** Additive. A plugin
+  adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
+  fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no
+  schema declared at all, so an installed plugin from before this release keeps working unchanged.
+
+- **Fixed: `job` was not a declared field, so a misspelled key was silently ignored and a seed could not carry
+  one (R-11).** `Task.job` is now a typed `Job` model (`adapter`, `template`, `params`, `argv`, `fn`, `timeout_s`,
+  `idle_timeout_s`, `retry_on`, `stdin_file`, `model`, `effort`, `prompt`, `result_kind`); a wrong type is refused
+  the moment a document carrying it is written. `job` now joins the contract fields that import, refresh and
+  patch carry (`tasks.CONTRACT_FIELDS`'s sibling list), under a rule on who is writing rather than on the field
+  (D-027 decision 7, amending D-018 decision 2): the owner (a seed import, `task.set_job`, the Control Center)
+  may write any job block, including a literal `argv`; a plan may write only a template id and typed params;
+  nothing else may write one at all. A seed row updating an existing task now applies the job it carries like any
+  other field instead of reporting `job_not_applied`, which is gone from the tree.
+
 ## 2.8.0 — 2026-11-16
 
 - **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**

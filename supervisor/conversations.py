@@ -213,13 +213,14 @@ def pending_turns(layout: Layout) -> list[tuple[str, int]]:
 
 def _task_like(thread_id: str, prompt: str) -> SimpleNamespace:
     """Stand-in for `supervisor.dispatch()`'s `task` argument: no Task backs a conversation, so only the
-    attributes the adapter machinery actually reads (`id`, `owner_role`, `model_extra`, `owned_paths`) exist.
+    attributes the adapter machinery actually reads (`id`, `owner_role`, `job`, `owned_paths`) exist.
     `owner_role="conversation"` pulls the chat lane's own confined profile (`config/routing.yaml` roles.
     conversation: read-only, opus) regardless of which role's card is embedded in the prompt — the target role
     supplies its voice, never its write permissions (routing.yaml's own note on that entry)."""
+    from .models.task import Job
     return SimpleNamespace(id=f"conv-{thread_id}", owner_role="conversation", owned_paths=[],
-                           model_extra={"job": {"prompt": prompt, "result_kind": "conversation",
-                                                "write_scope": "run_dir", "timeout_s": 600}})
+                           job=Job(prompt=prompt, result_kind="conversation", timeout_s=600,
+                                  write_scope="run_dir"))
 
 
 def dispatch(supervisor, thread_id: str, idx: int) -> dict | None:
