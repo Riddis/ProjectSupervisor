@@ -129,7 +129,10 @@ def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind:
     synchronously, against exactly what is on disk, and the result stored before this launch is allowed to
     proceed -- the loop's own bounded sweep (`loop.Supervisor.preflight_backfill`) covers whatever this window
     does not reach first. Once the sweep records that nothing is left pending, the window is closed and an
-    absent preflight refuses outright, the same as a failed one always has."""
+    absent preflight refuses outright, the same as a failed one always has. A failure here is stored the same
+    for any task, but opens an owner item only when `task.status` is not `TERMINAL` -- a `COMPLETE` task cannot
+    launch again to act on it, and the owner item exists so someone can; see `loop.preflight_backfill`'s own
+    docstring for why `CANCELLED` is still swept rather than skipped."""
     if kind != "delivery" or task is None:
         return None
     job = task.job
@@ -147,7 +150,8 @@ def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind:
         if pf is None:
             return "preflight missing: write the job block again to record one"
         if not pf.ok:
-            preflight_mod.report_backfill_failure(layout, task, pf)
+            if task.status not in TERMINAL:
+                preflight_mod.report_backfill_failure(layout, task, pf)
             return _preflight_failure_reason(pf)
         return None
     if not pf.ok:

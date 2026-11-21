@@ -354,15 +354,43 @@ def backfill_complete(layout: Layout) -> bool:
 def mark_backfill_complete(layout: Layout, *, swept: int) -> None:
     """Written once, by the sweep alone, the turn it finds nothing left pending (never by the gate's own
     run-on-absent check, which backfills one task at a time and has no view of whether any other is still
-    pending)."""
+    pending). `swept` is the one permanent record of the sweep's own cost, so the caller passes the running
+    total across every turn (`backfill_progress` plus this turn's own count, via `record_backfill_progress`),
+    never just the final turn's batch."""
     atomic_json(_backfill_state_path(layout), {"complete": True, "completed_at": now_iso(), "swept": swept})
+
+
+def backfill_progress(layout: Layout) -> int:
+    """How many tasks the sweep has written a preflight for so far, across every turn up to and including the
+    last one recorded -- 0 for a project that has not started (or has not yet finished) its first turn's
+    bookkeeping."""
+    p = _backfill_state_path(layout)
+    if not p.exists():
+        return 0
+    try:
+        return int(read_json(p).get("swept") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def record_backfill_progress(layout: Layout, *, swept_this_turn: int) -> int:
+    """Adds this turn's own count to the running total and persists it, `complete` still false -- so the total
+    `mark_backfill_complete` eventually records is the sweep's own cost, not just its last batch. Returns the
+    new total."""
+    total = backfill_progress(layout) + swept_this_turn
+    atomic_json(_backfill_state_path(layout), {"complete": False, "swept": total})
+    return total
 
 
 def pending_backfill(tasks: dict) -> list:
     """Every task whose stored job predates the preflight -- a `process`/`python` block with none recorded at
     all -- oldest first (`created`, then `id`, so a task written before that field existed sorts ahead of every
     task that has a date, which is the order the bounded sweep takes them in). A block that already carries one,
-    passing, failed or stale, is not pending: absent is the only case this backfill ever fills."""
+    passing, failed or stale, is not pending: absent is the only case this backfill ever fills. Not filtered by
+    `task.status`: a `COMPLETE` task is swept the same as any other so its result is on record if anything ever
+    reads it, and a `CANCELLED` one must be, since it can return to `NOT_STARTED` later and a sweep that had
+    skipped it would leave it permanently refused once the mark closes the gate's run-on-absent window --
+    `loop.preflight_backfill` is the one that decides which of these results is worth an owner item."""
     out = [t for t in tasks.values() if t.job is not None and t.job.adapter in PREFLIGHT_ADAPTERS
            and t.job.preflight is None]
     return sorted(out, key=lambda t: (t.created or "", t.id))

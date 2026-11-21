@@ -1455,13 +1455,17 @@ class Supervisor:
         (`gate.preflight_reason`) is a bounded migration window rather than a permanent one, and no store stops
         on upgrade day with no `supervisor migrate` step to run. A block that fails gets no retry loop here,
         only one deduped owner item (`preflight.report_backfill_failure`); the block itself is never touched
-        again -- this fills an absence, it does not retry a failure. Returns the task ids this turn wrote a
+        again -- this fills an absence, it does not retry a failure. A task already in `TERMINAL` (`COMPLETE`
+        has no route back to launching at all; `CANCELLED` is swept the same as any other so it is never
+        locked out if it later returns to `NOT_STARTED`) still gets its result stored, just no owner item: one
+        nobody can act on now is noise, not a finding. The count this records at completion is the sweep's own
+        running total across every turn, not just this one's batch. Returns the task ids this turn wrote a
         preflight for."""
         if preflight_mod.backfill_complete(self.layout):
             return []
         pending = preflight_mod.pending_backfill(tasks_mod.load_all(self.layout))
         if not pending:
-            preflight_mod.mark_backfill_complete(self.layout, swept=0)
+            preflight_mod.mark_backfill_complete(self.layout, swept=preflight_mod.backfill_progress(self.layout))
             return []
         batch = pending[:preflight_mod.BACKFILL_BATCH]
         acted = []
@@ -1470,10 +1474,11 @@ class Supervisor:
             if pf is None:
                 continue
             acted.append(task.id)
-            if not pf.ok:
+            if not pf.ok and task.status not in TERMINAL:
                 preflight_mod.report_backfill_failure(self.layout, task, pf)
+        total = preflight_mod.record_backfill_progress(self.layout, swept_this_turn=len(acted))
         if len(batch) == len(pending):
-            preflight_mod.mark_backfill_complete(self.layout, swept=len(acted))
+            preflight_mod.mark_backfill_complete(self.layout, swept=total)
         return acted
 
     STALL_GRACE_S = 600
