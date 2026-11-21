@@ -179,7 +179,11 @@ def test_a_broken_template_file_fails_the_preflight_rather_than_raising(layout):
 # ----------------------------------------------------------------------- the gate's own refusal (invariant 7)
 
 def test_gate_refuses_a_process_job_with_no_preflight(layout):
+    """Outside the backfill's own run-on-absent window (RECOVERY_PLAN.md section 3.3, step 5,
+    tests/test_preflight_backfill.py): once the sweep's completion mark is written, an absent preflight is
+    refused outright, with no second chance to pass it at the gate."""
     make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "preflight": None})
+    preflight.mark_backfill_complete(layout, swept=0)
     t = tasks_mod.load(layout, "T1")
     reason = gate.check(layout, t, "process", "delivery", running=[])
     assert reason and "preflight" in reason
@@ -239,8 +243,10 @@ def test_gate_does_not_demand_a_preflight_for_a_non_delivery_job_on_a_preflight_
 
 def test_gate_still_refuses_a_delivery_whose_own_block_has_no_preflight(layout):
     """The rule above narrows the check, it does not remove it: a `delivery` launch on `process`/`python` is
-    still refused without one."""
+    still refused without one, once the backfill's own run-on-absent window is closed (step 5,
+    tests/test_preflight_backfill.py)."""
     make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "preflight": None})
+    preflight.mark_backfill_complete(layout, swept=0)
     t = tasks_mod.load(layout, "T1")
     reason = gate.check(layout, t, "process", "delivery", running=[])
     assert reason and "preflight" in reason

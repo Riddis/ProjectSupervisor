@@ -110,14 +110,26 @@ def inactive_reason(role: str) -> str:
     return f"role {role} is inactive (routing.yaml roles.{role}.active: false)"
 
 
-def preflight_reason(task: Task | None, adapter_name: str, kind: str) -> str | None:
+def _preflight_failure_reason(pf) -> str:
+    detail = pf.detail or {}
+    return f"preflight failed ({detail.get('code', 'unknown')}): {detail.get('message', detail)}"
+
+
+def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
     """None when a `process`/`python` *delivery* job's stored preflight clears it to launch (RECOVERY_PLAN.md
     section 3.3, invariant 7); else why not. Bound to `kind == "delivery"` and to the task's own `job.adapter`
     matching this launch's adapter, not to the record's adapter alone: a verify, review or diagnosis job never
     runs the task's own stored `job` block at all -- each builds its own spec and launches it on whatever
     adapter that needs, `process` among them -- so a task whose own delivery is a model lane's (never
     preflighted, by design: `preflight.attach` skips every adapter outside `PREFLIGHT_ADAPTERS`) must not have
-    that unrelated, preflight-less block borrowed and refused the moment one of those launches for it."""
+    that unrelated, preflight-less block borrowed and refused the moment one of those launches for it.
+
+    An absent preflight (`pf is None`) is not always an outright refusal: section 3.3's backfill opens a window,
+    bounded by `preflight.backfill_complete`, in which a block that predates the check is preflighted right here,
+    synchronously, against exactly what is on disk, and the result stored before this launch is allowed to
+    proceed -- the loop's own bounded sweep (`loop.Supervisor.preflight_backfill`) covers whatever this window
+    does not reach first. Once the sweep records that nothing is left pending, the window is closed and an
+    absent preflight refuses outright, the same as a failed one always has."""
     if kind != "delivery" or task is None:
         return None
     job = task.job
@@ -128,10 +140,18 @@ def preflight_reason(task: Task | None, adapter_name: str, kind: str) -> str | N
         return None            # the adapter's own default argv/fn is unaffected by this rule
     pf = job.preflight
     if pf is None:
-        return "preflight missing: write the job block again to record one"
+        if preflight_mod.backfill_complete(layout):
+            return "preflight missing: write the job block again to record one"
+        from . import tasks as tasks_mod
+        pf = tasks_mod.backfill_job_preflight(layout, task.id)
+        if pf is None:
+            return "preflight missing: write the job block again to record one"
+        if not pf.ok:
+            preflight_mod.report_backfill_failure(layout, task, pf)
+            return _preflight_failure_reason(pf)
+        return None
     if not pf.ok:
-        detail = pf.detail or {}
-        return f"preflight failed ({detail.get('code', 'unknown')}): {detail.get('message', detail)}"
+        return _preflight_failure_reason(pf)
     current = job.model_dump(mode="json", exclude_none=True, exclude_unset=True)
     current.pop("preflight", None)
     if preflight_mod.block_digest(current) != (pf.detail or {}).get("block_digest"):
@@ -206,7 +226,7 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
         role = task.owner_role
     if role and role_inactive(layout, role):
         return inactive_reason(role)
-    reason = preflight_reason(task, adapter_name, kind)
+    reason = preflight_reason(layout, task, adapter_name, kind)
     if reason:
         return reason
     ad = REGISTRY.get(adapter_name)

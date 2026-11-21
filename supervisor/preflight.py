@@ -22,7 +22,7 @@ from typing import Any
 from . import envconfig
 from . import policy as policy_mod
 from . import templates as templates_mod
-from ._vendor.contract import contained
+from ._vendor.contract import atomic_json, contained, read_json
 from .paths import Layout
 from .store import now_iso
 
@@ -316,3 +316,72 @@ def attach(layout: Layout, doc: dict) -> None:
         return
     canonical["preflight"] = run(layout, canonical)
     doc["job"] = canonical
+
+
+# ---------------------------------------------------------------- the backfill sweep (RECOVERY_PLAN.md 3.3, step 5)
+#
+# Every `process`/`python` job block written before this release predates the preflight and has none stored; the
+# gate's refusal above would stop every one of them on upgrade day. Two bounded, automatic mechanisms close that
+# window without a `supervisor migrate` step (a release needing one is a major version, and this is not): the
+# loop's one-time sweep (`loop.Supervisor.preflight_backfill`, oldest task first, a bounded number per turn) and
+# the gate's own run-on-absent check (`gate.preflight_reason`, one task, synchronously, on its first launch).
+# Both call `tasks.backfill_job_preflight` for one task and both stop consulting this once `backfill_complete` is
+# true -- written exactly once, the moment the sweep finds nothing left pending.
+
+BACKFILL_BATCH = 50               # bounded per turn: enough to clear a few-hundred-task store in single-digit
+                                   # turns, small enough that one turn never stalls on it
+_BACKFILL_STATE_FILE = "preflight_backfill.json"
+
+
+def _backfill_state_path(layout: Layout):
+    return layout.runtime / _BACKFILL_STATE_FILE
+
+
+def backfill_complete(layout: Layout) -> bool:
+    """True once the sweep has recorded there is nothing left to backfill: after this, `gate.preflight_reason`'s
+    run-on-absent window is closed and an absent preflight refuses outright, the same as a failed one always has.
+    False for a project that has never run it -- including a fresh install with nothing to backfill at all, which
+    reaches this exactly once, on its first turn (`loop.Supervisor.preflight_backfill`)."""
+    p = _backfill_state_path(layout)
+    if not p.exists():
+        return False
+    try:
+        return bool(read_json(p).get("complete"))
+    except (OSError, ValueError):
+        return False
+
+
+def mark_backfill_complete(layout: Layout, *, swept: int) -> None:
+    """Written once, by the sweep alone, the turn it finds nothing left pending (never by the gate's own
+    run-on-absent check, which backfills one task at a time and has no view of whether any other is still
+    pending)."""
+    atomic_json(_backfill_state_path(layout), {"complete": True, "completed_at": now_iso(), "swept": swept})
+
+
+def pending_backfill(tasks: dict) -> list:
+    """Every task whose stored job predates the preflight -- a `process`/`python` block with none recorded at
+    all -- oldest first (`created`, then `id`, so a task written before that field existed sorts ahead of every
+    task that has a date, which is the order the bounded sweep takes them in). A block that already carries one,
+    passing, failed or stale, is not pending: absent is the only case this backfill ever fills."""
+    out = [t for t in tasks.values() if t.job is not None and t.job.adapter in PREFLIGHT_ADAPTERS
+           and t.job.preflight is None]
+    return sorted(out, key=lambda t: (t.created or "", t.id))
+
+
+def report_backfill_failure(layout: Layout, task, pf) -> dict | None:
+    """One deduped owner item for a job block the backfill could not pass -- `inbox.create`'s own `dedup_key`
+    keeps it to exactly one, however many turns the sweep runs or however many times a launch is attempted,
+    whichever of its two call sites (the sweep, the gate's run-on-absent check) meets the failure first. None
+    when the inbox has no room this turn (InboxFull): the result is stored either way, so the refusal itself
+    never depends on this succeeding."""
+    from . import inbox as inbox_mod
+    detail = pf.detail or {}
+    summary, text = inbox_mod.fit(
+        f"{task.id}'s job block cannot pass its preflight ({detail.get('code', 'unknown')}): "
+        f"{detail.get('message', detail)}. It will not launch until the block is corrected.")
+    try:
+        return inbox_mod.create(layout, for_role="owner", subject=f"{task.id}: preflight failed", summary=summary,
+                                 detail=text, kind="preflight_failed", allowed_responses=[], from_="loop",
+                                 task_id=task.id, dedup_key=f"preflight_backfill:{task.id}")
+    except inbox_mod.InboxFull:
+        return None

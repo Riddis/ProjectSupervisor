@@ -17,7 +17,7 @@ from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import plans as plans_mod
 from . import progress as progress_mod
-from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review as review_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, preflight as preflight_mod, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
@@ -1447,6 +1447,35 @@ class Supervisor:
         here — only the owner's apply_plan/cancel_plan choice decides what happens to it next."""
         return plans_mod.resume_plans(self.layout)
 
+    def preflight_backfill(self) -> list[str]:
+        """RECOVERY_PLAN.md section 3.3's one-time sweep (D-027 decision 9, step 5): the first turns after an
+        upgrade preflight every existing `process`/`python` job block that predates the check -- oldest task
+        first, a bounded number per turn (`preflight.BACKFILL_BATCH`) -- and record the sweep's own completion
+        once nothing is left pending (`preflight.mark_backfill_complete`), so the gate's run-on-absent rule
+        (`gate.preflight_reason`) is a bounded migration window rather than a permanent one, and no store stops
+        on upgrade day with no `supervisor migrate` step to run. A block that fails gets no retry loop here,
+        only one deduped owner item (`preflight.report_backfill_failure`); the block itself is never touched
+        again -- this fills an absence, it does not retry a failure. Returns the task ids this turn wrote a
+        preflight for."""
+        if preflight_mod.backfill_complete(self.layout):
+            return []
+        pending = preflight_mod.pending_backfill(tasks_mod.load_all(self.layout))
+        if not pending:
+            preflight_mod.mark_backfill_complete(self.layout, swept=0)
+            return []
+        batch = pending[:preflight_mod.BACKFILL_BATCH]
+        acted = []
+        for task in batch:
+            pf = tasks_mod.backfill_job_preflight(self.layout, task.id)
+            if pf is None:
+                continue
+            acted.append(task.id)
+            if not pf.ok:
+                preflight_mod.report_backfill_failure(self.layout, task, pf)
+        if len(batch) == len(pending):
+            preflight_mod.mark_backfill_complete(self.layout, swept=len(acted))
+        return acted
+
     STALL_GRACE_S = 600
 
     def _stall_grace(self) -> float:
@@ -1730,6 +1759,7 @@ class Supervisor:
                 self.request_approvals()
                 self.request_owner_decisions()
                 self.resume_plans()                                       # a crashed or stalled plan finishes here
+                self.preflight_backfill()                                 # RECOVERY_PLAN.md 3.3's one-time sweep
                 self.sweep_stalled()                                      # nothing stops silently
                 self.alert_if_idle()
                 done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted

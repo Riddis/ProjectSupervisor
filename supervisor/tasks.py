@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from . import gates as gates_mod
 from . import policy as policy_mod
 from . import store
-from .models.task import (ALLOWED, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval,
+from .models.task import (ALLOWED, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval, JobPreflight,
                           ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
 from .paths import Layout
 
@@ -805,6 +805,30 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
     t = Task.model_validate(doc)
     _sync_turn_snapshot(t)
     return t
+
+
+def backfill_job_preflight(layout: Layout, task_id: str) -> Optional[JobPreflight]:
+    """RECOVERY_PLAN.md section 3.3's backfill (D-027 decision 9, step 5): writes a fresh preflight for a stored
+    job block that predates the check -- called once per task, by the loop's bounded sweep (oldest task first,
+    `preflight.pending_backfill`) or by the gate's own run-on-absent check (`gate.preflight_reason`, while
+    `preflight.backfill_complete` is still false), whichever reaches it first. Goes through `_update`, the same
+    chokepoint every other job mutation shares, so this is preflighted under the same lock and the same
+    canonicalisation a real write gets. None when there is nothing to backfill: no job, a model lane's job, or
+    one that already carries a preflight -- even a failed one, since this only ever fills an absence, it never
+    retries a failure."""
+    from . import preflight as preflight_mod
+    result: dict | None = None
+
+    def fn(doc):
+        nonlocal result
+        job = doc.get("job")
+        if not job or job.get("adapter") not in preflight_mod.PREFLIGHT_ADAPTERS or job.get("preflight") is not None:
+            return
+        preflight_mod.attach(layout, doc)
+        result = (doc.get("job") or {}).get("preflight")
+
+    _update(layout, task_id, fn)
+    return JobPreflight.model_validate(result) if result else None
 
 
 def _sync_turn_snapshot(task: Task) -> None:
