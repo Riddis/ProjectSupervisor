@@ -23,12 +23,16 @@ def _write_template(layout):
     (layout.config / "job_templates.yaml").write_text(TEMPLATE_YAML, encoding="utf-8")
 
 
-def _setup(layout, rev=1):
-    """T1 (the subject, BLOCKED) and a five-operation plan exercising every category of the fixed order, in that
-    same order, so each operation's original index equals its category rank: 0 create_task, 1 add_dependency,
-    2 patch_contract, 3 set_job (the task this same plan creates, its first job), 4 resume."""
+def _setup(layout, rev=1, subject_status="BLOCKED"):
+    """T1 (the subject) and a five-operation plan exercising every category of the fixed order, in that same
+    order, so each operation's original index equals its category rank: 0 create_task, 1 add_dependency,
+    2 patch_contract, 3 set_job (the task this same plan creates, its first job), 4 resume.
+
+    `subject_status` is the subject's own starting status: BLOCKED and FAILED are both first-class here (the
+    stall lane dispatches on either, and the validator refuses neither), and both release to READY by an allowed
+    transition."""
     from tests.conftest import make_task
-    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
+    make_task(layout, "T1", status=subject_status, owned_paths=["."])
     _write_template(layout)
     ops = [
         {"op": "create_task", "task": {"id": "T2", "title": "T2", "objective": "o", "owner_role": "engineer",
@@ -41,6 +45,13 @@ def _setup(layout, rev=1):
     ]
     return {"plan_schema": 1, "id": PLAN_ID, "subject": {"task": "T1"}, "reason": "repair this task",
             "expected_rev": {"T1": rev}, "operations": ops}
+
+
+def _release_entries(layout, task_id="T1"):
+    """The subject's own history entries written by the applier's release: the only durable proof that this
+    plan's `resume` operation actually ran, which the subject's current status cannot carry."""
+    return [h for h in tasks_mod.load(layout, task_id).history
+            if h.get("by") == "plan" and h.get("note") == f"released by plan {PLAN_ID}"]
 
 
 def test_propose_writes_refused_status_for_an_invalid_plan(layout):
@@ -331,6 +342,138 @@ def test_a_crash_after_resumes_effect_succeeds_before_done_is_persisted(layout, 
     assert second["status"] == "applied", "a plan whose every operation already landed was recorded as stalled"
     assert sorted(second["done"]) == [0, 1, 2, 3, 4]
     assert tasks_mod.load(layout, "T1").status == TaskStatus.IN_PROGRESS, "resume forced the subject backwards"
+
+
+def test_a_failed_subject_is_released_like_a_blocked_one(layout):
+    """F9: FAILED is the other first-class subject status for this capability -- the stall lane dispatches on
+    FAILED as well as BLOCKED, the validator refuses neither, and FAILED -> READY is an allowed transition the
+    framework's own repair path already makes. A plan reaching `applied` with its subject still FAILED is exactly
+    the silent finish this step exists to eliminate: every operation ran, nothing stalled, nothing is visible."""
+    doc = _setup(layout, subject_status="FAILED")
+    plans.propose(layout, doc)
+
+    result = plans.apply(layout, PLAN_ID)
+    assert result["status"] == "applied"
+    assert sorted(result["done"]) == [0, 1, 2, 3, 4]
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.READY, "the plan reported applied, subject unreleased"
+    assert len(_release_entries(layout)) == 1, "no release was recorded against the subject"
+
+
+def test_a_crash_before_the_journal_catches_up_on_a_failed_subject_replays_as_a_noop(layout, monkeypatch):
+    """F9's crash row: the same window as the BLOCKED case (`resume`'s effect succeeds, `done` never catches up,
+    the scheduler then claims the now-READY subject) over a FAILED subject. The retry must find this plan's own
+    release already recorded and be a no-op, and it must not record a second release."""
+    doc = _setup(layout, subject_status="FAILED")
+    plans.propose(layout, doc)
+    real_append = plans._append_done
+    calls = {"n": 0}
+
+    def flaky_append(layout_, plan_id_, idx):
+        if idx == 4:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated crash after the effect ran, before the journal caught up")
+        return real_append(layout_, plan_id_, idx)
+    monkeypatch.setattr(plans, "_append_done", flaky_append)
+
+    first = plans.apply(layout, PLAN_ID)
+    assert sorted(first["done"]) == [0, 1, 2, 3]
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.READY, "resume's own effect did not run"
+
+    tasks_mod.set_status(layout, "T1", TaskStatus.IN_PROGRESS, actor="loop")   # the scheduler claims it first
+
+    second = plans.apply(layout, PLAN_ID)
+    assert second["status"] == "applied", "a plan whose every operation already landed was recorded as stalled"
+    assert sorted(second["done"]) == [0, 1, 2, 3, 4]
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.IN_PROGRESS, "resume forced the subject backwards"
+    assert len(_release_entries(layout)) == 1, "the replayed release wrote a second history entry"
+
+
+def test_a_subject_another_actor_moved_off_blocked_is_not_treated_as_released(layout, monkeypatch):
+    """F9's second shape: `resume`'s effect never ran at all (it crashed), and some other actor then moved the
+    subject off BLOCKED. The subject's status alone cannot tell that apart from this plan's own release having
+    already landed -- only the subject's history can -- and a plan whose last operation never happened must stop
+    visibly rather than report `applied`."""
+    doc = _setup(layout)
+    plans.propose(layout, doc)
+    real = plans._EFFECTS["resume"]
+    calls = {"n": 0}
+
+    def flaky(layout_, op, plan_doc):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash")
+        return real(layout_, op, plan_doc)
+    monkeypatch.setitem(plans._EFFECTS, "resume", flaky)
+
+    plans.apply(layout, PLAN_ID)                              # stops with resume still pending, nothing released
+    tasks_mod.set_status(layout, "T1", TaskStatus.IN_PROGRESS, actor="loop")   # another actor claims the subject
+
+    result = plans.apply(layout, PLAN_ID)
+    assert result["status"] != "applied", "a plan reported applied though its release never ran"
+    assert 4 not in (result.get("done") or []), "resume was journalled without ever running"
+    assert _release_entries(layout) == [], "a release was recorded that never happened"
+    assert (result.get("last_error") or {}).get("op") == "resume", "the stall does not name the release"
+
+
+@pytest.mark.parametrize("tampered", [[], [4, 0, 1, 2, 3]], ids=["truncated", "release_first"])
+def test_a_stored_order_the_applier_disagrees_with_stops_the_plan(layout, monkeypatch, tampered):
+    """F4: the execution order was computed once at promotion and then trusted on every later call. A truncated
+    one reaches `applied` with operations never attempted -- a silent finish, not a visible stop -- and one with
+    the release moved to the front would release the subject before the work it releases has landed. The order is
+    re-derived from the operations and cross-checked on every call, and a disagreement stops the plan instead of
+    being executed. (`state/plans/` is written only by the applier today, so this stands in for a partial write
+    rather than a reachable input.)"""
+    doc = _setup(layout)
+    plans.propose(layout, doc)
+    real = plans._EFFECTS["create_task"]
+    calls = {"n": 0}
+
+    def flaky(layout_, op, plan_doc):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash")
+        return real(layout_, op, plan_doc)
+    monkeypatch.setitem(plans._EFFECTS, "create_task", flaky)
+
+    plans.apply(layout, PLAN_ID)                              # promoted to applying; nothing journalled yet
+    assert store.read(plans.path_for(layout, PLAN_ID))["status"] == "applying"
+    store.update(plans.path_for(layout, PLAN_ID), lambda d: {**d, "order": list(tampered)})
+
+    result = plans.apply(layout, PLAN_ID)
+    assert result["status"] != "applied", "the plan finished on an order the applier never computed"
+    assert sorted(result.get("done") or []) == [], "an operation ran off an order the applier never computed"
+    assert not (layout.tasks / "T2.yaml").exists()
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.BLOCKED, "the release ran before the work it releases"
+    assert _release_entries(layout) == []
+
+
+def test_a_failing_log_write_in_the_stall_chain_never_escapes_apply(layout, monkeypatch):
+    """The residual on F1: three `tasks.log` lines in the stall chain sat outside the try blocks that contain
+    everything else, and `log()` does its own file I/O on a lock that can time out. Each sits after its own status
+    write has already landed, so a lost line costs the record and never the plan -- but it would still traceback
+    out of a hand-run apply."""
+    doc = _setup(layout)
+    plans.propose(layout, doc)
+
+    def always_fails(layout_, op, plan_doc):
+        raise RuntimeError("permanent failure")
+    monkeypatch.setitem(plans._EFFECTS, "patch_contract", always_fails)
+    real_log = tasks_mod.log
+    stall_events = {"plan_apply_stalled", "plan_stuck", "plan_stuck_item_opened"}
+
+    def flaky_log(layout_, event, actor, **fields):
+        if event in stall_events:
+            raise RuntimeError("the log's own lock timed out")
+        return real_log(layout_, event, actor, **fields)
+    monkeypatch.setattr(tasks_mod, "log", flaky_log)
+
+    result = None
+    for _ in range(plans.DEFAULT_MAX_RESUMES):
+        result = plans.apply(layout, PLAN_ID)                 # must never raise
+    assert result["status"] == "stuck", "a failing log line stopped the plan from reaching stuck"
+    assert result.get("owner_item"), "the owner item was lost with the log line that records it"
+    assert sorted(result["done"]) == [0, 1]
 
 
 def test_the_control_center_plans_page_shows_the_current_status(layout):
