@@ -1170,8 +1170,11 @@ def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) 
         name = op.get("op")
         assert name in _BASE_OPERATION_CLASS, f"plans.authority cannot classify operation {name!r}"
         if name == "create_task":
-            tid = (op.get("task") or {}).get("id")
-            classes.append(created_class.get(tid, CLASS_B))
+            task = op.get("task")
+            tid = task.get("id") if isinstance(task, dict) else None
+            assert tid in created_class, \
+                f"plans.authority cannot classify a create_task op with no id to classify ({task!r})"
+            classes.append(created_class[tid])
         elif name == "set_job":
             classes.append(_tightened(layout, "set_job", created_class.get(op.get("task"), CLASS_A)))
         else:
@@ -1181,16 +1184,26 @@ def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) 
 
 def approver_role(layout: Layout, proposer_role: str | None) -> tuple[str | None, str | None]:
     """(role, None) for class B's one approval session: the first role in `config/routing.yaml` `plan.approver`
-    (an ordered list) that is not `proposer_role` (RF-23) and whose lane is not configured inactive. (None,
-    reason) when no candidate qualifies — the caller raises the plan to the owner with that reason named (§2.7),
-    never silently."""
+    (an ordered list) that is not `proposer_role` (RF-23), that the project actually configures under `roles:`
+    when it configures that section at all, and whose lane is not configured inactive. (None, reason) when no
+    candidate qualifies — the caller raises the plan to the owner with that reason named (§2.7), never silently.
+
+    A role absent from `roles:` is unavailable here exactly as tasks.py's own contract_warnings treats it ("the
+    task would wait for it forever"): a project that configures `roles:` at all and lists a `plan.approver` the
+    section does not name must escalate to the owner, never mint a job for a role nothing will ever route to. A
+    project that configures no `roles:` section at all skips this check, same as that other reader does."""
     from . import gate as gate_mod
     candidates = [str(r) for r in ((gate_mod.routing_doc(layout).get("plan") or {}).get("approver") or [])]
+    roles_cfg = gate_mod.routing_doc(layout).get("roles")
+    roles_cfg = roles_cfg if isinstance(roles_cfg, dict) else {}
     tried = []
     for role in candidates:
         refusal = self_approval_refusal(proposer_role, role) if proposer_role else None
         if refusal is not None:
             tried.append(f"{role} ({refusal['code']})")
+            continue
+        if roles_cfg and role not in roles_cfg:
+            tried.append(f"{role} (not configured in routing.yaml roles:)")
             continue
         if gate_mod.role_inactive(layout, role):
             tried.append(f"{role} (inactive)")
@@ -1682,29 +1695,36 @@ def _open_owner_question(layout: Layout, plan_id: str, doc: dict, role: str, que
 def open_plan_review(layout: Layout, plan_id: str, *, by: str = "loop") -> dict:
     """Class B's one approval session (§2.7): resolve `plan.approver` (never the proposer, RF-23) and mint
     exactly one `plan_review` job id against the plan's subject task — a new job kind, additive to the existing
-    id derivation (`tasks.JobId`/`tasks.allocate_job`). No approver available escalates to the owner instead,
-    with the reason named, never silently dropped. Idempotent: a plan that already carries `plan_review` or
-    `owner_item` is returned unchanged, so a repeated call from the sweep never opens a second job."""
+    id derivation (`tasks.JobId`/`tasks.allocate_job`). Attempt-scoped when the subject names an attempt (RF-19
+    already compares it with current_attempt), task-scoped like a diagnosis raised before any delivery exists
+    only when it does not. No approver available escalates to the owner instead, with the reason named, never
+    silently dropped. Idempotent: a plan that already carries `plan_review` or `owner_item` is returned
+    unchanged, so a repeated call from the sweep never opens a second job."""
     doc = load_plan(layout, plan_id)
     if doc is None:
         raise PlanError(f"no such plan {plan_id!r}")
     if doc.get("plan_review") or doc.get("owner_item"):
         return doc
-    subject_id = (doc.get("subject") or {}).get("task")
+    subject = doc.get("subject") or {}
+    subject_id = subject.get("task")
     role, reason = approver_role(layout, doc.get("proposer_role"))
     if role is None:
         return _open_owner_choice(layout, plan_id, doc, reason=reason)
-    job_id = tasks_mod.allocate_job(layout, subject_id, "plan_review", note=f"plan_review of {plan_id}").id
+    pre_rev = tasks_mod.load(layout, subject_id).rev
+    job_id = tasks_mod.allocate_job(layout, subject_id, "plan_review", attempt=subject.get("attempt"),
+                                    note=f"plan_review of {plan_id}").id
     # allocate_job's own write bumps the subject's rev (its job counter lives there) — a mutation this function
     # makes, not one the store owner made, so it must never read back as RF-19 staleness when the review's own
-    # APPROVE later promotes this plan. The plan's frozen expected_rev is refreshed to the post-allocation rev
-    # it already reflects, the same way the journal's own `done` stays truthful across a write between steps.
+    # APPROVE later promotes this plan. Absorb only that own delta: refresh expected_rev to the post-allocation
+    # rev only when the plan's own recorded value still equals the rev read just before the allocation. If it
+    # does not, something else moved the subject in this same window, and expected_rev is left exactly as stale
+    # as it truthfully is, so apply()'s own re-validation refuses with RF-19 rather than being silenced here.
     new_rev = tasks_mod.load(layout, subject_id).rev
 
     def fn(d):
         d["plan_review"] = {"job": job_id, "role": role}
         expected = dict(d.get("expected_rev") or {})
-        if subject_id in expected:
+        if expected.get(subject_id) == pre_rev:
             expected[subject_id] = new_rev
         d["expected_rev"] = expected
         return d
@@ -1752,6 +1772,23 @@ def apply_plan_review(layout: Layout, plan_id: str, verdict: str, role: str, *,
     raise PlanError(f"plan_review verdict {verdict!r} is not APPROVE, REVISE or OWNER")
 
 
+def _refuse_held_subject(layout: Layout, plan_id: str, subject_id: str) -> dict:
+    """RF-22, re-checked immediately before routing opens any approval record — a hold placed after validate()
+    and before this turn must refuse here exactly as validate() itself would, never reach a human (an approver's
+    `plan_review` job, an owner's `apply_plan` button) as a choice apply()'s own re-validation would refuse
+    anyway (D-027 decision 10: only a choice the underlying command would accept is ever offered)."""
+    refusal = _rf("RF-22", "I2 §1.2", None, "subject", f"subject {subject_id!r} is held by the owner").as_dict()
+
+    def fn(d):
+        d["history"] = _history(d, "loop", "refused")
+        d["status"] = "refused"
+        d["refusals"] = [refusal]
+        return d
+    doc = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_refused", "loop", plan=plan_id, refusals=["RF-22"])
+    return doc
+
+
 def resume_plans(layout: Layout) -> list[str]:
     """The loop's own turn (§2.6 rule 5, extended by §2.7/step 8): route every plan still `awaiting_approval` and
     not yet routed by its own authority class (class A applied on the spot; class B and the owner class each
@@ -1770,6 +1807,12 @@ def resume_plans(layout: Layout) -> list[str]:
             status = doc.get("status")
             if status == "awaiting_approval" and not doc.get("plan_review") and not doc.get("owner_item"):
                 tasks_now = tasks_mod.load_all(layout) if tasks_now is None else tasks_now
+                subject_id = (doc.get("subject") or {}).get("task")
+                subject_task = tasks_now.get(subject_id)
+                if subject_task is not None and subject_task.held:
+                    _refuse_held_subject(layout, plan_id, subject_id)
+                    acted.append(plan_id)
+                    continue
                 cls = authority(doc, tasks_now, layout)
                 if cls == CLASS_A:
                     apply(layout, plan_id)

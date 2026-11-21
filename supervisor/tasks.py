@@ -986,8 +986,9 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
 
 # ---- the attempt-identity allocator (§2.2, §2.3 of the attempt-identity design) — not yet called from the loop.
 # A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
-# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job (today
-# only a diagnosis raised before any delivery ever exists, §2.5).
+# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job: a
+# diagnosis raised before any delivery ever exists (§2.5), or a plan_review whose plan's own subject names no
+# attempt either (RECOVERY_PLAN.md §2.7, step 8) — attempt-scoped like any other job when it does.
 _JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d", "plan_review": "p"}
 
 

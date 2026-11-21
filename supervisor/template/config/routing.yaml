@@ -193,8 +193,11 @@ limits:
   resource_cost_categories: []      # cost categories whose DELIVERY also holds that resource slot, on any lane — e.g. [local]
                                     # when an agent session does the resource's own engineering work (installs, runs, benchmarks it)
 plan:                                # recovery plans (RECOVERY_PLAN.md §2.7): who approves what a plan proposes
-  approver: [chief_architect, senior_pm]   # ordered; the first role that is not the plan's own proposer and is
-                                            # active reviews a plan that creates work on an unmetered lane (class B)
+  approver: [chief_architect, senior_pm]   # ordered; the first of these also named under roles: below, that is
+                                            # not the plan's own proposer and is active, reviews a plan that
+                                            # creates work on an unmetered lane (class B) — name a role here with
+                                            # no matching roles: entry and that candidate is skipped, never resolved
+                                            # (`supervisor doctor` warns); none left standing escalates to the owner
   # authority: {}                    # per-operation class override (add_dependency/remove_dependency/patch_contract/
                                       # resume/create_task/set_job -> A|B|owner); tightens only, never loosens
 # Two more sections, added when they are needed:

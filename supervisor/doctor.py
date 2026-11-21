@@ -124,6 +124,13 @@ def check_routing(layout: Layout) -> Check:
     missing = [r for r, p in roles.items() if (p or {}).get("card") and not (layout.agents / p["card"]).exists()]
     if missing:
         return Check("routing", False, "role cards missing: " + ", ".join(missing))
+    plan_cfg = doc.get("plan") or {}
+    approvers = [str(r) for r in (plan_cfg.get("approver") or [])] if isinstance(plan_cfg, dict) else []
+    unconfigured = [r for r in approvers if roles and r not in roles]
+    if unconfigured:
+        return Check("routing", True, f"{len(roles)} role(s) configured; plan.approver names "
+                     f"{', '.join(unconfigured)}, absent from roles: — a plan with no other approver reaches "
+                     "the owner instead of that role", warn=True)
     return Check("routing", True, f"{len(roles)} role(s) configured")
 
 
