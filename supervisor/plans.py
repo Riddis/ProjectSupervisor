@@ -1102,30 +1102,41 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
     tasks_mod._update(layout, op["task"], fn)
 
 
-# A subject this far past READY has already left BLOCKED by the ordinary path (the scheduler, a delivery) by
-# the time a crashed-and-retried `resume` reaches it again (F3): forcing it back to READY would both be wrong
-# and illegal (IN_PROGRESS -> READY is not in ALLOWED), so a retry that finds the subject here treats the
-# release as already done rather than failing a plan whose every operation already landed.
-_RELEASED_PAST_READY = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW,
-                                  TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED, TaskStatus.COMPLETE})
+def _release_note(plan_id: str) -> str:
+    """The release's own signature on the subject: the note `_effect_resume` writes, and the one `_already_released`
+    looks for. One string, so a retry can never disagree with what the first attempt recorded."""
+    return f"released by plan {plan_id}"
+
+
+def _already_released(subject: Task, plan_id: str, target: TaskStatus) -> bool:
+    """Proof, not a guess, that *this* plan's release already landed on an earlier call (F9): the subject's own
+    history entry, written by `_effect_resume` with `by: plan` and this plan's note. A status check cannot carry
+    that proof in either direction — a subject that is FAILED is a release this plan still owes (FAILED -> READY
+    is an allowed transition, and the repair lane's subjects arrive FAILED as often as BLOCKED), while a subject
+    some other actor moved off BLOCKED while `resume` was still pending was never released by this plan at all."""
+    note = _release_note(plan_id)
+    return any(h.get("by") == "plan" and h.get("note") == note and h.get("to") == target.value
+               for h in (subject.history or []))
 
 
 def _effect_resume(layout: Layout, op: dict, plan_doc: dict) -> None:
     """The release itself, always the applier's last operation (§2.6 rule 2) — re-reads the subject fresh rather
-    than trusting `plan_doc`, for two reasons a single validate() at promotion cannot cover (F2, F3): a Hold the
+    than trusting `plan_doc`, for two reasons a single validate() at promotion cannot cover (F2, F9): a Hold the
     owner places after promotion must still stop the release, and must never be cleared by this call — `resume`'s
     own `actor="plan"` is outside `tasks.AUTOMATIC_ACTORS`, which is exactly what would otherwise erase it
-    (tasks.set_status) on the way to BLOCKED -> READY; and a subject the scheduler has already moved past READY,
-    on a retry that lands after `resume`'s own earlier effect already succeeded, is treated as already released
-    rather than forced backwards into an illegal transition."""
+    (tasks.set_status) on the way to BLOCKED -> READY; and a retry that lands after this same effect already
+    succeeded (the crash window between the effect and `done`) must not force the subject backwards into an
+    illegal transition. Anything short of that proof is a release this plan still owes: the transition is made,
+    and if the store refuses it the plan stalls visibly rather than reporting a release it never performed."""
     subject_id = (plan_doc.get("subject") or {}).get("task")
+    plan_id = str(plan_doc.get("id"))
     target = TaskStatus.BLOCKED if op.get("as", "ready") == "blocked_on_dependencies" else TaskStatus.READY
     subject = tasks_mod.load(layout, subject_id)
     if subject.held:
         raise PlanError(f"subject {subject_id!r} is held by the owner; resume refused")
-    if target == TaskStatus.READY and subject.status in _RELEASED_PAST_READY:
+    if _already_released(subject, plan_id, target):
         return
-    tasks_mod.set_status(layout, subject_id, target, actor="plan", note=f"released by plan {plan_doc.get('id')}")
+    tasks_mod.set_status(layout, subject_id, target, actor="plan", note=_release_note(plan_id))
 
 
 _EFFECTS = {"create_task": _effect_create_task, "add_dependency": _effect_add_dependency,
@@ -1135,6 +1146,18 @@ _EFFECTS = {"create_task": _effect_create_task, "add_dependency": _effect_add_de
 
 # ----------------------------------------------------------------------- the applier itself
 
+def _log_quiet(layout: Layout, event: str, **fields) -> None:
+    """Every log line inside `apply()`'s own call tree goes through here: `tasks.log` does its own file I/O on a
+    lock that can time out, and each of these lines is written *after* the status write it records has already
+    landed. A lost line costs the trail, never the plan — and nothing inside this call tree may raise, or one bad
+    plan takes the loop's whole turn with it (the residual on F1). `propose()`'s own line is deliberately not
+    routed here: it has no status write to protect and its caller should see the failure."""
+    try:
+        tasks_mod.log(layout, event, "applier", **fields)
+    except Exception:                                  # noqa: BLE001 - a record, never a reason to raise
+        pass
+
+
 def _fail_refused(layout: Layout, plan_id: str, refusals: list[dict]) -> dict:
     def fn(d):
         d["history"] = _history(d, "applier", "refused")
@@ -1142,7 +1165,7 @@ def _fail_refused(layout: Layout, plan_id: str, refusals: list[dict]) -> dict:
         d["refusals"] = refusals
         return d
     doc = store.update(path_for(layout, plan_id), fn)
-    tasks_mod.log(layout, "plan_refused", "applier", plan=plan_id, refusals=[r["code"] for r in refusals])
+    _log_quiet(layout, "plan_refused", plan=plan_id, refusals=[r["code"] for r in refusals])
     return doc
 
 
@@ -1156,7 +1179,7 @@ def _promote_to_applying(layout: Layout, plan_id: str, order: list[int], report:
         d["report"] = report
         return d
     doc = store.update(path_for(layout, plan_id), fn)
-    tasks_mod.log(layout, "plan_applying", "applier", plan=plan_id)
+    _log_quiet(layout, "plan_applying", plan=plan_id)
     return doc
 
 
@@ -1176,7 +1199,7 @@ def _finish_applied(layout: Layout, plan_id: str) -> dict:
         d["status"] = "applied"
         return d
     doc = store.update(path_for(layout, plan_id), fn)
-    tasks_mod.log(layout, "plan_applied", "applier", plan=plan_id)
+    _log_quiet(layout, "plan_applied", plan=plan_id)
     return doc
 
 
@@ -1201,10 +1224,10 @@ def _try_open_stuck_item(layout: Layout, plan_id: str, doc: dict) -> dict:
                                 detail=detail, kind=inbox_mod.DECISION_KIND, allowed_responses=[], free_text=True,
                                 from_="applier", task_id=subject_id, dedup_key=f"plan:{plan_id}")
     except inbox_mod.InboxFull:
-        tasks_mod.log(layout, "inbox_full", "applier", reason="plan_stuck", plan=plan_id)
+        _log_quiet(layout, "inbox_full", reason="plan_stuck", plan=plan_id)
         return doc
     except Exception:                                  # noqa: BLE001 - a lock timeout here is not this plan's
-        tasks_mod.log(layout, "plan_apply_stall_unrecorded", "applier", plan=plan_id)
+        _log_quiet(layout, "plan_apply_stall_unrecorded", plan=plan_id)
         return doc
 
     def fn(d):
@@ -1213,10 +1236,10 @@ def _try_open_stuck_item(layout: Layout, plan_id: str, doc: dict) -> dict:
     try:
         doc = store.update(path_for(layout, plan_id), fn)
     except Exception:                                  # noqa: BLE001 - the item exists (dedup_key) either way
-        tasks_mod.log(layout, "plan_apply_stall_unrecorded", "applier", plan=plan_id)
+        _log_quiet(layout, "plan_apply_stall_unrecorded", plan=plan_id)
         return doc
-    tasks_mod.log(layout, "plan_stuck_item_opened", "applier", plan=plan_id, owner_item=item["id"],
-                  op_index=err.get("op_index"))
+    _log_quiet(layout, "plan_stuck_item_opened", plan=plan_id, owner_item=item["id"],
+               op_index=err.get("op_index"))
     return doc
 
 
@@ -1231,10 +1254,10 @@ def _mark_stuck(layout: Layout, plan_id: str, doc: dict) -> dict:
         try:
             doc = store.update(path_for(layout, plan_id), fn)
         except Exception:                              # noqa: BLE001 - never let a lock timeout out of apply()
-            tasks_mod.log(layout, "plan_apply_stall_unrecorded", "applier", plan=plan_id)
+            _log_quiet(layout, "plan_apply_stall_unrecorded", plan=plan_id)
             return load_plan(layout, plan_id) or doc
-        tasks_mod.log(layout, "plan_stuck", "applier", plan=plan_id,
-                      op_index=(doc.get("last_error") or {}).get("op_index"))
+        _log_quiet(layout, "plan_stuck", plan=plan_id,
+                   op_index=(doc.get("last_error") or {}).get("op_index"))
     return _try_open_stuck_item(layout, plan_id, doc)
 
 
@@ -1254,13 +1277,12 @@ def _record_stall(layout: Layout, plan_id: str, idx: int | None, op: dict | None
     try:
         doc = store.update(path_for(layout, plan_id), fn)
     except Exception:                                  # noqa: BLE001 - left for the next turn to retry
-        tasks_mod.log(layout, "plan_apply_stall_unrecorded", "applier", plan=plan_id)
+        _log_quiet(layout, "plan_apply_stall_unrecorded", plan=plan_id)
         return load_plan(layout, plan_id) or {}
     limits = _plan_limits(layout)
     if doc["resume_count"] >= limits["max_resumes"]:
         return _mark_stuck(layout, plan_id, doc)
-    tasks_mod.log(layout, "plan_apply_stalled", "applier", plan=plan_id, op_index=idx,
-                  resume_count=doc["resume_count"])
+    _log_quiet(layout, "plan_apply_stalled", plan=plan_id, op_index=idx, resume_count=doc["resume_count"])
     return doc
 
 
@@ -1290,6 +1312,7 @@ def apply(layout: Layout, plan_id: str) -> dict:
 
 
 def _apply_pending(layout: Layout, plan_id: str, doc: dict, status: str) -> dict:
+    order = _execution_order(doc.get("operations") or [])
     if status == "awaiting_approval":
         tasks_now = tasks_mod.load_all(layout)
         probe = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
@@ -1298,14 +1321,21 @@ def _apply_pending(layout: Layout, plan_id: str, doc: dict, status: str) -> dict
         report, refusals = validate(probe, layout, tasks=tasks_now)
         if refusals:
             return _fail_refused(layout, plan_id, refusals)
-        order = _execution_order(doc.get("operations") or [])
         doc = _promote_to_applying(layout, plan_id, order, report.as_dict())
     elif status == "stuck":
         doc = _try_open_stuck_item(layout, plan_id, doc)       # retry a deferred item before trying an effect
 
+    if list(doc.get("order") or []) != order:
+        # The stored order is re-derived from the operations and cross-checked on every call, never computed once
+        # at promotion and then trusted (F4): a truncated one would reach `applied` with operations never
+        # attempted, and a reordered one would put the release before the work it releases. Neither is reachable
+        # from any input today — only the applier writes this document — so a disagreement means the document is
+        # not what the applier wrote, and the plan stops visibly instead of executing it.
+        raise PlanError(f"plan {plan_id!r}: the stored operation order is not the one the applier computes from "
+                        f"these operations; refusing to apply it")
     ops = doc.get("operations") or []
     done = set(doc.get("done") or [])
-    for idx in doc.get("order") or []:
+    for idx in order:
         if idx in done:
             continue
         op = ops[idx]
@@ -1358,6 +1388,6 @@ def resume_plans(layout: Layout) -> list[str]:
             elif doc.get("status") == "stuck" and not doc.get("owner_item"):
                 _try_open_stuck_item(layout, plan_id, doc)
         except Exception:                              # noqa: BLE001 - one plan's own failure, never the sweep's
-            tasks_mod.log(layout, "plan_resume_error", "applier", plan=plan_id)
+            _log_quiet(layout, "plan_resume_error", plan=plan_id)
             continue
     return acted
