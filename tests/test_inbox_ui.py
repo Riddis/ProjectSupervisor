@@ -113,6 +113,88 @@ def test_empty_answer_rejected(layout, auth_client):
     assert inbox_mod.load(layout, item["id"])["status"] == "open"
 
 
+# ------------------------------------------------------------------ typed choices on the card (section 4.1)
+
+
+def _choice_item(layout, choices, **over):
+    from tests.conftest import make_task
+    if not (layout.tasks / "T1.yaml").exists():
+        make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
+    fields = {"for_role": "owner", "subject": "pick one", "summary": "body", "task_id": "T1", "choices": choices}
+    return inbox_mod.create(layout, **{**fields, **over})
+
+
+def test_a_choice_card_renders_its_buttons_from_the_effect_and_carries_the_digest(layout, auth_client):
+    """The card is rendered from the validated effect, not from prose beside it: one button per choice carrying
+    its own id, the label the effect renders to, and the hidden `choices_digest` the answer must carry back."""
+    item = _choice_item(layout, [{"id": "cancel", "effect": {"op": "cancel_task", "task": "T1"}},
+                                 {"id": "requeue", "effect": {"op": "resume", "task": "T1", "as": "ready"}}])
+    r = auth_client.get("/inbox")
+    assert r.status_code == 200
+    assert 'name="choice" value="cancel"' in r.text
+    assert 'name="choice" value="requeue"' in r.text
+    for choice in item["choices"]:
+        assert choice["label"] in r.text
+    assert f'name="choices_digest" value="{item["choices_digest"]}"' in r.text
+    # the free-text box is its own form: it carries no choice and no digest, because it is a comment (section 4.1)
+    choice_form = r.text.split('class="inline-form choice-form"')[1].split("</form>")[0]
+    assert 'name="text"' not in choice_form, "the free-text box is inside the choice form"
+
+
+def test_posting_a_choice_button_applies_its_effect_and_a_stale_digest_is_refused(layout, auth_client):
+    item = _choice_item(layout, [{"id": "cancel", "effect": {"op": "cancel_task", "task": "T1"}}])
+    r = post(auth_client, f"/inbox/{item['id']}/answer", choice="cancel", choices_digest=item["choices_digest"])
+    assert r.status_code == 303
+    assert "flash=applied" in r.headers["location"]
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.CANCELLED
+    assert inbox_mod.load(layout, item["id"])["choice_applied"]["ok"]
+
+    from tests.conftest import make_task
+    make_task(layout, "T2", status="BLOCKED", owned_paths=["."])
+    stale = _choice_item(layout, [{"id": "cancel", "effect": {"op": "cancel_task", "task": "T2"}}], task_id="T2")
+    r2 = post(auth_client, f"/inbox/{stale['id']}/answer", choice="cancel", choices_digest="not-what-was-shown")
+    assert r2.status_code == 303
+    assert "flash=error" in r2.headers["location"]
+    assert "RF-25" in r2.headers["location"]
+    assert inbox_mod.load(layout, stale["id"])["status"] == "open"
+    assert tasks_mod.load(layout, "T2").status == TaskStatus.BLOCKED
+
+
+def test_a_choice_that_fails_to_apply_flashes_an_error_and_shows_it_on_the_card(layout, auth_client):
+    item = _choice_item(layout, [{"id": "cancel_other", "effect": {"op": "cancel_task", "task": "T-absent"}}])
+    r = post(auth_client, f"/inbox/{item['id']}/answer", choice="cancel_other",
+             choices_digest=item["choices_digest"])
+    assert r.status_code == 303
+    assert "flash=error" in r.headers["location"]
+    assert "did+not+apply" in r.headers["location"] or "did%20not%20apply" in r.headers["location"]
+    page = auth_client.get("/inbox?tab=archive")
+    assert "did not apply" in page.text                       # the banner on the answered card, not only the flash
+
+
+def test_prose_typed_into_a_choice_cards_free_text_box_applies_no_effect(layout, auth_client):
+    """Through the real route: a sentence that merely begins with a choice's derived keyword must not be that
+    choice. Free text is never an effect (section 4.1), so the task is untouched and nothing is applied."""
+    item = _choice_item(layout, [{"id": "cancel", "effect": {"op": "cancel_task", "task": "T1"}}])
+    r = post(auth_client, f"/inbox/{item['id']}/answer", text="CANCEL the other one instead")
+    assert r.status_code == 303
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.BLOCKED
+    assert not inbox_mod.load(layout, item["id"]).get("choice_applied")
+
+
+def test_the_free_text_box_on_a_choice_card_is_a_comment_and_reopens_the_item(layout, auth_client):
+    item = _choice_item(layout, [{"id": "cancel", "effect": {"op": "cancel_task", "task": "T1"}}],
+                        kind=inbox_mod.DECISION_KIND, from_="loop")
+    r = post(auth_client, f"/inbox/{item['id']}/answer", text="I will look at this myself tomorrow")
+    assert r.status_code == 303
+    answered = inbox_mod.load(layout, item["id"])
+    assert answered["answer"]["kind"] == "text"
+    assert "choice_applied" not in answered
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.BLOCKED
+    reopened = inbox_mod.load(layout, answered["applied"]["reopened"])
+    assert reopened["choices"] == item["choices"]
+    assert reopened["choices_digest"] == item["choices_digest"]
+
+
 def test_snooze_then_reopen(layout, auth_client):
     item = inbox_mod.create(layout, for_role="owner", subject="s", summary="body")
     r = post(auth_client, f"/inbox/{item['id']}/snooze")
