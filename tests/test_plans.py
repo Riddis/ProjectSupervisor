@@ -464,6 +464,61 @@ def test_prose_in_checks_is_still_normalised_not_refused(layout):
     assert [n["code"] for n in report.normalised] == ["checks_to_tests"]
 
 
+def test_rf03_restating_an_existing_check_is_not_authored(layout):
+    """RF-03 and RF-16 do not exclude each other on a task that already carries a check: restating the entry
+    verbatim satisfies monotonicity and is not authoring, so `_executable_content_refusals` must see it too."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": [{"command": "python -m pytest tests/test_x.py"}]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert report.normalised == []
+
+
+def test_rf03_a_new_check_beside_an_existing_one_is_still_authored(layout):
+    """Restatement is exempt; a second, new entry beside it is not — RF-03 still refuses what the plan adds."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": [{"command": "python -m pytest tests/test_x.py"},
+                                               _executable_check(layout)]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_rf03_restating_an_existing_test_root_is_not_authored(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", test_roots=["tests"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"test_roots": ["tests"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == []
+
+
+def test_rf03_a_new_test_root_beside_an_existing_one_is_still_authored(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", test_roots=["tests"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"test_roots": ["tests", "docs"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_prose_normalisation_keeps_the_check_it_does_not_mention(layout):
+    """The gap this closes: `checks_to_tests` used to replace `checks` wholesale with only what it kept from the
+    plan's own list, so a plan correcting prose — never asking to touch the real command already there — tripped
+    RF-16 by the normalisation's own rewrite, spending the one correction turn Sec2.5 grants on a fault that was
+    never the plan's. The real check must survive untouched, and the move is still reported, never counted."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": ["the report names each refusal code"]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["checks_to_tests"]
+    patch = report.graph_diff["contract_patches"][0]
+    assert patch["after"]["checks"][0]["command"] == "python -m pytest tests/test_x.py"
+
+
 def test_create_task_may_not_carry_a_job_block(layout):
     """The other way a contract could name a program: `job` is not a contract field a plan may write (§2.2 — a
     job is a separate `set_job`, so the template rule lives in one place)."""
@@ -509,6 +564,19 @@ def test_a_refusal_never_carries_the_value_it_refused(layout):
     _, refusals = plans.validate(doc, layout)
     assert "RF-21" in codes(refusals), "the secret scan runs whatever the shape check decided"
     assert "RF-04" in codes(refusals)
+    for r in refusals:
+        assert SECRET not in str(r), r
+
+
+def test_rf21_scans_a_field_name_too_not_only_a_value(layout):
+    """RF-21's rule held for values and not for field names: a credential-shaped *key* in a field the schema does
+    not have reached the message `patch_contract.fields may not set {key!r}` unredacted. The key is now scanned
+    like any other string, and whatever message quotes the field path is screened the same way."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {SECRET: ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-21" in codes(refusals), "a secret-shaped field name is scanned like a value"
     for r in refusals:
         assert SECRET not in str(r), r
 
@@ -561,6 +629,37 @@ def test_rf18_a_warning_the_task_already_carried_is_not_a_refusal(layout):
     doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"review_note": "look at the log order"}}])
     _, refusals = plans.validate(doc, layout)
     assert refusals == []
+
+
+def test_rf18_contract_refused_on_a_patch_to_a_task_this_plan_creates(layout):
+    """The gap this closes: `patch_contract` on a task the same plan creates found no task in the live store
+    (`t is None`) and returned before RF-18, before monotonicity and before the RF-02 shape check — so a
+    two-operation plan could create a task and park it on an unconfigured role through its own second operation,
+    exactly what RF-18 exists to refuse on `create_task` itself."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text("roles:\n  engineer:\n    active: true\n", encoding="utf-8")
+    doc = base_plan(ops=[
+        {"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o", "owner_role": "engineer",
+                                       "cost_category": "deterministic"}},
+        {"op": "patch_contract", "task": "T2", "fields": {"reviewer": ["ghost_role"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-18")
+
+
+def test_a_clean_patch_onto_a_created_task_validates(layout):
+    """The other direction: a patch to a created task that adds nothing a contract would warn about is not made
+    unpatchable by the fix — RF-18 only, never a `t is None` no-op that silently skips every check."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[
+        {"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o", "owner_role": "engineer",
+                                       "cost_category": "deterministic"}},
+        {"op": "patch_contract", "task": "T2", "fields": {"review_note": "look at the log order"}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert "T2" in report.scope
 
 
 def test_rf19_expected_rev_must_name_the_subject(layout):
