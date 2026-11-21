@@ -79,6 +79,15 @@ def test_authority_set_job_inherits_its_created_tasks_class():
     assert plans.authority(doc, {}) == plans.CLASS_OWNER
 
 
+def test_authority_raises_on_a_create_task_with_no_id_to_classify():
+    """The docstring's own claim ("fires the assertion rather than falling through to a default class") is
+    proved, not just asserted: a create_task op whose task carries no id must never silently resolve to class B,
+    the metered check it would then skip."""
+    doc = {"operations": [{"op": "create_task", "task": {"title": "no id"}}]}
+    with pytest.raises(AssertionError):
+        plans.authority(doc, {})
+
+
 def test_authority_is_the_highest_class_of_its_operations():
     doc = {"operations": [{"op": "add_dependency", "task": "T1", "depends_on": ["T0"]}, _create_op("T2")]}
     assert plans.authority(doc, {}) == plans.CLASS_B
@@ -112,7 +121,7 @@ def test_approver_role_escalates_with_a_reason_when_only_candidate_is_the_propos
 
 def test_approver_role_skips_an_inactive_role(layout):
     _write_routing(layout, "plan:\n  approver: [chief_architect, senior_pm]\n"
-                          "roles:\n  chief_architect:\n    active: false\n")
+                          "roles:\n  chief_architect:\n    active: false\n  senior_pm: {}\n")
     role, reason = plans.approver_role(layout, "engineer")
     assert role == "senior_pm"
 
@@ -122,6 +131,33 @@ def test_approver_role_empty_configuration(layout):
     role, reason = plans.approver_role(layout, "engineer")
     assert role is None
     assert "empty" in reason
+
+
+def test_approver_role_skips_a_role_the_project_does_not_configure_at_all(layout):
+    """D-027 decision 6's load-bearing case, named in review: a project that configures `roles:` at all, and
+    whose template-shipped `plan.approver` default names a manager role the project never configured (a single-
+    manager project), must escalate to the owner with the reason — never resolve the absent role as if it were
+    an ordinary, active approver (tasks.py's own contract_warnings treats the same absence as "the task would
+    wait for it forever")."""
+    _write_routing(layout, "plan:\n  approver: [chief_architect, senior_pm]\n"
+                          "roles:\n  chief_architect: {}\n")
+    role, reason = plans.approver_role(layout, "engineer")
+    assert role == "chief_architect"
+    # now the only role actually configured IS the proposer: nothing left standing
+    role, reason = plans.approver_role(layout, "chief_architect")
+    assert role is None
+    assert "senior_pm" in reason
+    assert "not configured" in reason
+
+
+def test_approver_role_with_no_roles_section_at_all_still_resolves(layout):
+    """The complement of the case above: a project that configures no `roles:` section at all skips the
+    "is it configured" question entirely, same as tasks.py's own contract_warnings does — unchanged behaviour
+    for every project that does not use the roles: section."""
+    _write_routing(layout, APPROVER_ROUTING)
+    role, reason = plans.approver_role(layout, "senior_pm")
+    assert role == "chief_architect"
+    assert reason is None
 
 
 # ------------------------------------------------------------------ the plan_review job kind: additive to the
@@ -141,6 +177,24 @@ def test_plan_review_job_kind_is_additive_to_the_existing_id_derivation(layout):
     assert job_id == "T1.p1"
     second = tasks_mod.allocate_job(layout, "T1", "plan_review").id
     assert second == "T1.p2", "the counter still advances; nothing about an existing kind changed"
+
+
+def test_open_plan_review_job_is_attempt_scoped_when_the_subject_names_an_attempt(layout):
+    """§2.1's subject carries its own attempt (RF-19 already compares it with current_attempt); the plan_review
+    job must land inside that same attempt's own jobs[], not task-scoped like a diagnosis raised before any
+    delivery exists — task scope is reserved for a plan whose subject names no attempt at all."""
+    from tests.conftest import make_task
+    _write_routing(layout, APPROVER_ROUTING)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    doc["subject"]["attempt"] = 1
+    plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
+    plans.resume_plans(layout)
+    stored = plans.load_plan(layout, "T1.d1")
+    assert stored["plan_review"]["job"] == "T1.a1.p1"
+    task = tasks_mod.load(layout, "T1")
+    entry = next(a for a in task.attempts if a.n == 1)
+    assert any(j.get("id") == "T1.a1.p1" for j in entry.jobs), "the job row lands inside the attempt's own jobs[]"
 
 
 # ------------------------------------------------------------------ resume_plans() routes a freshly validated plan
@@ -233,6 +287,27 @@ def test_held_subject_is_refused_rf22_and_never_reaches_the_owner(layout):
     assert inbox_mod.all_items(layout) == []
 
 
+def test_a_hold_placed_after_validation_is_refused_before_any_approval_record_opens(layout):
+    """D-027 decision 10: only a choice the underlying command would accept is ever offered. A hold placed
+    between propose() (which found none) and the routing turn must still refuse with RF-22 here — never open an
+    approver's plan_review job, or an owner's apply_plan button, that apply()'s own re-validation would refuse
+    anyway."""
+    from tests.conftest import make_task
+    _write_routing(layout, APPROVER_ROUTING)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
+    tasks_mod.hold(layout, "T1", "owner", note="wait")
+    acted = plans.resume_plans(layout)
+    assert acted == ["T1.d1"]
+    stored = plans.load_plan(layout, "T1.d1")
+    assert stored["status"] == "refused"
+    assert any(r["code"] == "RF-22" for r in stored["refusals"])
+    assert not stored.get("plan_review")
+    assert not stored.get("owner_item")
+    assert inbox_mod.all_items(layout) == []
+
+
 # ------------------------------------------------------------------ apply_plan_review(): the typed result
 
 def _propose_class_b(layout, plan_id="T1.d1"):
@@ -291,3 +366,50 @@ def test_plan_review_refuses_self_approval_even_under_the_recorded_role(layout):
     store.update(plans.path_for(layout, doc["id"]), fn)
     with pytest.raises(plans.PlanError):
         plans.apply_plan_review(layout, doc["id"], "APPROVE", "senior_pm")
+
+
+# ------------------------------------------------------------------ open_plan_review()'s own expected_rev write
+# never silences a move it did not itself make (RF-19 stays live for class B, exactly as it already is for A)
+
+def test_open_plan_review_absorbs_only_its_own_rev_bump_not_a_move_it_did_not_make(layout):
+    """allocate_job's write bumps the subject's rev — open_plan_review must absorb exactly that bump and no
+    more. A move the store already took independently, in the same window, must stay visible to apply()'s own
+    re-validation (RF-19) instead of being quietly folded into "the rev open_plan_review itself produced"."""
+    from tests.conftest import make_task
+    _write_routing(layout, APPROVER_ROUTING)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
+    recorded = plans.load_plan(layout, "T1.d1")["expected_rev"]["T1"]
+
+    store.update(tasks_mod.path_for(layout, "T1"), lambda d: d)      # a move open_plan_review did not make
+    assert tasks_mod.load(layout, "T1").rev != recorded
+
+    plans.open_plan_review(layout, "T1.d1")
+    stored = plans.load_plan(layout, "T1.d1")
+    assert stored["expected_rev"]["T1"] == recorded, "the independent move is never silently absorbed here"
+
+    result = plans.apply_plan_review(layout, "T1.d1", "APPROVE", stored["plan_review"]["role"])
+    assert result["status"] == "refused", "apply()'s own re-validation still catches the move RF-19 names"
+    assert any(r["code"] == "RF-19" for r in result["refusals"])
+
+
+# ------------------------------------------------------------------ `supervisor doctor`'s cheap complement:
+# a plan.approver entry absent from roles: is worth a warning before a plan ever resolves it
+
+def test_doctor_warns_when_plan_approver_names_a_role_routing_does_not_configure(layout):
+    from supervisor import doctor as doctor_mod
+    _write_routing(layout, "plan:\n  approver: [chief_architect, senior_pm]\n"
+                          "roles:\n  chief_architect: {}\n")
+    check = doctor_mod.check_routing(layout)
+    assert check.ok
+    assert check.warn
+    assert "senior_pm" in check.detail
+
+
+def test_doctor_does_not_warn_when_every_plan_approver_is_configured(layout):
+    from supervisor import doctor as doctor_mod
+    _write_routing(layout, APPROVER_ROUTING + "roles:\n  chief_architect: {}\n  senior_pm: {}\n")
+    check = doctor_mod.check_routing(layout)
+    assert check.ok
+    assert not check.warn
