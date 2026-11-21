@@ -15,7 +15,7 @@ from .base import Adapter, Result, register
 
 def job_spec(task) -> dict:
     job = getattr(task, "job", None)
-    return job.model_dump(exclude_none=True) if job is not None else {}
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 JOBS: dict[str, Callable[..., dict]] = {}
 

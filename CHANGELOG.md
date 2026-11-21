@@ -16,8 +16,11 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   documented shape stays writable by hand; a lane with its own schema that ignores a key ignores it, as before.
   **Behaviour change a plugin's own
   code can rely on, not only its registration:** `task.job` is a declared field now (next entry), not a key of
-  `task.model_extra` — a lane that read `task.model_extra["job"]` reads nothing there any more; `job_spec(task)`
-  (`supervisor.plugin.job_spec`, unchanged) is and remains the one documented way to read it.
+  `task.model_extra` — a lane that read `task.model_extra["job"]` or subscripted `task.job` itself reads nothing
+  there any more; `job_spec(task)` (`supervisor.plugin.job_spec`, unchanged) is and remains the one documented way
+  to read it, and still returns a copy of exactly the keys the document carries, never a typed field's default
+  the block never named. The reference plugin declares a schema for its own lane, so `examples/` shows the hook
+  in use.
 
 - **Fixed: `job` was not a declared field, so a misspelled key was silently ignored and a seed could not carry
   one (R-11).** `Task.job` is now a typed `Job` model (`adapter`, `template`, `params`, `argv`, `fn`, `timeout_s`,

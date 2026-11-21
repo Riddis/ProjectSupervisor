@@ -64,9 +64,11 @@ def _skip_once(layout: Layout, task: Task, reason: str) -> None:
 
 
 def job_spec(task) -> dict:
-    """The task's `job` block (adapter, fn/argv, params) — a typed field on the task document."""
+    """The task's `job` block (adapter, fn/argv, params) — a typed field on the task document. A copy of what the
+    document carries and no more: `exclude_unset` keeps a declared field's default (`params`, `retry_on`) out of a
+    block that never named it, which a lane reading the block key by key would otherwise see as its own."""
     job = getattr(task, "job", None)
-    return job.model_dump(exclude_none=True) if job is not None else {}
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 
 def adapter_name(task: Task, layout: Layout | None = None) -> str:

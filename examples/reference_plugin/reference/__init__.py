@@ -3,8 +3,9 @@
 It keeps "notes": inbox items of its own kind `reference_note`, which the owner annotates on its Control Center page
 and closes there. Around that it registers one of everything: a subprocess lane, a python job, a doctor check, an
 Overview panel, a packet screen, a projection, a CLI group, two owner commands, an inbox kind, a page with its
-templates and static files, and its own config section. tests/test_hook_contracts.py loads it through the real
-loader, as a project would, and checks each hook's contract.
+templates and static files, its own config section, and a job schema for its lane's own job keys.
+tests/test_hook_contracts.py loads it through the real loader, as a project would, and checks each hook's
+contract.
 
 It follows the plugin standard (docs/PLUGIN_STANDARD.md): supervisor-plugin.toml declares everything
 setup() registers, and `supervisor plugin check reference` (gate G5) proves it. Install it in a project either as
@@ -129,6 +130,7 @@ def make_cli():
 def setup(registry: plugin.Registry) -> None:
     registry.config_sections("reference")
     registry.adapter(lane.ADAPTER)
+    registry.job_schema("reference_lane", lane.JobKeys)
     registry.python_job("reference_count", count_job)
     registry.doctor_check(check)
     registry.overview_panel(panel)

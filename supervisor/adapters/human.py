@@ -39,7 +39,7 @@ DEFER_SECONDS = 300.0
 
 def job_spec(task) -> dict:
     job = getattr(task, "job", None)
-    return job.model_dump(exclude_none=True) if job is not None else {}
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 
 class HumanAdapter(Adapter):

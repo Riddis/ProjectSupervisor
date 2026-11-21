@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from supervisor import plugins, jobs, tasks, testing
-from supervisor.plugin import InboxError, submit_command
+from supervisor.plugin import InboxError, job_spec, submit_command
 from supervisor.models.task import TaskStatus
 
 EXT = '''
@@ -103,7 +103,7 @@ def test_the_import_probe_is_offered(tmp_path):
 LANE_EXT = '''
 from pathlib import Path
 
-from supervisor.plugin import Adapter, Result
+from supervisor.plugin import Adapter, Result, job_spec
 
 
 class Slow(Adapter):
@@ -114,7 +114,7 @@ class Slow(Adapter):
     def prepare(self, layout, task, attempt_id):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        return {"run_dir": str(run_dir), "label": (task.job or {}).get("label", "")}
+        return {"run_dir": str(run_dir), "label": job_spec(task).get("label", "")}
 
     def submit(self, spec):
         return {"kind": "slow", "started": True}
@@ -147,7 +147,7 @@ def test_a_package_test_reads_its_registered_lane_and_the_task_it_is_handed(tmp_
     assert ad.name == "slow_lane" and ad.gpu
     testing.make_task(lay, "A", job={"adapter": "slow_lane", "label": "first"}, cost_category="local")
     task = testing.task(lay, "A")
-    assert task.status == "NOT_STARTED" and task.job["label"] == "first"
+    assert task.status == "NOT_STARTED" and job_spec(task)["label"] == "first"
     assert ad.prepare(lay, task, "A.a1")["label"] == "first"
     with pytest.raises(KeyError):
         testing.registered_lane("no_such_lane")
