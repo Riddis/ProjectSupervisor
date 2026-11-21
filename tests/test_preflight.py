@@ -215,3 +215,100 @@ def test_gate_is_silent_for_adapters_the_rule_does_not_bind(layout):
     assert t.job.preflight is None                    # never attached: claude_cli is not a preflight adapter
     reason = gate.check(layout, t, "claude_cli", "delivery", running=[])
     assert reason is None
+
+
+# ----------------------------------------------------------------------- the rule binds the launched block, not the record
+
+def test_gate_does_not_demand_a_preflight_for_a_non_delivery_job_on_a_preflight_adapter(layout):
+    """A verify (or review, or diagnosis) job never runs the task's own stored `job` block -- each builds its own
+    spec and launches on whatever adapter that needs, `process` among them. A task whose own delivery is a model
+    lane's never gets a preflight attached (that adapter is not bound by the rule at all); the record's own
+    adapter for THIS launch being `process` must not borrow that task's unrelated, preflight-less job block and
+    refuse it as 'preflight missing'."""
+    make_task(layout, "T1", job={"adapter": "claude_cli", "model": "fable"})
+    t = tasks_mod.load(layout, "T1")
+    assert t.job.preflight is None
+    for kind in ("verify", "review", "diagnosis"):
+        assert gate.check(layout, t, "process", kind, running=[]) is None
+
+
+def test_gate_still_refuses_a_delivery_whose_own_block_has_no_preflight(layout):
+    """The rule above narrows the check, it does not remove it: a `delivery` launch on `process`/`python` is
+    still refused without one."""
+    make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "preflight": None})
+    t = tasks_mod.load(layout, "T1")
+    reason = gate.check(layout, t, "process", "delivery", running=[])
+    assert reason and "preflight" in reason
+
+
+# ----------------------------------------------------------------------- write-time and launch-time agree on one shape
+
+def test_gate_does_not_see_an_explicit_null_as_a_change(layout):
+    """`timeout_s: null`, written explicitly, is the same block as one that omits the key: the digest stored at
+    write time and the one recomputed at launch must agree, not disagree because one side keeps a declared key's
+    explicit null and the other (`exclude_none`) drops it."""
+    make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "timeout_s": None})
+    t = tasks_mod.load(layout, "T1")
+    assert t.job.preflight is not None and t.job.preflight.ok is True
+    reason = gate.check(layout, t, "process", "delivery", running=[])
+    assert reason is None
+
+
+def test_gate_does_not_see_a_value_pydantic_coerces_as_a_change(layout):
+    """`timeout_s: "600"` (a string a lax-mode parse coerces to the int 600) is the same block before and after
+    that coercion: the write-time digest must be taken over the coerced form too, or an unchanged block is held
+    as 'stale' forever and rewriting it reproduces the same mismatch."""
+    make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "timeout_s": "600"})
+    t = tasks_mod.load(layout, "T1")
+    assert t.job.timeout_s == 600
+    assert t.job.preflight is not None and t.job.preflight.ok is True
+    reason = gate.check(layout, t, "process", "delivery", running=[])
+    assert reason is None
+
+
+# ----------------------------------------------------------------------- section 3.3's table, the rows the first round skipped
+
+def test_undeclared_parameter_refused(layout):
+    _write_templates(layout, {"t": _process_template(params={})})
+    job = {"adapter": "process", "template": "t", "params": {"ghost": "x"}}
+    out = preflight.run(layout, job)
+    assert out["ok"] is False
+    assert out["detail"]["code"] == "parameter_rejected"
+
+
+def test_leading_dash_parameter_refused_unless_the_slot_allows_it(layout):
+    _write_templates(layout, {"t": _process_template(
+        argv=[PY, "-c", "pass", "{flag}"], params={"flag": {"type": "str"}})})
+    job = {"adapter": "process", "template": "t", "params": {"flag": "-x"}}
+    out = preflight.run(layout, job)
+    assert out["ok"] is False
+    assert out["detail"]["code"] == "parameter_rejected"
+
+
+def test_leading_dash_parameter_allowed_when_the_slot_says_so(layout):
+    _write_templates(layout, {"t": _process_template(
+        argv=[PY, "-c", "pass", "{flag}"], params={"flag": {"type": "str", "allow_leading_dash": True}})})
+    job = {"adapter": "process", "template": "t", "params": {"flag": "-x"}}
+    out = preflight.run(layout, job)
+    assert out["ok"] is True
+
+
+def test_stdin_missing_refused(layout):
+    _write_templates(layout, {"t": _process_template()})
+    job = {"adapter": "process", "template": "t", "params": {}, "stdin_file": "nope/missing_stdin.txt"}
+    out = preflight.run(layout, job)
+    assert out["ok"] is False
+    assert out["detail"]["code"] == "stdin_missing"
+
+
+def test_probe_escaped_run_dir_refused(layout):
+    """The probe's own working directory is a scratch directory under the run tree; a probe that writes a new
+    top-level entry into the project root itself -- anywhere outside that scratch directory -- is refused, never
+    silently allowed through because the probe's own exit code was 0."""
+    marker = f"escaped_probe_marker_{id(layout)}.txt"
+    code = f"import pathlib; pathlib.Path({str(layout.root)!r}, {marker!r}).write_text('x')"
+    _write_templates(layout, {"t": _process_template(probe=[PY, "-c", code])})
+    job = {"adapter": "process", "template": "t", "params": {}}
+    out = preflight.run(layout, job)
+    assert out["ok"] is False
+    assert out["detail"]["code"] == "probe_escaped_run_dir"
