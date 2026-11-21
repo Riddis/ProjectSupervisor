@@ -39,7 +39,7 @@ CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "a
 # owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
 # refresh touching only an unrelated field would have silently reset them to their defaults.
 REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
-# `job` is a contract field too (what a task runs), carried by import, refresh and patch (RECOVERY_PLAN.md 3.4,
+# `job` is a contract field too (what a task runs), carried by create, import, refresh and patch (RECOVERY_PLAN.md 3.4,
 # D-027 decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
 # CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
 # always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's. Owner
@@ -62,10 +62,12 @@ def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
 
 
 def _write_job(doc: dict, job_value: dict | None, actor: str) -> None:
-    """The one chokepoint that sets `doc['job']` from a writer-controlled value, under the rule above. A plan's
-    own `set_job` effect (`plans._effect_set_job`) is not routed through this: its shape (an adapter inherited
-    from the existing job or the template, never the writer's own choice) is pre-vetted by RF-04 at promotion
-    time and is not the literal value this rule judges."""
+    """The one chokepoint that sets `doc['job']` from a writer-controlled value, under the rule above: every write
+    path whose job is the writer's own literal choice goes through here — a created row (`check_new`, which every
+    `create()` and the queued `task.create` reach), a seed's create and refresh branches, a patch and
+    `task.set_job`. A plan's own `set_job` effect (`plans._effect_set_job`) is not routed through this: its shape
+    (an adapter inherited from the existing job or the template, never the writer's own choice) is pre-vetted by
+    RF-04 at promotion time and is not the literal value this rule judges."""
     errors = _job_writer_errors(actor, job_value or {})
     if errors:
         raise TaskError("; ".join(errors))
@@ -464,31 +466,48 @@ def _default_evidence(doc: dict) -> dict:
     return doc
 
 
-def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:
+def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None,
+              actor: str = "system") -> tuple[dict, list[str], list[str]]:
     """(the stored document, errors, warnings) for a task `create()` would add: the contract (pydantic), the graph
     with it in place, its ownership and its artifacts; `contract_warnings` stay warnings. `combined` (default: the
     store) is the graph to check it against, so a caller that changes another task in the same step
-    (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract."""
+    (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract.
+
+    A created row's `job` is the writer's own literal choice exactly like a refreshed or patched one, so it takes
+    the same two checks here and nowhere else: `_write_job` for who may write it (section 3.4 — `actor` is
+    whoever asked for the create, and a caller that names none asserts no authority) and `job_schema_problems`
+    for the adapter's own keys. A caller whose document may not name a job at all (a plan's `create_task`, a
+    diagnosis's `new_task`, both restricted by their own field lists) never reaches either, and an empty one is
+    not a write: a document built from a whole task (`Task.model_dump()` names every declared field, `job`
+    included) says nothing about what the row runs, and there is nothing on a new row to clear."""
     doc = dict(doc)
     doc.setdefault("status", "NOT_STARTED")
     doc.update({"attempts": [], "result": None, "paths": []})
     doc = _default_evidence(doc)
+    if doc.get("job"):
+        _write_job(doc, doc["job"], actor)                # before pydantic: authority first, then the shape
+    elif "job" in doc:
+        doc["job"] = None
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
     warnings += contract_warnings([task], layout)
+    job_errors, job_warnings = job_schema_problems(layout, task.job)
+    art_errors += job_errors
+    warnings += job_warnings
     return doc, validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
 
 
 def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     """Add a task that is not in the seed (probes, owner-added work, Control Center conversions). Validated like
-    the seed; an existing id is a no-op, so a retried command (or a second click) is never a duplicate."""
+    the seed, `job` included (`check_new`, under the writer-authority rule of section 3.4); an existing id is a
+    no-op, so a retried command (or a second click) is never a duplicate."""
     doc = dict(doc)
     path = path_for(layout, doc["id"])
     if path.exists():
         return {"skipped": "exists", "id": doc["id"]}
-    doc, errors, warnings = check_new(layout, doc)
+    doc, errors, warnings = check_new(layout, doc, actor=actor)
     if errors:
         raise TaskError("; ".join(errors))
     written = store.write_new(path, doc)
@@ -530,11 +549,9 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             if not create:
                 ignored.append(tid)
                 continue
-            if "job" in t:
-                job_errors = _job_writer_errors(actor, t["job"] or {})
-                if job_errors:
-                    raise TaskError("; ".join(job_errors))
             doc = dict(t)
+            if "job" in doc:
+                _write_job(doc, doc["job"], actor)                       # the same chokepoint a refresh goes through
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": []})
             doc = _default_evidence(doc)

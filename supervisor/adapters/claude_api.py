@@ -28,18 +28,19 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from pydantic import BaseModel
 
 from .. import policy
 from .._vendor.contract import LaneUnavailable, atomic_json, read_json, structured_result
 from ..paths import Layout
 from ..store import now_iso
-from .base import Adapter, Result, register, register_job_schema
+from .base import Adapter, Result, ReviewLaneKeys, register, register_job_schema
 from .claude_cli import classify_status, job_spec, role_profile, routing
 
 
-class ClaudeApiJobExtra(BaseModel):
-    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md)."""
+class ClaudeApiJobExtra(ReviewLaneKeys):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md), plus the
+    review lane's own (`ReviewLaneKeys`): this lane reads none of those three — it has no tools and no file
+    system of its own — and the framework still composes them into a review job for it."""
     role: Optional[str] = None
     api_credits: Optional[bool] = None
     max_tokens: Optional[int] = None

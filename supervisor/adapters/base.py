@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from pydantic import BaseModel
+
 
 @dataclass
 class Result:
@@ -72,5 +74,17 @@ JOB_SCHEMAS: dict[str, Any] = {}
 
 def register_job_schema(name: str, model: Any) -> None:
     JOB_SCHEMAS[name] = model
+
+
+class ReviewLaneKeys(BaseModel):
+    """The confinement block the framework composes into a review or a diagnosis job itself (supervisor.review's
+    REVIEW_LANE, overridable per role as data in routing.yaml). A lane that can review declares all three, whether
+    or not it reads them, so the owner may write that documented shape into a seed or a patch by hand without
+    being refused for a key the framework puts there unasked. Which one actually confines the job is the lane's
+    own business: a lane with per-path write modes uses `write_scope`, one with a sandbox mode uses `sandbox`,
+    and a key its lane ignores is ignored, not a misspelling."""
+    tools: Optional[str | list[str]] = None
+    sandbox: Optional[str] = None
+    write_scope: Optional[str] = None
 
 
