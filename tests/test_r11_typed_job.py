@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from supervisor import plugins, store, tasks, testing
+from supervisor import commands, plugins, store, tasks, testing
 from tests.conftest import make_task
 
 
@@ -32,7 +32,7 @@ def test_a_seed_carrying_a_job_creates_a_runnable_task_with_no_job_not_applied(l
     p = layout.root / "seed.yaml"
     p.write_text(yaml.safe_dump(seed), encoding="utf-8")
 
-    r = tasks.import_seed(layout, p)
+    r = tasks.import_seed(layout, p, actor="owner")
 
     assert r["created"] == ["NEW"]
     assert "job_not_applied" not in r
@@ -48,7 +48,7 @@ def test_a_refresh_carries_a_job_change(layout):
     p = layout.root / "seed.yaml"
     p.write_text(yaml.safe_dump(seed), encoding="utf-8")
 
-    r = tasks.import_seed(layout, p, update_ids=["A"])
+    r = tasks.import_seed(layout, p, update_ids=["A"], actor="owner")
 
     assert r["updated"] == ["A"]
     assert "job_not_applied" not in r
@@ -114,6 +114,49 @@ def test_the_owner_may_write_a_literal_argv_the_plan_may_not(layout):
     make_task(layout, "A", cost_category="deterministic")
     tasks.patch_task(layout, "A", {"job": {"adapter": "process", "argv": ["ok"]}}, actor="owner")
     assert tasks.load(layout, "A").job.argv == ["ok"]
+
+
+def test_the_control_centers_owner_ui_identity_may_write_a_job(layout):
+    """D-027 decision 7's owner is `gates.is_owner_actor` (the CLI's `owner`, the Control Center's `owner-ui`, any
+    `owner-<channel>`) — not a second, narrower copy of that rule."""
+    make_task(layout, "A", cost_category="deterministic")
+    tasks.patch_task(layout, "A", {"job": {"adapter": "process", "argv": ["ok"]}}, actor="owner-ui")
+    assert tasks.load(layout, "A").job.argv == ["ok"]
+
+
+def test_a_caller_naming_no_actor_at_all_may_not_write_a_job(layout):
+    """Authority is asserted, never inherited: a seed row or a patch that does not name an actor must not draw
+    default-parameter identity (the queued command applier's own `cmd.get("actor", "cli")` fallback included)."""
+    make_task(layout, "A", cost_category="deterministic")
+    with pytest.raises(tasks.TaskError, match="may not write a job"):
+        tasks.patch_task(layout, "A", {"job": {"adapter": "process", "argv": ["z"]}})
+    assert tasks.load(layout, "A").job is None
+
+
+def test_task_set_job_refuses_a_non_owner_actor(layout):
+    """`task.set_job` always carries a literal `argv`; the one write path a plan must never reach (RECOVERY_PLAN.md
+    3.4) must refuse it exactly like a patch or a seed row would."""
+    make_task(layout, "A", cost_category="deterministic")
+    with pytest.raises(tasks.TaskError, match="may not write a job"):
+        commands.apply_job(layout, "A", {"adapter": "process", "argv": ["sneaky"]}, "worker")
+    assert tasks.load(layout, "A").job is None
+
+
+def test_task_set_job_refuses_a_plan_a_literal_argv_too(layout):
+    """The one actor D-027 decision 7 forbids an `argv` for: a plan reaching `task.set_job` (a queued command's
+    `actor`, a plugin's `submit_command(..., actor=...)`) must not slip a literal `argv` through where a patch
+    would have refused anything beyond `template`/`params`."""
+    make_task(layout, "A", cost_category="deterministic")
+    with pytest.raises(tasks.TaskError):
+        commands.apply_job(layout, "A", {"adapter": "process", "argv": ["sneaky"]}, "plan")
+    assert tasks.load(layout, "A").job is None
+
+
+def test_task_set_job_allows_the_control_centers_owner_ui(layout):
+    make_task(layout, "A", cost_category="deterministic")
+    t, warnings = commands.apply_job(layout, "A", {"adapter": "process", "argv": ["ok"]}, "owner-ui")
+    assert t.job.argv == ["ok"]
+    assert warnings == []
 
 
 # ---------------------------------------------------------------- every framework-known key is typed
@@ -183,3 +226,47 @@ def setup(registry):
 
     assert tasks.load(lay, "A").job.adapter == "widget2"
     assert any("widget2" in w for w in r.get("warnings", []))
+
+
+# -------------------------------------------------- the built-in lanes declare their own schema too (section 3.2)
+
+def test_a_built_in_lanes_own_documented_keys_draw_no_warning(layout):
+    """claude_cli's documented keys (docs/TASK_CONTRACT.md) are typed by its own job_schema (one of the built-in
+    lanes besides `process`), so a routine job using them is never told to check for a misspelled key."""
+    make_task(layout, "A", cost_category="deterministic", owned_paths=["."])
+
+    r = tasks.patch_task(layout, "A", {"job": {"adapter": "claude_cli", "role": "code_review",
+                                               "write_scope": "run_dir"}}, actor="owner")
+
+    assert r.get("warnings", []) == []
+
+
+def test_a_misspelled_key_is_refused_for_a_built_in_lane_with_a_schema(layout):
+    make_task(layout, "A", cost_category="deterministic", owned_paths=["."])
+
+    with pytest.raises(tasks.TaskError, match="prompt_fiel"):
+        tasks.patch_task(layout, "A", {"job": {"adapter": "claude_cli", "prompt_fiel": "x.md"}}, actor="owner")
+
+
+def test_the_human_lanes_own_documented_keys_draw_no_warning(layout):
+    make_task(layout, "A", cost_category="deterministic")
+
+    r = tasks.patch_task(layout, "A", {"job": {"adapter": "human", "subject": "s", "summary": "s",
+                                               "allowed_responses": ["ACCEPT"]}}, actor="owner")
+
+    assert r.get("warnings", []) == []
+
+
+# -------------------------------------------------- job is a declared field, not model_extra (plugin API, 3.2)
+
+def test_a_job_is_no_longer_reachable_through_model_extra(layout):
+    """docs/FRAMEWORK_VS_PLUGIN.md's own adapter example reads a job through `job_spec(task)`, never
+    `task.model_extra["job"]`: `job` is a declared field now, so `model_extra` never carries it."""
+    from supervisor.plugin import job_spec
+
+    make_task(layout, "A", job={"adapter": "process", "argv": ["x"]}, cost_category="deterministic")
+
+    task = tasks.load(layout, "A")
+
+    assert "job" not in (task.model_extra or {})
+    assert job_spec(task)["argv"] == ["x"]
