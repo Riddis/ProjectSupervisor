@@ -119,6 +119,14 @@
     {% if item.applied and item.applied.message %}
     <p class="muted">{{ item.applied.message }}{% if item.applied.reopened %} — see <a href="/inbox#inbox-item-{{ item.applied.reopened }}">{{ item.applied.reopened }}</a>{% endif %}</p>
     {% endif %}
+    {% if item.choice_applied %}
+    {% if item.choice_applied.ok %}
+    <p class="muted">Applied choice {{ item.choice_applied.choice }}.</p>
+    {% else %}
+    <p class="flash flash-error">Choice {{ item.choice_applied.choice }} did not apply: {{ item.choice_applied.error }}
+       {% if item.choice_applied.reopened %} — see <a href="/inbox#inbox-item-{{ item.choice_applied.reopened }}">{{ item.choice_applied.reopened }}</a>{% endif %}</p>
+    {% endif %}
+    {% endif %}
     {% endif %}
   </article>
   {% endfor %}

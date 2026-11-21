@@ -105,12 +105,20 @@ def act(request: Request, layout: Layout, kind: str, payload: dict, redirect_to:
     """Submit a command and report the outcome. HTMX requests get a rendered fragment; plain form posts (and tests
     that don't send HX-Request) get a redirect back to the page with a flash banner describing what happened."""
     outcome = commands_mod.submit_or_apply(layout, kind, payload, actor="owner-ui")
+    applied_choice = (outcome.get("result") or {}).get("choice_applied")
     if outcome.get("queued"):
         level, message = "pending", f"{kind} queued ({outcome['id']}) — applied by the running supervisor"
-    elif outcome.get("ok", True):
-        level, message = "applied", f"{kind} applied"
-    else:
+    elif not outcome.get("ok", True):
         level, message = "error", outcome.get("error", "failed")
+    elif applied_choice is not None and not applied_choice.get("ok"):
+        # A command can succeed (the answer was recorded) while the choice it named failed to apply — R-17's own
+        # symptom, "answering correctly changed nothing" — so that failure must flash as an error, not "applied".
+        level = "error"
+        message = f"choice {applied_choice.get('choice')!r} did not apply: {applied_choice.get('error')}"
+        if applied_choice.get("reopened"):
+            message += f" (reopened as {applied_choice['reopened']})"
+    else:
+        level, message = "applied", f"{kind} applied"
     if request.headers.get("HX-Request"):
         return templates.TemplateResponse(request, "partials/action_result.html",
                                           {"level": level, "message": message, "outcome": outcome})

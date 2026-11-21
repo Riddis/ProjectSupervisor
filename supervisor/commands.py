@@ -179,6 +179,10 @@ def _inbox_answer(layout, payload, actor):
         t = None
     if t is not None:
         out["task_status"] = t.status.value
+    if item.get("choice_applied") is not None:
+        # Surfaced so a choice that failed to apply is visible in the command result, not only on the item's own
+        # record — the Control Center flash (ui/deps.act) and the CLI both read this field.
+        out["choice_applied"] = item["choice_applied"]
     return out
 
 

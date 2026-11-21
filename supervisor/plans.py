@@ -1031,6 +1031,71 @@ def choices_digest(choices: list[dict]) -> str:
     return hashlib.sha256(yaml.safe_dump(choices, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+# ----------------------------------------------------------------------- a choice's label and detail, rendered
+# from its own effect (RECOVERY_PLAN.md section 4.2: "the label is rendered *from* the effect") — the one
+# function `inbox.create()` calls for every choice it is offered, so a stored label can never promise more than
+# its own effect performs. Covers the closed, twelve-effect vocabulary (OPERATIONS, OWNER_ONLY_EFFECTS) only;
+# `None` for anything else, which `inbox.create()` turns into a refusal rather than a blank button.
+
+def _op_phrase(op: dict) -> str | None:
+    name = op.get("op")
+    if name == "create_task":
+        tid = (op.get("task") if isinstance(op.get("task"), str) else (op.get("task") or {}).get("id")) or "?"
+        return f"create {tid}"
+    if name == "add_dependency":
+        return f"make {op.get('task', '?')} depend on {', '.join(op.get('depends_on') or []) or '?'}"
+    if name == "remove_dependency":
+        return f"remove {op.get('task', '?')}'s dependency on {', '.join(op.get('depends_on') or []) or '?'}"
+    if name == "patch_contract":
+        fields = ", ".join(sorted((op.get("fields") or {}).keys())) or "?"
+        return f"update {op.get('task', '?')}'s contract ({fields})"
+    if name == "set_job":
+        return f"set {op.get('task', '?')}'s job to {op.get('template', '?')}"
+    if name == "resume":
+        as_ = op.get("as", "ready")
+        if as_ == "ready":
+            return f"resume {op.get('task', '?')}"
+        if as_ == "blocked_on_dependencies":
+            return f"unblock {op.get('task', '?')} once its dependencies finish"
+        return f"resume {op.get('task', '?')} ({as_})"
+    if name == "apply_plan":
+        return f"apply plan {op.get('plan', '?')}"
+    if name == "cancel_plan":
+        return f"cancel plan {op.get('plan', '?')}"
+    if name == "cancel_task":
+        return f"cancel {op.get('task', '?')}"
+    if name == "hold":
+        return f"hold {op.get('task', '?')}"
+    if name == "release_hold":
+        return f"release the hold on {op.get('task', '?')}"
+    if name == "diagnose_now":
+        return f"run diagnosis on {op.get('task', '?')} now"
+    return None
+
+
+def render_choice(effect: Any) -> tuple[str | None, str | None]:
+    """(label, detail) for a choice's `effect` — one operation, an owner-only effect on its own, or a list of
+    plan operations applied as one transaction — derived entirely from the operation(s) it names. A single
+    operation's phrase, capitalised, is the label; two or more are joined "; then " for the label and numbered
+    for the detail. `(None, None)` when `effect` is not a non-empty operation or list of them, or names an
+    operation outside the closed vocabulary — never a guess at what an unknown operation might mean."""
+    if isinstance(effect, dict):
+        ops = [effect]
+    elif isinstance(effect, list) and effect:
+        ops = list(effect)
+    else:
+        return None, None
+    if any(not isinstance(op, dict) or not isinstance(op.get("op"), str) for op in ops):
+        return None, None
+    phrases = [_op_phrase(op) for op in ops]
+    if any(p is None for p in phrases):
+        return None, None
+    sentences = [p[0].upper() + p[1:] for p in phrases]
+    if len(sentences) == 1:
+        return sentences[0], None
+    return "; then ".join(sentences), "\n".join(f"{i + 1}. {s}" for i, s in enumerate(sentences))
+
+
 # ======================================================================= the journal and the applier (step 2 of
 # RECOVERY_PLAN.md's order of work, §2.6): the store holds one document per task and no multi-file transaction, so
 # the plan is its own journal instead — written before the first mutation, applied in the applier's own fixed
