@@ -76,7 +76,13 @@
       {% for c in item.choices %}
       <button type="submit" name="choice" value="{{ c.id }}" title="{{ c.detail or '' }}">{{ c.label }}</button>
       {% endfor %}
-      <input type="text" name="text" placeholder="Free-text answer instead">
+    </form>
+    {# free text on a choice card is a comment, not a button: its own form, carrying no choice and no digest,
+       because free text is never an effect (RECOVERY_PLAN.md section 4.1) #}
+    <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form comment-form">
+      {% include "partials/csrf.html" %}
+      {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}
+      <input type="text" name="text" placeholder="Or answer in free text (recorded as a comment)">
       <button type="submit">Send free text</button>
     </form>
     {% elif item.ext_answerable %}

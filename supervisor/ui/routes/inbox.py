@@ -199,7 +199,8 @@ def answer_item(item_id: str, request: Request, response: str = Form(""), text: 
 
     `choice`/`choices_digest` (RECOVERY_PLAN.md section 4.1): the typed-choice card's own button and hidden field —
     bound to what the card showed the same way, refused (RF-24/RF-25) rather than silently falling through to a
-    free-text answer the item never asked for."""
+    free-text answer the item never asked for. The choice card's free-text box is a separate form and arrives
+    here as `text` with no `choice` and no digest: a comment, which is all free text ever is (section 4.1)."""
     require_csrf(request, csrf_token)
     item = _get_item(layout, item_id)
     refusal = inbox_mod.owned_by_plugin(layout, item)

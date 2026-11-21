@@ -8,9 +8,11 @@ valid answer, not only the keywords. `HUMAN_INBOX.md` is rendered from this stor
 An item may also carry typed `choices` (RECOVERY_PLAN.md section 4.1): each one a label and detail rendered by
 `plans.render_choice` from its own effect — never prose a caller writes beside it — and an effect `create()` has
 already checked this release can apply, with the operands it needs. `create()` derives the legacy keyword list
-from them, `answer()` refuses an unoffered one or a stale `choices_digest`, and `apply_choice()` applies the
-chosen effect — one or several plan operations as a single journalled plan, or one owner-only effect — through
-the same applier `plans.py` uses for a plan. An item with no `choices` key is unaffected by any of this."""
+from them, `answer()` refuses an unoffered one or a stale `choices_digest` — on the keyword path as on the
+button's, since both name a choice — and `apply_choice()` applies the chosen effect, checking the digest once
+more where the effect actually lands: one or several plan operations as a single journalled plan, or one
+owner-only effect, through the same applier `plans.py` uses for a plan. Free text on such an item is a comment
+and never an effect. An item with no `choices` key is unaffected by any of this."""
 from __future__ import annotations
 
 import re
@@ -226,9 +228,15 @@ def answer(layout: Layout, item_id: str, response: str = "", note: str = "", by:
     (`plans.choice_stale_refusal`) — "reload" — when `choices_digest` no longer equals the item's own
     `choices_digest`, the approval-digest rule generalised to a button rather than a delivery. `response` then
     defaults to the choice's own id, so the stored answer and its derived keyword (`allowed_responses`) agree
-    with what gets applied below. The chosen effect — or, with no `choice` given, a legacy keyword that happens to
-    name one of the item's choices (`inbox.answer REQUEUE` on an item whose choice id is `requeue`) — is applied
-    once this answer is durable (`apply_choice`), through the same journalled applier a plan uses."""
+    with what gets applied below.
+
+    A bare keyword that is exactly one of those derived ids (`inbox.answer REQUEUE` on an item whose choice id is
+    `requeue`) names the same choice and is held to the same two refusals: an answer that names a choice carries
+    the digest it was shown, whichever argument names it, so there is no path to an effect that skips the check.
+    Prose that merely *begins* with such a keyword ("REQUEUE after the other one lands") names nothing: it is
+    recorded as a comment, because free text is never an effect (section 4.1). What the applier reads is written
+    on the answer itself (`choice`, `choices_digest`), and the effect is applied once this answer is durable
+    (`apply_choice`), through the same journalled applier a plan uses."""
     if choice:
         response = response.strip() or choice
     response = (response or "").strip()
@@ -252,14 +260,6 @@ def answer(layout: Layout, item_id: str, response: str = "", note: str = "", by:
             if current != digest:
                 raise InboxError(f"{item_id}: the delivery changed since this item was shown "
                                  f"(shown {digest[:12]}, now {(current or 'none')[:12]}); reload and review it again")
-        if choice:
-            from . import plans as plans_mod
-            carried = [c.get("id") for c in (doc.get("choices") or []) if isinstance(c, dict)]
-            refusal = plans_mod.choice_not_offered_refusal(carried, choice)
-            if refusal is None:
-                refusal = plans_mod.choice_stale_refusal(doc.get("choices_digest") or "", choices_digest or "")
-            if refusal is not None:
-                raise InboxError(f"{item_id}: {refusal['code']} {refusal['message']}")
         if not internal:
             refusal = owned_by_plugin(layout, doc)
             if refusal:
@@ -268,12 +268,35 @@ def answer(layout: Layout, item_id: str, response: str = "", note: str = "", by:
         allowed = DEFAULT_RESPONSES if stored is None else stored
         token = response.split(None, 1)[0].upper()
         structured = token in {a.upper() for a in allowed}
+        carried = [str(c.get("id")) for c in (doc.get("choices") or []) if isinstance(c, dict)]
+        named = (choice or "").strip() or None
+        if named is None and carried and structured and response.upper() == token:
+            # a keyword answer that is nothing but one of the derived keywords: the other way to name a choice
+            named = next((c for c in carried if c.upper() == token), None)
+        if named is None and carried and token in {c.upper() for c in carried}:
+            # prose about a choice is prose, whatever word it opens with: a comment, never that choice's effect
+            structured = False
+        if named is not None:
+            from . import plans as plans_mod
+            refusal = plans_mod.choice_not_offered_refusal(carried, named)
+            if refusal is None:
+                refusal = plans_mod.choice_stale_refusal(str(doc.get("choices_digest") or ""), choices_digest or "")
+            if refusal is not None:
+                missing = (refusal["code"] == "RF-25" and not choices_digest)
+                raise InboxError(f"{item_id}: {refusal['code']} {refusal['message']}"
+                                 + (" (an answer that names a choice carries the choices_digest the item showed)"
+                                    if missing else ""))
         if not structured and not doc.get("free_text", True):
             raise InboxError(f"{item_id}: {response!r} is not one of {allowed}")
         doc["status"] = "answered"
         doc["answered_at"] = store.now_iso()
         doc["answer"] = {"response": response, "kind": token if structured else "text", "note": note, "by": by,
                          "at": store.now_iso(), "command_id": command_id}
+        if named is not None:
+            # what `apply_choice` reads: the choice this answer named and the digest it was bound to, so the
+            # effect is checked against the item again where it is applied, not only here
+            doc["answer"]["choice"] = named
+            doc["answer"]["choices_digest"] = choices_digest
         outcome["kind"] = token if structured else "text"
         return doc
 
@@ -622,8 +645,7 @@ def _apply_owner_effect(layout: Layout, op: dict, by: str, item: dict) -> dict:
     if name == "release_hold":
         t = tasks_mod.release_hold(layout, op["task"], by, note=note)
         return {"status": t.status.value}
-    raise InboxError(f"{name!r} cannot be applied without the running loop (not yet wired; "
-                     f"see docs/releases/2.9.0/step7-typed-inbox-choices.md)")
+    raise InboxError(f"{name!r} cannot be applied without the running loop (not yet wired this release)")
 
 
 def _apply_plan_tier_effect(layout: Layout, item: dict, choice: dict, ops: list[dict], by: str) -> dict:
@@ -648,14 +670,18 @@ def resolve_choice(item: dict, choice_id: str) -> dict | None:
     return next((c for c in (item.get("choices") or []) if isinstance(c, dict) and c.get("id") == choice_id), None)
 
 
-def _reopen_after_choice_failure(layout: Layout, item: dict, out: dict) -> str | None:
+def _reopen_after_choice_failure(layout: Layout, item: dict, out: dict) -> tuple[str | None, str | None]:
     """A choice whose effect failed to apply must leave the owner with another actionable item, not a silently
     answered one — the exact symptom R-17 names ("answering correctly changed nothing") survives on the failure
     path otherwise. Reopened with the same choices, the same rule `apply_decision` already keeps for a deferred
-    decision (free text, DEFER). `None` (nothing reopened) when the item carries no task to watch, or the
-    owner's inbox has no room — `inbox_choice_applied`'s own log line is the record either way."""
+    decision (free text, DEFER).
+
+    Returns `(reopened id, error)`: `(None, None)` when the item carries no task to watch, and `(None, reason)`
+    when the reopen itself was refused — the owner's inbox has no room, or the carried choices no longer validate
+    against the task's new state after a half-applied effect, which `create()` checks. Nothing is raised: the
+    caller records the reason on `choice_applied`, so a failure of the failure path is still visible."""
     if not item.get("task_id") or not item.get("choices"):
-        return None
+        return None, None
     try:
         reopened = create(layout, for_role=item.get("for") or "owner",
                           subject=item.get("subject") or f"Choice failed on {item['id']}",
@@ -663,47 +689,75 @@ def _reopen_after_choice_failure(layout: Layout, item: dict, out: dict) -> str |
                                   f"({str(out.get('error') or '')[:200]}); pick again, or answer in free text.",
                           kind=item.get("kind") or DECISION_KIND, choices=item.get("choices"), free_text=True,
                           from_="loop", task_id=item.get("task_id"), extra={"reopened_from": item["id"]})
-        return reopened["id"]
+        return reopened["id"], None
     except InboxFull:
         tasks_mod.log(layout, "choice_reopen_full", "loop", item=item["id"], task=item.get("task_id"))
-        return None
+        return None, "the owner's inbox has no room for a fresh item"
+    except Exception as exc:                              # noqa: BLE001 - recorded on the marker, never raised
+        tasks_mod.log(layout, "choice_reopen_failed", "loop", item=item["id"], task=item.get("task_id"),
+                      error=str(exc)[:200])
+        return None, str(exc)[:200]
 
 
 def apply_choice(layout: Layout, item: dict, by: str = "owner") -> dict | None:
-    """Apply the effect of an answered item's chosen choice, once (RECOVERY_PLAN.md section 4.1). `None` when the
-    item carries no `choices`, or the answer's token names none of them (ordinary free text, or a legacy keyword
-    with no matching choice) — the comment-only path is unaffected either way. Idempotent: an item already
-    carrying `choice_applied` is never acted on twice, the same guarantee `apply_decision`'s own `applied` marker
-    gives the decision path. A failure is recorded on `choice_applied` (`ok: False`, `error`) and also reopens a
-    fresh item (`_reopen_after_choice_failure`) so the failure is visible to the owner, not only to the log."""
+    """Apply the effect of the choice an answered item's answer names, once (RECOVERY_PLAN.md section 4.1).
+
+    What is applied comes from the answer's own `choice`/`choices_digest`, which `answer()` writes only for an
+    answer that named a choice and carried the digest it was shown: `None` here when the item carries no
+    `choices`, or the answer named none of them (free text, a keyword matching nothing) — the comment-only path
+    is unaffected. The digest is then checked again, right where the effect is about to be applied, because a
+    stored answer can be applied later than it was recorded (a retried command, a recovered record) and the
+    item's choices may have moved since: a mismatch is RF-25, recorded and never applied.
+
+    Idempotent: an item already carrying `choice_applied` is never acted on twice, the same guarantee
+    `apply_decision`'s own `applied` marker gives the decision path. A failure is recorded on `choice_applied`
+    (`ok: False`, `error`) before anything else is attempted, and then reopens a fresh item
+    (`_reopen_after_choice_failure`) so the failure is visible to the owner, not only to the log."""
     if item.get("status") != "answered" or item.get("choice_applied"):
         return None
     choices = item.get("choices")
     if not choices:
         return None
-    token = str((item.get("answer") or {}).get("kind") or "")
-    choice = resolve_choice(item, token.lower()) or next(
-        (c for c in choices if isinstance(c, dict) and str(c.get("id", "")).upper() == token.upper()), None)
-    if choice is None:
+    answer = item.get("answer") or {}
+    named = str(answer.get("choice") or "")
+    if not named:
         return None
     from . import plans as plans_mod
-    ops = _effect_ops(choice)
-    try:
-        if len(ops) == 1 and ops[0].get("op") in plans_mod.OWNER_ONLY_EFFECTS:
-            result = _apply_owner_effect(layout, ops[0], by, item)
-        else:
-            result = _apply_plan_tier_effect(layout, item, choice, ops, by)
-        out = {"ok": True, "choice": choice["id"], "result": result}
-    except Exception as exc:                              # noqa: BLE001 - recorded on the item, never raised past
-        out = {"ok": False, "choice": choice["id"], "error": str(exc)[:300]}
-    if not out["ok"]:
-        reopened = _reopen_after_choice_failure(layout, item, out)
-        if reopened:
-            out["reopened"] = reopened
+    carried = [str(c.get("id")) for c in choices if isinstance(c, dict)]
+    refusal = (plans_mod.choice_not_offered_refusal(carried, named)
+               or plans_mod.choice_stale_refusal(str(item.get("choices_digest") or ""),
+                                                 str(answer.get("choices_digest") or "")))
+    choice = resolve_choice(item, named)
+    if refusal is not None or choice is None:
+        out = {"ok": False, "choice": named,
+               "error": (f"{refusal['code']} {refusal['message']}" if refusal is not None
+                         else f"{named!r} is not one of this item's choices")}
+    else:
+        ops = _effect_ops(choice)
+        try:
+            if len(ops) == 1 and ops[0].get("op") in plans_mod.OWNER_ONLY_EFFECTS:
+                result = _apply_owner_effect(layout, ops[0], by, item)
+            else:
+                result = _apply_plan_tier_effect(layout, item, choice, ops, by)
+            out = {"ok": True, "choice": named, "result": result}
+        except Exception as exc:                          # noqa: BLE001 - recorded on the item, never raised past
+            out = {"ok": False, "choice": named, "error": str(exc)[:300]}
 
     def mark(doc):
         doc["choice_applied"] = {"at": store.now_iso(), "by": by, **out}
         return doc
+
+    # The marker is written before the reopen is attempted, and again once the reopen's outcome is known: the
+    # reopen can itself be refused (create() re-validates the carried choices against the task's new state), and
+    # an answered item must never end up durable with neither an effect nor a record of why.
     store.update(path_for(layout, item["id"]), mark, lock_path=layout.state / ".inbox.lock")
+    if not out["ok"]:
+        reopened, reopen_error = _reopen_after_choice_failure(layout, item, out)
+        if reopened:
+            out["reopened"] = reopened
+        if reopen_error:
+            out["reopen_error"] = reopen_error
+        if reopened or reopen_error:
+            store.update(path_for(layout, item["id"]), mark, lock_path=layout.state / ".inbox.lock")
     tasks_mod.log(layout, "inbox_choice_applied", by, item=item["id"], **out)
     return out
