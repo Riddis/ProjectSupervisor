@@ -169,10 +169,11 @@ class Refusal:
 class PlanReport:
     """What `validate()` returns beside the refusal list: the normalisations applied, the computed scope, (only
     for a plan with no refusals) the graph diff — edges added/removed and contract fields before/after, per task
-    — and `preflight`: one entry per `set_job` operation actually preflighted (`{op_index, ok, digest}`), run
-    whether the operation is refused on another ground or not, and stored on the plan document regardless of
-    whether the plan as a whole validates — the approver reading a `set_job` needs the transcript it was refused
-    or passed on, not only the ones that passed (D-027 decision 6)."""
+    — and `preflight`: one entry per `set_job` operation actually preflighted (`{op_index, ok, digest}`). An
+    operation already refused on an earlier ground in the same function (RF-06, RF-07, RF-09, RF-11, RF-14)
+    never reaches the preflight call, so it carries no entry; one that does is stored on the plan document
+    regardless of whether the plan as a whole validates — the approver reading a `set_job` that passed needs the
+    same transcript the refused-by-RF-08 reader gets (D-027 decision 6)."""
     normalised: list[dict] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
     graph_diff: dict[str, Any] = field(default_factory=dict)
@@ -637,27 +638,30 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
     return out
 
 
-def _job_adapter_for_preflight(tid: str, t: Task | None, created: set[str], tmpl: dict) -> str | None:
-    """The adapter the simulated preflight block should carry: the existing job's own adapter for a parameter
-    diff (class A — RF-11 already refuses a template that would change it), or the template's declared adapter
-    for a task this plan created (class B, the first job it will ever have)."""
-    if tid not in created and t is not None and t.job is not None and t.job.adapter:
-        return t.job.adapter
-    return tmpl.get("adapter")
+def _set_job_block(existing: dict, tmpl: dict, template_id: Any, params: dict) -> dict:
+    """The one block `set_job` ever writes — the existing job's own keys (a parameter diff's inherited
+    `timeout_s`, `stdin_file`, ...; nothing at all for a task this plan created, its first job), `adapter`
+    carried over or else taken from the template, `template`/`params` replaced by this operation's own, and
+    `preflight` dropped (`tasks_mod._update` writes a fresh one once the block lands). `_check_set_job`'s own
+    preflight simulation and `_effect_set_job`'s actual write both build this block the same way, so the
+    transcript recorded on the plan is always the transcript for what the applier is actually about to run."""
+    existing = dict(existing)
+    existing.pop("preflight", None)
+    return {**existing, "adapter": existing.get("adapter") or tmpl.get("adapter"),
+            "template": template_id, "params": dict(params)}
 
 
-def _preflight_transcript_entry(i: int, layout: Layout, adapter: str | None, template_id: str,
-                                params: dict) -> tuple[Refusal | None, dict]:
+def _preflight_transcript_entry(i: int, layout: Layout, block: dict) -> tuple[Refusal | None, dict]:
     """Runs the real preflight (`supervisor.preflight.run`, the same check a write-time job block gets) against
-    the block this operation would write, never the weaker standalone checks this validator used to run on its
-    own: a template whose declared probe fails, or whose argv does not resolve, is otherwise invisible until the
-    applier's own write triggers it — a stall, not a named refusal (RF-08). The transcript is never stored
+    `block` — the exact block this operation would write, built by `_set_job_block` — never the weaker
+    standalone checks this validator used to run on its own: a template whose declared probe fails, whose argv
+    does not resolve, or whose inherited `timeout_s`/`stdin_file` no longer holds is otherwise invisible until
+    the applier's own write triggers it — a stall, not a named refusal (RF-08). The transcript is never stored
     whole (it can carry a probe's own stdout); only its digest travels, onto `PlanReport.preflight` and from
     there onto the plan document itself, so the record `RECOVERY_PLAN.md` 2.2's row promises survives a refusal
     as well as a pass."""
     from . import preflight as preflight_mod
-    simulated = {"adapter": adapter, "template": template_id, "params": dict(params)}
-    pf = preflight_mod.run(layout, simulated)
+    pf = preflight_mod.run(layout, block)
     digest = hashlib.sha256(json.dumps(pf, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     entry = {"op_index": i, "ok": bool(pf.get("ok")), "digest": digest}
     if pf.get("ok"):
@@ -690,15 +694,24 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
     may = tmpl.get("may_be_set_by") or []
     if "plan" not in may:
         out.append(_rf("RF-09", "I2 §1.2", i, "template", f"template {template_id!r} is not may_be_set_by: [plan]"))
+    existing_job: dict | None = None
     if tid not in created and t is not None:
         existing_job = t.job.model_dump(exclude_none=True) if t.job is not None else None
         if not isinstance(existing_job, dict) or not existing_job.get("adapter"):
             out.append(_rf("RF-11", "I2 §1.2", i, "task", f"{tid!r} has no existing job; set_job may not give it a first one"))
+        elif not existing_job.get("template") or existing_job.get("argv") or existing_job.get("fn"):
+            # A job with no `template` is a literal, owner-authored block (a bare argv or fn, never a plan's
+            # own to replace): the two RF-11 branches below both guard on the existing value, so a job that
+            # carries none would trip neither, and the applier would write the new template/params beside the
+            # stale literal it never removes — a third shape the frontier does not admit.
+            out.append(_rf("RF-11", "I2 §1.2", i, "template",
+                           f"{tid!r}'s existing job carries no template (a literal, owner-authored block); "
+                           "set_job may not replace it"))
         else:
-            if existing_job.get("adapter") and tmpl.get("adapter") and existing_job["adapter"] != tmpl["adapter"]:
+            if tmpl.get("adapter") and existing_job["adapter"] != tmpl["adapter"]:
                 out.append(_rf("RF-11", "I2 §1.2", i, "template", f"set_job would change {tid!r}'s adapter"))
             existing_template = existing_job.get("template")
-            if existing_template and existing_template != template_id:
+            if existing_template != template_id:
                 out.append(_rf("RF-11", "I2 §1.2", i, "template",
                                f"set_job would change {tid!r}'s template from {existing_template!r}"))
     decl = tmpl.get("params") or {}
@@ -717,8 +730,11 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
         # Every earlier check in this function passed, so this is the one shape worth the cost of actually
         # running the preflight: an operation already refused on another ground (RF-06, RF-07, RF-09, RF-11,
         # RF-14) would only have that same underlying problem reported twice, under two codes, for one cause.
-        adapter = _job_adapter_for_preflight(tid, t, created, tmpl)
-        refusal, preflight_entry = _preflight_transcript_entry(i, layout, adapter, str(template_id), params)
+        # The block simulated here is `_set_job_block`'s own merge, the same one `_effect_set_job` writes, so
+        # whatever the existing job inherited (a parameter diff) or the template declares (a created task's
+        # first job) is exactly what gets preflighted.
+        block = _set_job_block(existing_job or {}, tmpl, template_id, params)
+        refusal, preflight_entry = _preflight_transcript_entry(i, layout, block)
         if refusal is not None:
             out.append(refusal)
     return out, preflight_entry
@@ -856,7 +872,10 @@ def validate(doc: dict, layout: Layout, tasks: dict[str, Task] | None = None) ->
     templates = _load_templates(layout)
     subject_id = normalised_doc["subject"]["task"]
     scope = compute_scope(normalised_doc, tasks)
-    created = scope["narrow"] - {subject_id}
+    # scope["narrow"] carries every create_task id named, whether or not that op itself is a valid create (an id
+    # already in the store is refused on its own ground, RF-02's own check); excluding what the store already
+    # knows keeps set_job's RF-11 identity block closed on its own, not only as a side effect of that refusal.
+    created = (scope["narrow"] - {subject_id}) - set(tasks)
     created_tasks = _build_created_tasks(normalised_doc, tasks)
 
     out: list[Refusal] = []
@@ -1133,17 +1152,17 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
     """The one place a plan's `set_job` becomes a stored job block: a template id and typed params only — RF-04
     already refuses anything else at validate() time, so there is nothing else here to write. The adapter is the
     one the task's existing job already names (a parameter diff, RF-11), or — on a task this plan created — the
-    template's own declared adapter (its first job). This does not go through `tasks._write_job` (RECOVERY_PLAN.md
-    3.4): that chokepoint judges a writer-supplied value, and `adapter` here is never one — it is carried over
-    from the existing job or the template, not chosen by this op — so a plan's own writer-authority bound is RF-04
-    itself, already enforced before this effect ever runs."""
+    template's own declared adapter (its first job). Built by `_set_job_block`, the same merge `_check_set_job`
+    simulated at validate() time, so the preflight transcript recorded on the plan is the transcript for this
+    exact block. This does not go through `tasks._write_job` (RECOVERY_PLAN.md 3.4): that chokepoint judges a
+    writer-supplied value, and `adapter` here is never one — it is carried over from the existing job or the
+    template, not chosen by this op — so a plan's own writer-authority bound is RF-04 itself, already enforced
+    before this effect ever runs."""
     templates = _load_templates(layout)
     tmpl = templates.get(str(op.get("template"))) or {}
 
     def fn(doc):
-        existing = dict(doc.get("job") or {})
-        doc["job"] = {**existing, "adapter": existing.get("adapter") or tmpl.get("adapter"),
-                     "template": op.get("template"), "params": dict(op.get("params") or {})}
+        doc["job"] = _set_job_block(doc.get("job") or {}, tmpl, op.get("template"), op.get("params") or {})
         # RECOVERY_PLAN.md section 3.3: `tasks_mod._update` preflights the changed block itself.
     tasks_mod._update(layout, op["task"], fn)
 
