@@ -5,17 +5,24 @@ owns those); every plan here is otherwise clean and exercises the fixed operatio
 contract patches, set_job, resume."""
 from __future__ import annotations
 
+import sys
+
 import pytest
+import yaml
 
 from supervisor import inbox as inbox_mod
-from supervisor import plans, store
+from supervisor import plans, store, testing
 from supervisor import tasks as tasks_mod
-from supervisor import testing
 from supervisor.loop import Supervisor
 from supervisor.models.task import TaskStatus
 
 PLAN_ID = "T1.d1"
-TEMPLATE_YAML = "version: 1\ntemplates:\n  noop:\n    adapter: process\n    may_be_set_by: [owner, plan]\n    params: {}\n"
+PY = sys.executable
+# A real, passing argv (RECOVERY_PLAN.md section 1.2/3.3's own preflight now runs against this, not just a
+# resolve check): this release wires the applier's `set_job` into the real preflight, so a template too thin to
+# pass it (no `argv` at all) would refuse every otherwise-clean plan in this file with RF-08.
+TEMPLATE_YAML = yaml.safe_dump({"version": 1, "templates": {
+    "noop": {"adapter": "process", "argv": [PY, "-c", "pass"], "may_be_set_by": ["owner", "plan"], "params": {}}}})
 
 
 def _write_template(layout):
