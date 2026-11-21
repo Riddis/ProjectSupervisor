@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -50,7 +51,6 @@ def _pass(*, template: str | None, digest: str, probe_digest: str | None = None)
 
 
 def _resolve_executable(executable: str, layout: Layout, allowed: list[str] | None) -> bool:
-    import shutil
     if not executable:
         return False
     if allowed and templates_mod.basename(executable) not in [templates_mod.basename(a) for a in allowed]:
@@ -107,35 +107,65 @@ def _param_checks(params: dict[str, Any], declared: dict[str, dict], layout: Lay
                 return _fail("host_port_not_allowed", f"{name!r}={value!r} is not in {allowed}",
                              template=template, digest=digest)
         elif ptype == "path":
-            roots = slot.get("roots") or ["."]
-            if not isinstance(value, str) or not contained(value, roots, layout.root):
-                return _fail("path_missing", f"{name!r} does not resolve inside its declared roots",
-                             template=template, digest=digest)
-            if slot.get("must_exist", True) and not (layout.root / value).exists():
-                return _fail("path_missing", f"{name!r} ({value}) does not exist", template=template, digest=digest)
-        for value_text in ([value] if isinstance(value, str) else []):
-            if policy_mod.find_secrets(value_text, layout):
-                return _fail("secret_shaped_value", f"{name!r} holds a secret-shaped value",
-                             template=template, digest=digest)
+            failed = _path_checks(name, value, slot, layout, digest, template)
+            if failed:
+                return failed
+    return None
+
+
+def _path_checks(name: str, value: Any, slot: dict, layout: Layout, digest: str, template: str | None) -> dict | None:
+    """One declared `path` slot: inside its roots, and there (RECOVERY_PLAN.md section 3.3's table) -- "every
+    path parameter exists (or its parent does, for an output)". A slot marked `must_exist: false` names
+    something a later job writes, so the file itself is not required; the directory it goes in is, which is the
+    difference between a path nobody has written yet and a typo in the one they will."""
+    roots = slot.get("roots") or ["."]
+    if not isinstance(value, str) or not contained(value, roots, layout.root):
+        return _fail("path_outside_roots", f"{name!r} does not resolve inside its declared roots",
+                     template=template, digest=digest)
+    target = layout.root / value
+    if slot.get("must_exist", True):
+        if not target.exists():
+            return _fail("path_missing", f"{name!r} ({value}) does not exist", template=template, digest=digest)
+    elif not target.parent.is_dir():
+        return _fail("output_parent_missing", f"{name!r} ({value}): its directory does not exist",
+                     template=template, digest=digest)
+    return None
+
+
+def _secret_scan(params: dict[str, Any], layout: Layout, digest: str, template: str | None) -> dict | None:
+    """The table's own `all` row: no parameter of any job block, on either adapter, templated or literal, holds
+    a secret-shaped value. Unlike every other parameter check this is not about a declared slot -- a credential
+    written into the store is one whether a template declared the slot carrying it or not -- so it runs for a
+    literal `argv` block too, which declares no slots at all (section 1.4)."""
+    for name, value in params.items():
+        if isinstance(value, str) and policy_mod.find_secrets(value, layout):
+            return _fail("secret_shaped_value", f"{name!r} holds a secret-shaped value",
+                         template=template, digest=digest)
     return None
 
 
 def _run_probe(probe: list[str], layout: Layout, env: dict[str, str], cap_s: int) -> dict | None:
+    """The probe, in a scratch directory of its own under the run tree -- removed again when it finishes, pass
+    or fail: one directory per templated write, kept for the life of the project, is a leak nothing reads."""
     scratch = layout.runs / "_preflight" / str(int(time.time() * 1000))
     scratch.mkdir(parents=True, exist_ok=True)
     before = {p.name for p in layout.root.iterdir()} if layout.root.exists() else set()
     try:
-        proc = subprocess.run(probe, cwd=str(scratch), env=env, capture_output=True, timeout=cap_s)
-    except subprocess.TimeoutExpired:
-        return {"code": "probe_failed", "message": f"probe timed out after {cap_s}s"}
-    except OSError as exc:
-        return {"code": "probe_failed", "message": f"probe could not start: {exc}"}
-    if proc.returncode != 0:
-        return {"code": "probe_failed", "message": f"probe exited {proc.returncode}"}
-    after = {p.name for p in layout.root.iterdir()} if layout.root.exists() else set()
-    if after - before:
-        return {"code": "probe_escaped_run_dir", "message": f"probe wrote {sorted(after - before)} outside the run directory"}
-    return None
+        try:
+            proc = subprocess.run(probe, cwd=str(scratch), env=env, capture_output=True, timeout=cap_s)
+        except subprocess.TimeoutExpired:
+            return {"code": "probe_failed", "message": f"probe timed out after {cap_s}s"}
+        except OSError as exc:
+            return {"code": "probe_failed", "message": f"probe could not start: {exc}"}
+        if proc.returncode != 0:
+            return {"code": "probe_failed", "message": f"probe exited {proc.returncode}"}
+        after = {p.name for p in layout.root.iterdir()} if layout.root.exists() else set()
+        if after - before:
+            return {"code": "probe_escaped_run_dir",
+                    "message": f"probe wrote {sorted(after - before)} outside the run directory"}
+        return None
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)       # a probe's own leftovers go with it; the finding stands
 
 
 def run(layout: Layout, job: dict) -> dict:
@@ -167,34 +197,54 @@ def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None
                         template=template_id, digest=digest)
 
     params = dict(job.get("params") or {})
-    if tmpl and adapter == "process":
-        # Only a template's own declared slots are checked at all (RECOVERY_PLAN.md section 1.4): a literal
-        # `argv` job declares none, so nothing in its `params` is required to exist or match a type here. A
-        # python job's `params` go straight to its registered function, never through a declared slot -- its
-        # own signature (`_run_python`) is the one check that binds them, templated or literal alike.
+    failed = _secret_scan(params, layout, digest, template_id)
+    if failed:
+        return failed
+    if tmpl:
+        # Only a template's own declared slots are checked (RECOVERY_PLAN.md section 1.4), on either adapter: a
+        # literal `argv`/`fn` job declares none, so nothing in its `params` is required to be declared, to exist
+        # or to match a type -- for a literal python job the registered function's own signature
+        # (`_run_python`) is the one check that binds them, and for a literal process job only `argv[0]` is
+        # checked at all. Running these checks against a block with no template would refuse every parameter it
+        # carries as undeclared, which is a refusal the design does not make.
         declared = tmpl.get("params") or {}
         failed = _param_checks(params, declared, layout, digest, template_id)
         if failed:
             return failed
 
     timeout_s = job.get("timeout_s")
-    cap = tmpl.get("timeout_s")
+    failed = _timeout_checks(layout, timeout_s, tmpl, adapter, digest, template_id)
+    if failed:
+        return failed
+
+    if adapter == "python":
+        return _run_python(layout, job, tmpl, params, template_id, digest)
+    return _run_process(layout, job, tmpl, params, template_id, digest)
+
+
+def _timeout_checks(layout: Layout, timeout_s: Any, tmpl: dict, adapter: str | None, digest: str,
+                    template: str | None) -> dict | None:
+    """`timeout_s` against the ceilings that exist for this block, and against what its template says the work
+    needs. The ceiling is the lower of the template's own `timeout_s` and the lane's configured cap (routing.yaml
+    `timeouts.lane_caps.<adapter>`) -- where neither is declared there is none, and a block (a literal,
+    owner-authored one above all) may declare whatever deadline its work needs, exactly as before this release:
+    a lane's *default* duration is not a ceiling, and turning one into a ceiling would refuse blocks that have
+    been running correctly."""
+    from . import gate
     from . import timeouts
-    lane_cap = cap if cap is not None else (timeouts.PROCESS_CAP_S if adapter == "process" else None)
-    if timeout_s is not None and lane_cap is not None and timeout_s > lane_cap:
-        return _fail("timeout_too_high", f"timeout_s {timeout_s} is above the lane's cap {lane_cap}",
-                    template=template_id, digest=digest)
+    caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(gate.routing_doc(layout), adapter))
+            if isinstance(c, int) and not isinstance(c, bool)]
+    if timeout_s is not None and caps and timeout_s > min(caps):
+        return _fail("timeout_too_high", f"timeout_s {timeout_s} is above the cap {min(caps)} declared for it",
+                    template=template, digest=digest)
 
     needs = tmpl.get("needs") or {}
     duration_min = needs.get("duration_min")
     if duration_min is not None and timeout_s is not None and timeout_s < duration_min * 60:
         return _fail("duration_below_needs",
                     f"timeout_s {timeout_s} is below the template's needs.duration_min ({duration_min} min)",
-                    template=template_id, digest=digest)
-
-    if adapter == "python":
-        return _run_python(layout, job, tmpl, params, template_id, digest)
-    return _run_process(layout, job, tmpl, params, template_id, digest)
+                    template=template, digest=digest)
+    return None
 
 
 def _run_python(layout: Layout, job: dict, tmpl: dict, params: dict, template_id: str | None, digest: str) -> dict:

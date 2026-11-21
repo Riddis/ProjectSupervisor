@@ -15,7 +15,9 @@ failed attempt.
 Resolution, later wins: `DEFAULTS` -> routing.yaml `timeouts` -> `timeouts.by_cost.<cost_category>` -> the role's
 `timeouts` -> the task's `job` (`timeout_s` = hard cap, `idle_timeout_s` = idle limit). `idle_s: 0` (or null)
 switches the idle limit off. Non-model process jobs (verification, scripts) keep `job.timeout_s` (default 3600) as
-their cap and get an idle limit only when the job sets `idle_timeout_s`.
+their cap and get an idle limit only when the job sets `idle_timeout_s`. A project that wants an upper bound on what
+such a job may declare for itself sets one explicitly, per lane, in routing.yaml `timeouts.lane_caps` (`lane_cap()`,
+read by the write-time preflight); nothing bounds it by default.
 """
 from __future__ import annotations
 
@@ -69,6 +71,22 @@ def resolve(routing_cfg: dict, cost_category: str | None = None, role_prof: dict
     return {"idle_s": int(idle) if idle > 0 else None,
             "hard_cap_s": max(60, int(_num(out.get("hard_cap_s"), DEFAULTS["hard_cap_s"]))),
             "idle_cpu_s": max(0.5, _num(out.get("idle_cpu_s"), DEFAULTS["idle_cpu_s"]))}
+
+
+def lane_cap(routing_cfg: dict, adapter: str | None) -> int | None:
+    """The declared ceiling on a non-model job's own `timeout_s` for one adapter lane: routing.yaml
+    `timeouts.lane_caps.<adapter>`, and None unless a project declares one.
+
+    `PROCESS_CAP_S` is deliberately not that ceiling: it is the duration a process job that declares no
+    `timeout_s` *gets* (`adapters.process`), and a block asking for longer was never illegal -- `extend()`
+    exists to push a deadline out further still. A write-time refusal here can therefore only come from a cap
+    the project itself set, never from the lane's own default (RECOVERY_PLAN.md section 3.3's "timeout_s <= the
+    lane's cap")."""
+    caps = ((routing_cfg or {}).get("timeouts") or {}).get("lane_caps")
+    value = caps.get(str(adapter)) if isinstance(caps, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def spec_fields(limits: dict) -> dict:

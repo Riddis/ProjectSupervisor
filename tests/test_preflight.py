@@ -66,12 +66,15 @@ def test_unparsable_flag_refused(layout):
 
 
 def test_params_signature_mismatch_refused(layout):
+    """The registered callable's own signature, not the template's slots: the template below declares
+    `wrong_key` (so the declared-slot checks pass it) and the function does not take it."""
     @register_job("preflight_test_needs_mode")
     def _needs_mode(root, run_dir, mode):
         return {"status": "COMPLETE"}
     try:
         _write_templates(layout, {"t": {"adapter": "python", "fn": "preflight_test_needs_mode",
-                                         "may_be_set_by": ["owner"], "params": {}}})
+                                         "may_be_set_by": ["owner"],
+                                         "params": {"wrong_key": {"type": "int"}}}})
         job = {"adapter": "python", "template": "t", "params": {"wrong_key": 1}}
         out = preflight.run(layout, job)
         assert out["ok"] is False
