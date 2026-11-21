@@ -85,6 +85,22 @@ def test_rf11_changing_an_existing_jobs_template_is_refused(layout):
     assert refusals and all(r["code"] == "RF-11" for r in refusals), refusals
 
 
+def test_rf11_a_templateless_existing_job_is_refused_not_overwritten(layout):
+    """A third shape `set_job` must never admit: an existing job with no `template` at all is a literal,
+    owner-authored block (a bare `argv`, here), not a class A parameter diff — even one whose `adapter` happens
+    to match the plan's own template. Writing `template`/`params` beside that literal `argv` would leave a block
+    whose two halves disagree about what runs (the adapter launches the stale `argv`; the stored transcript
+    would attest to the template instead), so this is RF-11, not a second class the frontier admits."""
+    _write_templates(layout, {"t1": {"adapter": "process", "argv": [PY, "-c", "pass", "{mode}"],
+                                     "may_be_set_by": ["plan"],
+                                     "params": {"mode": {"type": "enum", "values": ["a", "b"]}}}})
+    make_task(layout, "T1", status="BLOCKED", job={"adapter": "process", "argv": [PY, "-c", "pass"]})
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = _plan("T1", rev, {"op": "set_job", "task": "T1", "template": "t1", "params": {"mode": "a"}})
+    _, refusals = plans.validate(doc, layout)
+    assert refusals and all(r["code"] == "RF-11" for r in refusals), refusals
+
+
 # ------------------------------------------------------------------ RF-08: the real preflight, not a resolve check
 
 def test_set_job_whose_probe_fails_is_refused_rf08_with_its_transcript_digest_on_the_plan(layout):
@@ -112,3 +128,21 @@ def test_set_job_whose_probe_fails_is_refused_rf08_with_its_transcript_digest_on
     on_disk = store.read(plans.path_for(layout, doc["id"]))
     assert on_disk["report"]["preflight"] == proposed["report"]["preflight"], \
         "the transcript digest must be the one actually read back from the plan document on disk"
+
+
+def test_set_job_preflights_the_block_it_would_actually_write_not_a_three_key_stand_in(layout):
+    """RF-08's preflight must run against the same block `apply()` would write — the existing job's own keys
+    (here, `stdin_file`) carried over, `template`/`params` replaced — never a narrower `{adapter, template,
+    params}` stand-in that drops them. A parameter diff whose existing job names a `stdin_file` that no longer
+    exists would validate clean under the stand-in and only fail later, as a write-time stall; it must be
+    refused here, under RF-08, instead."""
+    _write_templates(layout, {"t1": {"adapter": "process", "argv": [PY, "-c", "pass", "{mode}"],
+                                     "may_be_set_by": ["plan"],
+                                     "params": {"mode": {"type": "enum", "values": ["a", "b"]}}}})
+    make_task(layout, "T1", status="BLOCKED",
+             job={"adapter": "process", "template": "t1", "params": {"mode": "a"}, "stdin_file": "gone.txt"})
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = _plan("T1", rev, {"op": "set_job", "task": "T1", "template": "t1", "params": {"mode": "b"}})
+
+    _, refusals = plans.validate(doc, layout)
+    assert refusals and all(r["code"] == "RF-08" for r in refusals), refusals
