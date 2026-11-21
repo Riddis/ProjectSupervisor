@@ -36,8 +36,8 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   task's `job` is checked like every other write path's — an envelope whose `actor` is neither the owner's nor a
   plan's is refused where it used to be applied, and the created row's adapter keys are schema-checked too. Every
   real submitter already names an owner identity (the CLI's `task create`, the Control Center's routes), and the
-  two callers that build a document themselves (a plan's `create_task`, a diagnosis's `new_task`) may not name
-  `job` at all.
+  one caller that builds a document itself (a plan's `create_task` — the only path a diagnosis reaches this
+  through) may not name `job` at all.
 
 - **`config/job_templates.yaml`, the preflight, and a launch gate that requires one (RECOVERY_PLAN.md section
   3.3, R-11/R-20).** A project's own template file declares the executable line a `process`/`python` job may

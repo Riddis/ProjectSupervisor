@@ -1257,8 +1257,8 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str
     repeat call with the same id — a replayed ingest — returns the plan already on disk, unchanged, never a
     second validation and never a second write. What is stored as `operations` is the normalised form (§1.3): the
     applier later executes exactly what was checked, never the raw proposal. The correction turn of §2.5 (a
-    `revisions[]` entry replacing a refused `operations`) is T8-10's; this function always writes a fresh plan
-    once and leaves `revisions` empty.
+    `revisions[]` entry replacing a refused `operations`) is `revise()`'s own job; this function always writes a
+    fresh plan once and leaves `revisions` empty.
 
     `proposer_role` is stored on the plan (§2.7): the role `approver_role()` must never resolve to for this plan
     (RF-23), carried here rather than re-derived later so a plan's own approval lane always answers "never the
@@ -1289,6 +1289,46 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str
     tasks_mod.log(layout, "plan_refused" if refusals else "plan_proposed", by, plan=plan_id,
                   **({"refusals": [r["code"] for r in refusals]} if refusals else {"scope": report.scope}))
     return load_plan(layout, plan_id)
+
+
+def revise(layout: Layout, plan_id: str, doc: dict, by: str) -> dict:
+    """The correction turn (RECOVERY_PLAN.md section 2.5, D-027 decision 4/5): a plan already `refused` gets
+    exactly one more proposal from the SAME job, under the same id. The refused `operations`, its own refusal
+    list and its normalisations are moved into a `revisions[]` entry before the corrected form overwrites them
+    — "both plans and both refusal lists" stays one document, never a sibling file. `doc` is a fresh raw
+    proposal, the same shape `propose()` takes; how many times this may be called for one plan is the caller's
+    own rule (`diagnosis.py` dispatches at most one correction session), not this function's — it corrects
+    whatever `refused` plan it is given, however many times it is asked to."""
+    existing = load_plan(layout, plan_id)
+    if existing is None:
+        raise PlanError(f"no such plan {plan_id!r}")
+    if existing.get("status") != "refused":
+        raise PlanError(f"plan {plan_id!r} is {existing.get('status')!r}, not refused; nothing to revise")
+    tasks_now = tasks_mod.load_all(layout)
+    normalised_doc, _ = normalise(doc, tasks_now)
+    report, refusals = validate(doc, layout, tasks=tasks_now)
+    revision_entry = {"at": store.now_iso(), "session": by, "operations": existing.get("operations"),
+                      "refusals": existing.get("refusals"),
+                      "normalised": (existing.get("report") or {}).get("normalised")}
+
+    def fn(d):
+        d["revisions"] = list(d.get("revisions") or []) + [revision_entry]
+        d["operations"] = normalised_doc.get("operations")
+        d["reason"] = doc.get("reason")
+        d["expected_rev"] = doc.get("expected_rev")
+        d["report"] = report.as_dict()
+        to = "refused" if refusals else "awaiting_approval"
+        d["history"] = _history(d, by, to)
+        d["status"] = to
+        if refusals:
+            d["refusals"] = refusals
+        else:
+            d.update({"refusals": [], "done": [], "resume_count": 0})
+        return d
+    doc_out = store.update(path_for(layout, plan_id), fn)
+    tasks_mod.log(layout, "plan_refused" if refusals else "plan_revised", by, plan=plan_id,
+                  **({"refusals": [r["code"] for r in refusals]} if refusals else {"scope": report.scope}))
+    return doc_out
 
 
 # ----------------------------------------------------------------------- the applier's own fixed order (§2.6 rule 2)

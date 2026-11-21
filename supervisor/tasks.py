@@ -482,8 +482,9 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     A created row's `job` is the writer's own literal choice exactly like a refreshed or patched one, so it takes
     the same two checks here and nowhere else: `_write_job` for who may write it (section 3.4 — `actor` is
     whoever asked for the create, and a caller that names none asserts no authority) and `job_schema_problems`
-    for the adapter's own keys. A caller whose document may not name a job at all (a plan's `create_task`, a
-    diagnosis's `new_task`, both restricted by their own field lists) never reaches either, and an empty one is
+    for the adapter's own keys. A caller whose document may not name a job at all (a plan's `create_task`,
+    restricted by its own field list — the only path a diagnosis reaches this through, since 2.9.0) never
+    reaches either, and an empty one is
     not a write: a document built from a whole task (`Task.model_dump()` names every declared field, `job`
     included) says nothing about what the row runs, and there is nothing on a new row to clear."""
     doc = dict(doc)
