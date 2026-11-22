@@ -416,3 +416,213 @@ def test_rf31_a_plan_may_not_write_needs_onto_a_task_it_did_not_create(layout):
     _, refusals = plans.validate(doc, layout)
     assert refusals
     assert any("needs" in (r.get("field") or "") for r in refusals)
+
+
+# ---------------------------------------------------------------- the budget reaches every lane that resolves one
+#
+# The loss this release exists to close was recorded on an agent lane: a session with no job block of its own,
+# killed at the policy cap after eight hours of work. Section 9 step 4 and section 10 invariant 4 therefore name
+# three lanes, not one -- `process`, `claude_cli` and `codex_cli`, the three that call the resolver after this
+# release -- and D-028 decision 11 says every `prepare` passes `needs.needs_for(layout, task, kind)`.
+
+@pytest.mark.parametrize("lane", ["claude_cli", "codex_cli"])
+def test_a_model_lane_delivery_is_budgeted_by_its_own_declared_duration(layout, lane):
+    make_task(layout, "Long", job={"adapter": lane}, needs={"duration_min": 480})
+    spec = REGISTRY[lane].prepare(layout, tasks_mod.load(layout, "Long"), "Long.a1")
+    assert spec["timeout_s"] == 36000                            # 480 * 60 * 1.25
+    assert spec["timeout_s"] != timeouts.DEFAULTS["hard_cap_s"]  # not the policy cap that killed the recorded run
+
+
+@pytest.mark.parametrize("lane, extra", [("process", {"argv": [PY, "-c", "pass"]}),
+                                          ("claude_cli", {}), ("codex_cli", {})])
+def test_every_prepare_that_resolves_limits_scopes_the_declaration_to_the_delivery(layout, monkeypatch, lane, extra):
+    """What each `prepare` passes the resolver, asserted on the `needs=` itself and not on the resolved number
+    alone (section 9 step 4): a verify view's explicit `timeout_s` would mask a wrong kind."""
+    from supervisor import capabilities as capabilities_mod
+    calls = []
+    real = timeouts.resolve
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(timeouts, "resolve", spy)
+    for kind, expected in (("delivery", {"duration_min": 600}), ("review", None), ("verify", None),
+                           ("conversation", None)):
+        tid = f"{lane}_{kind}"
+        make_task(layout, tid, job={"adapter": lane, "result_kind": kind, **extra}, needs={"duration_min": 600})
+        REGISTRY[lane].prepare(layout, tasks_mod.load(layout, tid), f"{tid}.a1")
+        assert calls, f"{lane}.prepare resolved no limits at all"
+        assert calls[-1].get("needs") == expected, f"{lane}/{kind} passed {calls[-1].get('needs')!r}"
+        assert calls[-1].get("capabilities") == capabilities_mod.for_lane(layout, lane)
+
+
+def test_a_model_lane_timeout_s_above_the_ceiling_is_clamped_with_a_receipt(layout):
+    """D-028 decision 4: RF-08's cap row is the preflight's `process` row alone, so the resolver's last clamp is
+    the only enforcement on a model lane -- and it may not lower a declared number silently."""
+    _write_routing(layout, {"timeouts": {"max_hard_cap_s": 120}})
+    make_task(layout, "M", job={"adapter": "claude_cli", "timeout_s": 3600})
+    spec = REGISTRY["claude_cli"].prepare(layout, tasks_mod.load(layout, "M"), "M.a1")
+    assert spec["timeout_s"] == 120
+    events = _log(layout) if layout.log.exists() else []
+    assert any(e["event"] == "timeout_clamped" and e["declared_s"] == 3600 and e["ceiling_s"] == 120
+               for e in events), events
+
+
+# ---------------------------------------------------------------- one composed ceiling, read the same way by all four
+
+def test_rf28_refuses_against_the_ceiling_the_resolver_will_clamp_to(layout):
+    """`ceiling_s` is one function, but it is one *number* only if every reader composes it from the same
+    arguments (D-028 decision 4, section 3.2's signature). A per-cost-category `max_hard_cap_s` that the clamp
+    reads and the write-time refusal does not is the recorded cap-kill re-entering through configuration: the
+    declaration is admitted at the write and cut at launch, with declared work left."""
+    _write_routing(layout, {"timeouts": {"max_hard_cap_s": 86400, "by_cost": {"claude": {"max_hard_cap_s": 1800}}},
+                            "roles": {"engineer": {"adapter": "claude_cli", "model": "sonnet"}}})
+    with pytest.raises(tasks_mod.TaskError, match="needs.duration_min"):
+        tasks_mod.create(layout, _task_doc("Over", cost_category="claude", owned_paths=["work"],
+                                           job={"adapter": "claude_cli"},
+                                           needs={"duration_min": 31}), actor="owner")      # 1860 s > 1800 s
+    tasks_mod.create(layout, _task_doc("Exact", cost_category="claude", owned_paths=["work"],
+                                       job={"adapter": "claude_cli"},
+                                       needs={"duration_min": 30}), actor="owner")          # exactly 1800 s
+    spec = REGISTRY["claude_cli"].prepare(layout, tasks_mod.load(layout, "Exact"), "Exact.a1")
+    assert spec["timeout_s"] == 1800                      # the same number the write was judged against
+
+
+def test_rf08_refuses_a_process_timeout_s_above_the_composed_ceiling_and_admits_one_exactly_at_it(layout):
+    """Section 7.1's own named test for the one line this release lands inside the other design's check: RF-08's
+    `process`-row cap comparison reads `timeouts.ceiling_s`, composed for the lane and the role the job would run
+    on. The check, its code, its message and its home stay where RECOVERY_PLAN.md section 3.3 put them."""
+    _write_routing(layout, {"timeouts": {"max_hard_cap_s": 86400,
+                                          "by_cost": {"deterministic": {"max_hard_cap_s": 1800}}}})
+    tasks_mod.create(layout, _task_doc("Over", job={"adapter": "process", "argv": [PY, "-c", "pass"],
+                                                     "timeout_s": 1801}), actor="owner")
+    pf = tasks_mod.load(layout, "Over").job.preflight
+    assert pf.ok is False and pf.detail["code"] == "timeout_too_high"
+    tasks_mod.create(layout, _task_doc("Exact", job={"adapter": "process", "argv": [PY, "-c", "pass"],
+                                                      "timeout_s": 1800}), actor="owner")
+    assert tasks_mod.load(layout, "Exact").job.preflight.ok is True
+
+
+def test_rf32_refuses_against_the_ceiling_the_role_resolves(layout):
+    """The fourth reader (`agent.extend`) composes the ceiling the same way: a role profile's own
+    `max_hard_cap_s` bounds an extension exactly as it bounds the budget."""
+    deadline = time.time() + 100
+    _running_job(layout, deadline)
+    _write_routing(layout, {"roles": {"engineer": {"adapter": "claude_cli", "timeouts": {"max_hard_cap_s": 200}}}})
+    with pytest.raises(ValueError, match="RF-32"):
+        commands.HANDLERS["agent.extend"](layout, {"attempt_id": "T.a1", "_id": "c1", "seconds": 3600}, "owner-ui")
+    assert jobs.read(layout, "T.a1")["handle"]["deadline"] == pytest.approx(deadline)   # refused, not clamped
+
+
+# ---------------------------------------------------------------- the match runs in the preflight too (section 3.3)
+
+_LONG_TEMPLATE = {"adapter": "process", "argv": [PY, "-c", "pass"], "params": {},
+                  "needs": {"duration_min": 120}}
+
+
+def test_the_owners_set_job_stores_a_needs_refusal_where_the_gate_reads_it(layout):
+    """Section 3.3's second row: the owner's `set_job` on a task that already exists has no row to refuse, so the
+    refusal is stored in the same `job.preflight` record and the task stalls as `preflight_failed` -- not held
+    later by the gate under a different code, with different admitted choices."""
+    _write_routing(layout, {"timeouts": {"max_hard_cap_s": 3600}})
+    _write_templates(layout, {"long": {**_LONG_TEMPLATE, "may_be_set_by": ["owner"]}})
+    make_task(layout, "T", cost_category="deterministic", status="READY")
+    t, _ = commands.apply_job(layout, "T", {"adapter": "process", "template": "long", "params": {}}, "owner")
+    assert t.job.preflight.ok is False
+    assert t.job.preflight.detail["code"] == "needs_exceed_lane"
+    reason = gate.preflight_reason(layout, tasks_mod.load(layout, "T"), "process", "delivery")
+    assert reason is not None and "needs_exceed_lane" in reason
+
+
+def test_a_plans_set_job_is_refused_with_its_plan_and_stores_nothing_on_the_task(layout):
+    """Section 3.3's third row: a plan's `set_job` must pass its own preflight (RF-08), so a needs refusal
+    raised inside it refuses the operation with the plan it rode in on, and no live task is left holding a
+    refusal it did not have before."""
+    _write_templates(layout, {"long": {**_LONG_TEMPLATE, "may_be_set_by": ["plan"]}})
+    make_task(layout, "T1", cost_category="deterministic", status="BLOCKED",
+              job={"adapter": "process", "template": "long", "params": {}})
+    _write_routing(layout, {"timeouts": {"max_hard_cap_s": 3600}})     # the ceiling moves under the declaration
+
+    on_a_live_task = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "long", "params": {}}])
+    _, refusals = plans.validate(on_a_live_task, layout)
+    assert any(r["code"] == "RF-08" and "needs_exceed_lane" in json.dumps(r) for r in refusals), refusals
+    stored = tasks_mod.load(layout, "T1")
+    assert stored.job.preflight.ok is True                 # untouched by the refused plan, as it was before it
+
+    on_a_task_the_plan_creates = base_plan(ops=[
+        {"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o", "owner_role": "engineer",
+                                        "cost_category": "deterministic"}},
+        {"op": "set_job", "task": "T2", "template": "long", "params": {}}])
+    _, refusals = plans.validate(on_a_task_the_plan_creates, layout)
+    assert any(r["code"] == "RF-08" and "needs_exceed_lane" in json.dumps(r) for r in refusals), refusals
+
+
+# ---------------------------------------------------------------- the five framework lanes' stated capability values
+
+_CAPABILITIES_AS_DESIGNED = {
+    "claude_cli": {"durable": False, "network": True},
+    "codex_cli": {"durable": False, "network": True},
+    "claude_api": {"durable": False, "network": False, "max_duration_min": 10},
+    "process": {"network": True},
+    "python": {"network": True},
+}
+
+
+def test_the_five_framework_lanes_answer_exactly_the_declared_table(layout):
+    """Section 9 step 2: asserted over the table, so a changed value is a changed test."""
+    from supervisor import capabilities as capabilities_mod
+    _write_routing(layout, {"claude_api": {"timeout_s": 600}})
+    assert set(capabilities_mod.FRAMEWORK_LANES) == set(_CAPABILITIES_AS_DESIGNED)
+    for lane, declared in _CAPABILITIES_AS_DESIGNED.items():
+        assert capabilities_mod.for_lane(layout, lane) == declared, lane
+
+
+def test_claude_apis_one_configured_entry_follows_its_own_timeout(layout):
+    """The one entry in the table that is not a constant (section 3.2, section 4.2): this lane's whole budget is
+    one HTTP call's socket timeout, so a matcher that could not see it would refuse nothing on it."""
+    from supervisor import capabilities as capabilities_mod
+    from supervisor.adapters import claude_api
+    _write_routing(layout, {"claude_api": {"timeout_s": 1800}})
+    assert capabilities_mod.for_lane(layout, "claude_api")["max_duration_min"] == 30
+    _write_routing(layout, {})
+    assert (capabilities_mod.for_lane(layout, "claude_api")["max_duration_min"]
+            == claude_api.DEFAULT_TIMEOUT_S // 60)
+
+
+# ---------------------------------------------------------------- what the gate does and does not re-run
+
+def test_the_gate_does_not_re_run_the_preflights_probe(layout, monkeypatch):
+    """Section 3.4: the gate re-runs the match and only the match. The match is two dict lookups; the probe is a
+    subprocess, and running it at dispatch is what RECOVERY_PLAN.md section 3.3 refused on cost and lateness."""
+    from supervisor import preflight as preflight_mod
+    _write_templates(layout, {"t": {"adapter": "process", "argv": [PY, "-c", "pass"], "may_be_set_by": ["owner"],
+                                     "params": {}, "probe": [PY, "-c", "pass"]}})
+    make_task(layout, "T", cost_category="deterministic", status="READY",
+              job={"adapter": "process", "template": "t", "params": {}, "argv": [PY, "-c", "pass"]})
+    task = tasks_mod.load(layout, "T")
+    assert task.job.preflight.ok is True                      # recorded once, at the write
+    probes = []
+    monkeypatch.setattr(preflight_mod, "_run_probe", lambda *a, **k: probes.append(a))
+    assert gate.preflight_reason(layout, task, "process", "delivery") is None
+    assert gate.needs_mismatch_reason(layout, task, "process", "delivery") is None
+    assert probes == []
+
+
+def test_a_declaration_never_matches_or_budgets_the_jobs_it_does_not_describe(layout):
+    """Invariant 11, on the pairing that would otherwise stall forever: a resumable `process` delivery whose
+    review runs on a model lane (every model lane declares `durable: false`). The review is matched against
+    nothing, so its gate check refuses nothing and the task carries no `needs_mismatch`."""
+    from supervisor import packets
+    _write_templates(layout, {"t": {"adapter": "process", "argv": [PY, "-c", "pass"], "may_be_set_by": ["owner"],
+                                     "params": {}, "resumable": True}})
+    make_task(layout, "T", cost_category="deterministic", status="READY",
+              job={"adapter": "process", "template": "t", "params": {}, "argv": [PY, "-c", "pass"]},
+              needs={"resumable": True, "duration_min": 600})
+    task = tasks_mod.load(layout, "T")
+    assert gate.needs_mismatch_reason(layout, task, "process", "delivery") is None
+    for kind in ("review", "verify", "conversation"):
+        assert needs_mod.needs_for(layout, task, kind) is None
+        assert gate.needs_mismatch_reason(layout, task, "claude_cli", kind) is None
+    assert gate.needs_mismatch_reason(layout, None, "claude_cli", "conversation") is None   # a chat turn: no task
+    assert "verify" not in packets.NON_DELIVERY_KINDS         # it governs prompt guidance, never a budget
