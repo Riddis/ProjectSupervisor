@@ -1133,6 +1133,10 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     the counters its tasks imply. Refuses without a mapping file and refuses while the loop runs (§8.1). A
     record already carrying `migrated.attempts` is verified against the mapping, never rewritten; a mismatch is
     an error, not an overwrite, so a hand-edited mapping can never silently relabel an already-migrated record.
+    An allocator-written record with no stamp gets the same treatment, narrowed to the fields the allocator
+    itself derives (`attempt`/`kind`/`seq`/`parent`): verified, never rewritten, and never compared on
+    `cause`/`scope`, which this migration's own re-derivation can get wrong for such a record without that ever
+    being a placement error (P3-R2-A).
     The backup of `state/runtime/jobs/` and `state/tasks/` is taken once, before this call's own first write --
     never when there is nothing left to write, which is what makes a second apply with the same mapping a true
     no-op, and what lets an apply interrupted mid-way simply resume: every record this call has already written
@@ -1155,6 +1159,15 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
         wanted = _identity_fields(entry)
         if (rec.get("migrated") or {}).get("attempts"):
             (already if _record_matches(rec, wanted) else conflicts).append(job_id)
+        elif _has_identity_fields(rec):
+            # Allocator-written but never stamped (P3-R2-A, carried from the 2.8.0 round-2 review): verify it
+            # against the mapping the same way a stamped record is, but only on the fields the allocator itself
+            # derives -- attempt, kind, seq, parent. Never compare, and so never rewrite, cause/scope: this
+            # migration's own re-derivation reads the task-side attempt note, which an allocator-written record
+            # never had one written for, so a revision's `cause` would otherwise re-derive as `scheduled` and
+            # overwrite the allocator's own value on every apply.
+            core = {k: wanted[k] for k in ("attempt", "kind", "seq", "parent") if k in wanted}
+            (already if _record_matches(rec, core) else conflicts).append(job_id)
         else:
             to_write.append(job_id)
 
@@ -1236,7 +1249,9 @@ def check_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     # recorded run_dir value may differ -- a path absent already at dry-run time is not a failure either way.
     for job_id, info in (dry_report.get("run_dir_baseline") or {}).items():
         rec = jobs_mod.resolve(layout, job_id)
-        current = (rec.get("spec") or {}).get("run_dir") if rec else None
+        if rec is None:
+            continue   # already named by assertion 1; a missing record is not a second, run_dir failure too
+        current = (rec.get("spec") or {}).get("run_dir")
         if current != info.get("run_dir"):
             fail("2_run_dir_baseline", f"{job_id}: run_dir changed ({info.get('run_dir')!r} -> {current!r})")
         elif info.get("existed") and not Path(info["run_dir"]).exists():

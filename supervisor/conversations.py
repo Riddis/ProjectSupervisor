@@ -211,6 +211,19 @@ def pending_turns(layout: Layout) -> list[tuple[str, int]]:
     return out
 
 
+def turn_jobs(layout: Layout, thread_id: str) -> list[dict]:
+    """This thread's own job records, oldest turn first. A conversation record is permanently exempt from the
+    allocator (`loop.dispatch`'s own `kind == "conversation"` branch never gives it `attempt`/`kind`/`seq`), and
+    `jobs.sort_key` has carried no id-suffix fallback since the writers switch (C-3) -- so past the ninth turn
+    every record ties at the same key and the tie-break falls back to a lexicographic compare of the id, which
+    sorts turn 10 before turn 2 (step9-writers-switch.md). `conversation_turn`, written into every such record
+    at dispatch, is this reader's own reliable order: a thread's order is the thread reader's business, never
+    `jobs.for_task`'s -- which keeps C-3's deletion exactly as it is."""
+    from . import jobs as jobs_mod
+    records = jobs_mod.for_task(layout, f"conv-{thread_id}")
+    return sorted(records, key=lambda r: r.get("conversation_turn") if r.get("conversation_turn") is not None else -1)
+
+
 def _task_like(thread_id: str, prompt: str) -> SimpleNamespace:
     """Stand-in for `supervisor.dispatch()`'s `task` argument: no Task backs a conversation, so only the
     attributes the adapter machinery actually reads (`id`, `owner_role`, `job`, `owned_paths`) exist.
