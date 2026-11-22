@@ -18,8 +18,11 @@ The keys, as the template's `config/routing.yaml` shows them:
 - for an agent lane: `model`, `effort`, optionally `senior_model` (the second revision runs on it), and `tools`;
 - `card`: the card file under `agents/` (`card: null` for a role with no card yet, which must then be inactive);
 - `active`: `true`, or `false` to park the role;
-- `result_kinds`: the kinds of result it returns (`delivery`, `review`, ...) — enforced as a warning by
-  `task import`/`task create`/`supervisor check` against what the role's tasks would actually produce;
+- `result_kinds`: the kinds of result it returns (`delivery`, `review`, ...) — enforced, when the list is
+  non-empty, as a warning by `task import`/`task create`/`supervisor check` (a refusal, RF-18, from a plan's
+  `create_task`/`patch_contract`) against what the role's tasks would actually produce; omit the key, or leave it
+  `[]`, for a lane with no result document (`adapter: human`, or a job that always sets its own non-document
+  `result_kind`) — neither is checked;
 - `review`: how it runs when it reviews (`{tools: reviewer, write_scope: run_dir}` in the template).
 
 A reviewer runs on a different vendor's lane than the workers it reviews, where one exists. Keep each value's

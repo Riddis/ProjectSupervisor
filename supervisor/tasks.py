@@ -423,10 +423,12 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
     - one that is inactive (`active: false`), which parks the task until the role is activated;
-    - a role whose routing entry declares `result_kinds` (R-26: the one documented permission this project
-      enforces) and would be asked to produce a kind outside it — the owner_role's own `job.result_kind`
+    - a role whose routing entry declares a non-empty `result_kinds` (R-26: the one documented permission this
+      project enforces) and would be asked to produce a kind outside it — the owner_role's own `job.result_kind`
       (default `delivery`), or `review` for a reviewer, which every reviewer dispatch produces regardless of the
-      task (`review.py`'s own job spec) — a role with no `result_kinds` key at all is unrestricted, unchanged;
+      task (`review.py`'s own job spec) — a role with no `result_kinds` key at all, or `result_kinds: []`, is not
+      checked (the shipped `owner` and `conversation` entries use `[]` for a lane whose adapter is `human`, or
+      whose own job always sets a non-document `result_kind`, so there is no result document to hold to a list);
     - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
     - a `job` whose adapter, or whose python `fn`, neither the framework nor a plugin's manifest provides, which
       would fail only when it ran. No plugin is set up for this (`_registered_lanes`).
@@ -462,7 +464,7 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
             else:
                 entry = roles.get(role) if isinstance(roles, dict) else None
                 permitted = entry.get("result_kinds") if isinstance(entry, dict) else None
-                if isinstance(permitted, list):
+                if isinstance(permitted, list) and permitted:
                     expected = "review" if field_name == "reviewer" else ((job.result_kind if job else None) or "delivery")
                     if expected not in permitted:
                         out.append(f"{t.id}: {field_name} {role!r} would produce a {expected!r} result, outside "

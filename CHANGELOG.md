@@ -231,6 +231,25 @@ start-up guard refuses to dispatch once any job record exists that is neither mi
 allocator-written, so a project upgrading in place runs `migrate attempts --dry-run` then `--apply` (reviewed
 first) in the same stopped window it upgrades in, before restarting the loop.
 
+- **Fixed: thirteen settings a `project.yaml` or `routing.yaml` could carry had no reader anywhere, and two
+  settings the loader already read had no documentation (R-26).** `description`, `repo.*`, `ui.title` and
+  `owner.name` (`project.yaml`), and `version`, `roles.<role>.active_from`, `roles.<role>.second_opinion` and
+  `resources.<name>.single_job` (`routing.yaml`) are gone from the loader, every shipped template and the setup
+  docs; the "one job at a time" rule `single_job` looked like it configured stays exactly what it already was,
+  `limits.max_resource_jobs` plus a job's own `gpu` flag (D-028) — the two in-repo GPU-lane plugins now name that
+  rule in their own docstrings instead of the key nothing read. `roles.<role>.result_kinds` — documented as a
+  permission and, until now, never enforced — is implemented: `task import`, `task create` and `supervisor check`
+  warn, and a plan's `create_task`/`patch_contract` refuse (RF-18, the same as any other contract warning on that
+  path), when a role whose `result_kinds` is a non-empty list would be asked to produce a kind outside it; a role
+  with no `result_kinds` key at all, or an explicit `result_kinds: []` (the shipped `owner` and `conversation`
+  entries' own idiom for a lane with no result document — `adapter: human`, or a job that always sets a
+  non-document `result_kind`), is not checked. `claude_api.eligible_roles` and `job.api_credits`, already read,
+  are now documented (`docs/runbooks/claude_api.md`, `docs/TASK_CONTRACT.md`).
+
+  **Migration:** none added; `supervisor migrate` is unchanged. A `project.yaml` or `routing.yaml` carrying any of
+  the ten removed keys (`repo.*` is three) keeps loading exactly as before — the loader never read the key and
+  still does not — `doctor` now names it and says it is safe to delete, a warning and never a refusal.
+
 ## 2.7.0 — 2026-11-15
 
 - **Added: a one-field contract patch, so adding a dependency no longer means resending a task's whole contract.**

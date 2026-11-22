@@ -41,8 +41,13 @@ produce. Dormant roles keep `card: null`, `active: false` and a `note` saying wh
 | `research_report.json` | `research_strategist` | reviewers, the owner |
 | `assessment.json` | any role asked to score candidates independently | the manager's reconciliation |
 
-Each role's permitted kinds are listed as `result_kinds` in its routing entry, and enforced as a warning (not a
-refusal) by `task import`, `task create` and `supervisor check`: a role with `result_kinds` configured that would
-be asked to produce a kind outside it — its own delivery's `job.result_kind` (default `delivery`), or `review` for
-a reviewer — is named, with the kind and the list it fell outside. A role with no `result_kinds` key at all stays
-unrestricted.
+Each role's permitted kinds are listed as `result_kinds` in its routing entry, and enforced when the list is
+non-empty: a role whose `result_kinds` would be asked to produce a kind outside it — its own delivery's
+`job.result_kind` (default `delivery`), or `review` for a reviewer — is named, with the kind and the list it fell
+outside. That is a warning (not a refusal) from `task import`, `task create` and `supervisor check`; a plan's
+`create_task` or `patch_contract` turns the same line into a hard refusal (RF-18), the same as any other contract
+warning on the plan-apply path — a plan never creates or patches a task into a contract that would park it.
+
+A role with no `result_kinds` key at all, or with `result_kinds: []`, is not checked: `[]` is for a lane with no
+result document to hold to a list, such as `owner` (`adapter: human` never produces one) or `conversation` (its
+job always sets a non-document `result_kind`), not for "may produce nothing".

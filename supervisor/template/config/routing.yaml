@@ -43,9 +43,12 @@ cost_lanes:
 #   card             agents/<file>, or null while the role is dormant
 #   active           true once the role has work; a dormant role costs nothing - its tasks are parked by the
 #                    scheduler (logged `schedule_skip`), never dispatched on another lane
-#   result_kinds     schemas in agents/schemas/ this role may produce - enforced: `task import`/`task create`/
-#                    `supervisor check` warn when a task's owner_role would produce a kind (its `job.result_kind`,
-#                    default `delivery`) or a reviewer role would produce `review` outside this list
+#   result_kinds     schemas in agents/schemas/ this role may produce - enforced when the list is non-empty:
+#                    `task import`/`task create`/`supervisor check` warn (a plan's create_task/patch_contract
+#                    refuse, RF-18) when a task's owner_role would produce a kind (its `job.result_kind`, default
+#                    `delivery`) or a reviewer role would produce `review` outside this list. Omit the key, or
+#                    leave it `[]`, for a lane with no result document to hold to a list (`human`, or a job that
+#                    always sets a non-document `result_kind` such as `conversation`) - neither is checked
 #   senior_model     model for the second automatic revision
 #   review           confinement for a REVIEW job of this role (tools reviewer, write_scope run_dir by default)
 roles:
@@ -100,7 +103,7 @@ roles:
     tools: none
     card:
     active: true
-    result_kinds: []
+    result_kinds: []                # adapter human never produces a result document - not checked
     note: approvals, spend, logins, installs - final authority
   conversation:
     adapter: claude_cli             # Control Center chat lane, not an org-chart role
@@ -109,7 +112,7 @@ roles:
     tools: reader
     card:
     active: true                    # informational: the chat lane is owner-driven, `active` never parks a reply
-    result_kinds: []
+    result_kinds: []                # a chat turn's own job always sets result_kind "conversation" - not checked
     note: a chat turn that dispatches work does so under the target role's own entry
 
 claude:

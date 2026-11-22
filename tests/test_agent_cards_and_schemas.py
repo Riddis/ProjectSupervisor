@@ -54,7 +54,7 @@ def load_schema(name: str) -> dict:
 
 def test_routing_loads_with_the_blocks_the_framework_reads():
     doc = routing_doc()
-    assert doc["version"] == 1
+    assert "version" not in doc                    # R-26: no reader anywhere; the template no longer ships it
     assert doc["capacity"]["claude"]["reserve_percent"] == 20
     assert set(doc["cost_lanes"]) == {"deterministic", "local", "claude", "codex", "human", "mixed", "paid"}
     assert doc["claude"]["supports_effort"] is True and doc["limits"]["max_agent_jobs"] in (1, 2)
@@ -70,7 +70,8 @@ def test_routing_covers_every_role_in_the_task_store():
 def test_every_routing_entry_resolves(role):
     entry = roles()[role]
     assert entry["adapter"] in REGISTRY, f"{role}: unknown adapter {entry['adapter']!r}"
-    assert isinstance(entry["active"], bool) and isinstance(entry["active_from"], int)
+    assert isinstance(entry["active"], bool)
+    assert "active_from" not in entry           # R-26: no reader anywhere; purely informational, now gone
     assert set(entry.get("result_kinds") or []) <= set(SCHEMA_NAMES), f"{role}: unknown result kind"
     prof = role_profile(Layout(ROOT), role)
     tools = prof["tools"]

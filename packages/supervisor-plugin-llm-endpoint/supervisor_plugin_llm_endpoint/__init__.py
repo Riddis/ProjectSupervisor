@@ -5,9 +5,10 @@ schema-validated JSON out. It knows nothing about any particular server - the bi
 and the model name are configuration - so the same lane serves any server that speaks the shape. The HTTP call
 runs in a short-lived child process (`_worker.py`), same pid/create_time handle and result.json contract as
 every other `process`-family adapter; the server itself is started and stopped by a separate watchdog
-(`_server.py`) that outlives any one job. GPU-locked (`gpu = True`): one GPU-bound lane runs at a time
-(`resources.gpu.single_job`), and, where the project configures `resources.gpu.lease`, the machine-wide lease
-is held by the watchdog for as long as the server is up.
+(`_server.py`) that outlives any one job. GPU-locked (`gpu = True`): one GPU-bound lane runs at a time, serialised
+by `limits.max_resource_jobs` against the job record's own `gpu` flag (routing.yaml's `resources.<name>.single_job`
+is not read), and, where the project configures `resources.gpu.lease`, the machine-wide lease is held by the
+watchdog for as long as the server is up.
 
 Import only `supervisor.plugin` and `supervisor.testing` (in tests); register only inside setup()."""
 from __future__ import annotations
