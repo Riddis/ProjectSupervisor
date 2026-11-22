@@ -625,8 +625,8 @@ def _validate_choice(layout: Layout, task_id: str | None, choice: dict) -> dict:
 
 def _apply_diagnose_now(layout: Layout, task_id: str) -> dict:
     """`diagnose_now`: dispatch a diagnosis for `task_id` right now, through a `loop.Supervisor` built for this one
-    call (`Supervisor.__init__` starts no loop and no job, so this costs no more than any other owner-only effect
-    — no more than any other effect). The source and the signature are `why_not_runnable`'s own reason, read
+    call (`Supervisor.__init__` starts no loop and no job, so this costs no more than any other owner-only
+    effect below). The source and the signature are `why_not_runnable`'s own reason, read
     fresh rather than carried on the effect (RF-04's own rule, generalised: an effect names an operand, never a
     value a diagnosis would turn around and read back as if it had written it)."""
     from . import diagnosis as diagnosis_mod
