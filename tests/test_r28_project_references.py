@@ -1,10 +1,11 @@
 """R-28 (last bullet): the framework repository cited another project's own records as evidence inside comments
 and docstrings -- a decision id (`D-0NN`), an inbox or issue id (`H-0NN`/`OT-0NN`/`I-0NN`), a task or attempt id
-(`T<phase>-<nn>`, phase 1 and up), or a plan or review document's bare filename (`RECOVERY_PLAN.md`,
-`docs/plan/LONG_WORK.md`, `ATTEMPT_MODEL.md`, `CONTRIBUTOR_RULING.md`, `RELEASE_REVIEW_*.md`,
-`REVIEW_PROMPT_*.md`, `FRAMEWORK_REVIEW_*.md`, `RELEASE_RECORD*.md`, `docs/plan/PHASE<n>.md`, and similar).
-None of those records live in this repository (D-005): the framework repository never holds another project's
-files or information, including a pointer into them.
+(`T<phase>-<nn>`, two or three digits, phase 1 and up), a plan or review document's bare filename
+(`RECOVERY_PLAN.md`, `docs/plan/LONG_WORK.md`, `ATTEMPT_MODEL.md`, `CONTRIBUTOR_RULING.md`,
+`RELEASE_REVIEW_*.md`, `REVIEW_PROMPT_*.md`, `FRAMEWORK_REVIEW_*.md`, `RELEASE_RECORD*.md`,
+`docs/plan/PHASE<n>.md`, and similar), or a record's own path (`docs/releases/<release>/<finding>.md`,
+`docs/plan/<DOCUMENT>.md`). None of those records live in this repository (D-005): the framework repository
+never holds another project's files or information, including a pointer into them.
 
 The fifth shape the finding names is the project itself: its name, and the nicknames it gives the people and
 agents who work in it. A literal name cannot be written down here -- the word list belongs in a local,
@@ -16,10 +17,10 @@ position is one project's own vocabulary, and the note attributed to it is a poi
 records. G1d catches a name only when the local word list happens to carry it, which is the owner's choice and
 not this repository's to rely on; this test holds the structure instead.
 
-The first four shapes are the ones a word list cannot hold at all: a decision id, an inbox/issue id, a task id
-and a plan/review filename are generic patterns every project using this framework's planning convention
-produces, not one project's distinctive vocabulary, so G1d catches them only for the few ids a particular local
-list happens to name.
+The id, filename and path shapes are the ones a word list cannot hold at all: a decision id, an inbox/issue id,
+a task id, a plan/review filename and a record's path are generic patterns every project using this framework's
+planning convention produces, not one project's distinctive vocabulary, so G1d catches them only for the few ids
+a particular local list happens to name.
 
 Scope: every tracked file in the repository, excluding `supervisor/template/agents/schemas/` -- the placeholder
 and sample data a *new* project fills in with records of its own (a `task_ref` pattern example, sample ids in
@@ -39,6 +40,8 @@ Allow-list, stated here and nowhere else:
 - a handful of inbox/issue ids the framework's own tests generate and consume entirely within themselves --
   the first and second id a fresh test layout's own code assigns, never a citation of an external record:
   `H-001`, `H-002`, `I-001`, `I-002`;
+- for a record's path, `docs/plan/PROJECT_PLAN.md` (the documented path a new project writes its own plan to)
+  and `docs/plan/NOTE.md` (one fixture's invented artifact path, written and read inside that test alone);
 - for the fifth shape, the words this repository legitimately uses where a name would otherwise stand: the role
   and generic nouns that own a record (`the reviewer's probe`, `the owner's note`), the capitalised nouns it
   names things by (a screen, a language, a library, a tool, a role, a concept), and the function words that
@@ -60,7 +63,7 @@ THIS_FILE = Path(__file__).resolve()
 
 TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".html", ".js", ".css", ".txt", ".json"}
 
-TASK_ID = re.compile(r"\bT[1-9]-\d\d(\.[a-z]\d+)*\b")
+TASK_ID = re.compile(r"\bT[1-9]-\d\d\d?(\.[a-z]\d+)*\b")
 DECISION_ID = re.compile(r"\bD-0\d\d\b")
 INBOX_ISSUE_ID = re.compile(r"\bH-0\d\d\b|\bOT-0\d\d\b|\bI-0\d\d\b")
 DOC_NAME = re.compile(
@@ -69,6 +72,11 @@ DOC_NAME = re.compile(
     r"\bRELEASE_RECORD[\w.\-]*\.md\b|docs/plan/PHASE\d+\.md|\bCONTRIBUTION_DRYRUN\.md\b|\bTESTING_GAPS\.md\b|"
     r"\bFRAMEWORK_SURFACE\.md\b|\bBOUNDARY_RULING\.md\b|\bVERIFY_RULING\.md\b|\bCANDIDATE_HEAD\.md\b"
 )
+# A record's path, not only its bare filename: this repository tracks no `docs/releases/<release>/...` and no
+# `docs/plan/<DOCUMENT>.md` of its own (`git ls-files` has neither), so such a path is a pointer into the
+# planning records of the project that commissions this framework's development. `docs/plan/PROJECT_PLAN.md` is
+# the one exception and is allow-listed below: it is the documented path a *new* project writes its own plan to.
+RECORD_PATH = re.compile(r"docs/(?:releases|reviews)/[\w.\-]+/|docs/plan/([A-Z][\w.\-]*\.md)")
 
 # The fifth shape: a named identity credited with a record or an act of judgement. Three positions a name is
 # used in, each read as "whoever owns this must be a role or a thing this repository names, never a nickname".
@@ -86,6 +94,10 @@ ALLOWED_INBOX_ISSUE_IDS = {"H-001", "H-002", "I-001", "I-002"}
 # (`D-001-project-setup.md`, named that way in the setup skill and the interview doc for any project adopting
 # the framework) -- never a citation of this repository's own D-001.
 ALLOWED_DECISION_IDS = {"D-001"}
+# `docs/plan/` documents a *new* project creates for itself, or a test's own invented artifact path: the
+# documented plan path (the setup skill, the interview doc and the template all name it) and one fixture's
+# stand-in document name, written and read inside that test alone.
+ALLOWED_RECORD_PATHS = {"PROJECT_PLAN.md", "NOTE.md"}
 
 # Who may own a record here: a role, or the generic noun of the thing that produced it. A review finding this
 # repository's own history recorded is written as a bare number (`F5`, `G7`, `R-16`), an ordinal (`1`, `4`) or a
@@ -150,6 +162,9 @@ def _scan() -> list[str]:
                     hits.append(f"{rel}:{no}: inbox/issue id {m.group(0)!r}: {line.strip()!r}")
             for m in DOC_NAME.finditer(line):
                 hits.append(f"{rel}:{no}: review/plan filename {m.group(0)!r}: {line.strip()!r}")
+            for m in RECORD_PATH.finditer(line):
+                if m.group(1) not in ALLOWED_RECORD_PATHS:
+                    hits.append(f"{rel}:{no}: a record's path {m.group(0)!r}: {line.strip()!r}")
             for m in RECORD_OWNER.finditer(line):
                 owner = m.group(1)
                 if owner.lower() not in ALLOWED_RECORD_OWNERS and not FINDING_NUMBER.match(owner):
@@ -165,8 +180,8 @@ def _scan() -> list[str]:
 
 def test_the_framework_repository_cites_no_other_project_history():
     """D-005: the framework repository never holds another project's files or information. A task id, a
-    decision id, an inbox or issue id, a plan/review document's filename, or a named identity credited with a
-    record, found anywhere in this repository (excluding the sample data under
+    decision id, an inbox or issue id, a plan/review document's filename or path, or a named identity credited
+    with a record, found anywhere in this repository (excluding the sample data under
     `supervisor/template/agents/schemas/` and this test's own file), is a pointer into a record that lives only
     in that other project's own state -- never something this repository may cite as its own evidence. Every one
     of these was once a citation like "(RECOVERY_PLAN.md section 3.3, D-027 decision 9)" or "<Name>'s probe"
