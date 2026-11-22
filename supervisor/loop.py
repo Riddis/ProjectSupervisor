@@ -35,8 +35,8 @@ EXIT_RELOAD = 3
 
 
 class UnmigratedJobsError(RuntimeError):
-    """ATTEMPT_MODEL.md §8.6's start-up guard: a job record under `state/runtime/jobs/` or its archive
-    (`jobs.archive_dir`, step 14's retention work, §4.5) is neither migration-stamped nor allocator-written, so
+    """The writer switch's start-up guard: a job record under `state/runtime/jobs/` or its archive
+    (`jobs.archive_dir`, the retention work) is neither migration-stamped nor allocator-written, so
     it has no `attempt`/`kind`/`seq` for the writer switch's readers to sort or group it by. Checks both: a
     record that moved into the archive before `migrate attempts` ever ran is exactly the shape this guard exists
     to catch, not a reason to stop looking. Raised by `cli.run()` before it ever constructs a `Supervisor` or
@@ -69,7 +69,7 @@ def _bad_job_files(paths: list[Path]) -> tuple[list[str], bool]:
 
 
 def _unmigrated_job_files(layout: Layout) -> list[str]:
-    """RELEASE_REVIEW_2.8.0_round2.md's P3-R2-B: the live top level is bounded by work in flight, not by the
+    """P3-R2-B: the live top level is bounded by work in flight, not by the
     project's whole history, so it is scanned every start-up regardless. The archive only grows, one finished
     task at a time, and a record in it never changes once written — once a full scan has found it entirely
     migration-stamped/allocator-written, `jobs.mark_archive_migrated` fingerprints that listing so every later
@@ -101,9 +101,9 @@ def _check_writer_guard(layout: Layout) -> None:
 
 
 class ForeignEnvironmentError(RuntimeError):
-    """ATTEMPT_MODEL.md section 4.4's start-up guard: the launching environment this `supervisor run` process was
-    started with already carries a job's own identity markers (`envconfig.FOREIGN_MARKERS`) — the shape H-001
-    found by hand ("the loop had been launched from the desktop session with that session's environment"), a
+    """A start-up guard: the launching environment this `supervisor run` process was
+    started with already carries a job's own identity markers (`envconfig.FOREIGN_MARKERS`) — the shape
+    found by hand once ("the loop had been launched from the desktop session with that session's environment"), a
     shell or a session that still holds another job's `SUPERVISOR_ATTEMPT`/`SUPERVISOR_JOB`/`SUPERVISOR_RUN_DIR`/
     `SUPERVISOR_PROGRESS_FILE` from earlier. Raised by `cli.run()` before it ever constructs a `Supervisor`, the
     same point `UnmigratedJobsError` is raised from — a test (or a library caller) that builds one directly is
@@ -269,7 +269,7 @@ class Supervisor:
         # review, a verify, a diagnosis, a conversation) has none to give — those records stay exactly as narrow
         # as before this.
         job_extra = {**(extra or {}), "reason": reason} if reason else dict(extra or {})
-        # prior_round/digest_diff (R-15, ATTEMPT_MODEL.md 4.3) are this dispatch's own audit output, written beside
+        # prior_round/digest_diff (R-15) are this dispatch's own audit output, written beside
         # the run below; review_text_snapshot is the one of the three a LATER round still needs, so it alone stays
         # on the durable job record.
         run_dir_payload = {k: job_extra.pop(k) for k in ("prior_round", "digest_diff") if k in job_extra}
@@ -287,7 +287,7 @@ class Supervisor:
                                             new_attempt=new_attempt, resource=adapter_name, parent=parent, note=note)
             attempt_id = job_id.id
             job_attempt, job_seq, job_scope = job_id.attempt, job_id.seq, job_id.scope
-            # R-12 / RECOVERY_PLAN.md section 5: the STORED contract, re-read after allocate_job's own write — a
+            # R-12: the STORED contract, re-read after allocate_job's own write — a
             # revision's prompt or a fallback's model override decorates the SAME attempt, never changes what a
             # `task.patch`/`task.set_job` could. `contract_rev` names the generation this job's brief was built
             # from, on every kind that has a task; `job_fingerprint` stays delivery-only (R-12's own narrower use).
@@ -337,7 +337,7 @@ class Supervisor:
 
     def dispatch_delivery(self, task: Task, name: str) -> dict:
         """A scheduled delivery job on `name` - scheduler.plan() already resolved the owner role's own fallback
-        when its primary lane was unavailable (D-012 F-B Change 1), the same rule a fallback review already
+        when its primary lane was unavailable, the same rule a fallback review already
         applies. Re-derive the fallback's model/effort overrides the same way plan() picked `name`, so a role's
         own task runs with the fallback's own keys whatever `flag: same_vendor` says on the block - the flag
         decides only the attempt note and the `same_vendor` extra on the record (review.dispatch() and
@@ -397,7 +397,7 @@ class Supervisor:
         tasks_mod.log(self.layout, "job_requeued", "loop", task=task_id, attempt=rec["attempt_id"], reason=reason,
                       result=result.status, error=result.error, until=until, continuation=n + 1)
         if n >= self.MAX_CONTINUATIONS:
-            # D-010 Consequences: this used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
+            # This used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
             # retry=False because a blind re-dispatch of the same brief needs a continuation chain too — the
             # diagnosis route (bounded by its own DIAGNOSIS_BUDGET) decides requeue/defer/architect/owner instead.
             # `continued`+`capped` (R4): an intentionally capped attempt, never a torn write repair_continuations()
@@ -481,7 +481,7 @@ class Supervisor:
         so nothing escalates. The new attempt names the refused one (`rerouted_from`), so repair_continuations()
         can tell a reroute whose successor exists from one a crash interrupted before it, and queues only the
         latter; the refused record is never launched on its old lane again. `job_overrides` (a role's fallback's
-        own model/effort, D-012 F-B Change 2) are merged into the dispatched job; `extra` (`same_vendor`) reaches
+        own model/effort) are merged into the dispatched job; `extra` (`same_vendor`) reaches
         the new job record the same way a fallback review's does. Both are written into the SAME set_phase that
         names the lane (`rerouted_job`, `rerouted_extra`), so a crash before the successor lands leaves them as
         durable as `rerouted_to` itself: `_repair_reroutes()` replays them instead of launching the fallback lane
@@ -523,7 +523,7 @@ class Supervisor:
         None only once the task has moved past it: COMPLETE or CANCELLED) and carries its `diag_*` extras;
         every other kind just reloads the task, with the fallback's own model/effort (`rerouted_job`) merged
         into its job block. Both shapes carry the dispatch extras the reroute resolved (`rerouted_extra`:
-        D-012 F-B's same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
+        the same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
         it in the one set_phase that named the lane, so `reroute()` (the live path) and `_repair_reroutes()`
         (torn-write recovery) can never drift about what a reroute's successor carries - not its kind, not its
         extras and not its job. A review never reaches either (reroute() is never called for one).
@@ -711,7 +711,7 @@ class Supervisor:
         meant to hold; a mismatch is folded into the same "a quarantine or restore error" case as an `OSError`,
         since a silently truncated copy or restore is exactly that kind of failure with no exception raised.
 
-        Which case gets which record (`CONTRIBUTOR_RULING.md` §5.2's Log row). A path that *was* reverted: one
+        Which case gets which record. A path that *was* reverted: one
         `residue_reverted` event carrying both of the snapshot's digests and the quarantine location, and its name
         in one note on the task — and no owner item, because an automatic repair that files an inbox item against
         itself is not a repair. A path left exactly as found: its own reason in that task's "not reverted" note and
@@ -794,7 +794,7 @@ class Supervisor:
             self._notify_residue_left(task_id, by_reason)
 
     def _notify_residue_left(self, task_id: str, by_reason: dict[str, list[str]]) -> None:
-        """`CONTRIBUTOR_RULING.md` §5.2's Limits row: a path left exactly as found needs an owner decision, because
+        """A path left exactly as found needs an owner decision, because
         the next attempt will otherwise fail on something it cannot fix. One deduped item per (task, this exact set
         of left paths) — not one per rejection, so a retry rejected again for the same untouched residue does not
         stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape).
@@ -852,7 +852,7 @@ class Supervisor:
         return tuple(sorted(set(out)))
 
     def _notify_login_required(self, layout: Layout, engine: str | None, until: float, error: str) -> None:
-        """D-010's first category: a credential only the owner can renew. One deduped item per engine per login
+        """A credential only the owner can renew. One deduped item per engine per login
         window - not one per failed attempt, since mark_login_failed() moves `until` forward on every call and
         fingerprinting on it would stack one item per failure. Every branch of _lane_login_failed calls this
         alike (review / fallback reroute / no-fallback wait), so a role with a fallback configured no longer
@@ -877,12 +877,12 @@ class Supervisor:
             tasks_mod.log(layout, "inbox_full", "loop", reason="login_required", engine=engine)
 
     def _lane_login_failed(self, rec: dict, result: Result, kind: str) -> None:
-        """D-012 F-B Change 2: the lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
+        """The lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
         diagnostics - stderr, system/error events - never a model's ordinary answer, so a real failure or an
         answer that merely mentions a login never reaches here). Unavailable, not failed: mark the engine so
         every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) treats it exactly like a
         measured usage window, then hand off with no attempt spent, and tell the owner a credential needs
-        renewing (D-010's first category) - once per engine per login window, whichever branch below is taken.
+        renewing - once per engine per login window, whichever branch below is taken.
         A review just closes: pending()/dispatch_reviews() redispatch it next tick and lane_for() resolves the
         fallback itself (or returns None, token-free, exactly as a capacity-deferred review already does with
         none). A delivery with a configured fallback reroutes to it with the fallback's own model/effort and the
@@ -930,7 +930,7 @@ class Supervisor:
         Either kind of substantive failure hands off to supervisor.escalation for the retry/issue decision."""
         task_id = rec["task_id"]
         kind = (rec.get("spec") or {}).get("kind", "delivery")
-        # docs/plan/LONG_WORK.md section 5.3's "dying" row: `settle()` already wrote this prefix onto `result.error`
+        # `settle()` already wrote the "dying" prefix onto `result.error`
         # once `collect()` found the process gone, so this is the one place `ingest()` can tell a claim's holder
         # died from an ordinary finish, without a second liveness check of its own.
         release_reason = "dead" if isinstance(result.error, str) and result.error.startswith("lost:") else None
@@ -986,7 +986,7 @@ class Supervisor:
         if result.status == "DEFERRED":
             return self.requeue(rec, result, "capacity limit")
         timed_out = (result.raw or {}).get("timeout") if result.status == "FAILED" else None
-        # docs/plan/LONG_WORK.md section 4.4: a `process`-lane hard-cap stop on a declared-resumable job
+        # A `process`-lane hard-cap stop on a declared-resumable job
         # (`adapters.process._time_out`'s own `raw["resumable"]`) is a continuation too, never a spent attempt --
         # an idle stop on that lane stays a failure, so only `timed_out == "cap"` ever carries the flag at all.
         resumable_cap = (timed_out == "cap" and bool((result.raw or {}).get("resumable"))
@@ -1231,7 +1231,7 @@ class Supervisor:
 
     def _active_lease_names(self) -> set[str]:
         """Every machine-wide lease name one of this project's own open records currently takes
-        (`leases.lease_name_for`, docs/plan/LONG_WORK.md section 5.4), from exactly the two fields dispatch wrote
+        (`leases.lease_name_for`), from exactly the two fields dispatch wrote
         onto each record (`gpu`, `claim`) — never a second derivation of the same two facts `gate.lease_blocked`'s
         own peek already makes from `holds_resource`/`needs.claim_for`, so the peek and this sweep can never
         disagree about which lease a job takes."""
@@ -1495,13 +1495,13 @@ class Supervisor:
     # ------------------------------------------------------------ nothing stops silently
 
     def resume_plans(self) -> list[str]:
-        """RECOVERY_PLAN.md §2.6 rule 5: every plan still `applying` (a crash, or an operation that stalled and
+        """Every plan still `applying` (a crash, or an operation that stalled and
         has not yet exhausted `plan.max_resumes`) is continued from its own journal. A `stuck` plan is left alone
         here — only the owner's apply_plan/cancel_plan choice decides what happens to it next."""
         return plans_mod.resume_plans(self.layout)
 
     def preflight_backfill(self) -> list[str]:
-        """RECOVERY_PLAN.md section 3.3's one-time sweep (D-027 decision 9, step 5): the first turns after an
+        """The preflight's own one-time sweep: the first turns after an
         upgrade preflight every existing `process`/`python` job block that predates the check -- oldest task
         first, a bounded number per turn (`preflight.BACKFILL_BATCH`) -- and record the sweep's own completion
         once nothing is left pending (`preflight.mark_backfill_complete`), so the gate's run-on-absent rule
@@ -1649,8 +1649,8 @@ class Supervisor:
         put it there, so this never fires while it holds, rather than raising with every task's reason wrongly
         computed as if the loop's decision were still RUN.
 
-        The reason named for each task is `why_not_runnable`'s own (RECOVERY_PLAN.md section 4.3, D-027 decision
-        11) — a computed sentence from the closed nine-code set, the same one the Overview and the task page read,
+        The reason named for each task is `why_not_runnable`'s own
+        — a computed sentence from the closed nine-code set, the same one the Overview and the task page read,
         never a quoted note an agent wrote about something else. The item's own buttons are the choices that
         reason admits (`why_not_runnable.choices_for`), never the four legacy keywords: none of ACCEPT/REJECT/
         MODIFY/REDO does anything for "nothing can run"."""
@@ -1820,7 +1820,7 @@ class Supervisor:
                 self.request_approvals()
                 self.request_owner_decisions()
                 self.resume_plans()                                       # a crashed or stalled plan finishes here
-                self.preflight_backfill()                                 # RECOVERY_PLAN.md 3.3's one-time sweep
+                self.preflight_backfill()                                 # the preflight's own one-time sweep
                 self.sweep_stalled()                                      # nothing stops silently
                 self.alert_if_idle()
                 done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted

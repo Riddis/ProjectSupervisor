@@ -151,7 +151,7 @@ def _produced_delivery(layout: Layout, entries, kinds, delivery_idx: int, idx: i
 
 def _new_shape_identity(entries, attempt_id: str) -> tuple[int, str, int, str | None] | None:
     """(attempt, kind, seq, parent) for `attempt_id`, when the task's own `attempts[]` already carries it in the
-    allocator-written shape (ATTEMPT_MODEL.md §2.7: a numbered attempt's own `jobs[]`, written by
+    allocator-written shape (a numbered attempt's own `jobs[]`, written by
     `tasks.allocate_job` before `prepare()` ever runs) — the direct read every new job gets, no reconstruction
     needed because the fields were never derived from a note or a suffix in the first place. `None` when
     `attempt_id` is not there (a legacy entry from before the writer switch, §6's "readers first, writers
@@ -351,7 +351,7 @@ class ClaudeCliAdapter(ProcessAdapter):
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(prompt_text, encoding="utf-8")
         tools = prof["tools"] if isinstance(prof["tools"], list) else DEFAULT_TOOLS.get(prof["tools"], DEFAULT_TOOLS["reader"])
-        # docs/plan/LONG_WORK.md section 4.2: this lane resolves its budget through the one shared path, so a
+        # This lane resolves its budget through the one shared path, so a
         # declared duration derives a cap here exactly as it does on the process lane -- the recorded loss was an
         # agent session killed at the policy cap -- and a declared timeout_s the ceiling lowers leaves a receipt.
         limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))

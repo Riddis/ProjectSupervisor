@@ -216,7 +216,7 @@ def _verification_summary(layout: Layout, task: Task, digest: str) -> str:
 # category spelling the contract refuses.
 FINDING_CATEGORY_LIST = "correctness | requirement | regression | architecture | quality | advisory"
 
-# The cap bounding which text artifacts a review pass snapshots for a later diff (ATTEMPT_MODEL.md 4.3): a mid-task
+# The cap bounding which text artifacts a review pass snapshots for a later diff: a mid-task
 # attempt is never committed to git (only a COMPLETE task's bytes are checkpointed, checkpoint.py), so the only
 # durable copy of what a prior pass actually saw is the one its own job record keeps — kept small on purpose.
 TEXT_SNAPSHOT_CAP = 20_000
@@ -305,7 +305,7 @@ def _contract_superseded_reviews(task: Task, digest: str) -> list:
 
 
 def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list[str]) -> dict:
-    """Everything a review packet needs about earlier rounds of this task (ATTEMPT_MODEL.md 4.3, points 2-4): the
+    """Everything a review packet needs about earlier rounds of this task: the
     findings and verdict of every previous round, what the producer's own delivery result claims about them, the
     artifact-level change list and a size-capped unified diff against the immediately preceding round — entirely
     from the task document and this task's job records (both the store), plus the current working tree; never a
@@ -368,7 +368,7 @@ def _same_digest_superseded_block(same_digest: list[dict]) -> str:
 
 
 def prior_round_block(ctx: dict) -> str:
-    """The text ATTEMPT_MODEL.md 4.3 adds to a review packet from `prior_round_context()`."""
+    """The text the prior-round rule adds to a review packet from `prior_round_context()`."""
     lead = _same_digest_superseded_block(ctx["same_digest_superseded"]) if ctx.get("same_digest_superseded") else ""
     if not ctx["rounds"]:
         return lead + f"\n\n## Round 1\n{ROUND_1_INSTRUCTION}\n"

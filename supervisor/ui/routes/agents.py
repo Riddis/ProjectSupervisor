@@ -113,7 +113,7 @@ def extend(attempt_id: str, request: Request, csrf_token: str = Form(...),
           seconds: int = Form(timeouts_mod.EXTEND_STEP_S), layout: Layout = Depends(require_auth)):
     """Raise a running job's hard cap by one of the project's declared `timeouts.extend_offers` durations
     (default today's single +1h, supervisor.timeouts.EXTEND_STEP_S); the idle limit still applies, and the answer
-    states the resulting deadline (docs/plan/LONG_WORK.md section 4.3)."""
+    states the resulting deadline."""
     require_csrf(request, csrf_token)
     return act(request, layout, "agent.extend", {"attempt_id": attempt_id, "seconds": seconds}, f"/agents/{attempt_id}")
 

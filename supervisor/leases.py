@@ -329,7 +329,7 @@ def _record_waiting_from_peek(layout: Layout, name: str) -> None:
 
 
 def lease_name_for(layout: Layout, holds_slot: bool, claim: str | None) -> str | None:
-    """Which machine-wide lease, if any, a job carrying these two facts takes (docs/plan/LONG_WORK.md section 5.4):
+    """Which machine-wide lease, if any, a job carrying these two facts takes:
     a claim whose own `resources.<name>.lease` is configured names it; otherwise a slot holder (the `gpu` flag)
     keeps the literal `"gpu"`, exactly as before this release -- including one that also carries a claim with no
     `lease:` block, so adding a within-project claim to a GPU-flagged job never silently drops its cross-project

@@ -261,7 +261,7 @@ def unattended_eligible(layout: Layout, task, job: dict) -> bool:
     opted_in = job.get("api_credits") is True or role in (api_config(layout).get("eligible_roles") or [])
     if not opted_in:
         return False
-    # docs/plan/LONG_WORK.md section 4.2, D-028 decision 4: the preference is skipped, never refused, when
+    # The preference is skipped, never refused, when
     # this task's own declared need is something this lane cannot meet (a duration past its composed ceiling, or
     # `network: true`) -- the task stays on the lane it was matched against at the write. `resumable: true` never
     # reaches this: every model lane declares `durable: false`, so RF-29 already refused it at the write.

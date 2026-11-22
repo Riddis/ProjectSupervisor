@@ -39,23 +39,23 @@ CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "a
 # owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
 # refresh touching only an unrelated field would have silently reset them to their defaults.
 REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots", "needs"})
-# `needs` joins the sticky set for the reason D-028 decision 1 gives: it coordinates a launch (a budget, a lane
+# `needs` joins the sticky set because it coordinates a launch (a budget, a lane
 # match) rather than describing the work's shape, exactly as `owned_paths` does, and a refresh that touches an
 # unrelated field must never silently drop a declared duration back to the default cap. The only way to clear one
 # is an explicit empty block, reported as `needs_cleared` (`needs.cleared_warning`) rather than refused.
-# `job` names what a task runs, carried by create, import, refresh and patch (RECOVERY_PLAN.md 3.4, D-027
-# decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
+# `job` names what a task runs, carried by create, import, refresh and patch,
+# under a rule on who is writing, never on the field: kept out of
 # CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
 # always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's. Owner
 # identity is `gates.is_owner_actor` — the framework's one such rule, not a second copy of it — so a bare queued
 # command or a default parameter value (neither of which asserts an identity) never inherits it. For the same
-# reason it is outside CONTRACT_FIELDS, `job` never moves `contract_rev` either (D-027 decision 12): the counter
+# reason it is outside CONTRACT_FIELDS, `job` never moves `contract_rev` either: the counter
 # answers whether the bar a delivery is judged against moved, and routing a task to a different adapter/template
 # changes neither what must be delivered nor what a review reads. `plans._effect_set_job` and `commands.apply_job`
 # (`task.set_job`) write it through `_write_job`/`_update` exactly like any other job write, deliberately never
 # through `_bump_contract_rev` — this is the one declared exclusion, not an oversight.
 
-# What a review is judged against (RECOVERY_PLAN.md section 5, D-027 decision 12): the subset of CONTRACT_FIELDS
+# What a review is judged against: the subset of CONTRACT_FIELDS
 # whose change makes a recorded ACCEPT/owner-approval stale. `actions` and `objective` move `contract_rev` like
 # any other contract field but never supersede a review or approval — the work changed, not the bar it is judged
 # against.
@@ -121,7 +121,7 @@ def _bump_contract_rev(doc: dict, before: dict) -> None:
 
 
 def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
-    """RECOVERY_PLAN.md section 3.4: the owner (`gates.is_owner_actor`: the CLI's `owner`, the Control Center's
+    """The owner (`gates.is_owner_actor`: the CLI's `owner`, the Control Center's
     `owner-ui`, or any `owner-<channel>`) may write any job block, including a literal `argv`; a plan may write
     only a template id and typed params (RF-04); nothing else may write one at all."""
     if gates_mod.is_owner_actor(actor):
@@ -131,7 +131,7 @@ def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
         if extra:
             return [f"a plan may set job.template and job.params only, not {', '.join(sorted(extra))}"]
         return []
-    return [f"actor {actor!r} may not write a job block; only the owner or a plan may (RECOVERY_PLAN.md section 3.4)"]
+    return [f"actor {actor!r} may not write a job block; only the owner or a plan may"]
 
 
 def _write_job(layout: Layout, doc: dict, job_value: dict | None, actor: str) -> None:
@@ -142,7 +142,7 @@ def _write_job(layout: Layout, doc: dict, job_value: dict | None, actor: str) ->
     (an adapter inherited from the existing job or the template, never the writer's own choice) is pre-vetted by
     RF-04 at promotion time and is not the literal value this rule judges.
 
-    RECOVERY_PLAN.md section 3.3: the block this write ends up carrying is preflighted here, once, against
+    The block this write ends up carrying is preflighted here, once, against
     exactly what is about to be stored -- never left for the gate to discover wrong at the first launch."""
     errors = _job_writer_errors(actor, job_value or {})
     if errors:
@@ -154,7 +154,7 @@ def _write_job(layout: Layout, doc: dict, job_value: dict | None, actor: str) ->
 
 
 def job_schema_problems(layout: Layout, job) -> tuple[list[str], list[str]]:
-    """(errors, warnings) for one already-typed `Job`'s adapter-specific keys (RECOVERY_PLAN.md section 3.2): an
+    """(errors, warnings) for one already-typed `Job`'s adapter-specific keys: an
     unknown key is refused when `job.adapter` declared a schema through `registry.job_schema()`, and is only ever
     a warning when it did not — so a plugin written before this release still works unchanged."""
     if job is None or not job.adapter:
@@ -541,8 +541,8 @@ _DOCUMENT_ONLY_SUFFIXES = frozenset({".md", ".txt", ".rst"})
 
 
 def _document_only(doc: dict) -> bool:
-    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13,
-    ATTEMPT_MODEL.md section 4.4, step 13): the common planning/record task dispatched on a model lane, where
+    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13):
+    the common planning/record task dispatched on a model lane, where
     the pydantic default (`evidence: auto`) demands a command the moment its own prose `tests` say anything —
     most of R-13's "no test evidence" failures were exactly this shape."""
     artifacts = doc.get("artifacts") or []
@@ -627,7 +627,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     because of a row it will not actually write. Current contract rules (artifacts, ownership, routing warnings)
     apply only to rows this call creates or changes, so an old row that predates a rule added since it was written
     is neither refused nor warned about just for being named in the seed. All or nothing: every row is validated
-    before any row is written. `job` is a contract field too (RECOVERY_PLAN.md section 3.4): a created row carries
+    before any row is written. `job` is a contract field too: a created row carries
     it like any other field; a seed row updating an existing task carries a job change only when `actor` is the
     owner's — anything else (a plan never imports a seed) is refused, named in `TaskError`, not silently dropped.
 
@@ -816,7 +816,7 @@ def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
     """One-off migration: every live task on a writing lane that declares no ownership becomes explicitly exclusive
     (`owned_paths: ["."]`), with a note in its record. Terminal tasks are left alone. Idempotent.
 
-    `owned_paths` is a CONTRACT_FIELDS member (RECOVERY_PLAN.md section 5, D-027 decision 12): this always moves
+    `owned_paths` is a CONTRACT_FIELDS member: this always moves
     it from empty to `["."]` for a task the loop above selected, so the write below always bumps `contract_rev`
     — a reviewer who already judged the task is now reading a scope that just narrowed."""
     from . import scheduler
@@ -927,8 +927,8 @@ def completion_check(task: Task) -> str | None:
 
 def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
     """`fn` mutates the locked document; a `job` block it leaves changed (content other than `preflight` itself
-    differs from what was there before `fn` ran) is preflighted here before the write lands (RECOVERY_PLAN.md
-    section 3.3) -- the one chokepoint every lower-level job mutation shares with `_write_job`'s own callers, so
+    differs from what was there before `fn` ran) is preflighted here before the write lands
+    -- the one chokepoint every lower-level job mutation shares with `_write_job`'s own callers, so
     a diagnosis's or a plan's direct `doc['job'] = ...` is covered the same as a patch. An `fn` that leaves the
     job untouched never re-runs the probe: `tasks.hold`, a status transition and anything else that reaches
     `_update` without a job of its own interest pays nothing for it.
@@ -957,7 +957,7 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
 
 
 def backfill_job_preflight(layout: Layout, task_id: str) -> Optional[JobPreflight]:
-    """RECOVERY_PLAN.md section 3.3's backfill (D-027 decision 9, step 5): writes a fresh preflight for a stored
+    """The preflight's own backfill: writes a fresh preflight for a stored
     job block that predates the check -- called once per task, by the loop's bounded sweep (oldest task first,
     `preflight.pending_backfill`) or by the gate's own run-on-absent check (`gate.preflight_reason`, while
     `preflight.backfill_complete` is still false), whichever reaches it first. Goes through `_update`, the same
@@ -1072,7 +1072,7 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
 
 
 def release_hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
-    """The owner's `release_hold` effect (RECOVERY_PLAN.md section 4.1): clear a Hold without otherwise moving
+    """The owner's `release_hold` effect: clear a Hold without otherwise moving
     the task. Distinct from `set_status()`'s own implicit clearing on a move off BLOCKED — a same-status call
     there raises `_NoChange` before it ever reaches that line, so a held task with nowhere else to go has, until
     now, had no way to be unheld without being moved. Idempotent: releasing a Hold that is not there is a no-op."""
@@ -1115,7 +1115,7 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
     disk so the number allocated here is never one already used. Returns the updated task and the id it chose;
     `note` gets that id appended.
 
-    Superseded, for a fresh dispatch, by `allocate_job` (ATTEMPT_MODEL.md §2.3/§9, the writer switch) — this
+    Superseded, for a fresh dispatch, by `allocate_job` (the writer switch) — this
     function and the id shape it writes (`<task>.a<n>`, one flat counter) are kept only because an un-migrated
     document and a handful of narrow, unrelated tests still read and write it; `loop.dispatch` no longer calls
     it."""
@@ -1137,7 +1137,7 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
 # A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
 # that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job: a
 # diagnosis raised before any delivery ever exists (§2.5), or a plan_review whose plan's own subject names no
-# attempt either (RECOVERY_PLAN.md §2.7, step 8) — attempt-scoped like any other job when it does.
+# attempt either — attempt-scoped like any other job when it does.
 _JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d", "plan_review": "p"}
 
 
@@ -1286,7 +1286,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
     """A new artifact digest: earlier verification/reviews/approvals are superseded (kept in history). A task that was
     waiting on review/approval of the old digest returns to IN_PROGRESS.
 
-    `findings_response` (R-15, ATTEMPT_MODEL.md 4.3 point 3): the producer's own optional, per-finding reply
+    `findings_response` (R-15): the producer's own optional, per-finding reply
     to the previous round's own findings, kept the same way `result` already is — set when given, left as the
     last delivery's own value otherwise, so a producer that forgot to repeat it does not lose the one it gave."""
     def fn(doc):
@@ -1449,7 +1449,7 @@ def record_approval(layout: Layout, task_id: str, digest: str, response: str, by
 
 
 def _close_current_attempt(doc: dict, outcome: str) -> None:
-    """Write `Attempt.outcome` (ATTEMPT_MODEL.md §4.6 — 0 of ~1,400 records carried a real value before this):
+    """Write `Attempt.outcome` (0 of ~1,400 records carried a real value before this):
     the migrated shape's most recently opened `attempts[]` entry (`n` set, still `outcome: "open"`) gets its
     `outcome` and `closed` here, by the one place that knows the current try is over. An un-migrated entry (no
     `n`) has nothing here to close; it stays exactly as the old writer left it."""
@@ -1465,11 +1465,11 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
     knows which delivery attempt produced the digest now completing (loop.record_outcome does), is recorded on
     any issue this task's completion recovers (R-21, escalation.recover_issues_for_task).
 
-    Three of the transitions here close the attempt that produced the current digest (§2.4, §4.6): verified and
+    Three of the transitions here close the attempt that produced the current digest: verified and
     accepted, verification failed, or a review that was not ACCEPT sends the task back to IN_PROGRESS for a
     revision. A review-BLOCKED stop and a worker's own FAILED/BLOCKED result (classified before this ever runs,
     `loop.record_outcome`/escalation) are not covered here — the next release's supersede mechanism is where
-    those close (left to 2.9.0, ATTEMPT_MODEL.md "Deliberately left to 2.9.0")."""
+    those close (deliberately left for a later release)."""
     outcome = {}
 
     def fn(doc):

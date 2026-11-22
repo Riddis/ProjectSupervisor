@@ -90,7 +90,7 @@ def owner_reset(layout: Layout, engine: str, message: str = "") -> list:
     return up.owner_reset(engine, message)
 
 
-LOGIN_RECHECK_S = 900   # back off this long before the primary lane is tried again (D-012 F-B Change 2)
+LOGIN_RECHECK_S = 900   # back off this long before the primary lane is tried again
 
 
 def mark_login_failed(layout: Layout, engine: str, message: str) -> float:

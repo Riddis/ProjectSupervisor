@@ -59,9 +59,9 @@ OWN_WRITES = "own_writes.jsonl"
 # A dispatched job (or the loop process itself, via supervisor.launcher) carries these on its own os.environ:
 # SUPERVISOR_ATTEMPT/SUPERVISOR_JOB/SUPERVISOR_ATTEMPT_NO/SUPERVISOR_RUN_DIR name *this* verification's own job
 # (adapters/process.py), SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE
-# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business (R-13,
-# T3-06.a9: a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
-# leaked into it). Kept for the names it already documents and for the plugin API (supervisor.testing checks the
+# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business: seen
+# once, a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
+# leaked into it. Kept for the names it already documents and for the plugin API (supervisor.testing checks the
 # two it still carries); the actual filter below drops every `SUPERVISOR_*` name, not only these six, so a
 # marker this release never named still cannot reach a declared command (step 13).
 JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTEMPT_NO", "SUPERVISOR_RUN_DIR",
@@ -69,8 +69,8 @@ JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTE
 
 
 def declared_test_env(layout: Layout | None = None) -> dict[str, str]:
-    """The environment a declared command runs under (ATTEMPT_MODEL.md section 4.4, step 13): the same declared
-    *base* allow-list a process job's own subprocess starts from (`envconfig.base_names`, step 12) — never this
+    """The environment a declared command runs under: the same declared
+    *base* allow-list a process job's own subprocess starts from (`envconfig.base_names`) — never this
     process's whole `os.environ`, which is how a vendor variable the project never named in `config/routing.yaml`
     used to reach a declared command just because the loop's own launching session happened to carry it — with
     every `SUPERVISOR_*` name dropped regardless of whether it is on the base (the loop's own identity markers
@@ -86,7 +86,7 @@ def declared_environment(layout: Layout | None = None) -> dict[str, str]:
     """The pinned (interpreter, cwd, PATH) a declared command with no `cwd` override runs under by default —
     the one triple `run_declared_tests` actually uses for that case, recorded on `verification.json` and stated
     verbatim in the worker's own brief (`packets.result_contract_delivery`), so a disagreement between what ran
-    and what was promised is visible instead of inferred (R-13, ATTEMPT_MODEL.md section 4.4)."""
+    and what was promised is visible instead of inferred (R-13)."""
     root = str(layout.root) if layout is not None else os.getcwd()
     env = declared_test_env(layout)
     return {"interpreter": sys.executable, "cwd": root, "path": env.get("PATH", "")}

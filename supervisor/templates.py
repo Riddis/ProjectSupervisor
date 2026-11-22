@@ -1,5 +1,5 @@
-"""`config/job_templates.yaml`: project data, never shipped by the framework (RECOVERY_PLAN.md section 3.2,
-D-027 decision 8). A template is the executable line a plan may only *reference* (`template`, a plan's own
+"""`config/job_templates.yaml`: project data, never shipped by the framework.
+A template is the executable line a plan may only *reference* (`template`, a plan's own
 writer) — never author — so this loader is the one place that line's own shape is checked, before
 `supervisor.preflight` ever runs a job block against it.
 
@@ -15,7 +15,7 @@ import yaml
 
 from .paths import Layout
 
-# RECOVERY_PLAN.md section 1.4: "A template whose argv is `["sh", "-c", "{script}"]` defeats everything above."
+# A template whose argv is `["sh", "-c", "{script}"]` defeats everything above.
 # The loader refuses a template whose argv[0] basename is one of these unless the template is owner-only
 # (`may_be_set_by: [owner]`) -- a check, not a guarantee of what the executable itself then does.
 SHELLS = ("sh", "bash", "cmd", "powershell", "pwsh", "zsh")
@@ -70,7 +70,7 @@ def _validate_one(tid: str, tmpl) -> list[str]:
             errors.append(f"template {tid!r}: a process template needs a non-empty argv of strings")
         elif is_shell(argv[0]) and list(may) != ["owner"]:
             errors.append(f"template {tid!r}: argv[0] ({argv[0]!r}) is a shell; only an owner-only template "
-                          "(may_be_set_by: [owner]) may name one (RECOVERY_PLAN.md section 1.4)")
+                          "(may_be_set_by: [owner]) may name one")
         probe = tmpl.get("probe")
         if probe is not None and (not isinstance(probe, list) or not all(isinstance(a, str) for a in probe)):
             errors.append(f"template {tid!r}: probe must be a list of strings")

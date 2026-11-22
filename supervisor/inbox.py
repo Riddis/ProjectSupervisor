@@ -5,7 +5,7 @@ Answers accept the structured keywords (ACCEPT/REJECT/MODIFY/REDO, optionally fo
 argument, e.g. `MODIFY shorter summary`) or, unless an item disables it, free text — the owner's own words count as a
 valid answer, not only the keywords. `HUMAN_INBOX.md` is rendered from this store (render.render_inbox), never parsed.
 
-An item may also carry typed `choices` (RECOVERY_PLAN.md section 4.1): each one a label and detail rendered by
+An item may also carry typed `choices`: each one a label and detail rendered by
 `plans.render_choice` from its own effect — never prose a caller writes beside it — and an effect `create()` has
 already checked this release can apply, with the operands it needs. `create()` derives the legacy keyword list
 from them, `answer()` refuses an unoffered one or a stale `choices_digest` — on the keyword path as on the
@@ -123,7 +123,7 @@ def create(layout: Layout, *, for_role: str, subject: str, summary: str, kind: s
     all — only free text (an alert naming problems nobody can fix with ACCEPT/REJECT/MODIFY/REDO, R-06/R-17). `None`
     still means "the four defaults"; only an explicit empty list opts out of them.
 
-    `choices` (RECOVERY_PLAN.md section 4.1): typed buttons, each `{id, effect, preconditions?}` — see
+    `choices`: typed buttons, each `{id, effect, preconditions?}` — see
     `_validate_choice`, `answer()` and `apply_choice()`. Every one is checked here, before it is ever offered:
     its `effect` must be an operation (or a non-empty list of them) this release can actually apply — a
     plan-tier list run through `plans.validate` itself, an owner-only effect against the operands it needs — and
@@ -223,7 +223,7 @@ def answer(layout: Layout, item_id: str, response: str = "", note: str = "", by:
     what it showed, so an item left open through a newer delivery is refused here, under the same lock, before the
     item is spent — not left to fail later inside record_approval() with the item already marked answered (R-05).
 
-    `choice`, when given, names one of the item's own `choices[].id` (RECOVERY_PLAN.md section 4.1): refused with
+    `choice`, when given, names one of the item's own `choices[].id`: refused with
     RF-24 (`plans.choice_not_offered_refusal`) when the item carries no such choice, and with RF-25
     (`plans.choice_stale_refusal`) — "reload" — when `choices_digest` no longer equals the item's own
     `choices_digest`, the approval-digest rule generalised to a button rather than a delivery. `response` then
@@ -526,7 +526,7 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
     return out
 
 
-# ------------------------------------------------------------------ typed choices (RECOVERY_PLAN.md section 4.1)
+# ------------------------------------------------------------------ typed choices
 #
 # A choice's `effect` is one plan-tier operation, a list of them (the "two-step instruction becomes one choice"
 # rule — `set_job` then `resume`, applied as a single journalled plan), or one owner-only effect
@@ -540,7 +540,7 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
 # The owner-only effects this release's synchronous answer path can actually apply, each with the operand(s) its
 # effect must carry. `diagnose_now` needs more than `layout` alone — a diagnosis is dispatched through a
 # `loop.Supervisor` (`diagnosis.dispatch`'s own signature) — so `_apply_owner_effect` builds one of its own
-# (RECOVERY_PLAN.md section 9, step 10: "wiring diagnose_now is why_not_runnable's own step"); `Supervisor.__init__`
+# (wiring diagnose_now is why_not_runnable's own step); `Supervisor.__init__`
 # starts no loop and no job, so building one here for a single dispatch call is exactly as cheap as any other
 # owner-only effect below. A choice missing a required operand is refused at `create()` rather than offered as a
 # button that always raises when clicked.
@@ -559,8 +559,8 @@ def _effect_ops(choice: dict) -> list[dict]:
 
 
 def _validate_choice(layout: Layout, task_id: str | None, choice: dict) -> dict:
-    """One `choices[]` entry, checked before it is ever offered (RECOVERY_PLAN.md section 4.1: "only ones the
-    underlying command would accept are offered") and returned normalised: `label`/`detail` are always
+    """One `choices[]` entry, checked before it is ever offered (only ones the
+    underlying command would accept are offered) and returned normalised: `label`/`detail` are always
     `plans.render_choice` of the effect — whatever the caller wrote there, if anything, is replaced, never
     trusted (section 4.2) — so a stored label can never promise more than its own effect performs.
 
@@ -626,7 +626,7 @@ def _validate_choice(layout: Layout, task_id: str | None, choice: dict) -> dict:
 def _apply_diagnose_now(layout: Layout, task_id: str) -> dict:
     """`diagnose_now`: dispatch a diagnosis for `task_id` right now, through a `loop.Supervisor` built for this one
     call (`Supervisor.__init__` starts no loop and no job, so this costs no more than any other owner-only effect
-    — RECOVERY_PLAN.md section 9, step 10). The source and the signature are `why_not_runnable`'s own reason, read
+    — no more than any other effect). The source and the signature are `why_not_runnable`'s own reason, read
     fresh rather than carried on the effect (RF-04's own rule, generalised: an effect names an operand, never a
     value a diagnosis would turn around and read back as if it had written it)."""
     from . import diagnosis as diagnosis_mod
@@ -722,7 +722,7 @@ def _reopen_after_choice_failure(layout: Layout, item: dict, out: dict) -> tuple
 
 
 def apply_choice(layout: Layout, item: dict, by: str = "owner") -> dict | None:
-    """Apply the effect of the choice an answered item's answer names, once (RECOVERY_PLAN.md section 4.1).
+    """Apply the effect of the choice an answered item's answer names, once.
 
     What is applied comes from the answer's own `choice`/`choices_digest`, which `answer()` writes only for an
     answer that named a choice and carried the digest it was shown: `None` here when the item carries no

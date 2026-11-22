@@ -1,6 +1,6 @@
-"""Recovery plans page (RECOVERY_PLAN.md section 2.6): every state/plans/*.yaml document, its status, its journal
+"""Recovery plans page: every state/plans/*.yaml document, its status, its journal
 (`done`/`order`) and its history — read-only. Not yet linked from the main nav or offering a button: the typed
-choices that let an owner apply_plan/cancel_plan from here (RECOVERY_PLAN.md section 4, steps 7-8) are not built
+choices that let an owner apply_plan/cancel_plan from here are not built
 yet; until then the plan is cancelled or resumed with `supervisor plan cancel`/`plan apply`."""
 from __future__ import annotations
 

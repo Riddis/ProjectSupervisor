@@ -197,7 +197,7 @@ def answer_item(item_id: str, request: Request, response: str = Form(""), text: 
     other kind of item): bound to what the card showed, so a newer delivery landing while the page was open makes
     this answer refused rather than approving it unseen (R-05, the same rule as the task page's approve form).
 
-    `choice`/`choices_digest` (RECOVERY_PLAN.md section 4.1): the typed-choice card's own button and hidden field —
+    `choice`/`choices_digest`: the typed-choice card's own button and hidden field —
     bound to what the card showed the same way, refused (RF-24/RF-25) rather than silently falling through to a
     free-text answer the item never asked for. The choice card's free-text box is a separate form and arrives
     here as `text` with no `choice` and no digest: a comment, which is all free text ever is (section 4.1)."""

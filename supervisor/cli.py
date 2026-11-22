@@ -44,7 +44,7 @@ issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in 
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
-plan_app = typer.Typer(help="recovery plans (RECOVERY_PLAN.md): validate, apply (the journalled, resumable "
+plan_app = typer.Typer(help="recovery plans: validate, apply (the journalled, resumable "
                             "applier of step 2) and inspect state/plans/*.yaml")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
@@ -145,7 +145,7 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
 
 migrate_app = typer.Typer(help="bring a project's state and config up to the installed framework version "
                               "(idempotent); `attempts` derives the attempt-identity migration's mapping "
-                              "(ATTEMPT_MODEL.md section 8, --dry-run), writes a reviewed one onto the store "
+                              "(--dry-run), writes a reviewed one onto the store "
                               "(--apply) or checks an applied store against it (--check)")
 app.add_typer(migrate_app, name="migrate")
 
@@ -173,8 +173,8 @@ def migrate_attempts(
        dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; writes nothing "
                                      "else"),
        apply: bool = typer.Option(False, "--apply", help="write a reviewed mapping's identity fields onto the "
-                                  "store (ATTEMPT_MODEL.md section 8.4); refuses without --mapping"),
-       check: bool = typer.Option(False, "--check", help="section 8.5's seven assertions against the store and "
+                                  "store; refuses without --mapping"),
+       check: bool = typer.Option(False, "--check", help="the migration's seven assertions against the store and "
                                   "the mapping's own report.json, read-only; refuses without --mapping"),
        out: Path = typer.Option(..., "--out", help="directory for this run's own files: mapping.json/report.json/"
                                 "summary.md for --dry-run, apply_report.json for --apply, check_report.json for "
@@ -185,7 +185,7 @@ def migrate_attempts(
                                       "mapping's detected cause for the named jobs (--dry-run only)"),
        compare: Path = typer.Option(None, "--compare", help="an earlier run's mapping.json; fails if a row "
                                     "changed, after writing this run's own files (--dry-run only)")):
-    """ATTEMPT_MODEL.md section 8: derive the attempt-identity mapping from the store as it stands, for a human
+    """Derive the attempt-identity mapping from the store as it stands, for a human
     to read before anything is migrated (--dry-run); write a reviewed one onto the store (--apply); or check an
     applied store against it (--check). Exactly one of the three is required; apply and check both refuse
     without --mapping, and apply never derives a mapping of its own."""
@@ -476,8 +476,8 @@ def boundary_words(targets: list[str] = typer.Argument(..., help="folders or bui
 
 @plan_app.command("validate")
 def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
-    """Validate a plan document against the store: refuses whole on any of the 26 named codes (RECOVERY_PLAN.md
-    section 1.2); writes nothing (`plans.propose` writes it; `plan apply` applies it). Exit 0 with an empty
+    """Validate a plan document against the store: refuses whole on any of the 26 named codes;
+    writes nothing (`plans.propose` writes it; `plan apply` applies it). Exit 0 with an empty
     refusal list, 1 refused."""
     from . import plans as plans_mod
     doc = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
@@ -498,8 +498,8 @@ def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help=
 @plan_app.command("apply")
 def plan_apply(plan_id: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
     """Progress the named plan as far as it can go: proposes nothing (use `plan validate` plus
-    `supervisor.plans.propose` to write one first) — this is the applier of RECOVERY_PLAN.md section 2.6, called
-    directly here rather than through the approval lane (section 2.7): a human running this command is the
+    `supervisor.plans.propose` to write one first) — this is the plan's own applier, called
+    directly here rather than through the approval lane: a human running this command is the
     approval, exactly as the owner's own `apply_plan` choice is. Exit 0 unless the plan ends `stuck`."""
     from . import plans as plans_mod
     try:
@@ -660,8 +660,8 @@ def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unatten
         _check_writer_guard
     layout = _layout()
     try:
-        _check_launch_environment_guard()   # ATTEMPT_MODEL.md §4.4: refuse a foreign job's own identity first
-        _check_writer_guard(layout)       # ATTEMPT_MODEL.md §8.6: before anything below can ever dispatch
+        _check_launch_environment_guard()   # refuse a foreign job's own identity first
+        _check_writer_guard(layout)       # before anything below can ever dispatch
     except (ForeignEnvironmentError, UnmigratedJobsError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc

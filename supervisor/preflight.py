@@ -1,4 +1,4 @@
-"""The write-time preflight (RECOVERY_PLAN.md section 3.3, D-027 decision 9): a `process` or `python` job block
+"""The write-time preflight: a `process` or `python` job block
 is checked the moment it is written -- by a seed import, a patch, `task.set_job`, or a plan -- never at
 dispatch, so a wrong path, a wrong port, an unknown job function or an unparsable flag is refused once, with its
 own code, instead of discovered by running it.
@@ -27,7 +27,7 @@ from .paths import Layout
 from .store import now_iso
 
 PREFLIGHT_ADAPTERS = ("process", "python")
-PROBE_CAP_S = 20                 # default preflight cap (RECOVERY_PLAN.md section 3.3)
+PROBE_CAP_S = 20                 # default preflight cap
 
 
 def block_digest(job_like: dict) -> str:
@@ -62,7 +62,7 @@ def _resolve_executable(executable: str, layout: Layout, allowed: list[str] | No
 
 
 def _substitute(argv: list[str], params: dict[str, Any]) -> list[str]:
-    """One slot = one argv element, never concatenated (RECOVERY_PLAN.md section 3.2): an element that is
+    """One slot = one argv element, never concatenated: an element that is
     exactly `{name}` becomes `params[name]`, stringified; anything else passes through unchanged."""
     out = []
     for element in argv:
@@ -113,7 +113,7 @@ def _param_checks(params: dict[str, Any], declared: dict[str, dict], layout: Lay
 
 
 def _path_checks(name: str, value: Any, slot: dict, layout: Layout, digest: str, template: str | None) -> dict | None:
-    """One declared `path` slot: inside its roots, and there (RECOVERY_PLAN.md section 3.3's table) -- "every
+    """One declared `path` slot: inside its roots, and there -- "every
     path parameter exists (or its parent does, for an output)". A slot marked `must_exist: false` names
     something a later job writes, so the file itself is not required; the directory it goes in is, which is the
     difference between a path nobody has written yet and a typo in the one they will."""
@@ -172,8 +172,8 @@ def run(layout: Layout, job: dict, task=None) -> dict:
     """The preflight result for one job block, `{ok, at, template, probe_digest, detail}` -- never raises; a
     problem this function cannot itself classify is `detail['code'] == 'preflight_error'`, ok False.
 
-    `task` is the task whose contract this block belongs to, when the caller has one: the declared-needs match of
-    docs/plan/LONG_WORK.md section 3.3 reads the task's own `needs` block beside the block's template, and the
+    `task` is the task whose contract this block belongs to, when the caller has one: the declared-needs match
+    reads the task's own `needs` block beside the block's template, and the
     two callers that write a block differ in what they have (`attach` the whole document, a plan's validator a
     stored task or none at all, for one it is creating). Without it only the block's own template can declare a
     need, which is exactly what a plan's created task has."""
@@ -207,7 +207,7 @@ def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None
     if failed:
         return failed
     if tmpl:
-        # Only a template's own declared slots are checked (RECOVERY_PLAN.md section 1.4), on either adapter: a
+        # Only a template's own declared slots are checked, on either adapter: a
         # literal `argv`/`fn` job declares none, so nothing in its `params` is required to be declared, to exist
         # or to match a type -- for a literal python job the registered function's own signature
         # (`_run_python`) is the one check that binds them, and for a literal process job only `argv[0]` is
@@ -233,8 +233,8 @@ def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None
 
 
 def _needs_checks(layout: Layout, task, job: dict, digest: str, template: str | None) -> dict | None:
-    """The declared-needs match, run at the write (docs/plan/LONG_WORK.md section 3.3's second and third rows,
-    D-028 decision 2) through the one entry point every write-time caller shares, `needs.results_for`.
+    """The declared-needs match, run at the write
+    through the one entry point every write-time caller shares, `needs.results_for`.
 
     The owner's `task.set_job` on a task that already exists has no row to refuse, so a decidable mismatch is
     stored here with the probe's and the gate holds the task as `preflight_failed`; a plan's `set_job` is refused
@@ -242,7 +242,7 @@ def _needs_checks(layout: Layout, task, job: dict, digest: str, template: str | 
     preflight (RF-08) and stores nothing on the task. An import or a patch row is refused by `needs.write_check`
     in the `(errors, warnings)` pair those paths already return, which is the first row and not this one.
 
-    Only the refusal tier is stored: a warning never refuses a write (D-010) and the path that reports warnings
+    Only the refusal tier is stored: a warning never refuses a write, and the path that reports warnings
     to their writer is that same import/patch pair. The code stored is the match's own
     (`needs_exceed_lane`/`needs_unsupported`/...), so the stored record names which declaration failed, while
     the task's stated reason stays `preflight_failed` -- one stored verdict, not a second beside it."""
@@ -264,12 +264,11 @@ def _timeout_checks(layout: Layout, timeout_s: Any, tmpl: dict, adapter: str | N
     from . import gate, timeouts
     routing_cfg = gate.routing_doc(layout)
     lane_ceiling = timeouts.ceiling_for(layout, task, adapter, job)
-    # RF-08's own "the lane's cap" (RECOVERY_PLAN.md section 3.3) is this one number, named by
-    # docs/plan/LONG_WORK.md section 4.2/9 step 3: the check, its code, its message and its process-row scope
+    # RF-08's own "the lane's cap" is this one number: the check, its code, its message and its process-row scope
     # stay exactly here, with `timeouts.ceiling_s` added beside the template's own declared cap and the project's
     # explicit `timeouts.lane_caps.<adapter>` override as one more candidate the minimum is taken over. Composed
     # through `ceiling_inputs` like every other reader of it, so this row refuses against exactly the number the
-    # resolver's clamp will enforce on the same job (D-028 decision 4).
+    # resolver's clamp will enforce on the same job.
     caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(routing_cfg, adapter), lane_ceiling)
             if isinstance(c, int) and not isinstance(c, bool)]
     if timeout_s is not None and caps and timeout_s > min(caps):
@@ -337,7 +336,7 @@ def attach(layout: Layout, doc: dict) -> None:
     dumps the one it reads back at launch: `mode="json", exclude_none=True, exclude_unset=True`) before anything
     here digests or checks it -- the writer's own raw dict (an explicit null for a declared key, a numeric
     string a lax-mode parse would coerce) and the block the gate recomputes from `task.job` later must be the
-    same bytes, or an unchanged block is held as stale forever (RECOVERY_PLAN.md section 3.3). A block too
+    same bytes, or an unchanged block is held as stale forever. A block too
     broken even to canonicalise is a failed preflight, same as one `run()` itself cannot classify -- never an
     exception that would abort the write that carries it."""
     job = doc.get("job")
@@ -368,7 +367,7 @@ def _task_of(doc: dict, canonical: dict):
         return None
 
 
-# ---------------------------------------------------------------- the backfill sweep (RECOVERY_PLAN.md 3.3, step 5)
+# ---------------------------------------------------------------- the backfill sweep
 #
 # Every `process`/`python` job block written before this release predates the preflight and has none stored; the
 # gate's refusal above would stop every one of them on upgrade day. Two bounded, automatic mechanisms close that

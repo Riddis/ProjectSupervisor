@@ -58,8 +58,8 @@ def holds_resource(layout: Layout, task: Task | None, adapter_name: str, kind: s
 
 
 def lease_blocked(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
-    """None when this job's resource work may launch now as far as the machine-wide lease (R4, docs/plan/LONG_WORK.md
-    section 5.4) it would take is concerned; else who holds it. The lease itself is `leases.lease_name_for`'s own
+    """None when this job's resource work may launch now as far as the machine-wide lease (R4)
+    it would take is concerned; else who holds it. The lease itself is `leases.lease_name_for`'s own
     two-case choice between the slot's `"gpu"` and a claim's own configured name — this peek composes the same two
     facts dispatch will later write onto the record (`holds_resource`, `needs.claim_for`), so the peek and the
     loop's own acquire/renew/reclaim/release sweeps can never disagree about which lease a job takes. A read-only
@@ -101,7 +101,7 @@ def removed_routing_settings(layout: Layout | None) -> list[str]:
     `version`, which `templates.py` does check). `roles.<role>.active_from` and `roles.<role>.second_opinion` were
     always informational: no scheduler path reads either. `resources.<name>.single_job` is `needs.resources_declared`'s
     own documented exception — read back unexamined, never interpreted as the "one job at a time" rule (that rule
-    is `limits.max_resource_jobs` plus the job record's `gpu` flag, untouched; see docs/plan/LONG_WORK.md section 5.1)."""
+    is `limits.max_resource_jobs` plus the job record's `gpu` flag, untouched)."""
     doc = routing_doc(layout)
     out = []
     if "version" in doc:
@@ -182,8 +182,8 @@ def stored_preflight_reason(layout: Layout, job) -> str | None:
 
 
 def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
-    """None when a `process`/`python` *delivery* job's stored preflight clears it to launch (RECOVERY_PLAN.md
-    section 3.3, invariant 7); else why not. `preflight_binding` decides whether this launch's rule binds the
+    """None when a `process`/`python` *delivery* job's stored preflight clears it to launch;
+    else why not. `preflight_binding` decides whether this launch's rule binds the
     task's own job block at all; `stored_preflight_reason` decides everything a stored result (or its absence,
     once the backfill window is closed) can decide on its own, with no side effect -- the same two primitives
     `why_not_runnable` reads for its own, read-only classification.
@@ -216,7 +216,7 @@ def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind:
 
 
 def needs_mismatch_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
-    """None unless `task`'s own effective need (docs/plan/LONG_WORK.md section 3.4, D-028 decision 3) is
+    """None unless `task`'s own effective need is
     refusal-tier against `adapter_name` -- the write-time `needs.match` run again with the adapter this launch is
     actually about to use, since routing can move a task onto a different lane after the write. Scoped to a
     delivery alone (`needs.needs_for`): a review, a verify job or a chat turn is never matched. The one stable
@@ -270,7 +270,7 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     busy (callers choose: all open records when planning, only SUBMITTED/RUNNING when launching a PREPARED one);
     `extra_*` let the scheduler account for picks made earlier in the same plan -- `extra_claims` is `[(task_id,
     claim), ...]`, the same shape `extra_paths` already uses, so `scheduler.plan()` can never admit two claimants
-    of one name in the same tick (docs/plan/LONG_WORK.md section 5.2). `role` is the agent role the job
+    of one name in the same tick. `role` is the agent role the job
     runs as (a review's reviewer role, say); for a delivery it defaults to the task's owner role. A role configured
     `active: false` is refused here, so a record queued before the owner disabled the role never launches either.
     A `delivery` whose task is `held` is refused here too (F11), whatever queued it or which lane it is on.
@@ -339,9 +339,9 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     from . import needs as needs_mod
     claim = needs_mod.claim_for(layout, task, kind) if task is not None else None
     if claim:
-        # docs/plan/LONG_WORK.md section 5.2: the holder is an open job record carrying this same claim, the rule
+        # The holder is an open job record carrying this same claim, the rule
         # the `gpu` flag already uses -- modelled on the owned-path overlap clause just above, including its
-        # same-task exclusion (a task's own continuation or re-adopted record never blocks itself, §5.2 point 3).
+        # same-task exclusion (a task's own continuation or re-adopted record never blocks itself).
         holder = next((tid for tid, c in extra_claims if c == claim), None)
         if holder is None:
             holder = next((r["task_id"] for r in running

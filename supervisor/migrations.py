@@ -635,7 +635,7 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
     return notes
 
 
-# ---- the attempt-identity migration's dry run (ATTEMPT_MODEL.md section 8; step 6 of "Order of work") ----
+# ---- the attempt-identity migration's dry run ----
 #
 # `migrate attempts --dry-run` derives a mapping of every job record's attempt identity (section 8.2) from the
 # fields and evidence a store already carries -- never from content equality, never by parsing an id -- and writes
@@ -661,7 +661,7 @@ def _has_identity_fields(rec: dict) -> bool:
 
 def _dispatch_order(records: list[dict]) -> list[dict]:
     """The dispatch order `jobs.for_task` no longer gives an un-migrated record (section 8.2's own walk):
-    `jobs.sort_key` dropped its id-suffix fallback at the writers switch (C-3/T7-08, `a1fa01d`), on the grounds
+    `jobs.sort_key` dropped its id-suffix fallback at the writers switch, on the grounds
     that every record it ever sorts by then is migration-stamped or allocator-written -- which is exactly not
     true of the records this migration exists to place. A record with no identity fields yet is ordered by the
     one thing it does carry that still reflects when it was dispatched: the numeric suffix of its old-shape id,
@@ -1004,7 +1004,7 @@ def dry_run_attempts(layout: Layout, out: Path | str, *, overrides_path: Path | 
     return report
 
 
-# ---- the attempt-identity migration's apply and check (ATTEMPT_MODEL.md section 8, step 7 of "Order of work") ----
+# ---- the attempt-identity migration's apply and check ----
 #
 # `apply` takes a reviewed `mapping.json` (never derives its own) and writes its identity fields onto the job
 # records it names, under the existing atomic write and the task lock; `check` re-reads the store and asserts the
@@ -1222,9 +1222,9 @@ def check_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     so one run names everything wrong instead of one thing per re-run. Reads the store and the mapping's own
     `report.json` (written beside `mapping.json` by the dry run that produced it); writes only `check_report.json`
     under `--out`. Assertion 6 reads `expect.json` beside the mapping -- the committed, by-hand mapping of a
-    handful of named tasks (ATTEMPT_MODEL.md §9.1 for this project; a neutral fixture's equivalent in this
+    handful of named tasks that a deployed project keeps for its own migration (a neutral fixture's equivalent in this
     framework's own tests) -- and fails loudly when it is missing, since an anonymous or absent expectation file
-    cannot fail when a mapping rule changes (§8.5 note 6)."""
+    cannot fail when a mapping rule changes."""
     mapping_path = Path(mapping_path)
     mapping = _load_mapping(mapping_path)
     report_path = mapping_path.parent / "report.json"

@@ -74,7 +74,7 @@ def job_spec(task) -> dict:
 def default_adapter_for(layout: Layout | None, cost_category) -> str:
     """The cost lane a category resolves to before any `job.adapter` or role override -- what `adapter_name`
     falls back to, exposed for a caller with a cost category but no `Task` yet
-    (`plans._plan_duration_limit_min`, docs/plan/LONG_WORK.md section 6)."""
+    (`plans._plan_duration_limit_min`)."""
     key = str(getattr(cost_category, "value", cost_category) or "")
     return cost_lanes(layout).get(key, "claude_cli")
 
@@ -200,7 +200,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             # an engineering task moved here could neither read its inputs nor write its artifacts.
             if claude_api.credits_remaining(layout) and claude_api.unattended_eligible(layout, t, job_spec(t)):
                 name = "claude_api"
-        # D-012 F-B Change 1: a role's OWN delivery task falls back the same way a review of someone else's
+        # A role's OWN delivery task falls back the same way a review of someone else's
         # delivery already does (review.lane_for) - whoever owns this job's lane, not only astra reviewing
         # another role's work. A role with no configured fallback still just waits here, token-free, exactly as
         # before: lane_for() re-raises CapacityDeferred and the task is skipped like any other capacity hold.
@@ -218,7 +218,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             if reason.startswith("owned path error"):
                 tasks_mod.log(layout, "schedule_skip", "loop", task=t.id, reason=reason)
             elif reason.startswith("needs mismatch"):
-                # docs/plan/LONG_WORK.md section 3.4: a lane change is not transient, so this stalls like an
+                # A lane change is not transient, so this stalls like an
                 # inactive role -- logged once per task per process (`_skip_once`), never every tick.
                 _skip_once(layout, t, reason)
             continue

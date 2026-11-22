@@ -287,7 +287,7 @@ def check_gpu_lease(layout: Layout) -> Check:
 
 
 def check_resource_claims(layout: Layout) -> Check:
-    """Every `resources.<name>` this project declares (docs/plan/LONG_WORK.md section 5): its current holder, an
+    """Every `resources.<name>` this project declares: its current holder, an
     open job record carrying `claim: <name>` (§5.2), and its waiter — the same reason `why_not_runnable` would
     report, read here without a task to ask it for. Unconfigured (no `resources:` section, or none with claim
     fields) is fine: every project before this release, and every one that opens no name to a plan. Also names a

@@ -1,4 +1,4 @@
-"""The declared job environment (R-24, ATTEMPT_MODEL.md section 4.4): a process job's subprocess starts from an
+"""The declared job environment (R-24): a process job's subprocess starts from an
 allow-listed base plus its lane's own additions, never from the loop's whole environment
 (`os.environ`, `adapters/process.py` before this module) — a deny-list is wrong by default, because every new
 vendor variable would leak into every lane until someone noticed and added it to a list. An allow-list fails
@@ -99,7 +99,7 @@ def lane_additions(layout: Layout, lane: str) -> dict[str, str]:
 
 def digest(env: dict[str, str]) -> str:
     """Sorted names plus a hash of values: identifies a declared environment without writing any value anywhere
-    (ATTEMPT_MODEL.md section 4.4). Two builds of the same declaration hash the same; adding, removing or
+    Two builds of the same declaration hash the same; adding, removing or
     changing one name or one value always moves it."""
     h = hashlib.sha256()
     for key in sorted(env):
@@ -121,8 +121,8 @@ def build(layout: Layout, lane: str) -> tuple[dict[str, str], str]:
 
 def foreign_markers(env: dict[str, str] | None = None) -> list[str]:
     """Names of `FOREIGN_MARKERS` already set in `env` (default: this process's own environment), sorted — a
-    loop about to start checks its own launching environment with this before it ever dispatches a job
-    (ATTEMPT_MODEL.md section 4.4): a desktop session, or a shell, that still carries another job's identity
-    markers (H-001) would otherwise hand them down to every job this loop launches."""
+    loop about to start checks its own launching environment with this before it ever dispatches a job:
+    a desktop session, or a shell, that still carries another job's identity
+    markers would otherwise hand them down to every job this loop launches."""
     source = os.environ if env is None else env
     return sorted(k for k in source if k in FOREIGN_MARKERS)

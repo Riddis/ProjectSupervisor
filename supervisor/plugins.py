@@ -214,7 +214,7 @@ class Registry:
         # what it registered, (manifest kind, identifier), checked against its manifest. None outside setup().
         self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
         self._registered: list[tuple[str, str]] | None = None
-        # A built-in lane's own job_schema (RECOVERY_PLAN.md section 3.2): declared next to the lane itself
+        # A built-in lane's own job_schema: declared next to the lane itself
         # (adapters/base.register_job_schema), not through setup(), so it is here before any plugin's. A plugin
         # naming the same adapter through registry.job_schema() is refused by that method's own check (the owner
         # recorded here, "framework", never matches a plugin's identity).
@@ -373,7 +373,7 @@ class Registry:
 
     def job_schema(self, adapter: str, model: Any) -> None:
         """A pydantic model for the keys this plugin's own `adapter` lane adds to a job beyond the framework's
-        typed `Job` fields (RECOVERY_PLAN.md section 3.2, docs/plugin_api.json): checked (`tasks.job_schema_problems`)
+        typed `Job` fields (docs/plugin_api.json): checked (`tasks.job_schema_problems`)
         at every write that carries a job for this adapter. An unknown key is refused once a schema is declared for
         the adapter; with none declared at all, an unknown key is only ever a warning, so a plugin that predates
         this release keeps working unchanged. One schema per adapter name, like `adapter()`'s own lane name."""
@@ -391,7 +391,7 @@ class Registry:
 
     def capabilities(self, adapter: str, mapping: dict) -> None:
         """A plugin lane's own capability data (`durable`, `network`, `max_duration_min` -- the closed,
-        framework-known vocabulary of docs/plan/LONG_WORK.md section 3.2), read by `supervisor.capabilities.
+        framework-known vocabulary), read by `supervisor.capabilities.
         for_lane` instead of leaving the lane matched as `needs_lane_unknown` (a lane with no declaration at
         all). One of the framework's own five lane names is refused: their capability data is
         `supervisor.capabilities`'s own stated table, not a shape a plugin may fill in. One declaration per

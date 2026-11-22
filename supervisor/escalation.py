@@ -66,7 +66,7 @@ def classify(layout: Layout, source: str, reason: str | None = None) -> str:
         return causes[f"{source}:{reason}"]
     return causes.get(source, "substance")
 # retry=False decisions never get a second try at the same brief; the note explains why in the failure's own terms
-# instead of a stock worker_blocked sentence (D-010 Consequences: this is also where continuations-exhausted lands).
+# instead of a stock worker_blocked sentence (this is also where continuations-exhausted lands).
 NO_RETRY_NOTES = {"worker_blocked": "the worker reported it cannot proceed; retrying the same brief would repeat it",
                   "continuations_exhausted": "the continuation budget is spent; resubmitting the same brief would need another"}
 
@@ -97,8 +97,8 @@ def event_outcome(layout: Layout, task_id: str, event: str) -> str:
     landed" apart from "it has not" - never derived from the task's current status, since BLOCKED is this
     decision's own intermediate state (issue opened, diagnosis still owed) as much as it is a status set for
     any other reason. It says nothing about an owner's deliberate Hold, which a BLOCKED task carries for an
-    unrelated reason of its own: that is a separate, durable record on the task itself (`held`, D-010/round-4
-    F9), read directly by the recovery guard instead of being inferred from this event's outcome."""
+    unrelated reason of its own: that is a separate, durable record on the task itself (`held`),
+    read directly by the recovery guard instead of being inferred from this event's outcome."""
     dec = _load(layout, task_id)["events"].get(event)
     if not dec:
         return ""
@@ -312,7 +312,7 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     already landed" apart from "it has not" - that distinction cannot be read off the task's current status
     alone (BLOCKED is this event's own intermediate state as much as it is a stop for any other reason). A
     deliberate later cancellation is told apart because CANCELLED is outside the guard's allowed statuses; a
-    deliberate later Hold is told apart by its own durable record on the task (`held`, R4/D-010, round-4 F9),
+    deliberate later Hold is told apart by its own durable record on the task (`held`),
     checked directly rather than inferred from this event's `routed` flag, which carries no such information."""
     layout = supervisor.layout
     sig = decision["signature"]
@@ -391,7 +391,7 @@ def current_grant(layout: Layout, task_id: str) -> int:
 
 
 def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
-    """A fresh continuation grant (D-010/R4) retires every continuation marker that belongs to an earlier grant
+    """A fresh continuation grant retires every continuation marker that belongs to an earlier grant
     generation than this task's current one, the same way an owner REQUEUE resume has always retired them
     (supervisor.inbox). `current_grant` (`state["resets"]`) is the retirement boundary and it is durable in the
     same write `reset_retries` already made, so this function reads it fresh every call instead of trusting a
@@ -441,7 +441,7 @@ def record_failure(supervisor, task_id: str, source: str, detail: str, event: st
     R-14: `reason` is the extra classifier a caller may already have in hand (today, a verification
     report's own reason code distinguishing a verifier-condition failure from one on the work) that
     `classify()` uses, alongside `source`, to pick which of the three counters this failure charges.
-    `immediate` is trigger 4 of the review-rounds rule (ATTEMPT_MODEL.md 4.2): a REJECT escalates at once,
+    `immediate` is trigger 4 of the review-rounds rule: a REJECT escalates at once,
     regardless of any counter — a rejection is a verdict on the approach, not a list of repairs.
 
     Returns {"action": "retry"|"escalate", ...}."""

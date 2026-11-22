@@ -39,10 +39,10 @@ def _get_task(layout: Layout, task_id: str):
 
 def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str | None, run_dir: str | None,
             note: str | None, result: str | None) -> dict:
-    """One Attempts-table row for one job, on either `Attempt` shape (ATTEMPT_MODEL.md §2.7): the stored entry
+    """One Attempts-table row for one job, on either `Attempt` shape: the stored entry
     (an un-migrated `Attempt`'s own dump, or one of a migrated `Attempt`'s `jobs[]`) gives the static fields; the
     live job record, when it still exists, gives the kind as a fallback, the current phase/result and the model
-    (§4.6 — the model is read only from the job record here, never from the task document)."""
+    (the model is read only from the job record here, never from the task document)."""
     job = jobs_mod.resolve(layout, job_id) if job_id else None
     spec = (job or {}).get("spec") or {}
     return {
@@ -57,14 +57,14 @@ def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str
 
 def attempt_groups(layout: Layout, t) -> list[dict]:
     """The Attempts table's rows, grouped by delivery attempt, read from each stored entry's own dump
-    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone (ATTEMPT_MODEL.md
-    §4.6, step 15). A migrated document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
+    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone. A migrated
+    document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
     un-migrated document's one entry per job is named by whatever `id` key it was written under — tolerated,
     never typed, used only as the fallback when `jobs[]` is empty (never on a migrated document, which never
     carries an entry without `n` set). Each migrated group's `n` is the attempt number. An un-migrated entry's id
-    suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id whose kind is whatever happened to be
+    suffix is not one ("an existing job id whose kind is whatever happened to be
     dispatched nth"), so that group names its job instead of asserting a delivery-attempt count (`n: None`,
-    `job_id` set — the design's interim remedy, §6). Each row carries the job's own kind either way, so a
+    `job_id` set — the design's interim remedy). Each row carries the job's own kind either way, so a
     verification, a review or a diagnosis is never shown as if it were a fresh attempt at the deliverable."""
     groups = []
     for a in t.attempts:
@@ -84,8 +84,8 @@ def attempt_groups(layout: Layout, t) -> list[dict]:
 
 def task_context(layout: Layout, task_id: str) -> dict:
     """Everything `task_detail.html` renders, built once so a test (or another surface) can read it with no
-    `Request` to construct. `why_not_runnable` is read here exactly as the idle alert and the Overview read it
-    (RECOVERY_PLAN.md section 4.3): `None` for a task that is not this function's to classify at all — terminal
+    `Request` to construct. `why_not_runnable` is read here exactly as the idle alert and the Overview read it:
+    `None` for a task that is not this function's to classify at all — terminal
     (not "not runnable"), held (the hold itself is the reason, already shown), already running its own open job,
     or `tasks.eligible` (not blocked, merely outranked right now — the Overview's own scoping, matched here so
     the two can never disagree about which tasks have a reason at all). A paused/draining/stopped loop is read

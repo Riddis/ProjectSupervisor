@@ -1,5 +1,4 @@
-"""One computed reason a non-terminal task cannot run, read by the idle alert, the Overview and the task page
-(RECOVERY_PLAN.md section 4.3, D-027 decision 11, step 10 of the order of work).
+"""One computed reason a non-terminal task cannot run, read by the idle alert, the Overview and the task page.
 
 Before this module each of the three surfaces either quoted a task's last note -- prose an agent wrote, often
 about something else -- or showed nothing. `why_not_runnable(task, tasks, layout)` computes the reason once, from
@@ -13,7 +12,7 @@ of them, and a code that names a configuration line (`role_inactive`, `lane_unre
 choice at all -- there is no button that could fix a line in `routing.yaml` or `gates.yaml`.
 
 A held task is never classified here: `loop.alert_if_idle` excludes it before calling this module, exactly as the
-pre-2.8.0 idle alert already did (RECOVERY_PLAN.md section 11's own record of what is already closed) -- a hold is
+pre-2.8.0 idle alert already did -- a hold is
 the owner's own call, never the pipeline's problem.
 
 The loop's own decision (PAUSE/DRAIN/STOP) is excluded the same way, for the same reason, and is never a tenth
@@ -44,7 +43,7 @@ CODES = frozenset({
 # (`awaiting_review`, `awaiting_approval`) admit nothing a button could do.
 _DIAGNOSABLE = frozenset({"unmet_dependency", "preflight_failed"})
 _CONTENDED = frozenset({"capacity_floor"})
-# D-028 decision 3: the two writes that clear a needs mismatch (a routing edit, a task.patch on `needs`) are
+# The two writes that clear a needs mismatch (a routing edit, a task.patch on `needs`) are
 # named in its own detail, never offered as a button -- `resume` would be refused by the mismatch it ignores, so
 # this code admits exactly what a stalled contention admits and no `diagnose_now` (there is nothing to probe).
 _NAMED_ESCAPE_ONLY = frozenset({"needs_mismatch"})
@@ -224,7 +223,7 @@ def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
                 return {"code": "resource_claimed", "detail": f"owned path error against {other_id}",
                        "blockers": [other_id]}
 
-    # docs/plan/LONG_WORK.md section 5.2: the same named-claim clause `gate.check` applies, so the waiter's own
+    # The same named-claim clause `gate.check` applies, so the waiter's own
     # reason names the claim and its holder rather than falling through to the unclaimed fallback below.
     from . import needs as needs_mod
     claim = needs_mod.claim_for(layout, task, "delivery")

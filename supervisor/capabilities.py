@@ -1,4 +1,4 @@
-"""Lane capability data (docs/plan/LONG_WORK.md section 3.2, D-028 decision 2): what a lane can do, framework-known
+"""Lane capability data: what a lane can do, framework-known
 keys only (`durable`, `network`, `max_duration_min`), read by `supervisor.needs`'s matcher and nothing else. The
 framework states every value for its own five lanes; a plugin lane declares its own through the additive
 `registry.capabilities(adapter, mapping)` plugin API entry (`supervisor.plugins.Registry.capabilities`), and one
@@ -41,7 +41,7 @@ def _claude_api_max_duration_min(layout: Layout) -> int:
 def for_lane(layout: Layout, adapter: str | None) -> dict:
     """What `adapter` can do: a plugin lane's own `registry.capabilities` declaration when it has one, else the
     framework's table entry for one of its five lanes (with `claude_api`'s composed `max_duration_min`), else {}
-    -- a lane that declares nothing at all, matched as `needs_lane_unknown` (docs/plan/LONG_WORK.md section 2.3)."""
+    -- a lane that declares nothing at all, matched as `needs_lane_unknown` rather than refused."""
     if not adapter:
         return {}
     declared = _plugin_declared(layout, adapter)

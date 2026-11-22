@@ -100,7 +100,7 @@ def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: d
     write, never in a second one a crash could lose. `kind`/`attempt`/`seq`/`parent`/`cause`/`scope`/`env_digest`
     are the identity fields the attempt model adds (§2.6); each is omitted (not written as null) when not given,
     so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet.
-    `claim` is the named resource (docs/plan/LONG_WORK.md section 5.2) this record holds while open, written where
+    `claim` is the named resource this record holds while open, written where
     `gpu` is written — the same rule the gpu flag already uses for "busy" — and `None` for every job no declaration
     names one for, which is every job before this release and every job of a project that declares no resource."""
     identity = {"kind": kind, "attempt": attempt, "seq": seq, "parent": parent, "cause": cause, "scope": scope,
@@ -135,8 +135,8 @@ def resolve(layout: Layout, job_id: str) -> dict | None:
 
 
 def set_phase(layout: Layout, attempt_id: str, phase: str, *, release_reason: str | None = None, **fields) -> dict:
-    """`release_reason` names why a claim-carrying record is leaving the open set (docs/plan/LONG_WORK.md section
-    5.3): `None` (read as `"closed"`) for the ordinary case — the adapter's own result, a continuation's own
+    """`release_reason` names why a claim-carrying record is leaving the open set:
+    `None` (read as `"closed"`) for the ordinary case — the adapter's own result, a continuation's own
     close, a reroute — and an explicit override for the three callers that know a different one: `jobs.retire`
     (`"terminal"`, a task reaching COMPLETE/CANCELLED), `agent.terminate` (`"cancelled"`, the owner's own stop),
     and `Supervisor.ingest` (`"dead"`, a `collect()` that found the process gone). One release point: whichever
@@ -269,7 +269,7 @@ def kind_of(rec: dict) -> str:
 
 def attempt_of(rec: dict) -> int | None:
     """This job's attempt number (`None` for a task-scoped job): the `attempt` field, taken as-is. The writer
-    switch (ATTEMPT_MODEL.md §8.6's start-up guard) is what makes this safe to read with no fallback — every
+    switch (the start-up guard) is what makes this safe to read with no fallback — every
     record on disk by then is either migration-stamped or allocator-written, so it always carries this field."""
     return rec.get("attempt")
 
@@ -361,7 +361,7 @@ def archive_terminal(layout: Layout, task_id: str) -> list[str]:
     return moved
 
 
-# P3-R2-B (RELEASE_REVIEW_2.8.0_round2.md): the loop's start-up guard used to read and parse every archived job
+# P3-R2-B: the loop's start-up guard used to read and parse every archived job
 # record on every process start, once the archive holds thousands of finished tasks' history that never changes
 # again. The marker below lets it skip that read once a full scan has found the archive entirely migration-
 # stamped/allocator-written -- the live top level is cheap enough (bounded by work in flight, not by history) to
@@ -426,7 +426,7 @@ def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
     """The delivery attempt a past review digest belongs to, read from this task's own review job records (the
     store, never a run directory): the newest review job whose `review_digest` matches it names its own
     `attempt` — the same join `review._delivery_for_digest` uses from a verify job, available here too because
-    every review job already carries `attempt` once dispatched through the allocator (ATTEMPT_MODEL.md step 9).
+    every review job already carries `attempt` once dispatched through the allocator.
     `None` when no such record exists (a digest reviewed before this field existed, or never reviewed at all)."""
     matches = [r for r in for_task(layout, task_id) if kind_of(r) == "review" and r.get("review_digest") == digest]
     return attempt_of(matches[-1]) if matches else None

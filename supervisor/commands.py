@@ -233,15 +233,15 @@ def _task_import(layout, payload, actor):
 
 
 def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None) -> tuple:
-    """One of the owner's own writers of a task's `job` block (RECOVERY_PLAN.md section 3.4, D-027 decision 7 —
-    amends D-018 decision 2): `task.set_job` (the Control Center's re-route), never state/ directly. A diagnosis
-    cannot change a task's job (D-018 decision 1, restated as R0); a wrong process command reaches the owner as a
+    """One of the owner's own writers of a task's `job` block: `task.set_job` (the Control Center's re-route),
+    never state/ directly. A diagnosis
+    cannot change a task's job; a wrong process command reaches the owner as a
     question naming this command instead. `tasks._write_job` refuses `actor` here exactly as it does for a seed
     import or a patch — this always carries a literal `argv`, so nothing but the owner may reach it. Returns (the
     task, warnings) — an unknown key for an adapter with no declared schema is kept and warned, never refused
     (`tasks.job_schema_problems`). `cost_category` is a CONTRACT_FIELDS member (routing, read by `gate`/`scheduler`
-    the same as any other contract field), so a real change here bumps `contract_rev` (RECOVERY_PLAN.md section
-    5, D-027 decision 12) exactly as a patch would — `job` itself never does (it is outside CONTRACT_FIELDS by
+    the same as any other contract field), so a real change here bumps `contract_rev`
+    exactly as a patch would — `job` itself never does (it is outside CONTRACT_FIELDS by
     design, `tasks.py`'s own comment above `JUDGED_FIELDS`)."""
     def fn(doc):
         before = dict(doc)
@@ -431,7 +431,7 @@ def _agent_extend(layout, payload, actor):
         raise ValueError("extend by 1 s to 24 h")
     spec = rec.get("spec") or {}
     base = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
-    # docs/plan/LONG_WORK.md section 4.3 (RF-32, the dedupe window): a second extension of the SAME duration on
+    # The dedupe window (RF-32): a second extension of the SAME duration on
     # the SAME job inside `timeouts.extend_dedupe_s` is a no-op that reports the existing deadline -- the recorded
     # burst was ten clicks inside two seconds, each its own command id, so the existing per-command-id idempotence
     # (`timeouts.extend`'s own check) cannot see it on its own.
@@ -460,7 +460,7 @@ def _agent_extend(layout, payload, actor):
         task = tasks_mod.load(layout, rec.get("task_id"))
     except tasks_mod.TaskError:
         pass
-    # The same composed ceiling the budget was resolved against (`timeouts.ceiling_inputs`, D-028 decision 4):
+    # The same composed ceiling the budget was resolved against (`timeouts.ceiling_inputs`):
     # the running job's own spec carries the role it was prepared under, so an extension is bounded by exactly
     # the number that bounded the cap it is extending -- never by a project-wide one the lane never read.
     ceiling = timeouts.ceiling_for(layout, task, rec.get("adapter"), spec)

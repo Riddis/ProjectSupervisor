@@ -52,7 +52,7 @@ def _disk(layout: Layout) -> dict:
 JOB_ACTIVITY = {"delivery": "Working", "review": "Reviewing", "diagnosis": "Diagnosing a failure",
                 "conversation": "Answering chat", "verify": "Verifying", "plan_review": "Reviewing a plan"}
 
-# The word shown beside "attempt N" (ATTEMPT_MODEL.md §6, "Control Center"): a bare "attempt N" reads as a fresh
+# The word shown beside "attempt N": a bare "attempt N" reads as a fresh
 # try at the deliverable even for a job that is a verification, a review or a diagnosis of that attempt, so the
 # label always names the kind too.
 KIND_LABEL = {"delivery": "delivery", "verify": "verification", "review": "review", "diagnosis": "diagnosis",
@@ -258,7 +258,7 @@ def overview_live_context(layout: Layout) -> dict:
     blocked_preview_tasks = []
     if not waiting_to_start:
         # Nothing eligible: show why, from the same function the idle alert and the task page read
-        # (RECOVERY_PLAN.md section 4.3), rather than the bare "no tasks ready" copy this card showed before.
+        # rather than the bare "no tasks ready" copy this card showed before.
         from ... import why_not_runnable as why_not_runnable_mod
         stuck = sorted((t for t in tasks.values() if t.status not in TERMINAL and not t.held
                         and t.id not in running_ids), key=lambda t: t.id)

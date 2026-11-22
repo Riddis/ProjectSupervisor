@@ -102,7 +102,7 @@ def decode_flash(request: Request) -> dict | None:
 
 
 def _extend_message(result: dict) -> str:
-    """`agent.extend`'s own answer states the resulting deadline (docs/plan/LONG_WORK.md section 4.3): every
+    """`agent.extend`'s own answer states the resulting deadline: every
     click, including one the dedupe window turned into a no-op, reports where the hard cap now sits."""
     deadline = result.get("deadline")
     when = None

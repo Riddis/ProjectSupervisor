@@ -7,8 +7,8 @@ structured decision:
 
     requeue   — the task goes back to READY with written guidance that the next delivery brief carries; the retry
                 budget is reset once (DIAGNOSIS_BUDGET diagnoses per task, then straight to the owner);
-    defer     — the task waits for a repair named structurally, a `plan` (RECOVERY_PLAN.md section 2, D-027 decision
-                4): a document of the six typed operations `supervisor.plans` validates. A plan the validator refuses
+    defer     — the task waits for a repair named structurally, a `plan`:
+                a document of the six typed operations `supervisor.plans` validates. A plan the validator refuses
                 gets exactly one more session of this SAME diagnosis job to correct — `cause: continuation`, no new
                 cause value — carrying only the frozen evidence, the refused plan verbatim and its refusal list.
                 Still refused after that, it reaches the owner with both versions and both refusal lists from the
@@ -140,8 +140,8 @@ def _correction_brief(layout: Layout, task: Task, role: str, source: str, detail
 
 
 def _dispatch_correction(supervisor, task: Task, rec: dict, role: str, plan: dict) -> dict | None:
-    """One more session of the SAME diagnosis job (`cause: continuation`, `parent` on this session, D-027 decision
-    4): dispatched directly, never through `dispatch()`'s own signature dedup — a correction is not a fresh
+    """One more session of the SAME diagnosis job (`cause: continuation`, `parent` on this session):
+    dispatched directly, never through `dispatch()`'s own signature dedup — a correction is not a fresh
     diagnosis. A capacity window (or a failed login, `capacity.mark_login_failed`) is not terminal: `lane_for`'s
     own `CapacityDeferred` names `reset_epoch`, and the correction is dispatched anyway with `deferred_until` set
     to it — the same mechanism `loop.requeue()` already uses to continue every other job kind — so the PREPARED
@@ -255,7 +255,7 @@ def _route_plan_to_owner(layout: Layout, task: Task, rec: dict, role: str, plan:
 
 def _attempt_summary(ad: dict) -> str:
     """One line of the diagnosis brief's recent-attempts list, read from the stored dict (`Attempt.model_dump()`)
-    — never `Attempt.id` as a declared field, gone as of ATTEMPT_MODEL.md §4.6, step 15. The migrated shape
+    — never `Attempt.id` as a declared field, which no longer exists. The migrated shape
     (`jobs[]` set) names its jobs; an un-migrated entry names itself by whatever `id` key it was written under."""
     jobs = ad.get("jobs") or []
     if jobs:

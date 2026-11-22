@@ -1,5 +1,4 @@
-"""Declared task needs, matched against declared lane capability data (docs/plan/LONG_WORK.md sections 3-5,
-D-028 decisions 1-5, 6, 7, 11). One pure-data matcher, called from every reader that needs to know whether a
+"""Declared task needs, matched against declared lane capability data. One pure-data matcher, called from every reader that needs to know whether a
 declaration and a lane agree -- the write-time checks (`tasks.check_new`/`import_seed`/`patch_task`), the launch
 gate's re-match (`gate.check`), `why_not_runnable`, and every `prepare()` that resolves a budget -- so the two can
 never drift into two different answers for the same question.
@@ -45,9 +44,9 @@ def _template_needs(layout: Layout, job) -> dict:
 
 
 def template_declares_resumable(layout: Layout, task: "Task") -> bool:
-    """The template's own `resumable: true` sibling key (section 3.2) -- a capability of the *recipe*, never a
-    key inside the template's `needs` block, which stays exactly the `{duration_min, network, resource}` shape
-    RECOVERY_PLAN.md section 3.2 fixed."""
+    """The template's own `resumable: true` sibling key -- a capability of the *recipe*, never a
+    key inside the template's `needs` block, which stays exactly the `{duration_min, network, resource}` shape,
+    fixed and closed."""
     job = getattr(task, "job", None)
     if job is None or not job.template:
         return False

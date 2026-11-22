@@ -67,9 +67,9 @@ class CostCategory(str, Enum):
 
 
 class Attempt(BaseModel):
-    """ATTEMPT_MODEL.md §4.6 (step 15): `id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
-    first three, and the fourth was never written either; a reader now takes the model from the job record
-    (§2.7), never from this document. `at` is gone too, renamed to `opened` (closed sits beside it, §2.3's
+    """`id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
+    first three, and the fourth was never written either; a reader now takes the model from the job record,
+    never from this document. `at` is gone too, renamed to `opened` (closed sits beside it,
     delivery-attempt shape). `model_config` stays `extra: allow` so a document written before this release —
     whose `attempts[]` entries still carry `id`/`at`/`model`/`session_id`/`extra` on disk — still loads; those
     bytes are tolerated, never read back through a declared field."""
@@ -156,7 +156,7 @@ EXCLUSIVE = "."          # owned_paths: ["."] — "may touch anything, so nothin
 
 
 class Needs(BaseModel):
-    """What a task's delivery requires (docs/plan/LONG_WORK.md section 3.1, D-028 decision 1): a closed four-key
+    """What a task's delivery requires: a closed four-key
     vocabulary, every key optional, the whole block optional. An absent block is exactly pre-2.9.0 behaviour on
     every path -- the migration rule this model exists to hold. An unknown key, or a value of the wrong type, is
     refused at validation (RF-27) rather than silently ignored, since the vocabulary is framework-known and
@@ -201,7 +201,7 @@ class Check(BaseModel):
 
 
 class JobPreflight(BaseModel):
-    """`supervisor.preflight`'s own record of one write-time check (RECOVERY_PLAN.md section 3.3): `ok` is the
+    """`supervisor.preflight`'s own record of one write-time check: `ok` is the
     one `supervisor.gate` reads; `detail['block_digest']` is the job block's own content, `preflight` excluded,
     the moment this result was recorded -- a mismatch against the block now on disk means it changed since, and
     the gate refuses exactly as it would an absent or failed one."""
@@ -215,7 +215,7 @@ class JobPreflight(BaseModel):
 
 
 class Job(BaseModel):
-    """What a lane's `prepare()` reads (RECOVERY_PLAN.md section 3.2): the framework-known keys, typed — a wrong
+    """What a lane's `prepare()` reads: the framework-known keys, typed — a wrong
     type is refused the moment a document carrying it is validated. An adapter's own keys beyond these (a
     plugin lane's `workflow`, `base_url`, ...) are not declared here, since this model does not know which
     adapter it belongs to; they are kept (`extra: allow`) and checked separately, against whatever schema the
@@ -225,7 +225,7 @@ class Job(BaseModel):
     adapter: Optional[str] = None
     template: Optional[str] = None                             # a plan's own writer: a reference, never a command
     params: dict[str, Any] = Field(default_factory=dict)
-    argv: Optional[list[str]] = None                            # the owner's own writer only (RECOVERY_PLAN.md 3.4)
+    argv: Optional[list[str]] = None                            # the owner's own writer only
     fn: Optional[str] = None
     timeout_s: Optional[int] = None
     idle_timeout_s: Optional[int] = None
@@ -235,7 +235,7 @@ class Job(BaseModel):
     effort: Optional[str] = None
     prompt: Optional[str] = None
     result_kind: Optional[str] = None
-    preflight: Optional[JobPreflight] = None                   # RECOVERY_PLAN.md section 3.3: written at the
+    preflight: Optional[JobPreflight] = None                   # written at the
                                                                  # same time as the rest of the block, never by hand
 
     model_config = {"extra": "allow"}
@@ -276,10 +276,10 @@ class Task(BaseModel):
                                                                  # owner's own later status change (round-4 F9) -
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
-    needs: Optional[Needs] = None                               # docs/plan/LONG_WORK.md section 3.1, D-028 decision 1
-    job: Optional[Job] = None                                   # RECOVERY_PLAN.md 3.2/3.4: typed, under a writer rule
+    needs: Optional[Needs] = None                               # a closed, framework-known declaration
+    job: Optional[Job] = None                                   # typed, under a writer rule
     result: Optional[str] = None
-    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:
+    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15:
                                                                                # the producer's own optional, per-
                                                                                # finding reply {id, status, note?} to
                                                                                # the previous round's own findings —
@@ -293,7 +293,7 @@ class Task(BaseModel):
     created: Optional[str] = None
     updated: Optional[str] = None
     rev: int = 0
-    contract_rev: int = 1               # RECOVERY_PLAN.md section 5, D-027 decision 12: distinct from `rev`, which
+    contract_rev: int = 1               # distinct from `rev`, which
                                           # `store.update` bumps on every write (a status change, an attempt entry,
                                           # a note); this moves only when `tasks._bump_contract_rev` sees a
                                           # CONTRACT_FIELDS value actually change — "did the brief move", not

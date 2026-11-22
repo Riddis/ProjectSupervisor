@@ -105,7 +105,7 @@ class CodexCliAdapter(ProcessAdapter):
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(text, encoding="utf-8")
-        # docs/plan/LONG_WORK.md section 4.2: the second model lane that calls the resolver, through the same
+        # The second model lane that calls the resolver, through the same
         # shared path as the first and as the process lane -- one derived budget, one composed ceiling, one receipt.
         limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),

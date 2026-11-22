@@ -1,9 +1,9 @@
-"""The recovery plan (R-10, step 1 of RECOVERY_PLAN.md order of work): a typed document a diagnosis may propose to
+"""The recovery plan (R-10): a typed document a diagnosis may propose to
 repair one stopped attempt, a closed six-operation vocabulary, and a deterministic validator that refuses whole on
 any of 26 named codes. No applier lives here — `validate()` never writes to the store, never touches state/plans/,
 and never mutates a task; step 2 of the order of work builds the journal and the apply path.
 
-R0 (D-018, restated): no value a model produces ever becomes a program, an argument, a path outside a declared
+R0 (restated): no value a model produces ever becomes a program, an argument, a path outside a declared
 root, or an operation the framework did not already know how to perform. `SetJobOp` is the one place this has to be
 structural rather than a check (RF-04): the model declares exactly `op`, `task`, `template`, `params` and forbids
 every other key, so there is no `argv`, `fn`, `cmd` or `shell` slot anywhere in the six operations for a value to
@@ -22,7 +22,7 @@ the correction turn's brief, so every message here is built from field paths and
 value scans (RF-03, RF-21) therefore run on every operation whatever the shape check decided about it: an
 operation refused for its shape is the one most likely to be carrying something that must not be logged.
 
-Three refusal codes (RF-23, RF-24, RF-25) belong, by RECOVERY_PLAN.md section 1's own preamble, to the approval
+Three refusal codes (RF-23, RF-24, RF-25) belong, by the plan model's own preamble, to the approval
 lane and the inbox (steps 7-8 of the order of work) rather than to a plan document's own shape. Their rule is
 already fully determined by this step's inputs, so the pure functions that decide them (`self_approval_refusal`,
 `choice_not_offered_refusal`, `choice_stale_refusal`) live here, ahead of the machinery that will call them, so the
@@ -122,16 +122,16 @@ PATCH_ADD_ONLY_FIELDS = frozenset({"tests", "checks", "test_roots", "artifacts",
 # proposes for either survives `_executable_content_refusals`. They are contract fields a human writes.
 EXECUTABLE_CONTRACT_FIELDS = ("checks", "test_roots")
 
-# What `create_task.task` may name (§2.3/§2.4 of D-027 decision 3): the four the created task must state, the four
+# What `create_task.task` may name: the four the created task must state, the four
 # inherited from the subject and therefore forbidden here, and everything else a contract may optionally carry.
 CREATE_REQUIRED_FIELDS = frozenset({"title", "objective", "owner_role", "cost_category"})
 CREATE_FORBIDDEN_FIELDS = frozenset({"human_approval", "escalation", "phase", "priority"})
 CREATE_OPTIONAL_FIELDS = frozenset({"id", "depends_on", "actions", "artifacts", "tests", "checks", "owned_paths",
                                     "reviewer", "review_note", "acceptance", "evidence", "test_roots",
                                     "approval_note", "needs"})
-# `needs` is create_task-only (D-028 decision 7): it is deliberately absent from PATCH_ALLOWED_FIELDS, so a plan
-# has no operation that can write it onto a task it did not create -- the writer-authority rule of
-# docs/plan/LONG_WORK.md section 6 holds by the ops vocabulary's own field lists, with no extra check needed.
+# `needs` is create_task-only: it is deliberately absent from PATCH_ALLOWED_FIELDS, so a plan
+# has no operation that can write it onto a task it did not create -- the writer-authority rule
+# holds by the ops vocabulary's own field lists, with no extra check needed.
 CREATE_ALLOWED_FIELDS = CREATE_REQUIRED_FIELDS | CREATE_OPTIONAL_FIELDS
 
 EXCLUSIVE = "."
@@ -176,7 +176,7 @@ class PlanReport:
     operation already refused on an earlier ground in the same function (RF-06, RF-07, RF-09, RF-11, RF-14)
     never reaches the preflight call, so it carries no entry; one that does is stored on the plan document
     regardless of whether the plan as a whole validates — the approver reading a `set_job` that passed needs the
-    same transcript the refused-by-RF-08 reader gets (D-027 decision 6)."""
+    same transcript the refused-by-RF-08 reader gets."""
     normalised: list[dict] = field(default_factory=list)
     scope: list[str] = field(default_factory=list)
     graph_diff: dict[str, Any] = field(default_factory=dict)
@@ -535,7 +535,7 @@ def _check_create_task(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
         code = "RF-17" if "cycle" in e else "RF-02"
         out.append(_rf(code, "I3 §1.2" if code == "RF-02" else "I2 §1.2", i, "task", _safe(e, layout)))
     if not out:
-        # D-028 decision 7, docs/plan/LONG_WORK.md section 6 (RF-31's `may_be_claimed_by` half): a plan may name
+        # RF-31's `may_be_claimed_by` half: a plan may name
         # only a resource the project opened to plans. Checked on the **effective** need (no job block exists on
         # a create_task, so this is the task's own `needs.resource` alone) so the permission stays the project's
         # line of data, never something this write grants itself.
@@ -677,11 +677,11 @@ def _preflight_transcript_entry(i: int, layout: Layout, block: dict, task=None) 
     does not resolve, or whose inherited `timeout_s`/`stdin_file` no longer holds is otherwise invisible until
     the applier's own write triggers it — a stall, not a named refusal (RF-08). `task` is the stored task this
     operation writes onto, or None for one the plan creates in the same document: the preflight's declared-needs
-    match reads the task's own `needs` beside the block's template (docs/plan/LONG_WORK.md section 3.3's third
-    row), so a block whose effective need the lane contradicts is refused with the plan and stores nothing on any
+    match reads the task's own `needs` beside the block's template, so a block whose effective need the lane
+    contradicts is refused with the plan and stores nothing on any
     task. The transcript is never stored
     whole (it can carry a probe's own stdout); only its digest travels, onto `PlanReport.preflight` and from
-    there onto the plan document itself, so the record `RECOVERY_PLAN.md` 2.2's row promises survives a refusal
+    there onto the plan document itself, so the record a plan's own row promises survives a refusal
     as well as a pass."""
     from . import preflight as preflight_mod
     pf = preflight_mod.run(layout, block, task)
@@ -750,7 +750,7 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
         out += _param_refusals(i, name, value, slot, layout)
     preflight_entry = None
     if not out:
-        # D-028 decision 7, docs/plan/LONG_WORK.md section 6 (RF-31's `may_be_claimed_by` half): checked on the
+        # RF-31's `may_be_claimed_by` half: checked on the
         # **effective** need -- the task's own `needs.resource` (when `t` is stored; a task this same plan is
         # also creating has none visible here, the existing gap `needs.results_for(layout, None, ...)` already
         # has below) beside *this* template's own, so a plan cannot launder an owner-only claim onto itself by
@@ -1067,7 +1067,7 @@ def choices_digest(choices: list[dict]) -> str:
 
 
 # ----------------------------------------------------------------------- a choice's label and detail, rendered
-# from its own effect (RECOVERY_PLAN.md section 4.2: "the label is rendered *from* the effect") — the one
+# from its own effect ("the label is rendered *from* the effect") — the one
 # function `inbox.create()` calls for every choice it is offered, so a stored label can never promise more than
 # its own effect performs. Covers the closed, twelve-effect vocabulary (OPERATIONS, OWNER_ONLY_EFFECTS) only;
 # `None` for anything else, which `inbox.create()` turns into a refusal rather than a blank button.
@@ -1132,7 +1132,7 @@ def render_choice(effect: Any) -> tuple[str | None, str | None]:
 
 
 # ----------------------------------------------------------------------- the authority classes and the approval
-# lane (RECOVERY_PLAN.md §2.7, D-027 decision 6, step 8 of the order of work): validation proves a plan is
+# lane: validation proves a plan is
 # permitted, never that it is the right one, so a second, cheap reader sits between a validated plan and the
 # applier for everything but routine repair. Three classes, the mapping held in `config/routing.yaml` under
 # `plan.authority` so a project may tighten it without a release (never loosen: `_tightened` only ever raises an
@@ -1177,7 +1177,7 @@ def _tightened(layout: Layout | None, op_name: str, cls: str) -> str:
 
 
 def _plan_duration_limit_min(layout: Layout | None, task_doc: dict) -> int | None:
-    """docs/plan/LONG_WORK.md section 6, D-028 decision 7: `plan.max_duration_min`, or its unconfigured default
+    """`plan.max_duration_min`, or its unconfigured default
     -- the created task's own lane policy cap in minutes, from `timeouts.resolve` called with no `needs` and no
     `job` block, so the limit is the policy cap the chain yields and never the plan's own declared duration
     (passing the declaration would make the limit equal it, so it could never bind). `None` when `layout` is not
@@ -1217,7 +1217,7 @@ def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) 
             if isinstance(duration, int) and not isinstance(duration, bool):
                 limit = _plan_duration_limit_min(layout, op["task"])
                 if limit is not None and duration > limit:
-                    # D-028 decision 7: not a refusal -- raised to the owner authority class, exactly as a
+                    # Not a refusal -- raised to the owner authority class, exactly as a
                     # created task on a metered lane already is.
                     cls = CLASS_OWNER
             if tid:
@@ -1271,8 +1271,8 @@ def approver_role(layout: Layout, proposer_role: str | None) -> tuple[str | None
     return None, reason
 
 
-# ======================================================================= the journal and the applier (step 2 of
-# RECOVERY_PLAN.md's order of work, §2.6): the store holds one document per task and no multi-file transaction, so
+# ======================================================================= the journal and the applier:
+# the store holds one document per task and no multi-file transaction, so
 # the plan is its own journal instead — written before the first mutation, applied in the applier's own fixed
 # order (never the plan's), each operation individually idempotent, its index appended to `done` before the next
 # one starts. `resume` is always last, so a crash at any point leaves the subject exactly where it already was:
@@ -1310,7 +1310,7 @@ def _history(doc: dict, by: str, to: str) -> list[dict]:
 
 
 def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str | None = None) -> dict:
-    """Write the plan a proposing job's result names, exactly once for its whole life (§2.6, D-027 decision 5): a
+    """Write the plan a proposing job's result names, exactly once for its whole life: a
     repeat call with the same id — a replayed ingest — returns the plan already on disk, unchanged, never a
     second validation and never a second write. What is stored as `operations` is the normalised form (§1.3): the
     applier later executes exactly what was checked, never the raw proposal. The correction turn of §2.5 (a
@@ -1334,7 +1334,7 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str
             "operations": normalised_doc.get("operations"), "revisions": [], "proposer_role": proposer_role,
             # Written whether or not the plan validates: a `set_job` refused for a failed preflight (RF-08) is
             # refused *because* this ran, and the approver of a plan that does validate needs the same transcript
-            # for the one that passed (D-027 decision 6) — neither reader gets it from a run directory.
+            # for the one that passed — neither reader gets it from a run directory.
             "report": report.as_dict()}
     to = "refused" if refusals else "awaiting_approval"
     base["history"] = [{"at": store.now_iso(), "by": by, "from": None, "to": to}]
@@ -1349,7 +1349,7 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str
 
 
 def revise(layout: Layout, plan_id: str, doc: dict, by: str) -> dict:
-    """The correction turn (RECOVERY_PLAN.md section 2.5, D-027 decision 4/5): a plan already `refused` gets
+    """The correction turn: a plan already `refused` gets
     exactly one more proposal from the SAME job, under the same id. The refused `operations`, its own refusal
     list and its normalisations are moved into a `revisions[]` entry before the corrected form overwrites them
     — "both plans and both refusal lists" stays one document, never a sibling file. `doc` is a fresh raw
@@ -1438,7 +1438,7 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
     one the task's existing job already names (a parameter diff, RF-11), or — on a task this plan created — the
     template's own declared adapter (its first job). Built by `_set_job_block`, the same merge `_check_set_job`
     simulated at validate() time, so the preflight transcript recorded on the plan is the transcript for this
-    exact block. This does not go through `tasks._write_job` (RECOVERY_PLAN.md 3.4): that chokepoint judges a
+    exact block. This does not go through `tasks._write_job`: that chokepoint judges a
     writer-supplied value, and `adapter` here is never one — it is carried over from the existing job or the
     template, not chosen by this op — so a plan's own writer-authority bound is RF-04 itself, already enforced
     before this effect ever runs."""
@@ -1447,7 +1447,7 @@ def _effect_set_job(layout: Layout, op: dict, plan_doc: dict) -> None:
 
     def fn(doc):
         doc["job"] = _set_job_block(doc.get("job") or {}, tmpl, op.get("template"), op.get("params") or {})
-        # RECOVERY_PLAN.md section 3.3: `tasks_mod._update` preflights the changed block itself.
+        # `tasks_mod._update` preflights the changed block itself.
     tasks_mod._update(layout, op["task"], fn)
 
 
@@ -1764,7 +1764,7 @@ def _open_owner_choice(layout: Layout, plan_id: str, doc: dict, *, reason: str |
 
 
 def _open_owner_question(layout: Layout, plan_id: str, doc: dict, role: str, question: str) -> dict:
-    """RECOVERY_PLAN.md §2.7's other owner path: a `plan_review` verdict of `OWNER` is a question, never an
+    """The plan's other owner path: a `plan_review` verdict of `OWNER` is a question, never an
     effect — distinct from `_open_owner_choice`'s typed `apply_plan` button. Free text on the item it opens is an
     ordinary comment (§4.1); the plan itself is left `awaiting_approval`, exactly where the review found it."""
     if doc.get("owner_item"):
@@ -1873,7 +1873,7 @@ def _refuse_held_subject(layout: Layout, plan_id: str, subject_id: str) -> dict:
     """RF-22, re-checked immediately before routing opens any approval record — a hold placed after validate()
     and before this turn must refuse here exactly as validate() itself would, never reach a human (an approver's
     `plan_review` job, an owner's `apply_plan` button) as a choice apply()'s own re-validation would refuse
-    anyway (D-027 decision 10: only a choice the underlying command would accept is ever offered)."""
+    anyway (only a choice the underlying command would accept is ever offered)."""
     refusal = _rf("RF-22", "I2 §1.2", None, "subject", f"subject {subject_id!r} is held by the owner").as_dict()
 
     def fn(d):
