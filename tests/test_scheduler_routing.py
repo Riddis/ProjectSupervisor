@@ -81,10 +81,10 @@ def test_inactive_role_with_explicit_job_adapter_is_still_parked(layout):
     assert "R5" not in picks(layout)
 
 
-# ------------------------------------------------------------------ D-012 F-B Change 1: a role's own tasks fall back
+# ------------------------------------------------------------------ a role's own tasks fall back
 
 def test_a_role_owned_delivery_falls_back_when_its_primary_lane_is_out_of_capacity(layout, monkeypatch):
-    """Astra's own release-review tasks are `code_review` delivery tasks, not reviews of someone else's - D-012's
+    """Astra's own release-review tasks are `code_review` delivery tasks, not reviews of someone else's - the
     fallback used to cover only the latter (review.lane_for via review.dispatch); the scheduler must ask the same
     question for the role's own work."""
     from supervisor._vendor.contract import CapacityDeferred

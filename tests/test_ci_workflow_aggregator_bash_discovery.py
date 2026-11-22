@@ -1,12 +1,12 @@
-"""P3-6 (docs/reviews/RELEASE_REVIEW_2.5.0.md): `test_ci_workflow_aggregator.py`'s six cases bind to the first
+"""`test_ci_workflow_aggregator.py`'s six cases bind to the first
 `bash` on PATH without checking it is a shell. On a host whose PATH puts a non-shell `bash` first (the WSL
 launcher without a distro is one real example; this file fabricates a portable stand-in rather than depending on
 that feature being installed), the two `expect_zero` cases fail for a reason unrelated to the aggregator - exactly
-what this project's own verifier hit re-running T4-21.a3's gates command (`runs/T4-21/T4-21.a4/verification.json`).
+what a verifier hit re-running a gates command whose checkout lacked that shell.
 
 Two process-level cases spawn the committed test as a child with a PATH set by this file, never the ambient one -
-the re-runnable form a sandbox that denies a `PATH=... command` prefix needs, the same shape as the reviewer's own
-`runs/T4-21/T4-21.a5/test_path_order_2_5_0.py`, a fabricated bash instead of the host's real WSL stub so the
+the re-runnable form a sandbox that denies a `PATH=... command` prefix needs, using
+a fabricated bash instead of the host's real WSL stub so the
 result does not depend on what is installed on the machine running this suite. A third, in-process case drives the
 no-fallback-available branch directly (monkeypatching discovery rather than the host's real Program Files layout,
 which this workstation complicates with a duplicate all-caps `PROGRAMFILES` already on PATH)."""

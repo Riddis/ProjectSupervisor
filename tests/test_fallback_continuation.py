@@ -1,4 +1,4 @@
-"""T2-107 (D-012 F-B, release review 2.2.0 finding F1): every continuation of a fallen-back attempt must keep
+"""Every continuation of a fallen-back attempt must keep
 the fallback's resolved model/effort and its same-vendor flag, on all three paths that rebuild one -
 `Supervisor.requeue()`'s delivery branch, `Supervisor.repair_continuations()`'s torn-write recovery of the same,
 and a fallback review requeued mid-flight (`review.rebuild()`). Each regression fails at

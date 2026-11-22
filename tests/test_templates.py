@@ -1,5 +1,4 @@
-"""supervisor/templates.py: the loader and validator for `config/job_templates.yaml` (RECOVERY_PLAN.md section
-3.2, D-027 decision 8). The framework ships none of its own; a project's file is validated whole, never partially,
+"""supervisor/templates.py: the loader and validator for `config/job_templates.yaml`. The framework ships none of its own; a project's file is validated whole, never partially,
 and the shell-argv rule of section 1.4 is enforced here, before any job block is ever checked against it."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""R-21 (docs/reviews/FRAMEWORK_REVIEW_2026-11-14.md, lines 272-277), "Issues never close by themselves":
+"""“Issues never close by themselves”:
 `issue.resolve` was the only close path and had no CLI subcommand and no UI route — only `supervisor cmd
 issue.resolve` — so 14 issues in the records sat open with every task they named already terminal. The fix marks
 an issue `recovered`, with the attempt and digest that did it, the moment the task it names reaches COMPLETE — a

@@ -1,5 +1,4 @@
-"""Owner responses must re-trigger the tasks they gate (regression for 2026-10-20: H-002 APPROVE left T0-24 in
-WAITING_FOR_HUMAN; OT-010 done left T0-13 FAILED). Two bridges are under test: the loop's `approval` inbox item +
+"""Owner responses must re-trigger the tasks they gate. Two bridges are under test: the loop's `approval` inbox item +
 inbox.apply_approval for human_approval=required tasks, and owner_tasks.set_status(done) releasing `blocks`."""
 
 from supervisor import commands as commands_mod
@@ -66,7 +65,7 @@ def test_modify_on_the_approval_item_sends_the_task_back_to_work(layout):
 
 
 def test_agent_written_question_for_a_waiting_task_counts_as_the_approval(layout):
-    """The H-002 shape: the agent itself asked the owner (kind=question, task_id set, no attempt) and the owner
+    """The agent-written-question shape: the agent itself asked the owner (kind=question, task_id set, no attempt) and the owner
     clicked APPROVE before the loop could open its own item."""
     _approved_delivery(layout)
     item = inbox_mod.create(layout, for_role="owner", subject="Approve archiving", summary="move trees to E:",

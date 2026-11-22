@@ -1,4 +1,4 @@
-"""D-018 (state/decisions/D-018-job-fix-out-of-2.1.0.md): 2.1.0 ships with no way for a diagnosis to change a
+"""2.1.0 ships with no way for a diagnosis to change a
 task's job. A `requeue` that carries a `job_fix` is read exactly like one that does not: the job block is left
 byte-identical, nothing about it is logged, and the ordinary guidance-only requeue still happens. A process job
 whose own command is wrong reaches the owner as a question naming the `task.set_job` it needs, not a diagnosis

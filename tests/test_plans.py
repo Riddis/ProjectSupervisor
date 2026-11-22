@@ -1,5 +1,4 @@
-"""supervisor/plans.py — the recovery plan's document model, closed vocabulary and validator (RECOVERY_PLAN.md
-step 1). One test per refusal code RF-01..RF-26, each isolated so it produces exactly that code; the three
+"""supervisor/plans.py — the recovery plan's document model, closed vocabulary and validator. One test per refusal code RF-01..RF-26, each isolated so it produces exactly that code; the three
 normalisations; a valid plan; and the structural guarantee behind RF-04. No test here applies a plan — there is
 no applier in this module."""
 from __future__ import annotations
@@ -136,7 +135,7 @@ def test_rf21_secret_shaped_value(layout):
     assert_only(refusals, "RF-21")
 
 
-# ------------------------------------------------------------------ jobs — the D-018 frontier: RF-05..RF-09, RF-11, RF-12
+# ------------------------------------------------------------------ jobs — the frontier: RF-05..RF-09, RF-11, RF-12
 
 def _write_templates(layout, templates: dict):
     import yaml

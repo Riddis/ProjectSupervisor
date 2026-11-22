@@ -1,4 +1,4 @@
-"""supervisor/plans.py's applier (RECOVERY_PLAN.md section 2.6, step 2 of the order of work): the plan is its own
+"""supervisor/plans.py's applier: the plan is its own
 journal, apply is ordered, idempotent and resumable, resume is always the last operation, and a plan that cannot
 finish stops visibly instead of half-applying. No test here touches the validator's own refusal codes (test_plans.py
 owns those); every plan here is otherwise clean and exercises the fixed operation order: create, dependency edits,
@@ -18,7 +18,7 @@ from supervisor.models.task import TaskStatus
 
 PLAN_ID = "T1.d1"
 PY = sys.executable
-# A real, passing argv (RECOVERY_PLAN.md section 1.2/3.3's own preflight now runs against this, not just a
+# A real, passing argv: the preflight now runs against this, not just a
 # resolve check): this release wires the applier's `set_job` into the real preflight, so a template too thin to
 # pass it (no `argv` at all) would refuse every otherwise-clean plan in this file with RF-08.
 TEMPLATE_YAML = yaml.safe_dump({"version": 1, "templates": {

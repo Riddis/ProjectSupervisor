@@ -1,4 +1,4 @@
-"""Step 3 of the attempt-identity design (ATTEMPT_MODEL.md §2.7, §2.8, §6 "Control Center"): the Overview and the
+"""Step 3 of the attempt-identity design: the Overview and the
 task page must read a task document on either `Attempt` shape — an un-migrated document (one `Attempt` entry per
 job, joined on `Attempt.id`) and a migrated one (`Attempt.n`/`.jobs[]`, `Attempt.id` never set) — without ever
 showing a bare "attempt N" for a job that is not a delivery, and without ever reading `Attempt.id` on a migrated
@@ -139,7 +139,7 @@ def _migrated_shape_task(layout, tid):
 
 
 def test_attempts_table_groups_by_attempt_and_shows_a_kind_column_old_shape(layout, auth_client):
-    """An un-migrated `Attempt.id` is a job id, not a delivery-attempt number (ATTEMPT_MODEL.md §2.7: "an
+    """An un-migrated `Attempt.id` is a job id, not a delivery-attempt number ("an
     existing job id whose kind is whatever happened to be dispatched nth") — `T0-11.a2` here is a verification,
     not a second delivery attempt, so the row must name the job, never assert "Attempt 2" for it."""
     _old_shape_task(layout, "T0-11")

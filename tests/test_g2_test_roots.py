@@ -1,6 +1,6 @@
 """2.4.0 G2: a declared command's `cwd` must lie inside the task's own `test_roots`, and the interpreter is chosen
 by the verifier (that directory's `.venv` if it has one, else the supervisor's own) — never by what the command's
-own argv[0] spells. Invented directories throughout (D-005): "widget-lib" is not a real project."""
+own argv[0] spells. Invented directories throughout: "widget-lib" is not a real project."""
 import os
 import sys
 import types

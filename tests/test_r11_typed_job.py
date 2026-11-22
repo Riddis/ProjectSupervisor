@@ -1,4 +1,4 @@
-"""R-11 / RECOVERY_PLAN.md section 3, D-027 decision 7: `job` becomes a declared, typed contract field, carried
+"""`job` becomes a declared, typed contract field, carried
 by import, refresh and patch under a rule on who is writing (section 3.4) rather than on the field. Before this
 change `job` lived only in `model_extra`, so a misspelled key was silently ignored and a seed could not carry one
 at all (`tasks.py`'s old `job_not_applied` report)."""
@@ -53,7 +53,7 @@ def test_a_refresh_carries_a_job_change(layout):
     assert r["updated"] == ["A"]
     assert "job_not_applied" not in r
     doc = store.read(layout.tasks / "A.yaml")
-    # `preflight` (RECOVERY_PLAN.md section 3.3) is attached by the same write; "y" is not an executable, so it
+    # `preflight` is attached by the same write; "y" is not an executable, so it
     # fails, which does not block the write -- only naming the field it was writing, never its value.
     assert {k: v for k, v in doc.get("job", {}).items() if k != "preflight"} == {"adapter": "process", "argv": ["y"]}
 
@@ -119,7 +119,7 @@ def test_the_owner_may_write_a_literal_argv_the_plan_may_not(layout):
 
 
 def test_the_control_centers_owner_ui_identity_may_write_a_job(layout):
-    """D-027 decision 7's owner is `gates.is_owner_actor` (the CLI's `owner`, the Control Center's `owner-ui`, any
+    """The owner is `gates.is_owner_actor` (the CLI's `owner`, the Control Center's `owner-ui`, any
     `owner-<channel>`) — not a second, narrower copy of that rule."""
     make_task(layout, "A", cost_category="deterministic")
     tasks.patch_task(layout, "A", {"job": {"adapter": "process", "argv": ["ok"]}}, actor="owner-ui")
@@ -136,8 +136,7 @@ def test_a_caller_naming_no_actor_at_all_may_not_write_a_job(layout):
 
 
 def test_task_set_job_refuses_a_non_owner_actor(layout):
-    """`task.set_job` always carries a literal `argv`; the one write path a plan must never reach (RECOVERY_PLAN.md
-    3.4) must refuse it exactly like a patch or a seed row would."""
+    """`task.set_job` always carries a literal `argv`; the one write path a plan must never reach must refuse it exactly like a patch or a seed row would."""
     make_task(layout, "A", cost_category="deterministic")
     with pytest.raises(tasks.TaskError, match="may not write a job"):
         commands.apply_job(layout, "A", {"adapter": "process", "argv": ["sneaky"]}, "worker")
@@ -145,7 +144,7 @@ def test_task_set_job_refuses_a_non_owner_actor(layout):
 
 
 def test_task_set_job_refuses_a_plan_a_literal_argv_too(layout):
-    """The one actor D-027 decision 7 forbids an `argv` for: a plan reaching `task.set_job` (a queued command's
+    """The one actor the owner-only rule forbids an `argv` for: a plan reaching `task.set_job` (a queued command's
     `actor`, a plugin's `submit_command(..., actor=...)`) must not slip a literal `argv` through where a patch
     would have refused anything beyond `template`/`params`."""
     make_task(layout, "A", cost_category="deterministic")

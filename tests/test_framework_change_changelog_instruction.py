@@ -1,4 +1,4 @@
-"""docs/plan/CONTRIBUTION_DRYRUN.md Gap 2: framework-change/SKILL.md step 5 told a contributor to add their
+"""framework-change/SKILL.md step 5 told a contributor to add their
 CHANGELOG entry "under `## Unreleased`" - a heading this repository's own CHANGELOG.md no longer carries once a
 release has stamped it closed (test_changelog_stamp.py). Followed literally, past that stamp, the instruction
 breaks the very gate it exists to help a contributor pass. The fix names the file's topmost heading instead of

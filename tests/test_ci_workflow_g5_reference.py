@@ -1,9 +1,9 @@
-"""2.5.0 P1-1 (docs/reviews/RELEASE_REVIEW_2.5.0.md, finding P1-1): the `g5_reference` job's last step scaffolds a
+"""The `g5_reference` job's last step scaffolds a
 scratch package (`packages/supervisor-plugin-ci-pkg`, never committed) purely to prove `tools/ci_package.py run()`'s
-path. Since T4-15's M1, `run()` resolves `SOURCE_DATE_EPOCH` for the package wheel through `commit_epoch(ROOT,
+path. `run()` resolves `SOURCE_DATE_EPOCH` for the package wheel through `commit_epoch(ROOT,
 "HEAD", <package path>)`, which runs `git log -1 --format=%ct HEAD -- <path>` and raises `SystemExit` when that path
 has no commit - exactly the uncommitted scratch package's case. `commit_epoch` is correct by its own contract
-(docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.1); the fix is the workflow's: the job commits the scaffolded path in
+; the fix is the workflow's: the job commits the scaffolded path in
 the runner's own checkout (never pushed) before it calls `tools/ci_package.py run`.
 
 Two assertions:

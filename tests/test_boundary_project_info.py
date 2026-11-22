@@ -488,7 +488,7 @@ def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatc
     assert not any(path.startswith("packages/") for path, _l, _w in found)
 
 
-# ----------------------------------------------------- the catalog index (2.5.0, CONTRIBUTOR_RULING.md 2.3): an
+# ----------------------------------------------------- the catalog index : an
 # in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there, and only inside that
 # package's own entry (_catalog_path, _catalog_line_distributions) - not a second mechanism, a per-line scope over
 # the same file. Everywhere else, and in any other listed package's entry, the word is still a hit.
@@ -521,7 +521,7 @@ supervisor-plugin-zorblax = ["zorblax"]
 
 
 def test_the_catalog_allowance_is_scoped_to_each_entrys_own_distribution(tmp_path, monkeypatch):
-    """CONTRIBUTOR_RULING.md 2.3 opens the allowance 'for the words allowed to that entry's own distribution', not
+    """The catalog allowance is scoped 'for the words allowed to that entry's own distribution', not
     the whole file: one listed package's word must not sit unflagged in another listed package's own entry, even
     in the one free-text field (summary)."""
     terms_file(tmp_path, monkeypatch, TWO_PACKAGES_ALLOWING)

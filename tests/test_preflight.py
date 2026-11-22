@@ -1,4 +1,4 @@
-"""supervisor/preflight.py and the gate's own refusal (RECOVERY_PLAN.md section 3.3, D-027 decision 9): a wrong
+"""supervisor/preflight.py and the gate's own refusal: a wrong
 path, a wrong port, an unknown python `fn` and an unparsable flag are each refused at write time, with their own
 code, under section 3.3's table; a literal `argv`/`fn` job declares no parameter slots at all; the probe runs
 under the declared base environment a dispatched job would get; and a stale or failed preflight never launches."""
@@ -100,7 +100,7 @@ def test_timeout_too_high_refused(layout):
 
 
 def test_duration_below_needs_refused(layout):
-    """RECOVERY_PLAN.md section 7: the one R-20 check this release owns."""
+    """The one check this release owns."""
     _write_templates(layout, {"t": _process_template(needs={"duration_min": 5})})
     job = {"adapter": "process", "template": "t", "params": {}, "timeout_s": 60}
     out = preflight.run(layout, job)
@@ -179,8 +179,7 @@ def test_a_broken_template_file_fails_the_preflight_rather_than_raising(layout):
 # ----------------------------------------------------------------------- the gate's own refusal (invariant 7)
 
 def test_gate_refuses_a_process_job_with_no_preflight(layout):
-    """Outside the backfill's own run-on-absent window (RECOVERY_PLAN.md section 3.3, step 5,
-    tests/test_preflight_backfill.py): once the sweep's completion mark is written, an absent preflight is
+    """Outside the backfill's own run-on-absent window (see tests/test_preflight_backfill.py): once the sweep's completion mark is written, an absent preflight is
     refused outright, with no second chance to pass it at the gate."""
     make_task(layout, "T1", job={"adapter": "process", "argv": [PY, "-c", "pass"], "preflight": None})
     preflight.mark_backfill_complete(layout, swept=0)
@@ -331,7 +330,7 @@ SECRET_SHAPED = "sk-ant-" + "a" * 24          # shaped like a key, matched by po
 
 
 def test_secret_shaped_value_refused_in_a_literal_process_block(layout):
-    """The table's own `all` row (RECOVERY_PLAN.md section 3.3: "no secret-shaped value") binds a block with no
+    """The table's own `all` row ("no secret-shaped value") binds a block with no
     template at all: a literal, owner-authored `argv` declares no slots, but its `params` are still scanned."""
     job = {"adapter": "process", "argv": [PY, "-c", "pass"], "params": {"key": SECRET_SHAPED}}
     out = preflight.run(layout, job)

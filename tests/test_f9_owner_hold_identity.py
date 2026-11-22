@@ -1,4 +1,4 @@
-"""Round-4 review F9 (docs/reviews/RELEASE_REVIEW_2.1.0_round4.md lines 81-140, answer 3 at lines 178-207):
+"""
 nothing durable distinguished an owner Hold from the cap event's own BLOCKED, so the cap's automatic requeue
 undid it - in each of the three windows where recovery (`loop._repair_capped_escalation`) replayed an
 interrupted escalation over a Hold, and in the uninterrupted path too, where `diagnosis.ingest`'s own ordinary
@@ -267,8 +267,7 @@ def test_the_owner_s_own_requeue_releases_a_hold(layout):
 
 
 def test_release_hold_clears_the_hold_without_moving_the_task(layout):
-    """`tasks.release_hold()` is the owner's release that moves nothing (RECOVERY_PLAN.md section 4.1's
-    `release_hold` effect): a held task with nowhere else to go is unheld and stays exactly where it is, which
+    """`tasks.release_hold()` is the owner's release that moves nothing: a held task with nowhere else to go is unheld and stays exactly where it is, which
     `set_status()` cannot do — a same-status write there is a silent `_NoChange` that never reaches the clearing."""
     make_task(layout, "T")
     tasks.set_status(layout, "T", "IN_PROGRESS")

@@ -1,5 +1,4 @@
-"""supervisor/plans.py's authority classes and the approval lane (RECOVERY_PLAN.md section 2.7, D-027 decision 6,
-step 8 of the order of work): `plans.authority()` classifies every validated plan into A, B or the owner class,
+"""supervisor/plans.py's authority classes and the approval lane: `plans.authority()` classifies every validated plan into A, B or the owner class,
 total over the closed vocabulary; `resume_plans()` routes a freshly validated plan by that class — class A on the
 spot, class B behind exactly one `plan_review` job, the owner class behind exactly one typed choice; and the
 approver is never the proposer (RF-23)."""
@@ -111,7 +110,7 @@ def test_approver_role_skips_the_proposer(layout):
 
 
 def test_approver_role_escalates_with_a_reason_when_only_candidate_is_the_proposer(layout):
-    """D-027 decision 6's load-bearing case: the default manager level and the default planning role are the
+    """The load-bearing case: the default manager level and the default planning role are the
     same role, so a project configured with one manager role only must not approve its own proposal."""
     _write_routing(layout, "plan:\n  approver: [senior_pm]\n")
     role, reason = plans.approver_role(layout, "senior_pm")
@@ -134,7 +133,7 @@ def test_approver_role_empty_configuration(layout):
 
 
 def test_approver_role_skips_a_role_the_project_does_not_configure_at_all(layout):
-    """D-027 decision 6's load-bearing case, named in review: a project that configures `roles:` at all, and
+    """Another load-bearing case: a project that configures `roles:` at all, and
     whose template-shipped `plan.approver` default names a manager role the project never configured (a single-
     manager project), must escalate to the owner with the reason — never resolve the absent role as if it were
     an ordinary, active approver (tasks.py's own contract_warnings treats the same absence as "the task would
@@ -288,7 +287,7 @@ def test_held_subject_is_refused_rf22_and_never_reaches_the_owner(layout):
 
 
 def test_a_hold_placed_after_validation_is_refused_before_any_approval_record_opens(layout):
-    """D-027 decision 10: only a choice the underlying command would accept is ever offered. A hold placed
+    """Only a choice the underlying command would accept is ever offered. A hold placed
     between propose() (which found none) and the routing turn must still refuse with RF-22 here — never open an
     approver's plan_review job, or an owner's apply_plan button, that apply()'s own re-validation would refuse
     anyway."""

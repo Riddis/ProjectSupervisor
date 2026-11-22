@@ -1,4 +1,4 @@
-"""D-012 F-B Change 2: a lane whose login fails counts as unavailable, not failed, and hands over to the role's
+"""A lane whose login fails counts as unavailable, not failed, and hands over to the role's
 configured fallback - the same way a role's own tasks already fall back on capacity (Change 1)."""
 import os
 import sys

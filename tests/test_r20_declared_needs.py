@@ -1,4 +1,4 @@
-"""R-20 (D-028, docs/plan/LONG_WORK.md): declared task needs matched against the lane at import, a job-declared
+"""Declared task needs matched against the lane at import, a job-declared
 time budget enforced instead of the global cap, and an Extend that takes a duration bounded by the same ceiling,
 deduped against a click burst. Answers three recorded failures: an 8h agent session killed at the policy cap
 with no field to say the work was long; two reshaped tasks that ran three sessions on a lane that could never
@@ -423,7 +423,7 @@ def test_rf31_a_plan_may_not_write_needs_onto_a_task_it_did_not_create(layout):
 # The loss this release exists to close was recorded on an agent lane: a session with no job block of its own,
 # killed at the policy cap after eight hours of work. Section 9 step 4 and section 10 invariant 4 therefore name
 # three lanes, not one -- `process`, `claude_cli` and `codex_cli`, the three that call the resolver after this
-# release -- and D-028 decision 11 says every `prepare` passes `needs.needs_for(layout, task, kind)`.
+# release -- and every `prepare` passes `needs.needs_for(layout, task, kind)`.
 
 @pytest.mark.parametrize("lane", ["claude_cli", "codex_cli"])
 def test_a_model_lane_delivery_is_budgeted_by_its_own_declared_duration(layout, lane):
@@ -458,7 +458,7 @@ def test_every_prepare_that_resolves_limits_scopes_the_declaration_to_the_delive
 
 
 def test_a_model_lane_timeout_s_above_the_ceiling_is_clamped_with_a_receipt(layout):
-    """D-028 decision 4: RF-08's cap row is the preflight's `process` row alone, so the resolver's last clamp is
+    """RF-08's cap row is the preflight's `process` row alone, so the resolver's last clamp is
     the only enforcement on a model lane -- and it may not lower a declared number silently."""
     _write_routing(layout, {"timeouts": {"max_hard_cap_s": 120}})
     make_task(layout, "M", job={"adapter": "claude_cli", "timeout_s": 3600})
@@ -473,7 +473,7 @@ def test_a_model_lane_timeout_s_above_the_ceiling_is_clamped_with_a_receipt(layo
 
 def test_rf28_refuses_against_the_ceiling_the_resolver_will_clamp_to(layout):
     """`ceiling_s` is one function, but it is one *number* only if every reader composes it from the same
-    arguments (D-028 decision 4, section 3.2's signature). A per-cost-category `max_hard_cap_s` that the clamp
+    arguments. A per-cost-category `max_hard_cap_s` that the clamp
     reads and the write-time refusal does not is the recorded cap-kill re-entering through configuration: the
     declaration is admitted at the write and cut at launch, with declared work left."""
     _write_routing(layout, {"timeouts": {"max_hard_cap_s": 86400, "by_cost": {"claude": {"max_hard_cap_s": 1800}}},
@@ -492,7 +492,7 @@ def test_rf28_refuses_against_the_ceiling_the_resolver_will_clamp_to(layout):
 def test_rf08_refuses_a_process_timeout_s_above_the_composed_ceiling_and_admits_one_exactly_at_it(layout):
     """Section 7.1's own named test for the one line this release lands inside the other design's check: RF-08's
     `process`-row cap comparison reads `timeouts.ceiling_s`, composed for the lane and the role the job would run
-    on. The check, its code, its message and its home stay where RECOVERY_PLAN.md section 3.3 put them."""
+    on. The check, its code, its message and its home stay exactly where they were."""
     _write_routing(layout, {"timeouts": {"max_hard_cap_s": 86400,
                                           "by_cost": {"deterministic": {"max_hard_cap_s": 1800}}}})
     tasks_mod.create(layout, _task_doc("Over", job={"adapter": "process", "argv": [PY, "-c", "pass"],
@@ -594,7 +594,7 @@ def test_claude_apis_one_configured_entry_follows_its_own_timeout(layout):
 
 def test_the_gate_does_not_re_run_the_preflights_probe(layout, monkeypatch):
     """Section 3.4: the gate re-runs the match and only the match. The match is two dict lookups; the probe is a
-    subprocess, and running it at dispatch is what RECOVERY_PLAN.md section 3.3 refused on cost and lateness."""
+    subprocess, and running it at dispatch is refused on cost and lateness."""
     from supervisor import preflight as preflight_mod
     _write_templates(layout, {"t": {"adapter": "process", "argv": [PY, "-c", "pass"], "may_be_set_by": ["owner"],
                                      "params": {}, "probe": [PY, "-c", "pass"]}})

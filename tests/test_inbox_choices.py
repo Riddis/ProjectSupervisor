@@ -1,4 +1,4 @@
-"""Typed choices on an inbox item (RECOVERY_PLAN.md section 4.1, step 7 of the order of work): an item's
+"""Typed choices on an inbox item: an item's
 `choices[]` carry the effect a button actually performs, each one checked and its label/detail rendered *from*
 that effect before it is ever offered (section 4.2 — never prose a caller writes beside it), `choices_digest`
 binds an answer to what was shown, `allowed_responses` is derived rather than stated, and the effect is applied
@@ -59,7 +59,7 @@ def test_two_op_choice_label_is_rendered_from_both_operations(layout):
 
 
 def test_a_diagnose_now_choice_is_offered_at_create(layout):
-    """Step 10 (RECOVERY_PLAN.md section 9) wires `diagnose_now` through a `loop.Supervisor` built for the one
+    """Step 10 wires `diagnose_now` through a `loop.Supervisor` built for the one
     call (`inbox._apply_diagnose_now`) — it is an ordinary owner-only effect at create() time now, not refused
     the way an effect with no path to apply at all would be."""
     make_task(layout, "T1", status="BLOCKED")

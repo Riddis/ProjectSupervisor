@@ -1,4 +1,4 @@
-"""A diagnosis `defer` proposes a plan (RECOVERY_PLAN.md section 2.5, D-027 decision 4, order-of-work step 9).
+"""A diagnosis `defer` proposes a plan.
 
 Before this: a defer named `new_task`/`wait_for`, a validation error went straight to the owner with no chance to
 correct it, and every refused proposal in the records died of one correctable cause (prose in `checks`). Now a
@@ -222,7 +222,7 @@ def test_route_plan_to_owner_is_idempotent_like_plans_own_owner_routes(layout, f
 
 
 def test_cause_vocabulary_is_unchanged():
-    """D-027 decision 4: the correction turn reuses `cause: continuation`; no new `cause` value is added anywhere
+    """The correction turn reuses `cause: continuation`; no new `cause` value is added anywhere
     in the tree. Pinned against every literal `cause=` this release's own source carries."""
     import re
     from pathlib import Path

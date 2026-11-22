@@ -1,4 +1,4 @@
-"""RECOVERY_PLAN.md section 3.3's backfill, D-027 decision 9, step 5: the launch rule the previous step adds would
+"""The backfill: the launch rule the previous step adds would
 stop every existing `process`/`python` task on upgrade day, since none of them has a stored preflight. A bounded,
 one-time sweep (oldest task first), a completion mark the store carries once, a deduped owner item for a block that
 cannot pass, and a run-on-absent window at the gate that closes the moment the mark is written -- so an existing
@@ -84,7 +84,7 @@ def test_a_fresh_store_with_nothing_to_backfill_completes_on_its_first_turn(layo
 # ------------------------------------------------------------------- this project's own upgrade case
 
 def test_literal_argv_blocks_naming_not_yet_written_output_files_are_swept_clean(layout):
-    """A literal `argv`/`fn` job declares no parameter slots (RECOVERY_PLAN.md section 1.4): a positional argument
+    """A literal `argv`/`fn` job declares no parameter slots: a positional argument
     that happens to name a file nobody has written yet is not a path parameter the backfill checks for existence,
     so it is swept clean, launches, and never reaches the owner."""
     for i in range(3):

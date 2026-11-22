@@ -139,7 +139,7 @@ def test_release_requested_still_true_inside_the_hand_over_window(tmp_path):
 
 
 def test_a_waiter_still_asking_every_pass_is_not_read_as_expired_once_the_window_is_older_than_its_first_ask(tmp_path):
-    """F20 (docs/reviews/RELEASE_REVIEW_local-lane_round2.md). F8's expiry read only release_requested_at, set
+    """The expiry used to read only release_requested_at, set
     once on b's first refused pass and never refreshed (F2's own idempotence). A holder whose job outlives
     hand_over_timeout_s therefore read "nobody is waiting" while b was still asking on every pass. b's second
     ask, after the window from its *first* ask has already passed, must keep a asked to yield."""

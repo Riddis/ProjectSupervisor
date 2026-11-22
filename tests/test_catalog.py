@@ -1,5 +1,4 @@
-"""tools/catalog_check.py: the validator for plugins-catalog/index.yaml (docs/releases/2.5.0/CONTRIBUTOR_RULING.md
-section 2). It fetches nothing and runs no package's code; it refuses what is malformed, never what is unsafe -
+"""tools/catalog_check.py: the validator for plugins-catalog/index.yaml. It fetches nothing and runs no package's code; it refuses what is malformed, never what is unsafe -
 that half is the catalog-review skill's. Each in-repo (packages/<distribution>) case is built against a scaffolded
 package folder in a disposable git repository, never a real one under this repository's own packages/."""
 from __future__ import annotations
@@ -127,8 +126,8 @@ def test_g3_fetches_full_history_so_the_real_index_check_is_not_vacuous_once_ent
     tag) read `git tag --list` over the checkout `test_the_real_index_validates` runs against. That test is
     vacuous today only because the real index is still empty (`plugins: []`): no git call happens. The 'suite' job
     (G3) is where it runs, on a fresh `actions/checkout` every time; without full history that checkout carries no
-    tags, so the day T4-14 adds the first entry, every tag-dependent check would refuse it - not because it is
-    malformed, but because the checkout cannot see the tags that satisfy it (chief_architect review, T4-13).
+    tags, so the day an entry is first added, every tag-dependent check would refuse it - not because it is
+    malformed, but because the checkout cannot see the tags that satisfy it.
     Pinned here, not only in the CI YAML, so a reverted checkout step fails a test instead of merging unnoticed."""
     workflow = yaml.safe_load((REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
     checkout = next(step for step in workflow["jobs"]["suite"]["steps"]

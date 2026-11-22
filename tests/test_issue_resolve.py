@@ -44,9 +44,9 @@ def test_issue_resolve_is_the_only_command_handler_that_writes_state_issues(layo
         assert "layout.issues" not in src, f"{kind} touches state/issues/ too"
 
 
-# R3 (docs/reviews/RELEASE_REVIEW_2.1.0.md): `issue_id` is forwarded straight into `layout.issues / f"{id}.yaml"`,
+# `issue_id` is forwarded straight into `layout.issues / f"{id}.yaml"`,
 # so an id naming another record overwrites it. Each case below targets a real task record and must be refused
-# before any write — the reviewer's probe (runs/T2-05/T2-05.a1/probes.py, observation issue_path_traversal) is the
+# before any write — the reviewer's probe, observation issue_path_traversal, is the
 # first one, verbatim.
 
 def test_issue_resolve_refuses_a_traversal_id_and_leaves_the_task_record_unchanged(layout):

@@ -85,7 +85,7 @@ def test_lane_for_falls_back_same_vendor_on_capacity_deferral(layout, monkeypatc
 def test_lane_for_takes_an_explicit_primary_over_the_role_profiles_own_adapter(layout, monkeypatch):
     """A role's OWN delivery task may be routed onto its primary lane by job.adapter or a cost_lanes override,
     not only roles.<role>.adapter - scheduler.plan() must be able to ask lane_for() about THAT lane, not the one
-    role_profile() would guess on its own (D-012 F-B Change 1)."""
+    role_profile() would guess on its own."""
     import yaml
     layout.config.mkdir(parents=True, exist_ok=True)
     (layout.config / "routing.yaml").write_text(yaml.safe_dump({"roles": {"code_review": {
@@ -115,8 +115,8 @@ def test_full_cycle_implement_verify_review_complete(layout):
 
 def test_dispatch_computes_prior_round_context_once(layout, monkeypatch):
     """review.dispatch() needs the previous-round context for both the packet (review_brief) and the dispatch
-    extra (prior_round/digest_diff) - one computation shared between the two, not one each (R-15,
-    ATTEMPT_MODEL.md 4.3): a frozen manifest, a text snapshot and a unified diff built twice is wasted work on
+    extra (prior_round/digest_diff) - one computation shared between the two, not one each -
+    a frozen manifest, a text snapshot and a unified diff built twice is wasted work on
     every single review dispatch, not only a round with a prior round to show."""
     from supervisor import packets
     review_task(layout, "T")

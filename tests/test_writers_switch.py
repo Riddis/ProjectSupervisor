@@ -1,4 +1,4 @@
-"""ATTEMPT_MODEL.md section 8.6 and step 9 of "Order of work": the writers switch. `loop.dispatch` allocates
+"""The writers switch. `loop.dispatch` allocates
 every delivery/continuation/reroute/revision/verify/review/diagnosis job's identity through `tasks.allocate_job`
 instead of counting files; a conversation job is the one exception (§2.2: it backs no Task document for the
 allocator to lock, so `dispatch` still counts `jobs.for_task`'s rows for it, by design, not by oversight). The
@@ -7,7 +7,7 @@ allocator-written, and every suffix reader `jobs.attempt_no` fed (deleted in thi
 fields instead.
 
 Each test below is read against a neutral, invented store — no project name, task id or path from any real
-project (D-005)."""
+project."""
 from __future__ import annotations
 
 import json
@@ -288,10 +288,9 @@ def test_a_conversation_job_record_is_exempt_from_the_guard(layout):
     _check_writer_guard(layout)             # must not raise
 
 
-# ---------------------------------------------------------------- 11. the guard reads the archive too (RELEASE_
-# REVIEW_2.8.0.md P2): a job record that moved into `jobs.archive_dir` before `migrate attempts` ever ran is still
+# ---------------------------------------------------------------- 11. the guard reads the archive too: a job record that moved into `jobs.archive_dir` before `migrate attempts` ever ran is still
 # a record the writer switch's readers must be able to sort/group by fields it does not carry, and the guard's own
-# promise (ATTEMPT_MODEL.md §8.6) is "every job record under state/runtime/jobs/ and its archive", not the top
+# promise is "every job record under state/runtime/jobs/ and its archive", not the top
 # level alone.
 
 
@@ -457,7 +456,7 @@ def test_a_bare_record_dropped_into_an_already_archived_tasks_folder_is_still_na
 
 
 def test_an_out_of_band_overwrite_of_an_already_migrated_archived_record_is_caught_by_the_fingerprint(layout):
-    """RELEASE_REVIEW_2.8.0_round2.md's round-2 finding on this marker: a bare `Path.exists()` cannot tell a
+    """A bare `Path.exists()` cannot tell a
     restored pre-migration backup, or any other out-of-band write, from a file it already read -- a merge-copy
     restore of `migrations._backup_store`'s own backup is one way this happens, but the fix does not need to name
     that path, only detect any change to a file the marker speaks for. Dropping the `migrated.attempts` stamp

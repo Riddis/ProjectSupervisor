@@ -1,4 +1,4 @@
-"""The attempt-identity migration's apply and check (ATTEMPT_MODEL.md section 8, step 7 of "Order of work"):
+"""The attempt-identity migration's apply and check:
 apply writes a reviewed `mapping.json`'s identity fields onto the store it was derived from, never derives one
 of its own, and `check` re-reads the store afterwards and asserts section 8.5's seven claims against it.
 
@@ -73,7 +73,7 @@ ALL_EXPECTED = {**EXPECTED, **EXTRA_EXPECTED}
 
 
 def _allocator_job(layout, job_id, task_id, kind, attempt, seq, created, cause=None, parent=None, **fields):
-    """A record the allocator itself would have written (ATTEMPT_MODEL.md section 2.6): `kind`/`attempt`/`seq`
+    """A record the allocator itself would have written: `kind`/`attempt`/`seq`
     promoted to the top level, never only inside `spec`, which is what `_has_identity_fields` tells apart from
     a bare, un-migrated record. Built directly, like `_job` above, rather than through `tasks.allocate_job` --
     the shape on disk is what matters here, not the path that wrote it."""

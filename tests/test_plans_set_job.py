@@ -1,5 +1,4 @@
-"""`set_job` is the one plan operation that touches the D-018 frontier (RECOVERY_PLAN.md section 2.2's `set_job`
-row, step 6 of section 9): it may only correct a parameter of the job an existing task already has (class A), or
+"""`set_job` is the one plan operation that touches the frontier: it may only correct a parameter of the job an existing task already has (class A), or
 set the first job of a task this same plan created (class B, exercised in test_plans_apply.py's `_setup`).
 test_plans.py already owns the validator's RF-05..RF-09/RF-11/RF-12 refusals for a template that is unknown, not
 plannable, out of a bad parameter, or out of scope; this module owns what those tests do not: a class A parameter
@@ -108,7 +107,7 @@ def test_set_job_whose_probe_fails_is_refused_rf08_with_its_transcript_digest_on
     "does the executable resolve" check (what this validator used to run) would wave this plan through, and the
     failure would only surface later, as a stall, when the applier's own write re-runs the real preflight. The
     validator must catch it itself, under RF-08, with the failing transcript's digest recorded on the plan
-    document regardless of the refusal (RECOVERY_PLAN.md section 2.2's `set_job` row; D-027 decision 6)."""
+    document regardless of the refusal."""
     _write_templates(layout, {"t1": {"adapter": "process", "argv": [PY, "-c", "pass", "{mode}"],
                                      "probe": [PY, "-c", "import sys; sys.exit(1)"],
                                      "may_be_set_by": ["plan"],

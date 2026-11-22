@@ -126,7 +126,7 @@ def test_routing_resources_single_job_is_removed_the_slot_mechanism_is_untouched
     lay = testing.project(tmp_path)
     _write_routing(lay, {"resources": {"gpu": {"single_job": True, "usable_vram_floor_mb": 1000, "devices": [0]}}})
     from supervisor import needs as needs_mod
-    # the section still loads, tolerantly, exactly as T8-14 (R-20) left it...
+    # the section still loads, tolerantly, as a deliberate choice...
     assert needs_mod.resources_declared(lay)["gpu"]["single_job"] is True
     # ...but the framework names it a removed setting, not a read one
     removed = gate.removed_routing_settings(lay)

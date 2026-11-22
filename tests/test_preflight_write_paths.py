@@ -1,5 +1,4 @@
-"""The preflight runs whenever a job block is written -- by `task.create`, a patch, `task.set_job`, or a plan
-(RECOVERY_PLAN.md section 3.3) -- never only at the gate. One test per writer, each exercising a template-based
+"""The preflight runs whenever a job block is written -- by `task.create`, a patch, `task.set_job`, or a plan -- never only at the gate. One test per writer, each exercising a template-based
 job so a wrong parameter is caught at the write itself rather than at the first launch."""
 from __future__ import annotations
 
@@ -38,8 +37,8 @@ def test_create_attaches_a_preflight(layout):
 
 
 def test_create_records_a_failed_preflight_rather_than_refusing_the_create(layout):
-    """A create is not refused by a failed preflight (RECOVERY_PLAN.md section 3.3 binds the launch, not the
-    write); the gate is where a bad job block stops, so the record is visible instead of lost."""
+    """A create is not refused by a failed preflight: the launch is bound, not the
+    write; the gate is where a bad job block stops, so the record is visible instead of lost."""
     _write_templates(layout, {"t": _good_template()})
     tasks_mod.create(layout, {"id": "T1", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
                               "artifacts": ["x"], "cost_category": "deterministic",

@@ -1,4 +1,4 @@
-"""R-18 (docs/reviews/FRAMEWORK_REVIEW_2026-11-14.md, lines 249-256): Hold is the one moment the owner most
+"""Hold is the one moment the owner most
 needs it - a task has just failed and an automatic retry is about to race whatever they are repairing - and that
 is exactly the moment `tasks.hold()` refuses: `ALLOWED[FAILED]` carries no `BLOCKED` (`models/task.py`), so
 `hold()`'s own `TaskStatus.BLOCKED not in ALLOWED[current]` check raises before it ever reaches `held`. The same

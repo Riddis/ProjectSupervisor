@@ -147,7 +147,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## 2.8.0 — 2026-11-16
 
-- **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**
+- **Plugin API: additive, for the attempt-identity change.**
   `submit_command(..., job_id=None)` gains the one thing P3-R2-3 found missing: a job can tag its own command, so
   its failure reaches an owner issue and the job's own result waits on it, exactly as every CLI verb has since
   R-19 — the default stays interactive and the library still reads no environment variable. `Adapter`'s
@@ -168,7 +168,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   not a downstream package's test bodies, so it neither flagged nor could flag a plugin test that still guesses
   the old id shape — that is this note's own job.
 
-- **Plugin API: `ProcessAdapter.env()`'s default changes (R-24, ATTEMPT_MODEL.md section 4.4, step 12).** A
+- **Plugin API: `ProcessAdapter.env()`'s default changes.** A
   process job's child no longer inherits the loop's own environment; the default is now the declared allow-list
   (`config/routing.yaml`'s `env.base`, or a built-in default for a project that predates this release) plus the
   lane's own `env.lanes.<name>.add`/`.secrets`. `env(spec)`'s signature is unchanged and a subclass that already

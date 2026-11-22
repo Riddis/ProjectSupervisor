@@ -41,8 +41,8 @@ def test_the_reexported_names_are_the_framework_objects():
 
 def test_g2_api_contract_check_is_ok_for_this_worktree():
     """G2 bare (`python -m supervisor.api_contract check`) depends on whatever `supervisor` the ambient `python`
-    happens to resolve first, which on this machine is not always this worktree (RELEASE_REVIEW_local-lane.md
-    F17 names the same hazard for the package's own conformance test). Running the same check in-process,
+    happens to resolve first, which on this machine is not always this worktree - the same hazard applies to
+    the package's own conformance test. Running the same check in-process,
     inside this test's own pytest session, resolves `supervisor` the way every test in this file already does -
     from the worktree - so this is the worktree's own contract, not whatever the ambient install's happens to be."""
     from supervisor import api_contract

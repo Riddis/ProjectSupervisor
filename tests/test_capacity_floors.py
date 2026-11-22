@@ -153,7 +153,7 @@ def test_the_overage_window_is_labelled_and_takes_no_owner_floor():
 
 
 def test_mark_login_failed_makes_the_engine_unavailable_for_a_recheck_window(lay):
-    """D-012 F-B Change 2: a lane whose login fails counts as unavailable the same way a measured usage window
+    """A lane whose login fails counts as unavailable the same way a measured usage window
     does - every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) sees the same
     CapacityDeferred with no code of its own, gating only until the recheck (never a hard wait: a real login
     fixed sooner is seen the next time the CLI actually runs)."""

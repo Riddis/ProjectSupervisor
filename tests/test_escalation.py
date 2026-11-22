@@ -121,7 +121,7 @@ def test_escalate_on_a_failed_task_adds_a_note_instead_of_an_illegal_transition(
     assert tasks.load(layout, "T").status == TaskStatus.FAILED
 
 
-# ---- R-14: retry budgets split by cause (ATTEMPT_MODEL.md section 4.2, step 10 of "Order of work") ----
+# ---- retry budgets split by cause ----
 #
 # One counter used to charge infrastructure failures and content revisions alike: four infrastructure
 # failures could spend the budget a content review needed, and every blocked review round cost a

@@ -1,4 +1,4 @@
-"""Round-5 review F11 (docs/reviews/RELEASE_REVIEW_2.1.0_round5.md lines 92-120, answer 3 at lines 188-199):
+"""
 F9's durable `held` field (`models/task.py:160`) was read by only two of the automatic paths that move a task -
 `diagnosis.ingest`'s requeue branch and `loop._repair_capped_escalation` - so the loop's own continuation launch
 still reversed a Hold. `Supervisor.requeue` (`loop.py:151-208`) queued a continuation for any DEFERRED delivery
@@ -6,7 +6,7 @@ without reading `held` at all; `launch()` ran `_ensure_in_progress` (`loop.py:23
 saw the task, moving a BLOCKED, held task to IN_PROGRESS with `actor="loop"`; and `gate.check`
 (`gate.py:121-163`) had no task-status condition to refuse the launch that followed.
 
-Probe `held_then_launch` (round 5, `runs/T2-70/T2-70.a1/r5_hold.py` section A, `r5_hold.txt:5`): the owner Holds
+Probe `held_then_launch`: the owner Holds
 an IN_PROGRESS task through the real `/hold` route while its delivery is RUNNING; the delivery then reports a
 capacity DEFERRED through production `requeue()` - one continuation is PREPARED on the held task; the window
 resets and production `launch()` runs it: before this fix the gate refused nothing (`launch_held_reason: null`,

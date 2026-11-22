@@ -48,7 +48,7 @@ def test_seed_passing_only_because_of_a_row_it_does_not_write_is_refused(layout)
 
 
 def test_refresh_stores_evidence_test_roots_and_the_seeds_own_job(layout):
-    # RECOVERY_PLAN.md 3.4: an owner's refresh (asserted explicitly — gates.is_owner_actor, never a bare default)
+    # An owner's refresh (asserted explicitly — gates.is_owner_actor, never a bare default)
     # carries a job change like any other contract field — no separate task.set_job, no job_not_applied.
     make_task(layout, "A", tests=["prose"], cost_category="deterministic")
     seed = {"tasks": [_row("A", title="t2", evidence="review", test_roots=["sub"],
@@ -63,7 +63,7 @@ def test_refresh_stores_evidence_test_roots_and_the_seeds_own_job(layout):
     assert doc["title"] == "t2"
     assert doc.get("evidence") == "review"
     assert doc.get("test_roots") == ["sub"]
-    # `preflight` (RECOVERY_PLAN.md section 3.3) is attached by the same write; "x" is not an executable, so it
+    # `preflight` is attached by the same write; "x" is not an executable, so it
     # fails, which does not block the write -- only naming the field it was writing, never its value.
     assert {k: v for k, v in doc.get("job", {}).items() if k != "preflight"} == {"adapter": "process", "argv": ["x"]}
     assert "job_not_applied" not in r

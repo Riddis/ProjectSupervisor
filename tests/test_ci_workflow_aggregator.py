@@ -1,8 +1,8 @@
-"""M7 (docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.5): one fixed-name job replaces the six-and-growing
+"""One fixed-name job replaces the six-and-growing
 `package …` matrix contexts in branch protection. `all_gates` (rendered name `all gates`) needs `[packages,
 package]`, runs `if: always()` so a failed dependency does not simply skip it, and its one step's shell asserts
 `packages` succeeded and `package` either succeeded or was legitimately skipped (no package in the repository,
-`packages.outputs.count == '0'`). T4-24's protection PATCH requires the context by this file's own
+`packages.outputs.count == '0'`). Branch protection requires the context by this file's own
 `REQUIRED_CONTEXT_NAME` - it does not choose the name."""
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "ci.yml"
-REQUIRED_CONTEXT_NAME = "all gates"  # the exact string T4-24's branch-protection PATCH must require
+REQUIRED_CONTEXT_NAME = "all gates"  # the exact string branch protection must require
 
 # P3-6: a `bash` on PATH is not necessarily a shell (the WSL launcher without a distro exits 1 for every script,
-# printing a UTF-16 "WSL is not installed" message - exactly what runs/T4-21/T4-21.a4/verification.json hit when
+# printing a UTF-16 "WSL is not installed" message - exactly the failure mode hit when
 # System32 came before Git for Windows on the verifying host's PATH). These are Git for Windows' own well-known
 # install locations, tried only as a fallback when the first `bash` PATH offers cannot run one.
 _GIT_FOR_WINDOWS_BASH = (r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe")

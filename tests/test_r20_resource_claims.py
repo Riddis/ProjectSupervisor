@@ -1,4 +1,4 @@
-"""R-20 (D-028 decision 5, docs/plan/LONG_WORK.md section 5): a named external resource, declared by the project
+"""A named external resource, declared by the project
 and claimed by one job at a time -- the gate serialises two tasks that would otherwise both publish to the same
 external target (the recorded loss: two accepted heads lost to another merge, because the gate only ever
 coordinated owned paths *inside* the project). The claim is held by the open job record and by nothing else, so

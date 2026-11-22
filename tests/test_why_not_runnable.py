@@ -1,4 +1,4 @@
-"""`why_not_runnable` (RECOVERY_PLAN.md section 4.3, D-027 decision 11, step 10 of the order of work): one
+"""`why_not_runnable`: one
 function computes the reason a non-terminal task cannot run, from the closed nine-code set, and the idle alert,
 the Overview and the task page all read it — so the three surfaces can never show a different sentence for the
 same task, and each listed task is offered only the choices its own reason admits."""
@@ -235,7 +235,7 @@ def test_a_stored_preflight_for_a_different_launch_adapter_is_never_reported(lay
 
 @pytest.mark.usefixtures("fake_claude")
 def test_answering_a_diagnose_now_choice_dispatches_a_diagnosis(layout):
-    """Step 10's own wiring (RECOVERY_PLAN.md section 9): the owner-only `diagnose_now` effect, once offered by
+    """The owner-only `diagnose_now` effect, once offered by
     `why_not_runnable.choices_for` and answered, actually reaches `diagnosis.dispatch` through a `loop.Supervisor`
     built for the call -- not refused for want of "the running loop" the way it was before this step."""
     make_task(layout, "DEP")

@@ -3,7 +3,7 @@
 review salvage sort. At the reader release each also tolerated a record with none of the attempt-identity fields
 (the suffix was the only signal such a record carried) with the fields set and the suffix deliberately misleading
 (as a migrated-but-not-renamed record can be, since a record is never renamed) answering identically. The writer
-switch (ATTEMPT_MODEL.md §6/§8.6, step 9 of "Order of work") deletes every one of those suffix fallbacks:
+switch deletes every one of those suffix fallbacks:
 `jobs.attempt_no` is gone, and the start-up guard it ships with refuses to dispatch on a store holding even one
 record with neither a migration stamp nor an allocator-written `kind`/`seq` — so a fallback for "no fields at all"
 no longer has a reachable input to answer for. What is left below tests the fields-only behaviour each reader
@@ -80,7 +80,7 @@ def test_stall_sweep_newest_delivery_selection_reads_the_attempt_field(layout):
 
 def test_review_salvage_sorts_by_attempt_then_seq():
     """`seq` alone cannot tell two attempts' review jobs apart -- it is only the ordinal of a kind inside one
-    attempt (ATTEMPT_MODEL.md section 6), and a revision that re-delivers a byte-identical answer keeps the same
+    attempt, and a revision that re-delivers a byte-identical answer keeps the same
     role, digest and `seq == 1` on both attempts' review records. Only `attempt` orders them correctly; the id
     suffix (misleading here on purpose) is never read."""
     recs = [{"attempt_id": "B.a2", "attempt": 1, "seq": 1, "marker": "older"},

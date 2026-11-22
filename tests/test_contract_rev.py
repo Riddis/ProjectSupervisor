@@ -1,8 +1,7 @@
-"""RECOVERY_PLAN.md section 5, D-027 decision 12: `contract_rev` is a generation counter distinct from `rev` —
+"""`contract_rev` is a generation counter distinct from `rev` —
 `rev` (`store.update`) answers "did this document move", `contract_rev` answers "did the brief move". It moves
 only when a CONTRACT_FIELDS value actually changes, and exists to close a gap the recovery plan's own first
-no-human-in-the-loop contract writer would otherwise open: a plan may tighten a contract (RECOVERY_PLAN.md
-section 2.4), and without this field an ACCEPT recorded under the looser one would still count afterwards."""
+no-human-in-the-loop contract writer would otherwise open: a plan may tighten a contract, and without this field an ACCEPT recorded under the looser one would still count afterwards."""
 from __future__ import annotations
 
 from supervisor import commands, jobs, packets, tasks
