@@ -5,10 +5,12 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
-- **Fixed: five small items from the framework review (R-28).** `runtime.is_live`'s heartbeat window now scales
-  with the last turn's own recorded length, so a turn still inside its own precedent (a repo-wide snapshot, a
-  git commit) is never reported offline and the Control Center's Start button stays disabled while the loop is
-  actually live. `loop.RENDERED_PROJECTIONS` and `tasks.VOLATILE_PROJECTIONS`, literal copies of
+- **Fixed: five small items from the framework review (R-28).** `runtime.heartbeat` now records the writer's
+  own `{pid, create_time}`; `runtime.is_live` believes a document with that recorded only while the exact
+  process is still running, so a turn of any length (a repo-wide snapshot, a git commit, a whole verification)
+  is never reported offline while its process is actually alive, the Control Center's Start button stays
+  disabled while the loop is actually live, and a process that has died is never read as live no matter how
+  long its last turn was. `loop.RENDERED_PROJECTIONS` and `tasks.VOLATILE_PROJECTIONS`, literal copies of
   `verify.EXCLUDED_FILES` each redundantly unioned with a function that already contains it, are gone; both call
   sites read `verify.excluded_files()` directly. A new `supervisor.routing_config` module is the one place
   `config/routing.yaml` is opened and parsed; the three routing loaders and about a dozen inline readers across
