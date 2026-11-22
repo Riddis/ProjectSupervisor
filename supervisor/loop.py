@@ -45,10 +45,9 @@ class UnmigratedJobsError(RuntimeError):
     similar one-shot tools construct no `Supervisor` either and are likewise untouched by it."""
 
 
-def _unmigrated_job_files(layout: Layout) -> list[str]:
+def _bad_job_files(paths: list[Path]) -> list[str]:
     bad = []
-    candidates = sorted(list(layout.jobs.glob("*.json")) + list(layout.jobs.glob("archive/*/*.json")))
-    for p in candidates:
+    for p in paths:
         try:
             rec = read_json(p)
         except (OSError, ValueError):
@@ -63,14 +62,30 @@ def _unmigrated_job_files(layout: Layout) -> list[str]:
     return bad
 
 
+def _unmigrated_job_files(layout: Layout) -> list[str]:
+    """RELEASE_REVIEW_2.8.0_round2.md's P3-R2-B: the live top level is bounded by work in flight, not by the
+    project's whole history, so it is scanned every start-up regardless. The archive only grows, one finished
+    task at a time, and a record in it never changes once written — once a full scan has found it entirely
+    migration-stamped/allocator-written, `jobs.mark_archive_migrated` lets every later start-up trust that
+    instead of re-reading every file again. `jobs.archive_terminal` invalidates it the moment a new, not-yet-seen
+    file moves in; nothing else is assumed to have left the archive alone."""
+    bad = _bad_job_files(sorted(layout.jobs.glob("*.json")))
+    if jobs_mod.archive_known_migrated(layout):
+        return bad
+    archive_bad = _bad_job_files(sorted(layout.jobs.glob("archive/*/*.json")))
+    if not archive_bad:
+        jobs_mod.mark_archive_migrated(layout)
+    return bad + archive_bad
+
+
 def _check_writer_guard(layout: Layout) -> None:
     bad = _unmigrated_job_files(layout)
     if not bad:
         return
     shown = ", ".join(bad[:10]) + (f" and {len(bad) - 10} more" if len(bad) > 10 else "")
     raise UnmigratedJobsError(
-        f"{len(bad)} job record(s) under state/runtime/jobs/ carry neither a migration stamp "
-        f"(migrated.attempts) nor an allocator-written kind/seq: {shown}. Run "
+        f"{len(bad)} job record(s) under state/runtime/jobs/ or its archive (state/runtime/jobs/archive/) carry "
+        f"neither a migration stamp (migrated.attempts) nor an allocator-written kind/seq: {shown}. Run "
         f"`supervisor migrate attempts --dry-run --out <dir>`, review the mapping, then "
         f"`supervisor migrate attempts --apply --mapping <dir>/mapping.json --out <dir>` and "
         f"`supervisor migrate attempts --check --mapping <dir>/mapping.json --out <dir>` before dispatch resumes.")

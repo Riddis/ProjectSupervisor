@@ -358,7 +358,39 @@ def archive_terminal(layout: Layout, task_id: str) -> list[str]:
         moved.append(p.stem)
         with _RECORD_CACHE_LOCK:
             _RECORD_CACHE.pop(str(p), None)
+    if moved:
+        _invalidate_archive_marker(layout)   # P3-R2-B: files just moved in that the marker has not yet seen
     return moved
+
+
+# P3-R2-B (RELEASE_REVIEW_2.8.0_round2.md): the loop's start-up guard used to read and parse every archived job
+# record on every process start, once the archive holds thousands of finished tasks' history that never changes
+# again. This marker lets it skip that read once the archive has already been found, in full, to hold nothing but
+# migration-stamped or allocator-written records -- the live top level is cheap enough (bounded by work in
+# flight, not by history) to keep scanning every start-up regardless.
+_ARCHIVE_MARKER_NAME = ".archive-migrated"
+
+
+def _archive_marker_path(layout: Layout) -> Path:
+    return layout.jobs / "archive" / _ARCHIVE_MARKER_NAME
+
+
+def archive_known_migrated(layout: Layout) -> bool:
+    """Whether the start-up guard can trust the archive without re-reading it: `mark_archive_migrated` wrote this
+    the last time the whole archive scanned clean, and nothing has moved a new file into it since."""
+    return _archive_marker_path(layout).exists()
+
+
+def mark_archive_migrated(layout: Layout) -> None:
+    """Record that every file currently under the archive is migration-stamped or allocator-written."""
+    p = _archive_marker_path(layout)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(p, {"checked": now_iso()})
+
+
+def _invalidate_archive_marker(layout: Layout) -> None:
+    with contextlib.suppress(OSError):
+        _archive_marker_path(layout).unlink()
 
 
 def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
