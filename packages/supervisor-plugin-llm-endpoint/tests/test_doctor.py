@@ -1,6 +1,6 @@
-"""The llm_endpoint doctor check and its owner commands (D-013 section 6: "a doctor check (endpoint reachable,
+"""The llm_endpoint doctor check and its owner commands: "a doctor check (endpoint reachable,
 the configured model present at /v1/models, the server's state file consistent with the process table)";
-owner commands llm_endpoint.start and llm_endpoint.stop)."""
+owner commands llm_endpoint.start and llm_endpoint.stop."""
 from __future__ import annotations
 
 import json

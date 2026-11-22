@@ -42,8 +42,8 @@ Plugins never construct one.
 | `config_sections(*names)` | the `config/routing.yaml` sections this plugin reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
-| `job_schema(adapter, model)` | a pydantic model for the keys a job for `adapter` adds beyond `job_spec`'s framework-known fields (RECOVERY_PLAN.md section 3.2): refused when unknown and a schema is declared for the adapter, warned when none is declared at all |
-| `capabilities(adapter, mapping)` | `adapter`'s own capability data (`durable`, `network`, `max_duration_min` -- docs/plan/LONG_WORK.md section 3.2): matched against a task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's own five lane names (whose capability data is `supervisor.capabilities`'s own stated table) is refused |
+| `job_schema(adapter, model)` | a pydantic model for the keys a job for `adapter` adds beyond `job_spec`'s framework-known fields: refused when unknown and a schema is declared for the adapter, warned when none is declared at all |
+| `capabilities(adapter, mapping)` | `adapter`'s own capability data (`durable`, `network`, `max_duration_min`): matched against a task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's own five lane names (whose capability data is `supervisor.capabilities`'s own stated table) is refused |
 | `doctor_check(fn)` | `fn(layout) -> Check` |
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}` on the Overview |
 | `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)`, raising to refuse a brief |

@@ -5,8 +5,8 @@ description: Review a pull request that lists or updates a package in the framew
 
 # Catalog review: listing a package
 
-`tools/catalog_check.py` already refused the malformed (CONTRIBUTOR_RULING.md section 2.4: a missing field, an
-unsatisfiable range, a duplicate identity, a home naming neither shape). This skill is the other half: whether the
+`tools/catalog_check.py` already refused the malformed: a missing field, an
+unsatisfiable range, a duplicate identity, a home naming neither shape. This skill is the other half: whether the
 one exact artifact the entry names is *safe* to list, which no deterministic check can decide. Run both: a clean
 `catalog_check.py` is necessary and never sufficient.
 
@@ -31,7 +31,7 @@ Read the pull request's entry, not its description:
 - No project's information in the artifact: `supervisor boundary words <package folder or wheel>`, run where the
   local project-terms file is (plugin-release's own closing check, re-run here rather than read from the pull
   request).
-- The trust rule's own question (`docs/plan/boundary/00-main.md`, "Other suggestions"): module-level network or
+- The trust rule's own question: module-level network or
   subprocess calls in the package's own code, and any registry change on a clean-process import. G5's
   `import_side_effects` and `registrations` checks catch the second; the first is a reading of the source, because
   a side effect inside a *dependency's* import escapes both - which is exactly why this review exists beside them.
@@ -40,8 +40,8 @@ Read the pull request's entry, not its description:
 
 Not the contributor's own run, and not a rebuild: the same file whose digest section 1 verified, run by the
 maintainer listing it. Record the date and the framework version it was run against - these become the entry's
-own `g5.date` and `g5.framework` (CONTRIBUTOR_RULING.md 2.2: "the date of the maintainers' own G5 run", "one
-version, the one the maintainers ran"). A G5 run against a different framework version than the one about to be
+own `g5.date` and `g5.framework`: the date of the maintainers' own G5 run, against
+one version, the one the maintainers ran. A G5 run against a different framework version than the one about to be
 recorded is not this check; run it again against that version.
 
 ## 4. What the entry then records, exactly
@@ -65,13 +65,13 @@ Any of these missing or failing is a refusal, written on the pull request, namin
   entry names is not the one the package declares.
 
 A refusal is written evidence (which check, what it found), the same as a boundary-review REVISE - never a silent
-close. T4-14 is this skill's own proof: one candidate exercised to **two** separate refusals, the validator's exit
+close. One past candidate has already been exercised to **two** separate refusals this way, the validator's exit
 1 and this skill's own written one, because they answer different questions.
 
 ## Which gates apply
 
 A catalog review changes no framework code - it reads a pull request and runs checks against an already-built
-artifact. So, per `docs/plan/boundary/00-main.md`'s "Which gates apply" table: **G5 (re-run by the maintainer on
+artifact: **G5 (re-run by the maintainer on
 the listed artifact) and G7 (this skill's own questions, answered in writing) apply; G1-G4 do not - there is no
 framework code change for them to gate.** `tools/catalog_check.py` itself is covered by G3 (the framework's own
 suite, `tests/test_catalog.py`) when the validator's own code changes, not by this skill reviewing a listing.

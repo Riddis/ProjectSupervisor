@@ -1,4 +1,4 @@
-"""The server watchdog (D-013 section 1.2): `ensure_started()` (called from the adapter's submit(), in the
+"""The server watchdog: `ensure_started()` (called from the adapter's submit(), in the
 loop's own process) kicks the watchdog off in the background and never blocks on a cold load; `run()` (the
 watchdog's own entry point, a separate detached process) acquires the machine-wide GPU lease, starts the
 configured argv, waits for health, then watches idle/release-request/child-liveness until one of them says
@@ -74,8 +74,8 @@ class _NotFound(BaseHTTPRequestHandler):
 
 
 def test_health_ok_refuses_a_404_instead_of_reading_any_status_below_500_as_healthy(tmp_path):
-    """RELEASE_REVIEW_local-lane.md F15: at this head `_health_ok` reads `status_code < 500`, so a 404 from a
-    `health_path` the server does not serve counts as ready. A misconfiguration must read as unhealthy, not
+    """`_health_ok` must not read `status_code < 500` as healthy: a 404 from a
+    `health_path` the server does not serve counts as ready that way. A misconfiguration must read as unhealthy, not
     as a server that may still be loading."""
     srv = HTTPServer(("127.0.0.1", 0), _NotFound)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -187,9 +187,9 @@ def test_run_does_not_stop_on_an_expired_release_request_left_by_a_waiter_that_n
 
 def test_run_returns_lease_unavailable_and_starts_no_child_when_the_lease_is_held_by_another_project(
         tmp_path, fake_health, monkeypatch):
-    """F4 (RELEASE_REVIEW_local-lane.md): run() discarded lease.acquire()'s refusal and started the configured
+    """run() must not discard lease.acquire()'s refusal and start the configured
     argv regardless, loading VRAM while holding no lease and while the other project's release request against
-    it sat unanswered. The fix must check the return value before spawning anything."""
+    it sat unanswered: the return value must be checked before spawning anything."""
     lease_file = tmp_path / "lease" / "gpu.lease"
     root = tmp_path / "proj"
     testing.project(root, routing={"resources": {"gpu": {"lease": {"path": str(lease_file), "label": "demo"}}}})
@@ -222,8 +222,8 @@ def test_run_times_out_and_releases_when_the_server_never_becomes_healthy(tmp_pa
     assert plugin.resource_lease(lay, "gpu").acquire(wait_s=0) is True   # released: a fresh acquire succeeds at once
 
 
-# ---------------------------------------------------------------- F18: the watchdog finishes the in-flight
-# request before yielding (RELEASE_REVIEW_local-lane_round2.md)
+# ---------------------------------------------------------------- the watchdog finishes the in-flight
+# request before yielding
 
 
 def _wait_for_ready_pid(root, timeout=10.0):
@@ -241,15 +241,15 @@ def _wait_for_ready_pid(root, timeout=10.0):
 
 
 def test_run_finishes_the_in_flight_request_before_yielding_to_a_release_request(tmp_path, fake_health):
-    """F18 (RELEASE_REVIEW_local-lane_round2.md): R4's fairness clause is binding and specific - "this lane's
-    watchdog FINISHES THE IN-FLIGHT REQUEST, stops the server and releases" (LOCAL_MODEL_LANE.md:267-270) - but
-    at 50660a07becd2e35a4d20073d13b93b96eecb280 `run()` returns `release_requested` on the first poll that sees
-    the request (_server.py:336-337), with no look at the activity file - the worker's own in-flight signal,
-    touched on every streamed piece (_worker.py:85-90). Here a thread stands in for the worker, touching the
-    activity file every 25 ms while B's project asks to take the lease; the fix must keep the child alive while
-    the activity keeps coming and only yield once it goes quiet. Asserts that the child OUTLIVED the first
-    poll after the request landed, not merely the eventual return value - the defect kills the child within one
-    poll regardless of the activity file, so this fails at the pre-fix head even though `why` is still
+    """The fairness clause is binding and specific - "this lane's
+    watchdog FINISHES THE IN-FLIGHT REQUEST, stops the server and releases" - but at one point
+    `run()` returned `release_requested` on the first poll that saw
+    the request, with no look at the activity file - the worker's own in-flight signal,
+    touched on every streamed piece. Here a thread stands in for the worker, touching the
+    activity file every 25 ms while another project asks to take the lease; the fix keeps the child alive while
+    the activity keeps coming and only yields once it goes quiet. Asserts that the child OUTLIVED the first
+    poll after the request landed, not merely the eventual return value - the old defect killed the child within one
+    poll regardless of the activity file, so this would have failed before the fix even though `why` is still
     "release_requested" either way."""
     lease_file = tmp_path / "lease" / "gpu.lease"
     root = tmp_path / "proj"
@@ -330,12 +330,10 @@ def test_run_does_not_hold_the_cards_past_hand_over_timeout_s_when_the_request_n
 
 
 def test_a_hard_killed_watchdog_does_not_leave_its_server_running(tmp_path, fake_health):
-    """F5 (design risk list: "tested, not assumed"), in the review probe's own shape
-    (runs/T5-04/T5-04.a3/probes/test_llm_endpoint_probes.py::test_defect_hard_killed_watchdog_leaves_an_orphan_...),
-    now proving the fix instead of the defect: `_start_child_tied_to_this_process` ties the server child to the
+    """Proves the fix: `_start_child_tied_to_this_process` ties the server child to the
     watchdog at the OS level (a Job Object with KILL_ON_JOB_CLOSE here on Windows; a process group plus
     PR_SET_PDEATHSIG on POSIX, proven only by CI's ubuntu legs). The neighbouring tests below prove the
-    state-based backstop (F14's shape, the doctor, ensure_started(), llm_endpoint.stop) for whatever race or
+    state-based backstop (the doctor, ensure_started(), llm_endpoint.stop) for whatever race or
     platform that tie misses."""
     lease_file = tmp_path / "lease" / "gpu.lease"
     root = tmp_path / "proj"
@@ -481,13 +479,13 @@ def test_stop_command_kills_the_orphan_directly_when_no_watchdog_is_left_to_read
     assert not _server.stop_path(str(tmp_path)).exists()
 
 
-# ---------------------------------------------------------------- F22 (P3, advisory): a failed
-# AssignProcessToJobObject is silent (RELEASE_REVIEW_local-lane_round2.md)
+# ---------------------------------------------------------------- a failed
+# AssignProcessToJobObject must not be silent
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="AssignProcessToJobObject is Windows-only")
 def test_a_failed_job_object_tie_is_logged_and_recorded_as_not_tied(tmp_path, fake_health, monkeypatch):
-    """F22: `_start_child_tied_to_this_process` used to discard `AssignProcessToJobObject`'s own BOOL, so a
+    """`_start_child_tied_to_this_process` used to discard `AssignProcessToJobObject`'s own BOOL, so a
     host where the tie fails (a watchdog already inside a job that forbids nesting or breakaway) left the
     child simply untied with nothing said. The call is made to fail here instead of needing such a host."""
     def _fail_assign(*a):

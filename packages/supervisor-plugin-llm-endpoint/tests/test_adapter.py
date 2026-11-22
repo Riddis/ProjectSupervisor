@@ -1,6 +1,6 @@
-"""The llm_endpoint adapter's prepare()/submit(): the job contract of D-013 section 2.1 (prompt/schema/output_file,
-the context-budget arithmetic that fails an attempt rather than silently truncating) and the VRAM preflight of
-section 1 ("both cards, each against its own floor" - unlike the framework's single-device GPU-locked lanes)."""
+"""The llm_endpoint adapter's prepare()/submit(): the job contract (prompt/schema/output_file,
+the context-budget arithmetic that fails an attempt rather than silently truncating) and the VRAM preflight
+("both cards, each against its own floor" - unlike the framework's single-device GPU-locked lanes)."""
 from __future__ import annotations
 
 import json
@@ -49,13 +49,11 @@ def test_prepare_fails_the_attempt_when_the_prompt_exceeds_the_context_budget(tm
 
 
 def test_prepare_refuses_a_code_heavy_prompt_at_the_package_defaults_and_names_the_ratio_it_assumed(tmp_path):
-    """F7 (RELEASE_REVIEW_local-lane.md): a flat 4 chars/token admits 21,296 characters at the package defaults
+    """A flat 4 chars/token admits 21,296 characters at the package defaults
     (0.9 x 8192 - 2048 = 5324 tokens). Code, diffs, YAML and non-English text tokenise at ~2.5-3.5 chars/token
     with every tokenizer this lane will meet, so 21,000 characters of code-shaped text is really ~7,000 tokens -
-    the server would then shift or truncate the prompt silently, the exact failure D-013 section 2.1 says must
-    fail loudly. This is the reviewer's own probe
-    (runs/T5-04/T5-04.a3/probes/test_llm_endpoint_probes.py::test_token_budget_admits_a_code_heavy_prompt_that_
-    overflows_at_three_chars_per_token), made into a tracked regression: it must be refused at the package
+    the server would then shift or truncate the prompt silently, which must instead
+    fail loudly: it must be refused at the package
     defaults, with the ratio the refusal assumed stated in its message."""
     layout = _layout(tmp_path, plugin_cfg={})                      # package defaults: context_tokens=8192, max_tokens=2048
     code = ("if (x[i] != y[j]) { z += f(a, b); }\n" * 600)[:21000]
@@ -83,9 +81,9 @@ def test_chars_per_token_is_a_settings_key_that_reaches_the_computation(tmp_path
 
 
 def test_prepare_refuses_a_profile_other_than_the_one_this_lane_serves(tmp_path):
-    """RELEASE_REVIEW_local-lane.md F12: no multi-profile switching is an honest cut (nothing in the package
+    """No multi-profile switching is an honest cut (nothing in the package
     reads `job.profile`), but at this head a task carrying `profile: other` is served by whatever is running
-    without a word. T5-02 has chosen no second profile yet, so the one configured profile is the implicit
+    without a word. With no second profile configured, the one configured profile is the implicit
     default; any other name must be refused rather than silently served."""
     layout = _layout(tmp_path, plugin_cfg={})
     task = _task(layout, prompt="hello", profile="other")
@@ -143,10 +141,10 @@ def test_submit_defers_rather_than_block_while_the_server_is_cold_starting(tmp_p
 
 
 def test_submit_reaches_the_server_despite_low_free_vram_when_the_endpoint_is_already_healthy(tmp_path, monkeypatch):
-    """F3 (RELEASE_REVIEW_local-lane.md): the floor is a start check ("free VRAM says whether a start will
-    *work*", LOCAL_MODEL_LANE.md section 4), not a per-request one. A resident server holds exactly the VRAM
+    """The floor is a start check ("free VRAM says whether a start will
+    *work*"), not a per-request one. A resident server holds exactly the VRAM
     the floor guards, so a floor applied regardless of health defers every request against a server that is
-    already up and answering - the case the original test_adapter.py never combined."""
+    already up and answering - a case worth its own regression."""
     layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 6500},
                                         "beta": {"index": 5, "usable_vram_floor_mb": 6500}})
     task = _task(layout, prompt="hello")
@@ -173,9 +171,9 @@ def test_submit_refuses_with_the_floors_own_message_when_the_endpoint_is_not_hea
 
 
 def test_submit_runs_a_second_job_on_one_load_when_the_server_stays_healthy_and_full(tmp_path, monkeypatch):
-    """D-013 section 1.2's whole reason for idle_stop_s: a chain of jobs against one loaded server pays one
+    """The whole reason for idle_stop_s: a chain of jobs against one loaded server pays one
     cold start. Two submits against one already-healthy server, VRAM "full" (every card below every
-    configured floor) throughout, both reach the endpoint - the thing F3 made impossible."""
+    configured floor) throughout, both reach the endpoint without a floor check blocking the second."""
     layout = _layout(tmp_path, devices={"alpha": {"index": 3, "usable_vram_floor_mb": 6500},
                                         "beta": {"index": 5, "usable_vram_floor_mb": 6500}})
     monkeypatch.setattr(plugin.gpu, "free_mb", lambda index=None: 900)   # the resident server's own VRAM, always

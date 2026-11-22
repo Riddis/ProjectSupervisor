@@ -1,7 +1,7 @@
 """The device-aware preflight (framework 2.3.0's `supervisor.plugin.gpu_device`): the optional `vram_device` key
 resolves a role's own card and floor from `resources.gpu.devices`, read by `comfy_config()`, carried in the spec
 `prepare()` returns, and consulted by `submit()`'s preflight, `_record_peak_vram()`, `check_gpu` and `gpu_panel`.
-Invented device names and numbers throughout (D-005): no project's own role names, indices or floors appear here."""
+Invented device names and numbers throughout: no project's own role names, indices or floors appear here."""
 from __future__ import annotations
 
 import json

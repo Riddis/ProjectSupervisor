@@ -1,4 +1,4 @@
-"""The server watchdog (D-013 section 1.2): starts the configured `argv` as its own child, polls the configured
+"""The server watchdog: starts the configured `argv` as its own child, polls the configured
 health URL until ready, holds the machine-wide GPU lease for as long as it runs, and stops - killing the child,
 then releasing the lease - on idle (`idle_stop_s`), on a release request from another project, when the child
 dies on its own, or when told to (the owner command `llm_endpoint.stop`, a later commit). Runtime-agnostic: it
@@ -79,7 +79,7 @@ if sys.platform == "win32":
         job handle is returned so the caller keeps it referenced for the watchdog's whole life: closing it
         early is exactly what would kill the child early.
 
-        F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): `AssignProcessToJobObject`'s own BOOL used to be
+        `AssignProcessToJobObject`'s own BOOL used to be
         discarded, so a host where the tie fails (a watchdog already inside a job that forbids nesting or
         breakaway) left the child simply untied with nothing said. Returns whether it actually took and, when
         it did not, `GetLastError()` - the state-based backstop (the doctor, `ensure_started()`, `stop`) still
@@ -145,8 +145,8 @@ def deferral_path(root) -> Path:
 def read_deferral(root) -> dict:
     """The current deferral window, as the adapter's own process last wrote it (never the watchdog's): `{}`
     when nothing is deferring. Read fresh every call - never cached in memory - so the window survives a loop
-    restart (D-013 R5 names this explicitly: the accounting is in the state file, not a process-lifetime
-    counter)."""
+    restart: the accounting is in the state file, not a process-lifetime
+    counter."""
     try:
         return json.loads(deferral_path(root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -219,9 +219,9 @@ def _hand_over_timeout_s(layout) -> float:
     """resources.gpu.lease.hand_over_timeout_s, read straight from routing.yaml the same way
     `supervisor.leases._lease_config` does: `ResourceLease` keeps its own copy on a private `_cfg`, and this
     package already reads the same section directly rather than reach into it (`_preflight_devices`,
-    `_raise_owner_deferral_item` in `__init__.py`). F18 (RELEASE_REVIEW_local-lane_round2.md): the bound the
+    `_raise_owner_deferral_item` in `__init__.py`). The bound the
     hand-over grace below is measured against, so a wedged generation cannot hold the lease past the window
-    R4 itself names (LOCAL_MODEL_LANE.md:270-271)."""
+    the fairness clause requires."""
     gpu_cfg = plugin.resources(layout).get("gpu") or {}
     lease_cfg = gpu_cfg.get("lease") or {}
     return float(lease_cfg.get("hand_over_timeout_s", 900.0))
@@ -230,7 +230,7 @@ def _hand_over_timeout_s(layout) -> float:
 def _health_ok(base_url: str, health_path: str, timeout: float = 5.0) -> bool:
     try:
         resp = requests.get(base_url.rstrip("/") + health_path, timeout=timeout)
-        # F15 (RELEASE_REVIEW_local-lane.md): a 404 from a health_path the server does not serve (Ollama has
+        # A 404 from a health_path the server does not serve (Ollama has
         # no /health) is a misconfiguration, not a server that may still be loading (5xx) - only 2xx is ready.
         return 200 <= resp.status_code < 300
     except requests.RequestException:
@@ -355,7 +355,7 @@ def run(root: str, cfg: dict, *, poll_s: float = POLL_S) -> str:
         # log_event call after it safe, and finally still runs if either one does raise for some other reason.
         hand_over_timeout_s = _hand_over_timeout_s(layout)
         if not tied:
-            # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say so instead of serving an untied child
+            # Say so instead of serving an untied child
             # silently - the state-based backstop below still catches the orphan on the next call either way.
             plugin.log_event(layout, "llm_endpoint_server_job_object_tie_failed", pid=proc.pid, win32_error=tie_error)
         deadline = time.time() + cfg.get("start_timeout_s", 300)

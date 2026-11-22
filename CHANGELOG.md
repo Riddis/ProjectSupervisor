@@ -18,7 +18,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
   now uses `isdecimal()`, exactly the predicate `int()` itself parses.
 
-- **Plugin API: `Registry.job_schema(adapter, model)` (RECOVERY_PLAN.md section 3, R-11).** Additive. A plugin
+- **Plugin API: `Registry.job_schema(adapter, model)`.** Additive. A plugin
   adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
   fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no
   schema declared at all, so an installed plugin from before this release keeps working unchanged. Every
@@ -35,7 +35,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   the block never named. The reference plugin declares a schema for its own lane, so `examples/` shows the hook
   in use.
 
-- **Plugin API: `Registry.capabilities(adapter, mapping)` (docs/plan/LONG_WORK.md section 3.2, D-028, R-20).**
+- **Plugin API: `Registry.capabilities(adapter, mapping)`.**
   Additive. A plugin lane may now declare its own capability data in the same closed, framework-known vocabulary
   the framework states for its own five lanes (`durable`, `network`, `max_duration_min`): read by
   `supervisor.capabilities.for_lane` and matched against a task's declared `needs` exactly as a built-in lane is,
@@ -49,7 +49,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   `idle_timeout_s`, `retry_on`, `stdin_file`, `model`, `effort`, `prompt`, `result_kind`); a wrong type is refused
   the moment a document carrying it is written. `job` now joins the contract fields that create, import, refresh
   and patch carry (`tasks.CONTRACT_FIELDS`'s sibling list), under a rule on who is writing rather than on the
-  field (D-027 decision 7, amending D-018 decision 2): the owner — any actor `gates.is_owner_actor` recognizes
+  field: the owner — any actor `gates.is_owner_actor` recognizes
   (the CLI's `owner`, the Control Center's `owner-ui`, or any `owner-<channel>`), through a create, a seed
   import, `task.set_job` or a patch — may write any job block, including a literal `argv`; a plan may write only
   a template id and typed params; nothing else may write one at all, `task.set_job` and `task.create` included.
@@ -61,8 +61,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   one caller that builds a document itself (a plan's `create_task` — the only path a diagnosis reaches this
   through) may not name `job` at all.
 
-- **`config/job_templates.yaml`, the preflight, and a launch gate that requires one (RECOVERY_PLAN.md section
-  3.3, R-11/R-20).** A project's own template file declares the executable line a `process`/`python` job may
+- **`config/job_templates.yaml`, the preflight, and a launch gate that requires one.** A project's own template file declares the executable line a `process`/`python` job may
   reference (`supervisor.templates`): an argv whose slots are one argv element each, typed parameters, a probe,
   `may_be_set_by`, a timeout cap and a `needs` block — the framework ships none of its own, and a template
   whose `argv[0]` is a shell (`sh`, `bash`, `cmd`, `powershell`, `pwsh`, `zsh`) is refused unless it is marked
@@ -82,7 +81,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 - **A task declares `needs: {duration_min, network, resource, resumable}`, matched against lane capability data
   at the write; a job's time budget derives from a declared duration instead of a fixed default; Extend takes a
-  duration (D-028, R-20).** `needs` is a new, optional, sticky contract field (an absent block is exactly today's
+  duration.** `needs` is a new, optional, sticky contract field (an absent block is exactly today's
   behaviour everywhere): a key outside the four-key vocabulary, or a value of the wrong type, is refused; a task
   and its job's template naming different resources is refused (`resource_conflict`). The match
   (`supervisor.needs`) runs at every write that creates or changes a task's contract or job — refusing the row at
@@ -128,7 +127,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   resolved policy cap) raises the plan to the owner authority class instead of refusing it.
 
 - **A named external resource, declared by the project, serialises two tasks that would otherwise both publish to
-  the same target (D-028, R-20).** A project declares `resources.<name>` under `config/routing.yaml` (the section
+  the same target.** A project declares `resources.<name>` under `config/routing.yaml` (the section
   the machine-wide lease already lives under), optionally naming `description` and `may_be_claimed_by` (default
   `[owner]`); a task claims it with `needs.resource: <name>`, already shaped and conflict-checked by the previous
   entry. An undeclared name is refused at the write (`claim_unknown`); a plan may name only a resource the project
@@ -249,7 +248,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   `owner.name` (`project.yaml`), and `version`, `roles.<role>.active_from`, `roles.<role>.second_opinion` and
   `resources.<name>.single_job` (`routing.yaml`) are gone from the loader, every shipped template and the setup
   docs; the "one job at a time" rule `single_job` looked like it configured stays exactly what it already was,
-  `limits.max_resource_jobs` plus a job's own `gpu` flag (D-028) — the two in-repo GPU-lane plugins now name that
+  `limits.max_resource_jobs` plus a job's own `gpu` flag — the two in-repo GPU-lane plugins now name that
   rule in their own docstrings instead of the key nothing read. `roles.<role>.result_kinds` — documented as a
   permission and, until now, never enforced — is implemented: `task import`, `task create` and `supervisor check`
   warn, and a plan's `create_task`/`patch_contract` refuse (RF-18, the same as any other contract warning on that
@@ -401,7 +400,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
 - **Added: a way for a plugin to raise one idempotent owner inbox item for a condition that keeps holding.**
   `owned_item`, `owned_items`, `update_owned_item` and `close_owned_item` read, update and close items a plugin
   already has; none of them create one, so a plugin with no other inbox-owning job (the local model lane's
-  deferral budget, D-013 R5) had no way to tell the owner at all without importing the framework's internal
+  deferral budget) had no way to tell the owner at all without importing the framework's internal
   `inbox` module directly, which G5's plugin check already refuses. **Plugin API:** `open_owned_item`
   (`supervisor.plugin.open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
   allowed_responses=None, free_text=True, extra=None) -> dict | None`) is new, documented in `docs/PLUGIN_API.md`
@@ -412,8 +411,8 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   attempt by a backlog it did not cause (found in this same lane's F9 round: an unguarded call raised InboxFull
   out of `submit()`, which the loop turned into a failed attempt instead of a deferral).
 
-- **Hardened before release: the lease protocol's own loop integration, caught by the local-lane round-2 review
-  (`docs/reviews/RELEASE_REVIEW_local-lane.md` F1, F2, F8).** The loop now renews a running `gpu` record's lease
+- **Hardened before release: the lease protocol's own loop integration, caught during review before release.**
+  The loop now renews a running `gpu` record's lease
   entry on every `reconcile()`, so a job that outlives `stale_after_s` does not go stale under another project
   still holding it; a loop that is only ever peek-refused still records its own release request against the
   holder, so a blocked loop's ask has a sender and the holder's watchdog can see it; and a release request older
@@ -431,7 +430,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   under `docs/releases/local-lane/`.
 
 - **Hardened once more before release: the round-2 review's five remaining findings on the lease hand-over
-  protocol and the bundled package (`docs/reviews/RELEASE_REVIEW_local-lane_round2.md` F18-F22).** The package's
+  protocol and the bundled package.** The package's
   watchdog now finishes an in-flight request before it yields a release request, honouring one only once the
   worker's own activity file has sat quiet for a new `Settings` key, `hand_over_grace_s` (default 3.0 seconds),
   itself bounded by `hand_over_timeout_s` so a wedged generation still cannot hold the cards past the window
@@ -570,7 +569,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
 - **Fixed: `framework-change/SKILL.md` told a contributor to add a CHANGELOG entry "under `## Unreleased`",
   a heading this file no longer carries once a release has stamped it closed.** Followed literally after such a
   stamp, the instruction breaks `tests/test_changelog_stamp.py`; leaving the entry out instead breaks
-  `tests/test_changelog_entries_2_5_0.py` (docs/plan/CONTRIBUTION_DRYRUN.md, Gap 2). Step 5 now says the entry
+  `tests/test_changelog_entries_2_5_0.py`. Step 5 now says the entry
   goes under the file's topmost heading, whatever release that names, tagged or not - not a literal string that
   is not always there.
 
@@ -664,7 +663,7 @@ these six entries; the tag is not re-cut, and this heading is the whole remedy.
 
 ## 2.2.0 — 2026-11-02
 
-Phase 2's F-B (`docs/plan/PHASE2.md` §2, D-012 "Limits of the framework today"): the fallback now covers a
+The fallback now covers a
 role's own tasks, not only a review of another role's delivery, and a failed login counts as unavailable
 instead of a failed attempt.
 
@@ -709,8 +708,8 @@ instead of a failed attempt.
   rule the other two callers already followed; `fallback_overrides()`'s predicate is "this record carries
   `same_vendor` at all" (present, `True` or `False`), not the flag's own truth value, so a flag-less fallback's
   continuation is told apart from an ordinary, non-fallback attempt - the one case the first fix left open.
-- `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
-  plugin package's tests, read against the other two) found the gap list already empty; this release confirms
+- `supervisor.testing`: no new read helper. A real port of one
+  plugin package's tests, read against the other two, found the gap list already empty; this release confirms
   it again and ships the two fixes above instead.
 
 ## 2.1.1 — 2026-11-02
@@ -734,21 +733,20 @@ an older framework ignores it.
 
 ## 2.1.0 — 2026-10-31
 
-Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap now
+The continuation cap now
 goes through the manager's diagnosis route instead of around it, and the first command that closes an issue
-record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps before the tag — two CI jobs red
+record. Round-1 review found four gaps before the tag — two CI jobs red
 on the exact reviewed head, `issue.resolve` accepting a path outside `state/issues/`, a continuation grant that
 recovery could bypass after a manager requeue, and the diagnosis `job_fix` interface this release no longer
-carries (R1) — each closed by its own commit before round 2. Round-2 review
-(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found three more gaps in those same fixes — a continuation grant
+carries — each closed by its own commit before round 2. Round-2 review
+found three more gaps in those same fixes — a continuation grant
 whose retirement a crash-and-replay could leave unfinished or redo, a capped attempt a crash could strand before
 its own escalation was durable, and a manager-to-architect hand-off that lost its grant generation and reused an
-already-spent architect answer — each closed by its own commit too
-(`docs/releases/2.1.0/F2-continuation-retirement.md` through `F4-architect-grant-generation.md`); a fourth gap in
-that round (F1, a Windows command form that still let a diagnosis replace the program being run) was in the same
+already-spent architect answer — each closed by its own commit too; a fourth gap in
+that round (a Windows command form that still let a diagnosis replace the program being run) was in the same
 `job_fix` interface rounds 1 through 8 kept finding gaps in, and is moot now that the interface is gone. What
-follows already describes the corrected shape after both rounds, not either round's gap. *Since D-018
-(2026-11-01)* the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
+follows already describes the corrected shape after both rounds, not either round's gap. Since then
+the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
 
 **Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
 to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
@@ -809,10 +807,10 @@ it already understood.
   F4, F7): the recorded `escalation -> READY` transition, a generation-scoped retirement boundary, and a
   generation- and dispatch-state-aware architect hand-off are what now make the grant replay-safe end to end, not
   only across the one crash point the first attempt covered.
-- **Removed (D-018, 2026-11-01): the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
+- **Removed: the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
   job in 2.1.0. Rounds 1 through 8 of review kept finding gaps in the bounded correction this interface once
   offered a process job's command (R1, F1, F5, F8, F10, F14-F17) — nine of the release's seventeen findings, for
-  a case seen once (T1-08) whose cause phase 2 already removed. A process job whose own command is wrong now
+  a case seen once whose cause phase 2 already removed. A process job whose own command is wrong now
   reaches the owner as a question naming the `task.set_job` change the task needs; `task.set_job`
   (`commands.apply_job`) stays the only writer of a job block. `docs/releases/2.1.0/SCOPE-CUT-job-fix.md` has the
   removed commits, symbols and files, and the regression that proves a `job_fix` on a `requeue` now changes

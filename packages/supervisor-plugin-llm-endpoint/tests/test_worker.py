@@ -1,7 +1,7 @@
 """The worker subprocess (`_worker.py`): one streaming chat-completions request, `result.json` written at the
-end. A fake loopback HTTP server stands in for the real endpoint and serves whatever SSE lines a test configures
-(RELEASE_REVIEW_local-lane.md F6: `_stream()` must read `finish_reason` and notice a stream that never reaches
-`[DONE]`, instead of reporting COMPLETE on a truncated or broken one)."""
+end. A fake loopback HTTP server stands in for the real endpoint and serves whatever SSE lines a test configures:
+`_stream()` must read `finish_reason` and notice a stream that never reaches
+`[DONE]`, instead of reporting COMPLETE on a truncated or broken one."""
 from __future__ import annotations
 
 import json
@@ -57,8 +57,8 @@ def _run(tmp_path, fake_url, sse_lines, **extra):
 
 
 def test_a_length_truncated_stream_fails_the_attempt_naming_max_tokens(tmp_path, fake):
-    """At this head the worker never reads finish_reason: an answer cut at max_tokens is written to output_file
-    and reported COMPLETE with no trace (RELEASE_REVIEW_local-lane.md F6). It must FAILED instead, naming
+    """The worker must not report COMPLETE with no trace when an answer is cut at max_tokens and
+    written to output_file without reading finish_reason. It must FAILED instead, naming
     max_tokens, and never write the truncated text as if it were the deliverable."""
     res = _run(tmp_path, fake, [
         'data: {"choices":[{"delta":{"content":"The summary is"},"finish_reason":null}]}',
@@ -104,12 +104,12 @@ def test_finish_reason_and_usage_are_recorded_in_raw_on_a_normal_stream(tmp_path
     assert (tmp_path / "out.md").read_text(encoding="utf-8") == "ok"
 
 
-# ---------------------------------------------------------------- F11 (P3): json_schema needs a name
+# ---------------------------------------------------------------- json_schema needs a name
 
 def test_a_schema_request_names_its_json_schema_so_vllm_and_openai_shaped_servers_accept_it(tmp_path, fake):
-    """RELEASE_REVIEW_local-lane.md F11: `response_format.json_schema` at this head carries only `schema`.
-    `llama-server` and Ollama tolerate the missing `name`; the OpenAI shape the design calls "the
-    widely-implemented chat-completions shape" requires it, and vLLM and OpenAI-shaped servers reject the
+    """`response_format.json_schema` must not carry only `schema`.
+    `llama-server` and Ollama tolerate the missing `name`; the OpenAI shape - "the
+    widely-implemented chat-completions shape" - requires it, and vLLM and OpenAI-shaped servers reject the
     request outright."""
     _run(tmp_path, fake, ['data: {"choices":[{"delta":{"content":"{}"}}]}', 'data: [DONE]'],
         schema={"type": "object"}, output_file=None)
