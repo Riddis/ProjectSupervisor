@@ -358,16 +358,22 @@ def archive_terminal(layout: Layout, task_id: str) -> list[str]:
         moved.append(p.stem)
         with _RECORD_CACHE_LOCK:
             _RECORD_CACHE.pop(str(p), None)
-    if moved:
-        _invalidate_archive_marker(layout)   # P3-R2-B: files just moved in that the marker has not yet seen
     return moved
 
 
 # P3-R2-B (RELEASE_REVIEW_2.8.0_round2.md): the loop's start-up guard used to read and parse every archived job
 # record on every process start, once the archive holds thousands of finished tasks' history that never changes
-# again. This marker lets it skip that read once the archive has already been found, in full, to hold nothing but
-# migration-stamped or allocator-written records -- the live top level is cheap enough (bounded by work in
-# flight, not by history) to keep scanning every start-up regardless.
+# again. The marker below lets it skip that read once a full scan has found the archive entirely migration-
+# stamped/allocator-written -- the live top level is cheap enough (bounded by work in flight, not by history) to
+# keep scanning every start-up regardless.
+#
+# The marker is not a bare flag: it carries a stat-only fingerprint (name, size, mtime_ns) of every file the clean
+# scan actually read, taken from that same listing. The guard trusts the marker only when a fresh, stat-only
+# listing matches it exactly, so any file added, removed or overwritten since -- `archive_terminal` moving one in,
+# an out-of-band restore of a pre-migration backup, any other write into an existing archive folder -- is detected
+# without needing to be told: there is no separate "invalidate" step to order against a crash, because nothing is
+# ever trusted that was not just re-verified. A clean scan that had to skip a file it could not read never writes
+# the marker at all (`mark_archive_migrated` is only called when the caller says every file was read).
 _ARCHIVE_MARKER_NAME = ".archive-migrated"
 
 
@@ -375,22 +381,45 @@ def _archive_marker_path(layout: Layout) -> Path:
     return layout.jobs / "archive" / _ARCHIVE_MARKER_NAME
 
 
-def archive_known_migrated(layout: Layout) -> bool:
-    """Whether the start-up guard can trust the archive without re-reading it: `mark_archive_migrated` wrote this
-    the last time the whole archive scanned clean, and nothing has moved a new file into it since."""
-    return _archive_marker_path(layout).exists()
+def _archive_fingerprint(layout: Layout, paths: list[Path]) -> list[list]:
+    """A stat-only manifest of `paths` (expected: the archive's own `*/*.json` listing): each entry is
+    `[path relative to the archive root, size, mtime_ns]`, sorted by that relative path. No file is opened."""
+    root = layout.jobs / "archive"
+    out = []
+    for p in paths:
+        try:
+            st = p.stat()
+        except OSError:
+            continue        # gone between the listing and the stat; the next real scan will see it either way
+        out.append([str(p.relative_to(root)), st.st_size, st.st_mtime_ns])
+    out.sort(key=lambda row: row[0])
+    return out
 
 
-def mark_archive_migrated(layout: Layout) -> None:
-    """Record that every file currently under the archive is migration-stamped or allocator-written."""
+def archive_known_migrated(layout: Layout, paths: list[Path] | None = None) -> bool:
+    """Whether the start-up guard can trust the archive without re-reading it: true only when a fresh stat-only
+    fingerprint of `paths` (the archive's current `*/*.json` listing, recomputed here when the caller has not
+    already taken it) still matches the one `mark_archive_migrated` stored. `paths` lets a caller that already
+    globbed the archive pass that listing through instead of paying for a second one."""
+    try:
+        marker = read_json(_archive_marker_path(layout))
+    except (OSError, ValueError):
+        return False
+    stored = marker.get("fingerprint")
+    if stored is None:
+        return False
+    if paths is None:
+        paths = sorted(layout.jobs.glob("archive/*/*.json"))
+    return _archive_fingerprint(layout, paths) == stored
+
+
+def mark_archive_migrated(layout: Layout, paths: list[Path]) -> None:
+    """Record that every file in `paths` -- the exact listing a clean scan just finished reading -- is migration-
+    stamped or allocator-written, fingerprinted so a later change to any of them is caught without an explicit
+    invalidation step. The caller must not call this when its own scan had to skip an unreadable file."""
     p = _archive_marker_path(layout)
     p.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json(p, {"checked": now_iso()})
-
-
-def _invalidate_archive_marker(layout: Layout) -> None:
-    with contextlib.suppress(OSError):
-        _archive_marker_path(layout).unlink()
+    atomic_json(p, {"checked": now_iso(), "fingerprint": _archive_fingerprint(layout, paths)})
 
 
 def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:

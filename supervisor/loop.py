@@ -45,12 +45,17 @@ class UnmigratedJobsError(RuntimeError):
     similar one-shot tools construct no `Supervisor` either and are likewise untouched by it."""
 
 
-def _bad_job_files(paths: list[Path]) -> list[str]:
+def _bad_job_files(paths: list[Path]) -> tuple[list[str], bool]:
+    """Returns the unmigrated names in `paths`, and whether every one of `paths` was actually read: a file this
+    could not parse is skipped either way (R-03, not this guard's concern), but the caller must know it happened
+    -- a clean-looking scan that quietly skipped a file is not a scan anything should be trusted on (P3-R2-B)."""
     bad = []
+    all_read = True
     for p in paths:
         try:
             rec = read_json(p)
         except (OSError, ValueError):
+            all_read = False
             continue           # an unreadable record is jobs.py's own concern (R-03), not this guard's
         if jobs_mod.kind_of(rec) == "conversation":
             continue           # backs no Task document; stays outside this model entirely (§2.2), always has
@@ -59,22 +64,25 @@ def _bad_job_files(paths: list[Path]) -> list[str]:
         if rec.get("kind") is not None and isinstance(rec.get("seq"), int):
             continue
         bad.append(p.name)
-    return bad
+    return bad, all_read
 
 
 def _unmigrated_job_files(layout: Layout) -> list[str]:
     """RELEASE_REVIEW_2.8.0_round2.md's P3-R2-B: the live top level is bounded by work in flight, not by the
     project's whole history, so it is scanned every start-up regardless. The archive only grows, one finished
     task at a time, and a record in it never changes once written — once a full scan has found it entirely
-    migration-stamped/allocator-written, `jobs.mark_archive_migrated` lets every later start-up trust that
-    instead of re-reading every file again. `jobs.archive_terminal` invalidates it the moment a new, not-yet-seen
-    file moves in; nothing else is assumed to have left the archive alone."""
-    bad = _bad_job_files(sorted(layout.jobs.glob("*.json")))
-    if jobs_mod.archive_known_migrated(layout):
+    migration-stamped/allocator-written, `jobs.mark_archive_migrated` fingerprints that listing so every later
+    start-up can trust it, stat-only, instead of re-reading every file again; `jobs.archive_known_migrated`
+    re-verifies the fingerprint against the archive's current listing every time, so any change since -- a new
+    file `archive_terminal` moved in, an out-of-band write, a restored backup -- is caught without this needing to
+    invalidate anything itself. A scan that had to skip a file it could not read never marks the archive clean."""
+    bad, _ = _bad_job_files(sorted(layout.jobs.glob("*.json")))
+    archive_paths = sorted(layout.jobs.glob("archive/*/*.json"))
+    if jobs_mod.archive_known_migrated(layout, archive_paths):
         return bad
-    archive_bad = _bad_job_files(sorted(layout.jobs.glob("archive/*/*.json")))
-    if not archive_bad:
-        jobs_mod.mark_archive_migrated(layout)
+    archive_bad, all_read = _bad_job_files(archive_paths)
+    if not archive_bad and all_read:
+        jobs_mod.mark_archive_migrated(layout, archive_paths)
     return bad + archive_bad
 
 

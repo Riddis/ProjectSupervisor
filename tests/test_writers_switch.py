@@ -298,9 +298,10 @@ def test_a_conversation_job_record_is_exempt_from_the_guard(layout):
 def test_an_unmigrated_record_in_the_archive_refuses_to_dispatch_and_names_the_fix(layout, monkeypatch):
     """Clears the five job markers first: a supervisor-dispatched session (this one, possibly) already carries
     `SUPERVISOR_ATTEMPT`, and the launch-environment guard (round 1's P3) answers before this one ever would."""
+    from typer.testing import CliRunner
+
     from supervisor import envconfig
     from supervisor.cli import app
-    from typer.testing import CliRunner
     for name in envconfig.FOREIGN_MARKERS:
         monkeypatch.delenv(name, raising=False)
     archive = jobs_mod.archive_dir(layout, "T-ARCBAD")
