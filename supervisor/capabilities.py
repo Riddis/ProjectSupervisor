@@ -1,8 +1,9 @@
 """Lane capability data (docs/plan/LONG_WORK.md section 3.2, D-028 decision 2): what a lane can do, framework-known
 keys only (`durable`, `network`, `max_duration_min`), read by `supervisor.needs`'s matcher and nothing else. The
-framework states every value for its own five lanes; a plugin lane that declares nothing gets {} here, which the
-matcher turns into a warning rather than a refusal (`needs_lane_unknown`) -- the plugin-facing declaration hook
-itself is not built in this release (see docs/releases/2.9.0 for the record).
+framework states every value for its own five lanes; a plugin lane declares its own through the additive
+`registry.capabilities(adapter, mapping)` plugin API entry (`supervisor.plugins.Registry.capabilities`), and one
+that declares nothing at all gets {} here, which the matcher turns into a warning rather than a refusal
+(`needs_lane_unknown`).
 
 The table's contents, every value stated, so no reader has a judgement call left: `durable: false` on the three
 model lanes (a continuation re-spends a session, which is not a computation resuming); absent on `process`/
@@ -22,6 +23,8 @@ _TABLE: dict[str, dict] = {
     "process": {"network": True},
     "python": {"network": True},
 }
+
+FRAMEWORK_LANES = frozenset(_TABLE)   # the five lanes whose capability data is the framework's, never a plugin's
 
 
 def _claude_api_max_duration_min(layout: Layout) -> int:
@@ -54,8 +57,10 @@ def for_lane(layout: Layout, adapter: str | None) -> dict:
 
 def _plugin_declared(layout: Layout, adapter: str) -> dict | None:
     """A plugin lane's own capability mapping, when its setup() declared one for `adapter` -- None otherwise
-    (never for one of the framework's own five lane names, which this table alone answers for)."""
-    if adapter in _TABLE:
+    (never for one of the framework's own five lane names, which this table alone answers for: `registry.
+    capabilities` itself refuses a plugin that names one of them, section 3.2's "not a shape to be filled in
+    later")."""
+    if adapter in FRAMEWORK_LANES:
         return None
     try:
         from . import plugins as plugins_mod

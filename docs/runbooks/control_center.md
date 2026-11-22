@@ -86,11 +86,15 @@ supervisor offline the same button powers off after the grace period, cancellabl
 
 A running job is stopped only when it goes **quiet** (no new output and under `idle_cpu_s` CPU seconds of work in its
 processes for `idle_s`, default 20 min) or reaches its **hard cap** (default 6 h for agent sessions) — see
-`supervisor/timeouts.py` and `config/routing.yaml: timeouts`. **+1h** on a *Now running* row (or **Extend +1h** on
-the agent page) is the `agent.extend` command: it raises that one job's cap by an hour, idempotently per command id;
-the quiet limit still applies. Ten minutes before the cap an agent session is asked to write its handoff; a
-timed-out agent session is continued from its HANDOFF.md by a fresh session (`job_requeued`, reason *time limit*),
-not counted as a failed attempt.
+`supervisor/timeouts.py` and `config/routing.yaml: timeouts`. **+1h** on a *Now running* row is the `agent.extend`
+command with no declared duration: it raises that one job's cap by an hour, idempotently per command id; the quiet
+limit still applies. The agent page renders one **Extend** control per declared `timeouts.extend_offers` duration
+(default `[3600]`, so a project configuring nothing sees exactly today's single **Extend +1h**); each click states
+the resulting deadline, and two clicks of the same duration inside `timeouts.extend_dedupe_s` (default 10 s) are one
+unit, reported as the deadline already reached rather than added again — an Extend past the lane's resolved ceiling
+(`timeouts.ceiling_s`) is refused, naming it, rather than silently clamped. Ten minutes before the cap an agent
+session is asked to write its handoff; a timed-out agent session is continued from its HANDOFF.md by a fresh
+session (`job_requeued`, reason *time limit*), not counted as a failed attempt.
 
 Quiet time is measured from the first time the loop looks at a job, not from its launch, so a session that was
 already running when the loop was updated gets a full quiet window before it can be stopped. The cap shown, the cap

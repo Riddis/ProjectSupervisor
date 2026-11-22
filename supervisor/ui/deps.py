@@ -101,6 +101,22 @@ def decode_flash(request: Request) -> dict | None:
     return {"level": level, "message": message}
 
 
+def _extend_message(result: dict) -> str:
+    """`agent.extend`'s own answer states the resulting deadline (docs/plan/LONG_WORK.md section 4.3): every
+    click, including one the dedupe window turned into a no-op, reports where the hard cap now sits."""
+    deadline = result.get("deadline")
+    when = None
+    if isinstance(deadline, (int, float)) and deadline != float("inf"):
+        from datetime import datetime
+        when = datetime.fromtimestamp(deadline).strftime("%H:%M")
+    skipped = result.get("skipped")
+    if skipped == "already extended":
+        return f"already extended to that duration — hard cap stays {when}" if when else "already extended to that duration"
+    if skipped:
+        return f"agent.extend: {skipped}"
+    return f"extended — hard cap now {when}" if when else "agent.extend applied"
+
+
 def act(request: Request, layout: Layout, kind: str, payload: dict, redirect_to: str) -> RedirectResponse:
     """Submit a command and report the outcome. HTMX requests get a rendered fragment; plain form posts (and tests
     that don't send HX-Request) get a redirect back to the page with a flash banner describing what happened."""
@@ -117,6 +133,8 @@ def act(request: Request, layout: Layout, kind: str, payload: dict, redirect_to:
         message = f"choice {applied_choice.get('choice')!r} did not apply: {applied_choice.get('error')}"
         if applied_choice.get("reopened"):
             message += f" (reopened as {applied_choice['reopened']})"
+    elif kind == "agent.extend":
+        level, message = "applied", _extend_message(outcome.get("result") or {})
     else:
         level, message = "applied", f"{kind} applied"
     if request.headers.get("HX-Request"):

@@ -658,6 +658,26 @@
           ],
           "returns": "None"
         },
+        "capabilities": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "mapping"
+            }
+          ],
+          "returns": "None"
+        },
         "cli": {
           "kind": "method",
           "params": [

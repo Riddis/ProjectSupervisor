@@ -32,6 +32,12 @@ class Registry(Protocol):
         refused when unknown and a schema is declared for the adapter, warned when none is declared at all."""
         ...
 
+    def capabilities(self, adapter: str, mapping: dict) -> None:
+        """This `adapter`'s own capability data (`durable`, `network`, `max_duration_min`), matched against a
+        task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's
+        own five lane names is refused."""
+        ...
+
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this plugin reads with `supervisor.plugin.config()`; one owner per section."""
         ...

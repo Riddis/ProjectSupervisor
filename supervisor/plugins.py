@@ -202,6 +202,8 @@ class Registry:
     config_schemas: dict[str, Any] = field(default_factory=dict)  # plugin -> the pydantic model of its section
     job_schemas: dict[str, Any] = field(default_factory=dict)   # adapter name -> the pydantic model of its own job keys
     job_schema_owners: dict[str, str] = field(default_factory=dict)  # adapter name -> the plugin that declared it
+    capabilities_table: dict[str, dict] = field(default_factory=dict)        # adapter name -> its capability mapping
+    capabilities_table_owners: dict[str, str] = field(default_factory=dict)  # adapter name -> the plugin that declared it
 
     _setting_up: str | None = None                              # the plugin whose setup(registry) is running
 
@@ -386,6 +388,40 @@ class Registry:
                              f"{self.job_schema_owners[adapter]!r}")
         self.job_schemas[adapter] = model
         self.job_schema_owners[adapter] = owner
+
+    def capabilities(self, adapter: str, mapping: dict) -> None:
+        """A plugin lane's own capability data (`durable`, `network`, `max_duration_min` -- the closed,
+        framework-known vocabulary of docs/plan/LONG_WORK.md section 3.2), read by `supervisor.capabilities.
+        for_lane` instead of leaving the lane matched as `needs_lane_unknown` (a lane with no declaration at
+        all). One of the framework's own five lane names is refused: their capability data is
+        `supervisor.capabilities`'s own stated table, not a shape a plugin may fill in. One declaration per
+        adapter name, like `job_schema()`'s own."""
+        from . import capabilities as capabilities_mod
+        if not isinstance(adapter, str) or not adapter:
+            raise PluginError(f"capabilities needs a non-empty adapter name, got {adapter!r}")
+        if adapter in capabilities_mod.FRAMEWORK_LANES:
+            raise PluginError(f"capabilities({adapter!r}, ...): {adapter!r} is one of the framework's own lanes; "
+                              f"its capability data is supervisor.capabilities's own table, not a plugin's to declare")
+        if not isinstance(mapping, dict):
+            raise PluginError(f"capabilities({adapter!r}, ...): mapping must be a dict, got {mapping!r}")
+        unknown = sorted(set(mapping) - {"durable", "network", "max_duration_min"})
+        if unknown:
+            raise PluginError(f"capabilities({adapter!r}, ...): unknown key(s) {', '.join(unknown)} (the vocabulary "
+                              f"is durable, network, max_duration_min)")
+        for key in ("durable", "network"):
+            if key in mapping and not isinstance(mapping[key], bool):
+                raise PluginError(f"capabilities({adapter!r}, ...): {key} must be a bool, got {mapping[key]!r}")
+        if "max_duration_min" in mapping:
+            value = mapping["max_duration_min"]
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise PluginError(f"capabilities({adapter!r}, ...): max_duration_min must be a positive int, got "
+                                  f"{value!r}")
+        owner = self._setting_up or "?"
+        current_owner = self.capabilities_table_owners.get(adapter)
+        if current_owner is not None and current_owner != owner:
+            raise PluginError(f"capabilities for adapter {adapter!r} is already declared by plugin {current_owner!r}")
+        self.capabilities_table[adapter] = dict(mapping)
+        self.capabilities_table_owners[adapter] = owner
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it

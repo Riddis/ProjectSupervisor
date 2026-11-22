@@ -43,6 +43,7 @@ Plugins never construct one.
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
 | `job_schema(adapter, model)` | a pydantic model for the keys a job for `adapter` adds beyond `job_spec`'s framework-known fields (RECOVERY_PLAN.md section 3.2): refused when unknown and a schema is declared for the adapter, warned when none is declared at all |
+| `capabilities(adapter, mapping)` | `adapter`'s own capability data (`durable`, `network`, `max_duration_min` -- docs/plan/LONG_WORK.md section 3.2): matched against a task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's own five lane names (whose capability data is `supervisor.capabilities`'s own stated table) is refused |
 | `doctor_check(fn)` | `fn(layout) -> Check` |
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}` on the Overview |
 | `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)`, raising to refuse a brief |
@@ -56,7 +57,8 @@ Plugins never construct one.
 
 `docs/FRAMEWORK_VS_PLUGIN.md` describes each hook in full. Names are unique: `adapter()` refuses a lane name
 another lane already has, built in or another plugin's, and `python_job()`, `command()`, `inbox_kind()`,
-`config_sections()` and `job_schema()` refuse a taken name the same way. A refusal is a `PluginError` from `setup()`: the plugin
+`config_sections()`, `job_schema()` and `capabilities()` refuse a taken name the same way; `capabilities()` also
+refuses one of the framework's own five lane names. A refusal is a `PluginError` from `setup()`: the plugin
 does not load, and a required one blocks the loop. Registering the same object a second time is harmless, so an
 plugin that still registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)`
 from the internal modules still work and are deprecated from 1.11.0.

@@ -22,6 +22,15 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   the block never named. The reference plugin declares a schema for its own lane, so `examples/` shows the hook
   in use.
 
+- **Plugin API: `Registry.capabilities(adapter, mapping)` (docs/plan/LONG_WORK.md section 3.2, D-028, R-20).**
+  Additive. A plugin lane may now declare its own capability data in the same closed, framework-known vocabulary
+  the framework states for its own five lanes (`durable`, `network`, `max_duration_min`): read by
+  `supervisor.capabilities.for_lane` and matched against a task's declared `needs` exactly as a built-in lane is,
+  instead of only ever drawing the `needs_lane_unknown` warning a lane with no declaration at all still does. An
+  unknown key, a value of the wrong type, or one of the framework's own five lane names (their capability data is
+  `supervisor.capabilities`'s own stated table, not a plugin's to declare) is refused. The reference plugin
+  declares its lane's capability data, so `examples/` shows the hook in use.
+
 - **Fixed: `job` was not a declared field, so a misspelled key was silently ignored and a seed could not carry
   one (R-11).** `Task.job` is now a typed `Job` model (`adapter`, `template`, `params`, `argv`, `fn`, `timeout_s`,
   `idle_timeout_s`, `retry_on`, `stdin_file`, `model`, `effort`, `prompt`, `result_kind`); a wrong type is refused
@@ -93,17 +102,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   (`timeouts.ceiling_s`, naming it rather than silently clamping), and dedupes a second extension of the same
   duration on the same job inside `timeouts.extend_dedupe_s` (default 10s) as a no-op reporting the existing
   deadline (`job_extend_deduped`) — closing the recorded burst of seventeen clicks on one job, ten of them inside
-  two seconds. The unattended credit preference now skips (never refuses) moving a task onto `claude_api` when
-  its own declared need would be refused there. A plan's `create_task` may declare `needs` on the task it
-  creates; a `duration_min` above `plan.max_duration_min` (unconfigured default: that lane's own resolved policy
-  cap) raises the plan to the owner authority class instead of refusing it. **Not built in this release** (named
-  so, not deferred silently): named resource claims (`needs.resource` is validated for shape and for a
-  task/template conflict, but serialising a claim through the launch gate is a separate build task); a plugin's
-  own `registry.capabilities()` declaration hook (a plugin lane with no entry in the framework's table is matched
-  as `needs_lane_unknown`, exactly as this release's own compatibility rule already treats one); the Control
-  Center rendering one button per declared Extend offer (the command and `timeouts.extend_offers` are built and
-  tested; the Control Center still renders its one pre-2.9.0 button, which a project configuring more than one
-  offer cannot yet reach from the UI).
+  two seconds. The Control Center's agent page now renders one **Extend** control per declared offer (a project
+  configuring nothing still sees exactly one, **Extend +1h**) and every answer, including the dedupe window's
+  no-op, states the resulting deadline. The unattended credit preference now skips (never refuses) moving a task
+  onto `claude_api` when its own declared need would be refused there. A plan's `create_task` may declare `needs`
+  on the task it creates; a `duration_min` above `plan.max_duration_min` (unconfigured default: that lane's own
+  resolved policy cap) raises the plan to the owner authority class instead of refusing it. **Not built in this
+  release** (named so, not deferred silently): named resource claims (`needs.resource` is validated for shape and
+  for a task/template conflict, but serialising a claim through the launch gate is a separate build task).
 
 ## 2.8.0 — 2026-11-16
 
