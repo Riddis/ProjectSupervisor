@@ -5,6 +5,17 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
+- **Fixed: five small items from the framework review (R-28).** `runtime.is_live`'s heartbeat window now scales
+  with the last turn's own recorded length, so a turn still inside its own precedent (a repo-wide snapshot, a
+  git commit) is never reported offline and the Control Center's Start button stays disabled while the loop is
+  actually live. `loop.RENDERED_PROJECTIONS` and `tasks.VOLATILE_PROJECTIONS`, literal copies of
+  `verify.EXCLUDED_FILES` each redundantly unioned with a function that already contains it, are gone; both call
+  sites read `verify.excluded_files()` directly. A new `supervisor.routing_config` module is the one place
+  `config/routing.yaml` is opened and parsed; the three routing loaders and about a dozen inline readers across
+  the tree now delegate to it instead of each re-implementing the same read. `/tasks?phase=<value>` no longer
+  raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
+  now uses `isdecimal()`, exactly the predicate `int()` itself parses.
+
 - **Plugin API: `Registry.job_schema(adapter, model)` (RECOVERY_PLAN.md section 3, R-11).** Additive. A plugin
   adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
   fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no
