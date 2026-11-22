@@ -191,6 +191,23 @@ def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind:
     return None
 
 
+def needs_mismatch_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
+    """None unless `task`'s own effective need (docs/plan/LONG_WORK.md section 3.4, D-028 decision 3) is
+    refusal-tier against `adapter_name` -- the write-time `needs.match` run again with the adapter this launch is
+    actually about to use, since routing can move a task onto a different lane after the write. Scoped to a
+    delivery alone (`needs.needs_for`): a review, a verify job or a chat turn is never matched. The one stable
+    prefix ("needs mismatch") is what `scheduler.plan`/`why_not_runnable` key their own handling on, never a
+    second copy of `needs.match`'s own verdict."""
+    from . import needs as needs_mod
+    eff = needs_mod.needs_for(layout, task, kind)
+    if not eff:
+        return None
+    refusal = next((r for r in needs_mod.match(layout, task, adapter_name, eff) if r["tier"] == "refusal"), None)
+    if refusal is None:
+        return None
+    return f"needs mismatch on {adapter_name}: {refusal['code']} ({refusal['need']} = {eff.get(refusal['need'])})"
+
+
 # Job kinds whose agent is the task's owner role; a review's agent is its `review_role`, a verify job runs
 # deterministic commands and a diagnosis/conversation names its own role in the spec.
 OWNER_ROLE_KINDS = ("delivery",)
@@ -261,6 +278,9 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
     reason = preflight_reason(layout, task, adapter_name, kind)
     if reason:
         return reason
+    needs_reason = needs_mismatch_reason(layout, task, adapter_name, kind)
+    if needs_reason:
+        return needs_reason
     ad = REGISTRY.get(adapter_name)
     if ad is None:
         return f"adapter {adapter_name} not registered"

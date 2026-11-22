@@ -32,7 +32,7 @@ from .paths import Layout
 
 CODES = frozenset({
     "unmet_dependency", "phase_gate", "role_inactive", "capacity_floor", "lane_unregistered",
-    "awaiting_review", "awaiting_approval", "preflight_failed", "resource_claimed",
+    "awaiting_review", "awaiting_approval", "preflight_failed", "resource_claimed", "needs_mismatch",
 })
 
 # Which choices a reason admits, keyed by code -- built once here so `loop.alert_if_idle`, the Overview and the
@@ -44,13 +44,17 @@ CODES = frozenset({
 # (`awaiting_review`, `awaiting_approval`) admit nothing a button could do.
 _DIAGNOSABLE = frozenset({"unmet_dependency", "preflight_failed"})
 _CONTENDED = frozenset({"capacity_floor"})
+# D-028 decision 3: the two writes that clear a needs mismatch (a routing edit, a task.patch on `needs`) are
+# named in its own detail, never offered as a button -- `resume` would be refused by the mismatch it ignores, so
+# this code admits exactly what a stalled contention admits and no `diagnose_now` (there is nothing to probe).
+_NAMED_ESCAPE_ONLY = frozenset({"needs_mismatch"})
 
 
 def _choice_names(why: dict) -> list[str]:
     code = why["code"]
     if code in _DIAGNOSABLE:
         return ["diagnose_now", "cancel_task"]
-    if code in _CONTENDED:
+    if code in _CONTENDED or code in _NAMED_ESCAPE_ONLY:
         return ["cancel_task", "hold"]
     if code == "resource_claimed":
         return ["cancel_task", "hold"] + (["diagnose_now"] if not why.get("blockers") else [])
@@ -171,6 +175,12 @@ def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
         if pf_reason:
             return {"code": "preflight_failed", "detail": f"{pf_job.template or pf_job.adapter}: {pf_reason}",
                    "blockers": [pf_job.template or pf_job.adapter]}
+
+    needs_reason = gate_mod.needs_mismatch_reason(layout, task, adapter_name, "delivery")
+    if needs_reason:
+        detail = (f"{needs_reason}; put the task back on a lane that satisfies the declaration (a routing edit) "
+                 "or change the declaration (task.patch on needs)")
+        return {"code": "needs_mismatch", "detail": detail, "blockers": [adapter_name]}
 
     ad = REGISTRY.get(adapter_name)
     engine = getattr(ad, "engine", None)

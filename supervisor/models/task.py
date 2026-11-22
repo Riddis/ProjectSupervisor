@@ -155,6 +155,41 @@ class Delivery(BaseModel):
 EXCLUSIVE = "."          # owned_paths: ["."] — "may touch anything, so nothing else may write meanwhile"
 
 
+class Needs(BaseModel):
+    """What a task's delivery requires (docs/plan/LONG_WORK.md section 3.1, D-028 decision 1): a closed four-key
+    vocabulary, every key optional, the whole block optional. An absent block is exactly pre-2.9.0 behaviour on
+    every path -- the migration rule this model exists to hold. An unknown key, or a value of the wrong type, is
+    refused at validation (RF-27) rather than silently ignored, since the vocabulary is framework-known and
+    versioned."""
+    duration_min: Optional[int] = None    # the work's expected wall-clock minutes
+    network: Optional[bool] = None        # the work must reach a service outside this machine
+    resource: Optional[str] = None        # one declared resource this work claims while it runs
+    resumable: Optional[bool] = None      # a stop may be resumed from the work's own on-disk state
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("duration_min", mode="before")
+    @classmethod
+    def _duration_min(cls, v):
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v <= 0):
+            raise ValueError("needs.duration_min must be a positive int")
+        return v
+
+    @field_validator("network", "resumable", mode="before")
+    @classmethod
+    def _bool_key(cls, v):
+        if v is not None and not isinstance(v, bool):
+            raise ValueError("must be a bool")
+        return v
+
+    @field_validator("resource", mode="before")
+    @classmethod
+    def _resource(cls, v):
+        if v is not None and (not isinstance(v, str) or not v):
+            raise ValueError("needs.resource must be a non-empty string")
+        return v
+
+
 class Check(BaseModel):
     """An executable acceptance check fixed by the task contract. Verification always re-runs every
     check; a worker's reported `tests` are additional evidence and can never replace these."""
@@ -241,6 +276,7 @@ class Task(BaseModel):
                                                                  # owner's own later status change (round-4 F9) -
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
+    needs: Optional[Needs] = None                               # docs/plan/LONG_WORK.md section 3.1, D-028 decision 1
     job: Optional[Job] = None                                   # RECOVERY_PLAN.md 3.2/3.4: typed, under a writer rule
     result: Optional[str] = None
     findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:

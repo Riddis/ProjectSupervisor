@@ -71,6 +71,14 @@ def job_spec(task) -> dict:
     return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 
+def default_adapter_for(layout: Layout | None, cost_category) -> str:
+    """The cost lane a category resolves to before any `job.adapter` or role override -- what `adapter_name`
+    falls back to, exposed for a caller with a cost category but no `Task` yet
+    (`plans._plan_duration_limit_min`, docs/plan/LONG_WORK.md section 6)."""
+    key = str(getattr(cost_category, "value", cost_category) or "")
+    return cost_lanes(layout).get(key, "claude_cli")
+
+
 def adapter_name(task: Task, layout: Layout | None = None) -> str:
     job = job_spec(task)
     if job and job.get("adapter"):
@@ -207,6 +215,10 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
         if reason:
             if reason.startswith("owned path error"):
                 tasks_mod.log(layout, "schedule_skip", "loop", task=t.id, reason=reason)
+            elif reason.startswith("needs mismatch"):
+                # docs/plan/LONG_WORK.md section 3.4: a lane change is not transient, so this stalls like an
+                # inactive role -- logged once per task per process (`_skip_once`), never every tick.
+                _skip_once(layout, t, reason)
             continue
         chosen.append((t, name))
         chosen_paths += [(t.id, p) for p in gate.owned_for(t, name, "delivery")]

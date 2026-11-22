@@ -114,14 +114,30 @@ class ProcessAdapter(Adapter):
         return spec["argv"]
 
     def prepare(self, layout, task, attempt_id):
+        from .. import capabilities as capabilities_mod
+        from .. import gate as gate_mod
+        from .. import needs as needs_mod
+        from .. import tasks as tasks_mod
         jobspec = job_spec(task)
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         _, env_digest = envconfig.build(layout, self.name)
+        kind = jobspec.get("result_kind", "delivery")
+        # docs/plan/LONG_WORK.md section 4.2: the derived budget, the composed ceiling and its clamp all reach
+        # this lane through the one resolver -- `lane="plain"` starts from PROCESS_CAP_S and reads none of the
+        # model-lane policy merges, so a job with no declared `needs`/`timeout_s` still gets exactly 3600 s.
+        caps = capabilities_mod.for_lane(layout, self.name)
+        eff_needs = needs_mod.needs_for(layout, task, kind)
+        limits = timeouts.resolve(gate_mod.routing_doc(layout), job=jobspec, needs=eff_needs, lane="plain",
+                                  capabilities=caps)
+        if limits.get("clamped_from_s") is not None:
+            tasks_mod.log(layout, "timeout_clamped", "loop", task=task.id, attempt=attempt_id,
+                          declared_s=limits["clamped_from_s"], ceiling_s=limits["hard_cap_s"])
+        resumable = (bool((eff_needs or {}).get("resumable")) and needs_mod.template_declares_resumable(layout, task))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),
-                "timeout_s": jobspec.get("timeout_s", timeouts.PROCESS_CAP_S), "idle_s": jobspec.get("idle_timeout_s"),
-                "retry_on": list(jobspec.get("retry_on") or []),
+                "timeout_s": limits["hard_cap_s"], "idle_s": limits["idle_s"],
+                "retry_on": list(jobspec.get("retry_on") or []), "resumable": resumable,
                 "root": str(layout.root), "stdin_file": jobspec.get("stdin_file"), "env_digest": env_digest}
 
     def submit(self, spec):
@@ -247,7 +263,13 @@ class ProcessAdapter(Adapter):
     def _time_out(self, spec, handle, kind: str, error: str) -> Result:
         self.terminate(handle)
         self.on_timeout(spec, handle)
-        return Result(status="FAILED", error=error, raw={"timeout": kind})
+        raw = {"timeout": kind}
+        # docs/plan/LONG_WORK.md section 4.4: a hard-cap stop on a job whose task declared `needs.resumable: true`
+        # on a template declaring `resumable: true` (`prepare()`'s own `resumable` flag) is relaunched as a
+        # continuation, never recorded FAILED -- an idle stop stays a failure, resumability is about redoing work.
+        if kind == "cap" and spec.get("resumable"):
+            raw["resumable"] = True
+        return Result(status="FAILED", error=error, raw=raw)
 
     def collect(self, spec, handle) -> Optional[Result]:
         """A job ends on time only when it is idle (no output, no CPU work in its process tree for `idle_s`) or past

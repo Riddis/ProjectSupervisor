@@ -58,6 +58,53 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   backfill that preflights one at the gate on its first launch, until a one-time sweep is recorded complete,
   ships in a follow-on step of the same release.
 
+- **A task declares `needs: {duration_min, network, resource, resumable}`, matched against lane capability data
+  at the write; a job's time budget derives from a declared duration instead of a fixed default; Extend takes a
+  duration (D-028, R-20).** `needs` is a new, optional, sticky contract field (an absent block is exactly today's
+  behaviour everywhere): a key outside the four-key vocabulary, or a value of the wrong type, is refused; a task
+  and its job's template naming different resources is refused (`resource_conflict`). The match
+  (`supervisor.needs`) runs at every write that creates or changes a task's contract or job — refusing the row at
+  an import or a patch, storing the refusal in the preflight for the owner's `set_job` on a live task, refusing
+  the plan at a plan's `set_job` — against the framework's own five-lane capability table
+  (`supervisor.capabilities`): a declared duration above the lane's resolved ceiling (`timeouts.ceiling_s`,
+  `max_hard_cap_s` default 24h) is refused; `resumable: true` against a lane declaring `durable: false`, or
+  against a present template that does not itself declare `resumable: true`, is refused; `network: true` against
+  a lane declaring `network: false` is refused. Where the lane declares nothing at all, or declares no `network`
+  key, the mismatch is a warning instead (`needs_lane_unknown`, `needs_unverifiable`), so a plugin lane from
+  before this release keeps working unchanged; clearing a sticky `needs` block explicitly is reported as
+  `needs_cleared`. The gate re-matches the same function against the lane a task actually dispatches to (routing
+  can move after the write) and stalls a refusal-tier mismatch as its own `why_not_runnable` reason
+  (`needs_mismatch`, admitting `cancel_task`/`hold`, never `resume`), logged once per task rather than every
+  tick. A declaration describes the task's own delivery alone — a review, a verify job and a chat turn match
+  nothing and derive no budget (`needs.applies_to`), so a declaration can never stall or misbudget the task's own
+  review.
+  `timeouts.resolve` takes additive `needs=`/`lane=`/`capabilities=` arguments: a declared `duration_min` derives
+  a budget (`duration_min * 60 * timeouts.needs_headroom`, default ×1.25) when no explicit `timeout_s` is set,
+  clamped to the same resolved ceiling; an explicit `timeout_s` above the ceiling is clamped and logged
+  (`timeout_clamped`) rather than refused, since the write-time refusal (RF-08) binds only the `process`/`python`
+  row of the preflight. `ProcessAdapter.prepare` now calls the resolver (`lane="plain"`) instead of computing its
+  own cap, so a declared duration reaches this lane's budget too; its unconfigured default (3600s, no idle limit)
+  is unchanged. A `process`-lane hard-cap stop on a job whose task declares `needs.resumable: true`, on a
+  template that declares `resumable: true`, is recorded as a continuation instead of a failed attempt — the
+  recorded loss was 8.0h of agent work killed at a policy cap nobody could describe as long; this is the budget
+  side of the same fix.
+  `agent.extend` now reads a declared offer set (`timeouts.extend_offers`, default `[3600]` — a project
+  configuring nothing sees exactly today's single +1h), refuses past the lane's resolved ceiling
+  (`timeouts.ceiling_s`, naming it rather than silently clamping), and dedupes a second extension of the same
+  duration on the same job inside `timeouts.extend_dedupe_s` (default 10s) as a no-op reporting the existing
+  deadline (`job_extend_deduped`) — closing the recorded burst of seventeen clicks on one job, ten of them inside
+  two seconds. The unattended credit preference now skips (never refuses) moving a task onto `claude_api` when
+  its own declared need would be refused there. A plan's `create_task` may declare `needs` on the task it
+  creates; a `duration_min` above `plan.max_duration_min` (unconfigured default: that lane's own resolved policy
+  cap) raises the plan to the owner authority class instead of refusing it. **Not built in this release** (named
+  so, not deferred silently): named resource claims (`needs.resource` is validated for shape and for a
+  task/template conflict, but serialising a claim through the launch gate is a separate build task); a plugin's
+  own `registry.capabilities()` declaration hook (a plugin lane with no entry in the framework's table is matched
+  as `needs_lane_unknown`, exactly as this release's own compatibility rule already treats one); the Control
+  Center rendering one button per declared Extend offer (the command and `timeouts.extend_offers` are built and
+  tested; the Control Center still renders its one pre-2.9.0 button, which a project configuring more than one
+  offer cannot yet reach from the UI).
+
 ## 2.8.0 — 2026-11-16
 
 - **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**

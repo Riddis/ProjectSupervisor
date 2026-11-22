@@ -85,6 +85,10 @@ def _validate_one(tid: str, tmpl) -> list[str]:
     needs = tmpl.get("needs")
     if needs is not None and not isinstance(needs, dict):
         errors.append(f"template {tid!r}: needs must be a mapping")
+
+    resumable = tmpl.get("resumable")
+    if resumable is not None and not isinstance(resumable, bool):
+        errors.append(f"template {tid!r}: resumable must be a bool")
     return errors
 
 

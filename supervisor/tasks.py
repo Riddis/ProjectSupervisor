@@ -32,13 +32,17 @@ from .paths import Layout
 ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED}
 CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "actions", "artifacts", "tests",
                    "checks", "owned_paths", "reviewer", "review_note", "acceptance", "escalation", "human_approval",
-                   "approval_note", "cost_category", "evidence", "test_roots"]
+                   "approval_note", "cost_category", "evidence", "test_roots", "needs"]
 # A refresh is a whole-contract replace: a seed row that omits a CONTRACT_FIELDS key clears it (R-07d, by design —
 # use patch_task for a change to one field without resending the rest). These four are the exception: once set,
 # they outlive a seed row that does not mention them, the same way the store itself (migrate_ownership) may set
 # owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
 # refresh touching only an unrelated field would have silently reset them to their defaults.
-REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
+REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots", "needs"})
+# `needs` joins the sticky set for the reason D-028 decision 1 gives: it coordinates a launch (a budget, a lane
+# match) rather than describing the work's shape, exactly as `owned_paths` does, and a refresh that touches an
+# unrelated field must never silently drop a declared duration back to the default cap. The only way to clear one
+# is an explicit empty block, reported as `needs_cleared` (`needs.cleared_warning`) rather than refused.
 # `job` names what a task runs, carried by create, import, refresh and patch (RECOVERY_PLAN.md 3.4, D-027
 # decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
 # CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
@@ -572,6 +576,10 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     job_errors, job_warnings = job_schema_problems(layout, task.job)
     art_errors += job_errors
     warnings += job_warnings
+    from . import needs as needs_mod
+    needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+    art_errors += needs_errors
+    warnings += needs_warnings
     return doc, validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
 
 
@@ -617,6 +625,7 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     resulting = dict(existing)            # the real graph this call will leave on disk, built up below
     changed: list[Task] = []              # rows being created or refreshed: only these take current contract rules
     new_docs: dict[str, dict] = {}        # id -> the document a create() would write
+    cleared_checks: list[tuple[dict, dict]] = []   # (before_raw, seed row) for each updated row's needs_cleared check
     created, updated, untouched, ignored = [], [], [], []
 
     for t in seed:
@@ -636,19 +645,27 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             changed.append(task)
             created.append(tid)
         elif tid in update_ids:
-            merged = _refresh_contract(layout, dict(store.read(path_for(layout, tid))), t, actor)   # validates in memory
+            before_raw = dict(store.read(path_for(layout, tid)))
+            merged = _refresh_contract(layout, dict(before_raw), t, actor)   # validates in memory
             resulting[tid] = Task.model_validate(merged)
             changed.append(resulting[tid])
+            cleared_checks.append((before_raw, t))
             updated.append(tid)
         else:
             untouched.append(tid)
 
     art_errors, warnings = artifact_problems(changed, root=layout.root)
     warnings += contract_warnings(changed, layout)
+    from . import needs as needs_mod
     for task in changed:
         job_errors, job_warnings = job_schema_problems(layout, task.job)
         art_errors += job_errors
         warnings += job_warnings
+        needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+        art_errors += needs_errors
+        warnings += needs_warnings
+    for before_raw, t in cleared_checks:
+        warnings += needs_mod.cleared_warning(before_raw, t)
     errors = validate_graph(resulting) + ownership_errors(changed, layout) + art_errors
     if errors:
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
@@ -732,7 +749,8 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     existing = load_all(layout)
     if task_id not in existing:
         raise TaskError(f"no such task {task_id}")
-    merged = _apply_patch(layout, dict(store.read(path_for(layout, task_id))), fields, actor)
+    before_raw = dict(store.read(path_for(layout, task_id)))
+    merged = _apply_patch(layout, dict(before_raw), fields, actor)
     task = Task.model_validate(merged)
     combined = dict(existing)
     combined[task_id] = task
@@ -741,6 +759,11 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     job_errors, job_warnings = job_schema_problems(layout, task.job)
     art_errors += job_errors
     warnings += job_warnings
+    from . import needs as needs_mod
+    needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+    art_errors += needs_errors
+    warnings += needs_warnings
+    warnings += needs_mod.cleared_warning(before_raw, fields)
     errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
     if errors:
         raise TaskError("patch invalid: " + "; ".join(errors))

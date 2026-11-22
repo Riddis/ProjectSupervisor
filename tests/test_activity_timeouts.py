@@ -329,8 +329,14 @@ def _legacy_job(layout, started):
 def test_extend_on_a_legacy_session_extends_its_effective_cap(layout):
     """5h55m into a pre-1.7.0 session: the effective (six-hour) cap is 5 min away and the session was asked for its
     handoff. Extend must add the hour to that cap, record it, show it, and withdraw the request."""
+    import yaml
     from supervisor.ui.routes.agents import _enrich
     from supervisor.ui.routes.overview import now_running
+    # Two genuinely separate requests for another hour, not the rapid-click burst timeouts.extend_dedupe_s exists
+    # to collapse (see test_a_second_same_duration_extend_inside_the_window_is_a_no_op) -- disabled here so both
+    # register.
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text(yaml.safe_dump({"timeouts": {"extend_dedupe_s": 0}}), encoding="utf-8")
     now = time.time()
     started = now - (5 * 3600 + 55 * 60)
     run_dir = _legacy_job(layout, started)

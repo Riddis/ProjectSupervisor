@@ -128,7 +128,10 @@ CREATE_REQUIRED_FIELDS = frozenset({"title", "objective", "owner_role", "cost_ca
 CREATE_FORBIDDEN_FIELDS = frozenset({"human_approval", "escalation", "phase", "priority"})
 CREATE_OPTIONAL_FIELDS = frozenset({"id", "depends_on", "actions", "artifacts", "tests", "checks", "owned_paths",
                                     "reviewer", "review_note", "acceptance", "evidence", "test_roots",
-                                    "approval_note"})
+                                    "approval_note", "needs"})
+# `needs` is create_task-only (D-028 decision 7): it is deliberately absent from PATCH_ALLOWED_FIELDS, so a plan
+# has no operation that can write it onto a task it did not create -- the writer-authority rule of
+# docs/plan/LONG_WORK.md section 6 holds by the ops vocabulary's own field lists, with no extra check needed.
 CREATE_ALLOWED_FIELDS = CREATE_REQUIRED_FIELDS | CREATE_OPTIONAL_FIELDS
 
 EXCLUSIVE = "."
@@ -1148,6 +1151,28 @@ def _tightened(layout: Layout | None, op_name: str, cls: str) -> str:
     return configured if configured is not None and _CLASS_RANK[configured] > _CLASS_RANK[cls] else cls
 
 
+def _plan_duration_limit_min(layout: Layout | None, task_doc: dict) -> int | None:
+    """docs/plan/LONG_WORK.md section 6, D-028 decision 7: `plan.max_duration_min`, or its unconfigured default
+    -- the created task's own lane policy cap in minutes, from `timeouts.resolve` called with no `needs` and no
+    `job` block, so the limit is the policy cap the chain yields and never the plan's own declared duration
+    (passing the declaration would make the limit equal it, so it could never bind). `None` when `layout` is not
+    given: no project to resolve a lane's policy against."""
+    if layout is None:
+        return None
+    from . import gate as gate_mod
+    from . import scheduler as scheduler_mod
+    from . import timeouts as timeouts_mod
+    from . import capabilities as capabilities_mod
+    routing = gate_mod.routing_doc(layout)
+    configured = (routing.get("plan") or {}).get("max_duration_min")
+    if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0:
+        return configured
+    adapter = scheduler_mod.default_adapter_for(layout, task_doc.get("cost_category"))
+    lane_shape = "plain" if adapter in ("process", "python") else "model"
+    caps = capabilities_mod.for_lane(layout, adapter)
+    return timeouts_mod.resolve(routing, lane=lane_shape, capabilities=caps)["hard_cap_s"] // 60
+
+
 def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) -> str:
     """A | B | owner: the highest class of `plan`'s own operations (§2.7). Total over the closed, six-operation
     vocabulary — an operation this table does not name (a seventh operation, or one of the owner-only effects
@@ -1163,6 +1188,13 @@ def authority(plan: dict, tasks: dict[str, Task], layout: Layout | None = None) 
         if op.get("op") == "create_task" and isinstance(op.get("task"), dict):
             tid = op["task"].get("id")
             cls = CLASS_OWNER if metered(layout, op["task"].get("cost_category")) else CLASS_B
+            duration = (op["task"].get("needs") or {}).get("duration_min")
+            if isinstance(duration, int) and not isinstance(duration, bool):
+                limit = _plan_duration_limit_min(layout, op["task"])
+                if limit is not None and duration > limit:
+                    # D-028 decision 7: not a refusal -- raised to the owner authority class, exactly as a
+                    # created task on a metered lane already is.
+                    cls = CLASS_OWNER
             if tid:
                 created_class[tid] = _tightened(layout, "create_task", cls)
     classes = []

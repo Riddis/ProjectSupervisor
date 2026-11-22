@@ -430,6 +430,43 @@ def _agent_extend(layout, payload, actor):
         raise ValueError("extend by 1 s to 24 h")
     spec = rec.get("spec") or {}
     base = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
+    # docs/plan/LONG_WORK.md section 4.3 (RF-32, the dedupe window): a second extension of the SAME duration on
+    # the SAME job inside `timeouts.extend_dedupe_s` is a no-op that reports the existing deadline -- the recorded
+    # burst was ten clicks inside two seconds, each its own command id, so the existing per-command-id idempotence
+    # (`timeouts.extend`'s own check) cannot see it on its own.
+    from . import gate as gate_mod
+    routing_cfg = gate_mod.routing_doc(layout)
+    exts = list((rec["handle"] or {}).get("extensions") or [])
+    last = exts[-1] if exts else None
+    command_id = payload.get("_id")
+    replay = last is not None and command_id is not None and last.get("command_id") == command_id
+    if last is not None and not replay and int(last.get("seconds") or 0) == seconds:
+        last_at = timeouts._epoch(last.get("at"))
+        if last_at is not None and time.time() - last_at < timeouts.extend_dedupe_s(routing_cfg):
+            deadline = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
+            tasks_mod.log(layout, "job_extend_deduped", actor, task=rec.get("task_id"), attempt=attempt_id,
+                          seconds=seconds)
+            return {"skipped": "already extended", "deadline": deadline}
+    # RF-32: an Extend whose result would push the job's total duration (its own resolved cap, section 4.2,
+    # plus every extension granted including this one) past the lane's resolved ceiling is refused, naming the
+    # ceiling -- a clamp would report success for a request it did not grant. Measured from the job's own
+    # `spec["timeout_s"]` (the cap `timeout_s` is relative to at launch, `adapters.process.submit`) and the
+    # extensions the handle already records, never from a wall-clock "launched at" lookup: a record's `created`/
+    # `handle["started"]` need not be real launch time (an adopted legacy record, a test fixture) and a wrong
+    # reading there must never manufacture a refusal for a job that never came near the ceiling.
+    from . import capabilities as capabilities_mod
+    task = None
+    try:
+        task = tasks_mod.load(layout, rec.get("task_id"))
+    except tasks_mod.TaskError:
+        pass
+    cost_category = str(getattr(task.cost_category, "value", task.cost_category)) if task is not None else None
+    caps = capabilities_mod.for_lane(layout, rec.get("adapter"))
+    ceiling = timeouts.ceiling_s(routing_cfg, cost_category, None, caps)
+    total_duration = int(spec.get("timeout_s") or 0) + sum(int(e.get("seconds") or 0) for e in exts) + seconds
+    if total_duration > ceiling:
+        raise ValueError(f"extend refused (RF-32): the result would reach {total_duration} s since launch, past "
+                         f"{rec.get('adapter')}'s ceiling of {ceiling} s; current effective deadline {base}")
     handle, changed = timeouts.extend(rec["handle"], seconds, payload.get("_id"), actor, now_iso(), base=base)
     if changed:
         jobs_mod.set_phase(layout, attempt_id, rec["phase"], handle=handle)

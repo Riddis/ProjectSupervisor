@@ -230,8 +230,15 @@ def _timeout_checks(layout: Layout, timeout_s: Any, tmpl: dict, adapter: str | N
     owner-authored one above all) may declare whatever deadline its work needs, exactly as before this release:
     a lane's *default* duration is not a ceiling, and turning one into a ceiling would refuse blocks that have
     been running correctly."""
+    from . import capabilities as capabilities_mod
     from . import gate, timeouts
-    caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(gate.routing_doc(layout), adapter))
+    routing_cfg = gate.routing_doc(layout)
+    lane_ceiling = timeouts.ceiling_s(routing_cfg, capabilities=capabilities_mod.for_lane(layout, adapter))
+    # RF-08's own "the lane's cap" (RECOVERY_PLAN.md section 3.3) is this one number, named by
+    # docs/plan/LONG_WORK.md section 4.2/9 step 3: the check, its code, its message and its process-row scope
+    # stay exactly here, with `timeouts.ceiling_s` added beside the template's own declared cap and the project's
+    # explicit `timeouts.lane_caps.<adapter>` override as one more candidate the minimum is taken over.
+    caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(routing_cfg, adapter), lane_ceiling)
             if isinstance(c, int) and not isinstance(c, bool)]
     if timeout_s is not None and caps and timeout_s > min(caps):
         return _fail("timeout_too_high", f"timeout_s {timeout_s} is above the cap {min(caps)} declared for it",

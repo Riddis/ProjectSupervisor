@@ -957,7 +957,12 @@ class Supervisor:
         if result.status == "DEFERRED":
             return self.requeue(rec, result, "capacity limit")
         timed_out = (result.raw or {}).get("timeout") if result.status == "FAILED" else None
-        if timed_out and rec.get("adapter") in gate.MODEL_LANES and kind != self.VERIFY_KIND:
+        # docs/plan/LONG_WORK.md section 4.4: a `process`-lane hard-cap stop on a declared-resumable job
+        # (`adapters.process._time_out`'s own `raw["resumable"]`) is a continuation too, never a spent attempt --
+        # an idle stop on that lane stays a failure, so only `timed_out == "cap"` ever carries the flag at all.
+        resumable_cap = (timed_out == "cap" and bool((result.raw or {}).get("resumable"))
+                        and rec.get("adapter") not in gate.MODEL_LANES)
+        if timed_out and (rec.get("adapter") in gate.MODEL_LANES or resumable_cap) and kind != self.VERIFY_KIND:
             # 1.7.0: a session stopped by its time limit (supervisor.timeouts) was busy or stalled, not wrong — a
             # fresh session continues from its HANDOFF.md instead of spending a revision.
             return self.requeue(rec, result, "time limit (hard cap)" if timed_out == "cap" else "time limit (idle)")
@@ -1111,7 +1116,7 @@ class Supervisor:
                 f"sys.exit(main(['verify_job', {str(input_path)!r}]))")
         doc = task.model_dump(mode="json")
         doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code],
-                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120}
+                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120, "result_kind": "verify"}
         view = Task.model_validate(doc)
         prior_verify = any(jobs_mod.kind_of(r) == "verify" and r.get("verify_delivery") == delivery_rec["attempt_id"]
                           for r in jobs_mod.for_task(self.layout, task.id))
