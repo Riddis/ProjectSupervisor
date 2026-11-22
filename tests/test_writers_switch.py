@@ -11,6 +11,7 @@ project (D-005)."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -347,9 +348,12 @@ def test_the_guard_passes_on_an_empty_or_absent_archive(layout):
 
 # ---------------------------------------------------------------- 12. the guard's archive scan is bounded (RELEASE_
 # REVIEW_2.8.0_round2.md P3-R2-B): once a start-up has found the whole archive migration-stamped/allocator-written,
-# a marker records that, and the next start-up trusts it instead of reading every archived record again. A later
-# `jobs.archive_terminal` call (a task going terminal) invalidates the marker, because it is the one path that
-# moves a not-yet-seen file into the archive; nothing else is assumed to have left it alone.
+# a marker records that, fingerprinted (name, size, mtime_ns per file, stat-only) against the exact listing that
+# scan read, and the next start-up trusts it only while a fresh, stat-only listing still matches. Nothing
+# invalidates the marker on purpose -- `archive_terminal` moving a new file in, an out-of-band write into an
+# existing archive folder, a restored backup -- each changes the listing the marker speaks for, so the mismatch
+# is found by re-checking, not by a separate step something could crash between. A scan that had to skip a file
+# it could not read never writes the marker at all.
 
 
 def _tracked_read_json(monkeypatch, seen):
@@ -389,7 +393,7 @@ def test_archiving_a_task_invalidates_the_marker_and_the_next_start_up_reads_the
     jobs_mod.write(layout, {"attempt_id": "T-MARKARCH.a1", "task_id": "T-MARKARCH", "adapter": "claude_cli",
                             "phase": "DONE", "result": "COMPLETE", "kind": "delivery", "attempt": 1, "seq": 1})
     jobs_mod.archive_terminal(layout, "T-MARKARCH")   # moves the now-DONE record into the archive
-    assert not jobs_mod.archive_known_migrated(layout)        # the marker is gone
+    assert not jobs_mod.archive_known_migrated(layout)        # the listing no longer matches the stored fingerprint
     archived = jobs_mod.archive_dir(layout, "T-MARKARCH") / "T-MARKARCH.a1.json"
     assert archived.exists()
     seen = []
@@ -423,7 +427,59 @@ def test_a_corrupt_or_misplaced_archived_file_behaves_exactly_as_before_the_mark
     (deep / "T-ARCCORRUPT.a2.json").write_text(
         json.dumps({"attempt_id": "bad2", "task_id": "bad2"}), encoding="utf-8")      # misplaced one level too deep
     _check_writer_guard(layout)                       # none of the four lookalikes is named; the guard passes
-    assert jobs_mod.archive_known_migrated(layout)     # the one real (empty-of-records) archive folder is clean
+    # the real archived file the scan actually reached (T-ARCCORRUPT.a1.json) could not be parsed, so the scan
+    # skipped it without reading it -- the marker must not claim the archive clean over a file it never read
+    assert not jobs_mod.archive_known_migrated(layout)
+    _check_writer_guard(layout)                       # repeating the same, still-corrupt start-up: still passes
+
+
+def test_a_bare_record_dropped_into_an_already_archived_tasks_folder_is_still_named_with_the_marker_in_place(layout):
+    """The resolver reaches `archive/<task_id>/<attempt_id>.json` as readily as the live top level (`jobs.resolve`,
+    `jobs.for_task`); a second, bare record landing in a folder the marker already covers -- any out-of-band write
+    into an existing archive folder, not only `archive_terminal` moving a brand-new task in -- must still be
+    named, not hidden behind a marker that was only ever true of an earlier listing."""
+    from supervisor.loop import _check_writer_guard, _unmigrated_job_files
+    archive = jobs_mod.archive_dir(layout, "T-ARCADD")
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "T-ARCADD.a1.json").write_text(json.dumps(
+        {"attempt_id": "T-ARCADD.a1", "task_id": "T-ARCADD", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE",
+         "migrated": {"attempts": {"at": "2026-01-01T00:00:00+00:00"}}}), encoding="utf-8")
+    _check_writer_guard(layout)                       # first start-up: this one record is clean, the marker is written
+    assert jobs_mod.archive_known_migrated(layout)
+    bad_path = archive / "T-ARCADD.a2.json"            # a second, bare record dropped into the same archived folder
+    bad_path.write_text(json.dumps(
+        {"attempt_id": "T-ARCADD.a2", "task_id": "T-ARCADD", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE"}), encoding="utf-8")
+    assert not jobs_mod.archive_known_migrated(layout)         # the listing no longer matches what was fingerprinted
+    assert bad_path.name in _unmigrated_job_files(layout)      # ... so it is named, exactly as a fresh archive would be
+
+
+def test_an_out_of_band_overwrite_of_an_already_migrated_archived_record_is_caught_by_the_fingerprint(layout):
+    """RELEASE_REVIEW_2.8.0_round2.md's round-2 finding on this marker: a bare `Path.exists()` cannot tell a
+    restored pre-migration backup, or any other out-of-band write, from a file it already read -- a merge-copy
+    restore of `migrations._backup_store`'s own backup is one way this happens, but the fix does not need to name
+    that path, only detect any change to a file the marker speaks for. Dropping the `migrated.attempts` stamp
+    changes the record's size even when a restore happens to preserve its mtime, so the stat-only fingerprint
+    (name, size, mtime_ns) catches it either way."""
+    from supervisor.loop import _check_writer_guard, _unmigrated_job_files
+    archive = jobs_mod.archive_dir(layout, "T-ARCRESTORE")
+    archive.mkdir(parents=True, exist_ok=True)
+    record_path = archive / "T-ARCRESTORE.a1.json"
+    record_path.write_text(json.dumps(
+        {"attempt_id": "T-ARCRESTORE.a1", "task_id": "T-ARCRESTORE", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE",
+         "migrated": {"attempts": {"at": "2026-01-01T00:00:00+00:00"}}}), encoding="utf-8")
+    _check_writer_guard(layout)                       # clean store, the marker is written
+    assert jobs_mod.archive_known_migrated(layout)
+    old_shape = json.dumps(
+        {"attempt_id": "T-ARCRESTORE.a1", "task_id": "T-ARCRESTORE", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE"})     # the pre-migration shape
+    stat_before = record_path.stat()
+    record_path.write_text(old_shape, encoding="utf-8")        # an out-of-band restore, e.g. a merge-copy backup
+    os.utime(record_path, ns=(stat_before.st_mtime_ns, stat_before.st_mtime_ns))     # even with the mtime preserved
+    assert not jobs_mod.archive_known_migrated(layout)         # ... the size changed, so the fingerprint still differs
+    assert record_path.name in _unmigrated_job_files(layout)   # the restored, bare record is named again
 
 
 def test_the_refusal_message_names_the_archive_as_well_as_the_live_job_directory(layout):
