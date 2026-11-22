@@ -177,6 +177,85 @@ def test_result_kinds_within_the_list_is_silent(tmp_path):
     assert not any("result_kinds" in w for w in warnings)
 
 
+def test_result_kinds_empty_list_is_not_checked_for_a_human_role(tmp_path):
+    """The shipped template's `owner: {adapter: human, result_kinds: []}` idiom: a human-gate task never
+    produces a result document, so an empty list must mean "not checked", not "may produce nothing" (R26-01)."""
+    lay = testing.project(tmp_path)
+    _write_routing(lay, {"roles": {"owner": {"adapter": "human", "active": True, "result_kinds": []}}})
+    make_task(lay, "T1", owner_role="owner")
+    t = tasks_mod.load(lay, "T1")
+    warnings = tasks_mod.contract_warnings([t], lay)
+    assert not any("result_kinds" in w for w in warnings)
+
+
+def test_result_kinds_empty_list_is_not_checked_for_a_non_document_job_kind(tmp_path):
+    """The shipped template's `conversation: result_kinds: []` idiom: its own job always sets a non-document
+    `result_kind` ("conversation"), so an empty list must not warn against it either."""
+    lay = testing.project(tmp_path)
+    _write_routing(lay, {"roles": {"conversation": {"active": True, "result_kinds": []}}})
+    make_task(lay, "T1", owner_role="conversation", job={"result_kind": "conversation"})
+    t = tasks_mod.load(lay, "T1")
+    warnings = tasks_mod.contract_warnings([t], lay)
+    assert not any("result_kinds" in w for w in warnings)
+
+
+# ------------------------------------------------------------------ roles.<role>.result_kinds on the plan path:
+# a warning everywhere else becomes RF-18 there, same as any other contract_warnings line (R26-02) -- and an
+# empty list, now "not checked", never turns into that refusal either
+
+def test_result_kinds_violation_is_rf18_on_a_plan_create_task(tmp_path):
+    from supervisor import plans
+    lay = testing.project(tmp_path)
+    # create_task carries no `job` block (not a creatable field), so its owner_role's expected kind is always the
+    # default, "delivery" -- a role whose list excludes it is the violation a plan can actually produce.
+    _write_routing(lay, {"roles": {"engineer": {"active": True, "result_kinds": ["review"]}}})
+    make_task(lay, "T1", owner_role="engineer", status="BLOCKED")
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"}, "reason": "repair this task",
+           "expected_rev": {"T1": 1},
+           "operations": [{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                           "owner_role": "engineer",
+                                                           "cost_category": "deterministic"}},
+                          {"op": "resume", "task": "T1", "as": "ready"}]}
+    _, refusals = plans.validate(doc, lay)
+    assert refusals and all(r["code"] == "RF-18" for r in refusals)
+    assert any("result_kinds" in r["message"] for r in refusals)
+
+
+def test_result_kinds_empty_list_is_never_an_rf18_refusal_on_a_plan_create_task(tmp_path):
+    """The owner human-gate idiom must stay creatable through a plan: RF-18 exists to stop a plan from parking a
+    task forever, not to refuse the shipped template's own inbox lane."""
+    from supervisor import plans
+    lay = testing.project(tmp_path)
+    _write_routing(lay, {"roles": {"owner": {"adapter": "human", "active": True, "result_kinds": []},
+                                    "engineer": {"active": True}}})
+    make_task(lay, "T1", owner_role="engineer", status="BLOCKED")
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"}, "reason": "repair this task",
+           "expected_rev": {"T1": 1},
+           "operations": [{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                           "owner_role": "owner", "cost_category": "human"}},
+                          {"op": "resume", "task": "T1", "as": "ready"}]}
+    _, refusals = plans.validate(doc, lay)
+    assert not any(r["code"] == "RF-18" for r in refusals)
+
+
+# ------------------------------------------------------------------ resources.<name>.single_job: the plugins that
+# shipped from this repository must not go on documenting it as their GPU serialisation mechanism (R26-03)
+
+def test_plugin_docstrings_name_the_real_gpu_serialisation_rule_not_single_job():
+    """No package shipped from this repository may still document `single_job` as its GPU serialisation
+    mechanism now that R-26 found no reader for it (R26-03): any `__init__.py` that mentions it at all must say
+    in the same breath that `limits.max_resource_jobs` plus the job's own `gpu` flag is the real rule."""
+    hits = 0
+    for init_py in (REPO_ROOT / "packages").glob("*/*/__init__.py"):
+        text = init_py.read_text(encoding="utf-8")
+        if "single_job" not in text:
+            continue
+        hits += 1
+        assert "limits.max_resource_jobs" in text, init_py
+        assert "not read" in text, init_py
+    assert hits >= 2
+
+
 # ------------------------------------------------------------------ read, undocumented: claude_api.eligible_roles,
 # job.api_credits -- documented with what the code does
 
