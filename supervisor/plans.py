@@ -661,17 +661,21 @@ def _set_job_block(existing: dict, tmpl: dict, template_id: Any, params: dict) -
             "template": template_id, "params": dict(params)}
 
 
-def _preflight_transcript_entry(i: int, layout: Layout, block: dict) -> tuple[Refusal | None, dict]:
+def _preflight_transcript_entry(i: int, layout: Layout, block: dict, task=None) -> tuple[Refusal | None, dict]:
     """Runs the real preflight (`supervisor.preflight.run`, the same check a write-time job block gets) against
     `block` — the exact block this operation would write, built by `_set_job_block` — never the weaker
     standalone checks this validator used to run on its own: a template whose declared probe fails, whose argv
     does not resolve, or whose inherited `timeout_s`/`stdin_file` no longer holds is otherwise invisible until
-    the applier's own write triggers it — a stall, not a named refusal (RF-08). The transcript is never stored
+    the applier's own write triggers it — a stall, not a named refusal (RF-08). `task` is the stored task this
+    operation writes onto, or None for one the plan creates in the same document: the preflight's declared-needs
+    match reads the task's own `needs` beside the block's template (docs/plan/LONG_WORK.md section 3.3's third
+    row), so a block whose effective need the lane contradicts is refused with the plan and stores nothing on any
+    task. The transcript is never stored
     whole (it can carry a probe's own stdout); only its digest travels, onto `PlanReport.preflight` and from
     there onto the plan document itself, so the record `RECOVERY_PLAN.md` 2.2's row promises survives a refusal
     as well as a pass."""
     from . import preflight as preflight_mod
-    pf = preflight_mod.run(layout, block)
+    pf = preflight_mod.run(layout, block, task)
     digest = hashlib.sha256(json.dumps(pf, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     entry = {"op_index": i, "ok": bool(pf.get("ok")), "digest": digest}
     if pf.get("ok"):
@@ -744,7 +748,7 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
         # whatever the existing job inherited (a parameter diff) or the template declares (a created task's
         # first job) is exactly what gets preflighted.
         block = _set_job_block(existing_job or {}, tmpl, template_id, params)
-        refusal, preflight_entry = _preflight_transcript_entry(i, layout, block)
+        refusal, preflight_entry = _preflight_transcript_entry(i, layout, block, t)
         if refusal is not None:
             out.append(refusal)
     return out, preflight_entry

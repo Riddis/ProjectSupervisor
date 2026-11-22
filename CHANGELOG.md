@@ -91,9 +91,14 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   a budget (`duration_min * 60 * timeouts.needs_headroom`, default ×1.25) when no explicit `timeout_s` is set,
   clamped to the same resolved ceiling; an explicit `timeout_s` above the ceiling is clamped and logged
   (`timeout_clamped`) rather than refused, since the write-time refusal (RF-08) binds only the `process`/`python`
-  row of the preflight. `ProcessAdapter.prepare` now calls the resolver (`lane="plain"`) instead of computing its
-  own cap, so a declared duration reaches this lane's budget too; its unconfigured default (3600s, no idle limit)
-  is unchanged. A `process`-lane hard-cap stop on a job whose task declares `needs.resumable: true`, on a
+  row of the preflight. All three lanes that have a work deadline — `claude_cli`, `codex_cli` and `process` —
+  resolve their budget through one shared path, so the derived cap, the one composed ceiling and that log line
+  reach every one of them: `ProcessAdapter.prepare` now calls the resolver (`lane="plain"`) instead of computing
+  its own cap, and its unconfigured default (3600s, no idle limit) is unchanged. The ceiling itself is composed
+  from one place for every reader (the cost category, the role profile and the lane's capability mapping), so a
+  project setting `timeouts.max_hard_cap_s` per cost category or per role cannot have a write-time refusal and a
+  launch-time clamp disagree. `python` and `claude_api` stay off the resolver (no work deadline to derive).
+  A `process`-lane hard-cap stop on a job whose task declares `needs.resumable: true`, on a
   template that declares `resumable: true`, is recorded as a continuation instead of a failed attempt — the
   recorded loss was 8.0h of agent work killed at a policy cap nobody could describe as long; this is the budget
   side of the same fix.

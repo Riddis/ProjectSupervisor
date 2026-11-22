@@ -168,20 +168,26 @@ def _run_probe(probe: list[str], layout: Layout, env: dict[str, str], cap_s: int
         shutil.rmtree(scratch, ignore_errors=True)       # a probe's own leftovers go with it; the finding stands
 
 
-def run(layout: Layout, job: dict) -> dict:
+def run(layout: Layout, job: dict, task=None) -> dict:
     """The preflight result for one job block, `{ok, at, template, probe_digest, detail}` -- never raises; a
-    problem this function cannot itself classify is `detail['code'] == 'preflight_error'`, ok False."""
+    problem this function cannot itself classify is `detail['code'] == 'preflight_error'`, ok False.
+
+    `task` is the task whose contract this block belongs to, when the caller has one: the declared-needs match of
+    docs/plan/LONG_WORK.md section 3.3 reads the task's own `needs` block beside the block's template, and the
+    two callers that write a block differ in what they have (`attach` the whole document, a plan's validator a
+    stored task or none at all, for one it is creating). Without it only the block's own template can declare a
+    need, which is exactly what a plan's created task has."""
     job = dict(job)
     digest = block_digest(job)
     template_id = job.get("template")
     adapter = job.get("adapter")
     try:
-        return _run(layout, job, adapter, template_id, digest)
+        return _run(layout, job, adapter, template_id, digest, task)
     except Exception as exc:                                     # noqa: BLE001 - a broken check is a failed preflight
         return _fail("preflight_error", f"{type(exc).__name__}: {exc}", template=template_id, digest=digest)
 
 
-def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None, digest: str) -> dict:
+def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None, digest: str, task=None) -> dict:
     if adapter not in PREFLIGHT_ADAPTERS:
         return _pass(template=template_id, digest=digest)
 
@@ -213,7 +219,11 @@ def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None
             return failed
 
     timeout_s = job.get("timeout_s")
-    failed = _timeout_checks(layout, timeout_s, tmpl, adapter, digest, template_id)
+    failed = _timeout_checks(layout, timeout_s, tmpl, adapter, digest, template_id, task, job)
+    if failed:
+        return failed
+
+    failed = _needs_checks(layout, task, job, digest, template_id)
     if failed:
         return failed
 
@@ -222,22 +232,44 @@ def _run(layout: Layout, job: dict, adapter: str | None, template_id: str | None
     return _run_process(layout, job, tmpl, params, template_id, digest)
 
 
+def _needs_checks(layout: Layout, task, job: dict, digest: str, template: str | None) -> dict | None:
+    """The declared-needs match, run at the write (docs/plan/LONG_WORK.md section 3.3's second and third rows,
+    D-028 decision 2) through the one entry point every write-time caller shares, `needs.results_for`.
+
+    The owner's `task.set_job` on a task that already exists has no row to refuse, so a decidable mismatch is
+    stored here with the probe's and the gate holds the task as `preflight_failed`; a plan's `set_job` is refused
+    with the plan it rode in on, because `plans._preflight_transcript_entry` refuses the operation on any failed
+    preflight (RF-08) and stores nothing on the task. An import or a patch row is refused by `needs.write_check`
+    in the `(errors, warnings)` pair those paths already return, which is the first row and not this one.
+
+    Only the refusal tier is stored: a warning never refuses a write (D-010) and the path that reports warnings
+    to their writer is that same import/patch pair. The code stored is the match's own
+    (`needs_exceed_lane`/`needs_unsupported`/...), so the stored record names which declaration failed, while
+    the task's stated reason stays `preflight_failed` -- one stored verdict, not a second beside it."""
+    from . import needs as needs_mod
+    refusal = next((r for r in needs_mod.results_for(layout, task, job) if r["tier"] == "refusal"), None)
+    if refusal is None:
+        return None
+    return _fail(refusal["code"], refusal["message"], template=template, digest=digest)
+
+
 def _timeout_checks(layout: Layout, timeout_s: Any, tmpl: dict, adapter: str | None, digest: str,
-                    template: str | None) -> dict | None:
+                    template: str | None, task=None, job: dict | None = None) -> dict | None:
     """`timeout_s` against the ceilings that exist for this block, and against what its template says the work
     needs. The ceiling is the lower of the template's own `timeout_s` and the lane's configured cap (routing.yaml
     `timeouts.lane_caps.<adapter>`) -- where neither is declared there is none, and a block (a literal,
     owner-authored one above all) may declare whatever deadline its work needs, exactly as before this release:
     a lane's *default* duration is not a ceiling, and turning one into a ceiling would refuse blocks that have
     been running correctly."""
-    from . import capabilities as capabilities_mod
     from . import gate, timeouts
     routing_cfg = gate.routing_doc(layout)
-    lane_ceiling = timeouts.ceiling_s(routing_cfg, capabilities=capabilities_mod.for_lane(layout, adapter))
+    lane_ceiling = timeouts.ceiling_for(layout, task, adapter, job)
     # RF-08's own "the lane's cap" (RECOVERY_PLAN.md section 3.3) is this one number, named by
     # docs/plan/LONG_WORK.md section 4.2/9 step 3: the check, its code, its message and its process-row scope
     # stay exactly here, with `timeouts.ceiling_s` added beside the template's own declared cap and the project's
-    # explicit `timeouts.lane_caps.<adapter>` override as one more candidate the minimum is taken over.
+    # explicit `timeouts.lane_caps.<adapter>` override as one more candidate the minimum is taken over. Composed
+    # through `ceiling_inputs` like every other reader of it, so this row refuses against exactly the number the
+    # resolver's clamp will enforce on the same job (D-028 decision 4).
     caps = [c for c in (tmpl.get("timeout_s"), timeouts.lane_cap(routing_cfg, adapter), lane_ceiling)
             if isinstance(c, int) and not isinstance(c, bool)]
     if timeout_s is not None and caps and timeout_s > min(caps):
@@ -321,8 +353,19 @@ def attach(layout: Layout, doc: dict) -> None:
                                        template=raw.get("template"), digest=block_digest(raw))
         doc["job"] = canonical
         return
-    canonical["preflight"] = run(layout, canonical)
+    canonical["preflight"] = run(layout, canonical, _task_of(doc, canonical))
     doc["job"] = canonical
+
+
+def _task_of(doc: dict, canonical: dict):
+    """The task this block is being written onto, for the needs match of section 3.3 -- built from the document
+    the write is about to store, with the canonical block in place, so the declaration and the block are read as
+    one. None when the document cannot be validated, which is a document the write itself is about to refuse."""
+    from .models.task import Task
+    try:
+        return Task.model_validate({**doc, "job": {k: v for k, v in canonical.items() if k != "preflight"}})
+    except Exception:                                   # noqa: BLE001 - nothing here may raise (see `attach`)
+        return None
 
 
 # ---------------------------------------------------------------- the backfill sweep (RECOVERY_PLAN.md 3.3, step 5)

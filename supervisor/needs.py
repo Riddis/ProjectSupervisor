@@ -97,7 +97,6 @@ def match(layout: Layout, task: "Task", adapter: str, effective_need: dict) -> l
     refuses anything. Pure data: two dict lookups and an integer comparison, no probe, no `kind` -- a write is
     about the contract's own work, which is always the delivery's own need."""
     from . import capabilities as capabilities_mod
-    from . import gate as gate_mod
     from . import timeouts as timeouts_mod
     out: list[dict] = []
     if effective_need.get("resource_conflict"):
@@ -113,7 +112,7 @@ def match(layout: Layout, task: "Task", adapter: str, effective_need: dict) -> l
         return out
     duration_min = effective_need.get("duration_min")
     if duration_min is not None:
-        ceiling = timeouts_mod.ceiling_s(gate_mod.routing_doc(layout), capabilities=caps)
+        ceiling = timeouts_mod.ceiling_for(layout, task, adapter)
         if duration_min * 60 > ceiling:
             out.append({"code": "needs_exceed_lane", "tier": "refusal", "need": "duration_min",
                         "message": f"needs.duration_min ({duration_min} min) exceeds {adapter!r}'s ceiling "
@@ -142,14 +141,35 @@ def match(layout: Layout, task: "Task", adapter: str, effective_need: dict) -> l
     return out
 
 
+def results_for(layout: Layout, task: "Task | None", job_block: dict | None = None) -> list[dict]:
+    """`match()` for the work a write is about to create, against the lane it would run on -- the one entry point
+    every write-time caller goes through (section 3.3), so none of them composes the effective need, the lane or
+    the ceiling privately.
+
+    With `job_block` given it is *that* block, not the one the task carries, that the template half of the
+    effective need and the lane are read from: the owner's `task.set_job` and a plan's `set_job` both replace the
+    block inside the same write the preflight runs in (section 3.3's second and third rows), and a plan's
+    `set_job` on a task it creates in the same plan has no stored task to read at all."""
+    from . import scheduler as scheduler_mod
+    from .models.task import Job
+    job = None
+    if job_block is not None:
+        try:
+            job = Job.model_validate({k: v for k, v in dict(job_block).items() if k != "preflight"})
+        except Exception:                        # noqa: BLE001 - an uncanonicalisable block is its own refusal
+            return []
+    subject = task if job is None else (None if task is None else task.model_copy(update={"job": job}))
+    if subject is not None:
+        return match(layout, subject, scheduler_mod.adapter_name(subject, layout), effective_for(layout, subject))
+    return match(layout, None, (job.adapter if job is not None else "") or "",
+                 effective({}, _template_needs(layout, job)))
+
+
 def write_check(layout: Layout, task: "Task") -> tuple[list[str], list[str]]:
     """(errors, warnings) for `task`'s own effective need against the lane it would run on -- called at every
     write that creates or changes a task's contract or job (section 3.3): a refusal-tier entry refuses the row,
     the patch or the plan it came through; a warning-tier entry never refuses anything."""
-    from . import scheduler as scheduler_mod
-    eff = effective_for(layout, task)
-    adapter = scheduler_mod.adapter_name(task, layout)
-    results = match(layout, task, adapter, eff)
+    results = results_for(layout, task)
     errors = [r["message"] for r in results if r["tier"] == "refusal"]
     warnings = [r["message"] for r in results if r["tier"] == "warning"]
     return errors, warnings

@@ -71,7 +71,8 @@ def ceiling_s(routing_cfg: dict, cost_category: str | None = None, role_prof: di
     default `MAX_HARD_CAP_S`) and the lane's declared `max_duration_min * 60`, where the lane declares one. A
     lane declaring a *higher* number than the project's neither refuses nor grants: the minimum always picks the
     project's. Read by RF-28, the derived-cap clamp inside `resolve()`, RF-32 (`agent.extend`) and RF-08's
-    `process`-row cap comparison (`preflight._timeout_checks`) -- four readers, one number."""
+    `process`-row cap comparison (`preflight._timeout_checks`) -- four readers, one number, each composing its
+    arguments through `ceiling_inputs` (the clamp through the `prepare` that calls `resolve`)."""
     out: dict = {"max_hard_cap_s": MAX_HARD_CAP_S}
     cfg = (routing_cfg or {}).get("timeouts") or {}
     _merge(out, cfg)
@@ -86,6 +87,38 @@ def ceiling_s(routing_cfg: dict, cost_category: str | None = None, role_prof: di
         except (TypeError, ValueError):
             pass
     return resolved
+
+
+def ceiling_inputs(layout, task, adapter: str | None, job: dict | None = None) -> tuple:
+    """`(cost_category, role_prof, capabilities)` -- the three arguments `ceiling_s` takes for one task on one
+    lane, composed in exactly one place. "The ceiling is one number" holds only if every reader composes it the
+    same way (D-028 decision 4): a project that sets `timeouts.by_cost.<cat>.max_hard_cap_s` or a role's own
+    would otherwise have the write-time refusal (RF-28, RF-08's row) read one number and the clamp inside
+    `resolve()` another, and nothing would fail when they disagree -- a declaration admitted at the write and cut
+    at launch with declared work left, which is the recorded cap-kill arriving through configuration.
+
+    The role is the one the job would run under (`job.role`, else the task's own owner role), resolved through
+    the same `role_profile` every `prepare` uses. With no task (a plan's `set_job` on a task it is creating, a
+    block preflighted on its own) there is nothing to resolve a cost category or a role from, and the lane's
+    capability mapping is the whole of it."""
+    from . import capabilities as capabilities_mod
+    from .adapters.claude_cli import cost_category, role_profile
+    caps = capabilities_mod.for_lane(layout, adapter)
+    if task is None:
+        return None, None, caps
+    if job is None:
+        stored = getattr(task, "job", None)
+        job = stored.model_dump(exclude_none=True, exclude_unset=True) if stored is not None else {}
+    role = (job or {}).get("role") or getattr(task, "owner_role", None)
+    return cost_category(task), (role_profile(layout, str(role)) if role else None), caps
+
+
+def ceiling_for(layout, task, adapter: str | None, job: dict | None = None) -> int:
+    """`ceiling_s` for one task on one lane, from `ceiling_inputs` -- what RF-28 (`needs.match`), RF-08's
+    `process`-row cap comparison (`preflight._timeout_checks`) and RF-32 (`agent.extend`) each read. The fourth
+    reader is the clamp inside `resolve()`, which is given the same three values by the `prepare` that calls it."""
+    from . import gate as gate_mod
+    return ceiling_s(gate_mod.routing_doc(layout), *ceiling_inputs(layout, task, adapter, job))
 
 
 def extend_offers(routing_cfg: dict) -> list[int]:

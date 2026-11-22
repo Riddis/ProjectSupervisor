@@ -19,7 +19,7 @@ from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
 from .base import Result, ReviewLaneKeys, register, register_job_schema
-from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits,
+from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, limit_result, model_limits,
                          resolve_handoff, role_profile, routing)
 from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
 
@@ -105,10 +105,13 @@ class CodexCliAdapter(ProcessAdapter):
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(text, encoding="utf-8")
+        # docs/plan/LONG_WORK.md section 4.2: the second model lane that calls the resolver, through the same
+        # shared path as the first and as the process lane -- one derived budget, one composed ceiling, one receipt.
+        limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),
                 "role": role, "model": prof.get("model"), "effort": prof.get("effort", "high"),
                 "sandbox": prof.get("sandbox", "read-only"), "images": job.get("images", []), "stdin_file": str(prompt_file),
-                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
+                **timeouts.spec_fields(limits),
                 "executable": job.get("executable") or executable(layout),
                 "result_kind": job.get("result_kind", "delivery")}
 

@@ -454,15 +454,15 @@ def _agent_extend(layout, payload, actor):
     # extensions the handle already records, never from a wall-clock "launched at" lookup: a record's `created`/
     # `handle["started"]` need not be real launch time (an adopted legacy record, a test fixture) and a wrong
     # reading there must never manufacture a refusal for a job that never came near the ceiling.
-    from . import capabilities as capabilities_mod
     task = None
     try:
         task = tasks_mod.load(layout, rec.get("task_id"))
     except tasks_mod.TaskError:
         pass
-    cost_category = str(getattr(task.cost_category, "value", task.cost_category)) if task is not None else None
-    caps = capabilities_mod.for_lane(layout, rec.get("adapter"))
-    ceiling = timeouts.ceiling_s(routing_cfg, cost_category, None, caps)
+    # The same composed ceiling the budget was resolved against (`timeouts.ceiling_inputs`, D-028 decision 4):
+    # the running job's own spec carries the role it was prepared under, so an extension is bounded by exactly
+    # the number that bounded the cap it is extending -- never by a project-wide one the lane never read.
+    ceiling = timeouts.ceiling_for(layout, task, rec.get("adapter"), spec)
     total_duration = int(spec.get("timeout_s") or 0) + sum(int(e.get("seconds") or 0) for e in exts) + seconds
     if total_duration > ceiling:
         raise ValueError(f"extend refused (RF-32): the result would reach {total_duration} s since launch, past "

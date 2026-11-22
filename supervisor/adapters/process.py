@@ -113,26 +113,49 @@ class ProcessAdapter(Adapter):
     def command(self, spec) -> list[str]:
         return spec["argv"]
 
-    def prepare(self, layout, task, attempt_id):
-        from .. import capabilities as capabilities_mod
-        from .. import gate as gate_mod
+    def _resolve_limits(self, layout, task, attempt_id, jobspec, routing_cfg, lane="model"):
+        """`(the resolved limits, the effective need they were resolved for)` for one job about to be prepared --
+        the one path onto the resolver for all three lanes that have a work deadline (`process` and, through this
+        class, `claude_cli` and `codex_cli`), so the derived budget and the one composed ceiling cannot reach one
+        of them and not another (docs/plan/LONG_WORK.md section 4.2, section 9 step 4, D-028 decision 11).
+        Internal to these three lanes and not plugin-facing: the plugin API this release adds is
+        `registry.capabilities` and nothing else (D-028's own consequence list), and a plugin lane resolves its
+        limits by calling `timeouts.resolve` itself, as it does today.
+
+        The declaration is scoped here, not per lane: `needs.needs_for(layout, task, kind)` with the kind read
+        from the job block's own `result_kind` (default `delivery`), so a review, a verify job and a chat turn
+        are passed `None` and resolve exactly today's chain -- no `prepare` signature changes and no adapter
+        gets a branch of its own. `ceiling_inputs` composes the cost category, the role profile and the lane's
+        capability mapping the same way every other reader of the ceiling does.
+
+        The `timeout_clamped` receipt is logged here, the caller that prepares the job, and never inside
+        `resolve()`, which stays a pure function of its arguments: on a model lane the last clamp is the only
+        enforcement of a declared `timeout_s` above the ceiling (RF-08's cap row is the preflight's `process` row
+        alone), and it may not lower a declared number silently (D-028 decision 4)."""
         from .. import needs as needs_mod
         from .. import tasks as tasks_mod
-        jobspec = job_spec(task)
-        run_dir = layout.runs / task.id / attempt_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        _, env_digest = envconfig.build(layout, self.name)
         kind = jobspec.get("result_kind", "delivery")
-        # docs/plan/LONG_WORK.md section 4.2: the derived budget, the composed ceiling and its clamp all reach
-        # this lane through the one resolver -- `lane="plain"` starts from PROCESS_CAP_S and reads none of the
-        # model-lane policy merges, so a job with no declared `needs`/`timeout_s` still gets exactly 3600 s.
-        caps = capabilities_mod.for_lane(layout, self.name)
         eff_needs = needs_mod.needs_for(layout, task, kind)
-        limits = timeouts.resolve(gate_mod.routing_doc(layout), job=jobspec, needs=eff_needs, lane="plain",
+        cost_category, role_prof, caps = timeouts.ceiling_inputs(layout, task, self.name, jobspec)
+        limits = timeouts.resolve(routing_cfg, cost_category, role_prof, jobspec, needs=eff_needs, lane=lane,
                                   capabilities=caps)
         if limits.get("clamped_from_s") is not None:
             tasks_mod.log(layout, "timeout_clamped", "loop", task=task.id, attempt=attempt_id,
                           declared_s=limits["clamped_from_s"], ceiling_s=limits["hard_cap_s"])
+        return limits, eff_needs
+
+    def prepare(self, layout, task, attempt_id):
+        from .. import gate as gate_mod
+        from .. import needs as needs_mod
+        jobspec = job_spec(task)
+        run_dir = layout.runs / task.id / attempt_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _, env_digest = envconfig.build(layout, self.name)
+        # docs/plan/LONG_WORK.md section 4.2: the derived budget, the composed ceiling and its clamp all reach
+        # this lane through the one resolver -- `lane="plain"` starts from PROCESS_CAP_S and reads none of the
+        # model-lane policy merges, so a job with no declared `needs`/`timeout_s` still gets exactly 3600 s.
+        limits, eff_needs = self._resolve_limits(layout, task, attempt_id, jobspec, gate_mod.routing_doc(layout),
+                                                 lane="plain")
         resumable = (bool((eff_needs or {}).get("resumable")) and needs_mod.template_declares_resumable(layout, task))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),

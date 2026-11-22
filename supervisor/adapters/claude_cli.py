@@ -352,12 +352,16 @@ class ClaudeCliAdapter(ProcessAdapter):
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(prompt_text, encoding="utf-8")
         tools = prof["tools"] if isinstance(prof["tools"], list) else DEFAULT_TOOLS.get(prof["tools"], DEFAULT_TOOLS["reader"])
+        # docs/plan/LONG_WORK.md section 4.2: this lane resolves its budget through the one shared path, so a
+        # declared duration derives a cap here exactly as it does on the process lane -- the recorded loss was an
+        # agent session killed at the policy cap -- and a declared timeout_s the ceiling lowers leaves a receipt.
+        limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),
                 "role": role, "model": prof["model"], "effort": prof["effort"], "tools": tools,
                 "write_scope": write_scope(layout, run_dir, job.get("write_scope")),
                 "write_confined": bool(job.get("write_scope")),
                 "session_id": str(uuid.uuid4()), "stdin_file": str(prompt_file),
-                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
+                **timeouts.spec_fields(limits),
                 "executable": job.get("executable") or executable(layout), "result_kind": job.get("result_kind", "delivery"),
                 "add_dirs": job.get("add_dirs") or extra_dirs(layout, task, prof),
                 "bash_allow": list((routing(layout).get("claude") or {}).get("bash_allow") or []),
