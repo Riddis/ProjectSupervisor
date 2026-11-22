@@ -298,6 +298,17 @@ def _prior_rounds(task: Task, digest: str) -> list[tuple[str, list]]:
     return [(d, by_digest[d]) for d in order]
 
 
+def _contract_superseded_reviews(task: Task, digest: str) -> list:
+    """Reviews of THIS SAME digest that a contract change superseded (`tasks._bump_contract_rev`), not a later
+    delivery: `_prior_rounds` excludes every record for `digest` on the assumption a same-digest record is
+    always this round's own still-live verdict, which stopped holding once a judged-field change could
+    supersede a review without a new delivery digest. Without this, the re-dispatched review for the same digest
+    would render `## Round 1` (`prior_round_block`) as if no one had ever reviewed it — losing the only durable
+    copy of a pass that read the contract before it changed."""
+    return [r for r in task.delivery.reviews
+           if r.digest == digest and r.superseded and r.superseded_contract_rev is not None]
+
+
 def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list[str]) -> dict:
     """Everything a review packet needs about earlier rounds of this task (ATTEMPT_MODEL.md 4.3, points 2-4): the
     findings and verdict of every previous round, what the producer's own delivery result claims about them, the
@@ -327,8 +338,12 @@ def prior_round_context(layout: Layout, task: Task, digest: str, artifacts: list
                 prior_snapshot = rec.get("review_text_snapshot") or prior_snapshot
         change_list = _change_list(prior_manifest, frozen_inputs(layout, artifacts))
         diff_text = _unified_diffs(layout, prior_snapshot, change_list)
+    same_digest_superseded = [{"role": r.role, "verdict": r.verdict.value, "findings": list(r.findings),
+                               "contract_rev": r.superseded_contract_rev, "fields": list(r.superseded_fields)}
+                              for r in _contract_superseded_reviews(task, digest)]
     return {"rounds": rounds, "claim": claim, "responses": responses, "change_list": change_list,
-            "diff_text": diff_text, "snapshot": text_snapshot(layout, artifacts)}
+            "diff_text": diff_text, "snapshot": text_snapshot(layout, artifacts),
+            "same_digest_superseded": same_digest_superseded}
 
 
 def _finding_line(f: dict, responses: dict | None = None) -> str:
@@ -341,10 +356,27 @@ def _finding_line(f: dict, responses: dict | None = None) -> str:
             f"(evidence: {f.get('evidence', '')}){reply}")
 
 
+def _same_digest_superseded_block(same_digest: list[dict]) -> str:
+    """F4: the verdict(s) a contract change superseded for THIS SAME digest, named with the generation and the
+    fields that moved — `_prior_rounds` never carries these (it groups by digest, and this digest is the one
+    now under review), so without this block they would vanish from the packet the instant a judged field
+    changed, even though the delivery being re-reviewed is identical."""
+    last = same_digest[-1]
+    lines = [(f"\n\n## This digest was already reviewed once; the contract changed before this pass\n"
+             f"The task's contract moved to rev {last['contract_rev']} ({', '.join(last['fields'])} changed) "
+             "after the verdict(s) below were recorded, superseding them. Judge this delivery against the "
+             "contract as it stands now, not the one these read.")]
+    for rv in same_digest:
+        lines.append(f"- **{rv['role']}** verdict {rv['verdict']} (superseded)")
+        lines.extend(_finding_line(f) for f in rv["findings"])
+    return "\n".join(lines) + "\n"
+
+
 def prior_round_block(ctx: dict) -> str:
     """The text ATTEMPT_MODEL.md 4.3 adds to a review packet from `prior_round_context()`."""
+    lead = _same_digest_superseded_block(ctx["same_digest_superseded"]) if ctx.get("same_digest_superseded") else ""
     if not ctx["rounds"]:
-        return f"\n\n## Round 1\n{ROUND_1_INSTRUCTION}\n"
+        return lead + f"\n\n## Round 1\n{ROUND_1_INSTRUCTION}\n"
     lines = ["\n\n## Previous rounds of this task (read before judging this delivery)"]
     for rnd in ctx["rounds"]:
         attempt = rnd["attempt"] if rnd["attempt"] is not None else "—"
@@ -361,7 +393,7 @@ def prior_round_block(ctx: dict) -> str:
         capped = ctx["diff_text"][:DIGEST_DIFF_CAP]
         note = "" if len(ctx["diff_text"]) <= DIGEST_DIFF_CAP else "\n(truncated at the packet's own size cap)"
         lines.append(f"\n**Unified diff of changed text artifacts:**\n```diff\n{capped}{note}\n```")
-    return "\n".join(lines)
+    return lead + "\n".join(lines)
 
 
 def _review_note_block(task: Task) -> str:

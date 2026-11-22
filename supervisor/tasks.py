@@ -39,43 +39,81 @@ CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "a
 # owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
 # refresh touching only an unrelated field would have silently reset them to their defaults.
 REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
-# `job` is a contract field too (what a task runs), carried by create, import, refresh and patch (RECOVERY_PLAN.md 3.4,
-# D-027 decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
+# `job` names what a task runs, carried by create, import, refresh and patch (RECOVERY_PLAN.md 3.4, D-027
+# decision 7 — amends D-018 decision 2) under a rule on who is writing, never on the field: kept out of
 # CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
 # always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's. Owner
 # identity is `gates.is_owner_actor` — the framework's one such rule, not a second copy of it — so a bare queued
-# command or a default parameter value (neither of which asserts an identity) never inherits it.
+# command or a default parameter value (neither of which asserts an identity) never inherits it. For the same
+# reason it is outside CONTRACT_FIELDS, `job` never moves `contract_rev` either (D-027 decision 12): the counter
+# answers whether the bar a delivery is judged against moved, and routing a task to a different adapter/template
+# changes neither what must be delivered nor what a review reads. `plans._effect_set_job` and `commands.apply_job`
+# (`task.set_job`) write it through `_write_job`/`_update` exactly like any other job write, deliberately never
+# through `_bump_contract_rev` — this is the one declared exclusion, not an oversight.
 
 # What a review is judged against (RECOVERY_PLAN.md section 5, D-027 decision 12): the subset of CONTRACT_FIELDS
-# whose change makes a recorded ACCEPT stale. `actions` and `objective` move `contract_rev` like any other
-# contract field but never supersede a review — the work changed, not the bar it is judged against.
+# whose change makes a recorded ACCEPT/owner-approval stale. `actions` and `objective` move `contract_rev` like
+# any other contract field but never supersede a review or approval — the work changed, not the bar it is judged
+# against.
 JUDGED_FIELDS = frozenset({"tests", "checks", "acceptance", "artifacts", "reviewer", "review_note", "evidence"})
 
 
-def _bump_contract_rev(doc: dict, before: dict) -> None:
-    """The one place `contract_rev` moves: both `_apply_patch` and `_refresh_contract` call this last, after every
-    other mutation, so a plan's `patch_contract`, an owner's `task.patch` and a seed refresh all bump it the same
-    way and nowhere else bumps it by hand. Distinct from `rev`, which `store.update` bumps on every write
-    including a status change, an attempt entry or a note (`rev` answers "did this document move"); `contract_rev`
-    answers "did the brief move", and only a real value change in CONTRACT_FIELDS counts — `before` is the
-    document exactly as it was read, so a patch that resends a field's current value moves neither.
+def _contract_value(doc: dict, key: str):
+    """`doc[key]`, or the `Task` model's own default for an absent one — so a patch that resends a field's
+    schema default (`checks: []` on a document that never had a `checks` key at all) reads as "no change", the
+    same as resending a value that IS on disk. Comparing raw `.get(k)` pairs made "the key is present" part of
+    the diff by accident: a document with no `checks` key reads `None`, never equal to an explicitly-sent `[]`,
+    even though both mean exactly the same contract."""
+    if key in doc:
+        return doc[key]
+    field = Task.model_fields[key]
+    return field.default_factory() if field.default_factory is not None else field.default
 
-    When the change touches JUDGED_FIELDS, every live review of the current delivery digest is superseded: the
-    ACCEPT it recorded was read against a contract that no longer exists, so `_evaluate()`'s `not r.superseded`
-    filter (and `review.py`'s own copies of it) must stop counting it, exactly as a new delivery digest already
-    supersedes an old review. Verification is deliberately left alone — it re-runs the CURRENT checks against the
-    delivered bytes every time a digest is verified, so a contract edit cannot make a stale verification wrong,
-    only a stale review's reading of it."""
-    changed = {k for k in CONTRACT_FIELDS if doc.get(k) != before.get(k)}
+
+def _contract_fields_changed(doc: dict, before: dict) -> list[str]:
+    """Sorted CONTRACT_FIELDS keys whose normalised value actually differs between the two documents — the one
+    answer both `_bump_contract_rev` (does the counter move) and `patch_task` (is this write a no-op at all)
+    read, so the two can never disagree about what "changed" means."""
+    return sorted(k for k in CONTRACT_FIELDS if _contract_value(doc, k) != _contract_value(before, k))
+
+
+def _bump_contract_rev(doc: dict, before: dict) -> None:
+    """The one function that moves `contract_rev`: every writer of a CONTRACT_FIELDS value calls this last, after
+    its own mutation — `_apply_patch`/`_refresh_contract` (the patch/seed-refresh path), and the two writers that
+    set a contract field without going through either, named at their own call site rather than through a
+    generic chokepoint (`commands.apply_job`'s `cost_category`, `migrate_ownership`'s `owned_paths`) — nowhere
+    else bumps it by hand. Distinct from `rev`, which `store.update` bumps on every write including a status
+    change, an attempt entry or a note (`rev` answers "did this document move"); `contract_rev` answers "did the
+    brief move", and only a real value change in CONTRACT_FIELDS counts, each side read through
+    `_contract_fields_changed`/`_contract_value` so an absent key and its own default compare equal.
+
+    When the change touches JUDGED_FIELDS, every live review AND approval of the current delivery digest is
+    superseded — exactly as a new delivery digest already supersedes both (`record_delivery`), never only the
+    review: the ACCEPT either one recorded was read against a contract that no longer exists, so `_evaluate()`'s
+    `not r.superseded`/`not a.superseded` filters (and `review.py`'s own copies of the review one) must stop
+    counting it. Each record superseded this way carries `superseded_contract_rev` (the generation that did it)
+    and `superseded_fields` (which judged fields moved), so a reader — `packets.prior_round_block`, in
+    particular — can say what changed instead of the record going silently blank. Verification is deliberately
+    left alone — it re-runs the CURRENT checks against the delivered bytes every time a digest is verified, so a
+    contract edit cannot make a stale verification wrong, only a stale review's or approval's reading of it."""
+    changed = _contract_fields_changed(doc, before)
     if not changed:
         return
     doc["contract_rev"] = int(doc.get("contract_rev") or 1) + 1
-    if changed & JUDGED_FIELDS:
+    judged_changed = sorted(set(changed) & JUDGED_FIELDS)
+    if judged_changed:
         d = doc.get("delivery") or {}
         digest = d.get("digest")
         for r in d.get("reviews") or []:
             if r.get("digest") == digest and not r.get("superseded"):
                 r["superseded"] = True
+                r["superseded_contract_rev"] = doc["contract_rev"]
+                r["superseded_fields"] = judged_changed
+        for a in d.get("approvals") or []:
+            if a.get("digest") == digest and not a.get("superseded"):
+                a["superseded"] = True
+                a["superseded_contract_rev"] = doc["contract_rev"]
+                a["superseded_fields"] = judged_changed
 
 
 def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
@@ -710,7 +748,14 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     def fn(doc):
         before = dict(doc)
         result = _apply_patch(layout, doc, fields, actor)
-        if result == before:
+        # "job" is outside CONTRACT_FIELDS and always reattaches a fresh preflight (`_write_job`), so a job patch
+        # is always a real write; everything else `_apply_patch` can touch (a CONTRACT_FIELDS key, or
+        # add_dependency/remove_dependency's effect on `depends_on`, itself a CONTRACT_FIELDS member) is a no-op
+        # exactly when `_contract_fields_changed` says so — the same normalised comparison `_bump_contract_rev`
+        # already used above, not a second, stricter one: comparing raw dicts here made resending a field's own
+        # default (an absent key explicitly set to it) look like a change and write anyway, bumping `rev` even
+        # though `contract_rev` correctly did not move.
+        if "job" not in fields and not _contract_fields_changed(result, before):
             raise _NoChange()
         return result
     try:
@@ -732,7 +777,11 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
 
 def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
     """One-off migration: every live task on a writing lane that declares no ownership becomes explicitly exclusive
-    (`owned_paths: ["."]`), with a note in its record. Terminal tasks are left alone. Idempotent."""
+    (`owned_paths: ["."]`), with a note in its record. Terminal tasks are left alone. Idempotent.
+
+    `owned_paths` is a CONTRACT_FIELDS member (RECOVERY_PLAN.md section 5, D-027 decision 12): this always moves
+    it from empty to `["."]` for a task the loop above selected, so the write below always bumps `contract_rev`
+    — a reviewer who already judged the task is now reading a scope that just narrowed."""
     from . import scheduler
     from .models.task import EXCLUSIVE, TERMINAL
     migrated = []
@@ -741,9 +790,11 @@ def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
             continue
 
         def fn(doc):
+            before = dict(doc)
             doc["owned_paths"] = [EXCLUSIVE]
             doc.setdefault("notes", []).append({"at": store.now_iso(), "by": actor,
                                                 "note": "owned_paths set to ['.'] (exclusive mode) by migrate-ownership"})
+            _bump_contract_rev(doc, before)
         _update(layout, t.id, fn)
         migrated.append(t.id)
     log(layout, "ownership_migrated", actor, tasks=migrated)
@@ -843,13 +894,22 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
     section 3.3) -- the one chokepoint every lower-level job mutation shares with `_write_job`'s own callers, so
     a diagnosis's or a plan's direct `doc['job'] = ...` is covered the same as a patch. An `fn` that leaves the
     job untouched never re-runs the probe: `tasks.hold`, a status transition and anything else that reaches
-    `_update` without a job of its own interest pays nothing for it."""
+    `_update` without a job of its own interest pays nothing for it.
+
+    Deliberately NOT a generic `_bump_contract_rev` chokepoint, even though it would be the cheapest way to close
+    every stored writer at once: this is also the one function several test fixtures use to set up a document's
+    `artifacts`/`owned_paths`/... directly as a shortcut, with no contract-change intent at all — bumping on
+    every one of those would move `contract_rev` and, worse, supersede a live review for a reason no production
+    writer ever gave. A caller whose write IS a real contract change (`commands.apply_job`'s `cost_category`,
+    `migrate_ownership`'s `owned_paths`) calls `_bump_contract_rev` itself, the same way
+    `_apply_patch`/`_refresh_contract` do around their own mutation — named at each of those two call sites, not
+    folded in here."""
     def wrapped(doc):
         from . import preflight as preflight_mod
-        before = preflight_mod.block_digest(doc.get("job") or {})
+        before_job = preflight_mod.block_digest(doc.get("job") or {})
         fn(doc)
         job = doc.get("job") or {}
-        if job and preflight_mod.block_digest(job) != before:
+        if job and preflight_mod.block_digest(job) != before_job:
             preflight_mod.attach(layout, doc)
         Task.model_validate(doc)      # never persist an invalid task
         return doc

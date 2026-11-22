@@ -125,6 +125,11 @@ class ReviewRecord(BaseModel):
                                                                      # itself so a later review pass can read them
                                                                      # without ever reaching into a run directory
     superseded: bool = False
+    superseded_contract_rev: Optional[int] = None   # set only when a judged-field change (tasks._bump_contract_rev)
+                                                      # superseded this record, not a later delivery digest: the
+                                                      # `contract_rev` the task moved to when it did
+    superseded_fields: list[str] = Field(default_factory=list)   # the judged fields that changed, naming what a
+                                                                    # reader (packets.prior_round_block) should say
 
 
 class ApprovalRecord(BaseModel):
@@ -135,6 +140,8 @@ class ApprovalRecord(BaseModel):
     note: str = ""
     command_id: Optional[str] = None
     superseded: bool = False
+    superseded_contract_rev: Optional[int] = None   # see ReviewRecord.superseded_contract_rev
+    superseded_fields: list[str] = Field(default_factory=list)
 
 
 class Delivery(BaseModel):

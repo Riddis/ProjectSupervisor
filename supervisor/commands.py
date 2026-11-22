@@ -239,11 +239,16 @@ def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category
     question naming this command instead. `tasks._write_job` refuses `actor` here exactly as it does for a seed
     import or a patch — this always carries a literal `argv`, so nothing but the owner may reach it. Returns (the
     task, warnings) — an unknown key for an adapter with no declared schema is kept and warned, never refused
-    (`tasks.job_schema_problems`)."""
+    (`tasks.job_schema_problems`). `cost_category` is a CONTRACT_FIELDS member (routing, read by `gate`/`scheduler`
+    the same as any other contract field), so a real change here bumps `contract_rev` (RECOVERY_PLAN.md section
+    5, D-027 decision 12) exactly as a patch would — `job` itself never does (it is outside CONTRACT_FIELDS by
+    design, `tasks.py`'s own comment above `JUDGED_FIELDS`)."""
     def fn(doc):
+        before = dict(doc)
         tasks_mod._write_job(layout, doc, job, actor)
         if cost_category:
             doc["cost_category"] = cost_category
+        tasks_mod._bump_contract_rev(doc, before)
     t = tasks_mod._update(layout, task_id, fn)
     errors, warnings = tasks_mod.job_schema_problems(layout, t.job)
     if errors:
