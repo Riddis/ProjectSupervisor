@@ -20,6 +20,7 @@ from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, preflight as preflight_mod, render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
+from . import why_not_runnable as why_not_runnable_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
 from ._vendor import handoff
 from .adapters import REGISTRY, Result
@@ -1585,32 +1586,34 @@ class Supervisor:
             tasks_mod.log(self.layout, "state_commit_error", "state_commit", error=str(exc)[:300])
             return None
 
-    IDLE_WAIT_REASON = {
-        TaskStatus.NOT_STARTED: "waiting on a phase gate or an unfinished dependency",
-        TaskStatus.READY: "eligible, but nothing has dispatched it",
-        TaskStatus.IN_PROGRESS: "in progress, with nothing currently running for it",
-        TaskStatus.WAITING_FOR_REVIEW: "waiting for a review to be dispatched",
-        TaskStatus.WAITING_FOR_HUMAN: "waiting on your approval",
-        TaskStatus.BLOCKED: "blocked, waiting on a decision",
-        TaskStatus.FAILED: "failed, waiting on a decision",
-    }
-
     def alert_if_idle(self, now: float | None = None) -> dict | None:
         """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
         work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
         per-task sweep gets its chance first. It lists every non-terminal task that is not an owner hold (R-17: the
         pre-1.7.0 version counted only FAILED/BLOCKED/WAITING_FOR_HUMAN, so an IN_PROGRESS or WAITING_FOR_REVIEW task
         with nothing actually running for it never appeared; and a task the owner is deliberately holding is the
-        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list).
-        The item carries no ACCEPT/REJECT/MODIFY/REDO buttons: none of them does anything for "nothing can run"."""
+        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list). A
+        paused, draining or stopped loop is excluded the same way (`why_not_runnable.decision_blocked`): the owner
+        put it there, so this never fires while it holds, rather than raising with every task's reason wrongly
+        computed as if the loop's decision were still RUN.
+
+        The reason named for each task is `why_not_runnable`'s own (RECOVERY_PLAN.md section 4.3, D-027 decision
+        11) — a computed sentence from the closed nine-code set, the same one the Overview and the task page read,
+        never a quoted note an agent wrote about something else. The item's own buttons are the choices that
+        reason admits (`why_not_runnable.choices_for`), never the four legacy keywords: none of ACCEPT/REJECT/
+        MODIFY/REDO does anything for "nothing can run"."""
         now = time.time() if now is None else now
         path = self.layout.runtime / "idle_alert.json"
         state = read_json(path) if path.exists() else {}
         tasks = tasks_mod.load_all(self.layout)
         remaining = [t for t in tasks.values() if t.status not in TERMINAL]
         waiting = [t for t in remaining if not t.held]
+        # A paused, draining or stopped loop is the owner's own call, exactly as a held task is (R-17's own
+        # precedent): never raised as "idle" while it holds, so no task is ever classified by why_not_runnable
+        # while gate.check's own decision != RUN refusal would apply identically to every one of them.
         idle = (not jobs_mod.open_records(self.layout) and not tasks_mod.eligible(self.layout, tasks)
-                and not inbox_mod.open_items(self.layout, "owner") and waiting)
+                and not inbox_mod.open_items(self.layout, "owner") and waiting
+                and why_not_runnable_mod.decision_blocked(self.layout) is None)
         if not idle:
             if state.get("idle_since"):
                 atomic_json(path, {k: v for k, v in state.items() if k != "idle_since"})
@@ -1625,13 +1628,13 @@ class Supervisor:
         fingerprint = "|".join(f"{t.id}:{t.status.value}:{t.updated}" for t in stuck) or "deps-or-gates"
         if state.get("fingerprint") == fingerprint:
             return None
-        lines = []
+        lines, choices = [], []
         for t in stuck[:8]:
-            notes = (t.model_extra or {}).get("notes") or []
-            last = (notes[-1].get("note") if notes else "") or next(
-                (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
-            reason = str(last) or self.IDLE_WAIT_REASON.get(t.status, "waiting")
-            lines.append(f"{t.id} {t.status.value}: {reason[:220]}")
+            why = why_not_runnable_mod.why_not_runnable(t, tasks, self.layout)
+            # Never cut short here: `inbox.fit` bounds the whole item below, so a long reason still reaches the
+            # alert byte-identical to the Overview and the task page (a per-line cut here would not).
+            lines.append(f"{t.id} {t.status.value}: {why_not_runnable_mod.render_reason(why)}")
+            choices += [{**c, "id": f"{t.id}.{c['id']}"} for c in why_not_runnable_mod.choices_for(t, why)]
         held_ct = len(remaining) - len(waiting)
         held_note = f" ({held_ct} held by you, not listed)" if held_ct else ""
         summary, detail = inbox_mod.fit(
@@ -1640,7 +1643,8 @@ class Supervisor:
         try:
             item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
                                     summary=summary, detail=detail, kind="question", from_="loop",
-                                    allowed_responses=[], extra={"idle_fingerprint": fingerprint})
+                                    allowed_responses=[], choices=choices or None,
+                                    extra={"idle_fingerprint": fingerprint})
         except inbox_mod.InboxFull:
             return None
         state.update(fingerprint=fingerprint, item=item["id"], raised=now_iso())

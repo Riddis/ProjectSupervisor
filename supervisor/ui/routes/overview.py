@@ -18,7 +18,7 @@ from ... import timeouts as timeouts_mod
 from ... import plugins as plugins_mod
 from ... import project as project_mod
 from ... import updates as updates_mod
-from ...models.task import TaskStatus
+from ...models.task import TERMINAL, TaskStatus
 from ...paths import Layout
 from .. import logtail
 from ..auth import require_auth
@@ -255,8 +255,31 @@ def overview_live_context(layout: Layout) -> dict:
     running_rows = now_running(open_jobs, tasks, now)
     running_ids = {r["task_id"] for r in running_rows}
     waiting_to_start = [t for t in elig if t.id not in running_ids]
+    blocked_preview_tasks = []
+    if not waiting_to_start:
+        # Nothing eligible: show why, from the same function the idle alert and the task page read
+        # (RECOVERY_PLAN.md section 4.3), rather than the bare "no tasks ready" copy this card showed before.
+        from ... import why_not_runnable as why_not_runnable_mod
+        stuck = sorted((t for t in tasks.values() if t.status not in TERMINAL and not t.held
+                        and t.id not in running_ids), key=lambda t: t.id)
+        blocked_preview_tasks = stuck[:3]
+        # A paused/draining/stopped loop blocks every one of these identically (gate.check's own decision check);
+        # that is read once, never per task, and only for a task whose reason would otherwise come from the
+        # structural classifier -- WAITING_FOR_HUMAN/WAITING_FOR_REVIEW tasks are unaffected (neither reaches
+        # gate.check) and keep reading their own reason.
+        decision_reason = why_not_runnable_mod.decision_blocked(layout)
+        blocked_preview = []
+        for t in blocked_preview_tasks:
+            if decision_reason and t.status not in (TaskStatus.WAITING_FOR_HUMAN, TaskStatus.WAITING_FOR_REVIEW):
+                reason = decision_reason
+            else:
+                reason = why_not_runnable_mod.render_reason(why_not_runnable_mod.why_not_runnable(t, tasks, layout))
+            blocked_preview.append({"task": t, "reason": reason})
+    else:
+        blocked_preview = []
     return {
         "now_running": running_rows, "up_next": waiting_to_start[:3], "eligible_count": len(waiting_to_start),
+        "blocked_preview": blocked_preview, "blocked_preview_tasks": blocked_preview_tasks,
         "human_jobs": sum(1 for j in open_jobs if j.get("adapter") == "human"),
         "controls": controls(live, rt), "paused": live and (rt.get("status") == "PAUSED" or rt.get("decision") == "PAUSE"),
         "draining": draining, "active_jobs": active_jobs, "shutdown_armed": bool(rt.get("shutdown_on_drain")),

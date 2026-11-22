@@ -537,12 +537,15 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
 # journalled through the plan applier — it is the one call the framework already makes for an owner's command
 # (hold, a cancel, the existing plan applier called directly for apply_plan/cancel_plan).
 
-# The owner-only effects this release's synchronous answer path can actually apply (plans.OWNER_ONLY_EFFECTS
-# minus `diagnose_now`, which needs the running loop — see `_apply_owner_effect`), each with the operand(s) its
-# effect must carry. A choice naming `diagnose_now`, or missing a required operand, is refused at `create()`
-# rather than offered as a button that always raises when clicked.
+# The owner-only effects this release's synchronous answer path can actually apply, each with the operand(s) its
+# effect must carry. `diagnose_now` needs more than `layout` alone — a diagnosis is dispatched through a
+# `loop.Supervisor` (`diagnosis.dispatch`'s own signature) — so `_apply_owner_effect` builds one of its own
+# (RECOVERY_PLAN.md section 9, step 10: "wiring diagnose_now is why_not_runnable's own step"); `Supervisor.__init__`
+# starts no loop and no job, so building one here for a single dispatch call is exactly as cheap as any other
+# owner-only effect below. A choice missing a required operand is refused at `create()` rather than offered as a
+# button that always raises when clicked.
 _OWNER_EFFECT_REQUIRED = {"apply_plan": ("plan",), "cancel_plan": ("plan",), "cancel_task": ("task",),
-                          "hold": ("task",), "release_hold": ("task",)}
+                          "hold": ("task",), "release_hold": ("task",), "diagnose_now": ("task",)}
 _CHOICE_FIELDS = frozenset({"id", "effect", "label", "detail", "preconditions"})
 
 
@@ -562,10 +565,10 @@ def _validate_choice(layout: Layout, task_id: str | None, choice: dict) -> dict:
     trusted (section 4.2) — so a stored label can never promise more than its own effect performs.
 
     An owner-only effect (a bare `effect` dict naming one of `plans.OWNER_ONLY_EFFECTS`) is checked against
-    `_OWNER_EFFECT_REQUIRED`: an effect this release cannot yet apply (`diagnose_now`), or one missing an operand
-    it needs, is refused here. Anything else — one plan operation or a list of them — is checked by building the
-    plan `apply_choice` would propose and handing it to `plans.validate` whole, so a plan-tier choice is refused
-    on exactly the grounds a plan would be, RF-26 (an owner-only effect inside it) among them."""
+    `_OWNER_EFFECT_REQUIRED`: one missing an operand it needs is refused here. Anything else — one plan operation
+    or a list of them — is checked by building the plan `apply_choice` would propose and handing it to
+    `plans.validate` whole, so a plan-tier choice is refused on exactly the grounds a plan would be, RF-26 (an
+    owner-only effect inside it) among them."""
     from . import plans as plans_mod
     if not isinstance(choice, dict):
         raise InboxError("a choice must be an object")
@@ -620,15 +623,32 @@ def _validate_choice(layout: Layout, task_id: str | None, choice: dict) -> dict:
     return out
 
 
+def _apply_diagnose_now(layout: Layout, task_id: str) -> dict:
+    """`diagnose_now`: dispatch a diagnosis for `task_id` right now, through a `loop.Supervisor` built for this one
+    call (`Supervisor.__init__` starts no loop and no job, so this costs no more than any other owner-only effect
+    — RECOVERY_PLAN.md section 9, step 10). The source and the signature are `why_not_runnable`'s own reason, read
+    fresh rather than carried on the effect (RF-04's own rule, generalised: an effect names an operand, never a
+    value a diagnosis would turn around and read back as if it had written it)."""
+    from . import diagnosis as diagnosis_mod
+    from . import escalation as escalation_mod
+    from . import tasks as tasks_mod2
+    from . import why_not_runnable as why_not_runnable_mod
+    from .loop import Supervisor
+    task = tasks_mod2.load(layout, task_id)
+    why = why_not_runnable_mod.why_not_runnable(task, tasks_mod2.load_all(layout), layout)
+    detail = why_not_runnable_mod.render_reason(why)
+    sig = escalation_mod.signature(f"why_not_runnable:{why['code']}:{detail}")
+    rec = diagnosis_mod.dispatch(Supervisor(layout), task, "owner", detail, sig, level="manager")
+    if rec is None:
+        raise InboxError(f"diagnosis could not be dispatched for {task_id} (disabled, or no lane available)")
+    return {"attempt_id": rec.get("attempt_id")}
+
+
 def _apply_owner_effect(layout: Layout, op: dict, by: str, item: dict) -> dict:
-    """The five owner-only effects `_OWNER_EFFECT_REQUIRED` lets `_validate_choice` offer: `apply_plan`/
+    """The six owner-only effects `_OWNER_EFFECT_REQUIRED` lets `_validate_choice` offer: `apply_plan`/
     `cancel_plan` call the plan applier directly (the same one a plan-tier choice's own operations go through,
-    §4.1's "same applier"), and `cancel_task`/`hold`/`release_hold` call the one existing function each already
-    is. `diagnose_now` dispatches a diagnosis job through the running loop (`diagnosis.dispatch`), which this
-    synchronous answer path has no handle on — `_validate_choice` already refuses offering it as a choice, so
-    reaching the final branch below means a stored item predates that check; wiring `diagnose_now` is
-    `why_not_runnable`'s own step (RECOVERY_PLAN.md section 9, step 10), where the alert that offers the choice
-    holds the loop already."""
+    §4.1's "same applier"), `cancel_task`/`hold`/`release_hold` call the one existing function each already is,
+    and `diagnose_now` is `_apply_diagnose_now` above."""
     from . import plans as plans_mod
     name = op.get("op")
     note = f"{item['id']}: owner choice"
@@ -642,6 +662,8 @@ def _apply_owner_effect(layout: Layout, op: dict, by: str, item: dict) -> dict:
     if name == "hold":
         t = tasks_mod.hold(layout, op["task"], by, note=note)
         return {"status": t.status.value}
+    if name == "diagnose_now":
+        return _apply_diagnose_now(layout, op["task"])
     if name == "release_hold":
         t = tasks_mod.release_hold(layout, op["task"], by, note=note)
         return {"status": t.status.value}

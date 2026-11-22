@@ -115,44 +115,38 @@ def _preflight_failure_reason(pf) -> str:
     return f"preflight failed ({detail.get('code', 'unknown')}): {detail.get('message', detail)}"
 
 
-def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
-    """None when a `process`/`python` *delivery* job's stored preflight clears it to launch (RECOVERY_PLAN.md
-    section 3.3, invariant 7); else why not. Bound to `kind == "delivery"` and to the task's own `job.adapter`
-    matching this launch's adapter, not to the record's adapter alone: a verify, review or diagnosis job never
-    runs the task's own stored `job` block at all -- each builds its own spec and launches it on whatever
-    adapter that needs, `process` among them -- so a task whose own delivery is a model lane's (never
-    preflighted, by design: `preflight.attach` skips every adapter outside `PREFLIGHT_ADAPTERS`) must not have
-    that unrelated, preflight-less block borrowed and refused the moment one of those launches for it.
-
-    An absent preflight (`pf is None`) is not always an outright refusal: section 3.3's backfill opens a window,
-    bounded by `preflight.backfill_complete`, in which a block that predates the check is preflighted right here,
-    synchronously, against exactly what is on disk, and the result stored before this launch is allowed to
-    proceed -- the loop's own bounded sweep (`loop.Supervisor.preflight_backfill`) covers whatever this window
-    does not reach first. Once the sweep records that nothing is left pending, the window is closed and an
-    absent preflight refuses outright, the same as a failed one always has. A failure here is stored the same
-    for any task, but opens an owner item only when `task.status` is not `TERMINAL` -- a `COMPLETE` task cannot
-    launch again to act on it, and the owner item exists so someone can; see `loop.preflight_backfill`'s own
-    docstring for why `CANCELLED` is still swept rather than skipped."""
+def preflight_binding(task: Task | None, adapter_name: str, kind: str):
+    """The task's own job block, when this launch's preflight rule binds it at all -- `kind == "delivery"`, the
+    block's own `adapter` matching this launch's, and that adapter among `PREFLIGHT_ADAPTERS` -- else `None`.
+    A verify, review or diagnosis job never runs the task's own stored `job` block (each builds its own spec and
+    launches it on whatever adapter that needs, `process` among them), so a task whose own delivery is a model
+    lane's (never preflighted, by design: `preflight.attach` skips every adapter outside `PREFLIGHT_ADAPTERS`)
+    must not have an unrelated, stale `job.preflight` borrowed and refused the moment one of those launches for
+    it. The one guard `preflight_reason` and `why_not_runnable` both apply before reading a stored preflight at
+    all, so the two can never bind it differently."""
     if kind != "delivery" or task is None:
         return None
     job = task.job
     if job is None or job.adapter != adapter_name:
-        return None            # not the task's own job block running right now: nothing here to check
+        return None
     from . import preflight as preflight_mod
     if adapter_name not in preflight_mod.PREFLIGHT_ADAPTERS:
-        return None            # the adapter's own default argv/fn is unaffected by this rule
+        return None
+    return job
+
+
+def stored_preflight_reason(layout: Layout, job) -> str | None:
+    """None when `job`'s own *stored* preflight (never a freshly run one) clears it to launch; else why not --
+    side-effect-free, so this is also safe to call from a 5s poll. The one case it cannot resolve on its own is
+    an absent preflight (`pf is None`) while section 3.3's backfill window is still open: that needs a live probe
+    against what is on disk (`preflight_reason`'s own next branch), which this never runs, so it returns `None`
+    there too -- not a clearance, just "not yet decided by what is stored". Call `preflight_binding` first; this
+    assumes the binding already holds."""
+    from . import preflight as preflight_mod
     pf = job.preflight
     if pf is None:
         if preflight_mod.backfill_complete(layout):
             return "preflight missing: write the job block again to record one"
-        from . import tasks as tasks_mod
-        pf = tasks_mod.backfill_job_preflight(layout, task.id)
-        if pf is None:
-            return "preflight missing: write the job block again to record one"
-        if not pf.ok:
-            if task.status not in TERMINAL:
-                preflight_mod.report_backfill_failure(layout, task, pf)
-            return _preflight_failure_reason(pf)
         return None
     if not pf.ok:
         return _preflight_failure_reason(pf)
@@ -160,6 +154,40 @@ def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind:
     current.pop("preflight", None)
     if preflight_mod.block_digest(current) != (pf.detail or {}).get("block_digest"):
         return "preflight stale: the job block changed since it was recorded"
+    return None
+
+
+def preflight_reason(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
+    """None when a `process`/`python` *delivery* job's stored preflight clears it to launch (RECOVERY_PLAN.md
+    section 3.3, invariant 7); else why not. `preflight_binding` decides whether this launch's rule binds the
+    task's own job block at all; `stored_preflight_reason` decides everything a stored result (or its absence,
+    once the backfill window is closed) can decide on its own, with no side effect -- the same two primitives
+    `why_not_runnable` reads for its own, read-only classification.
+
+    An absent preflight (`pf is None`) is not always an outright refusal while the window is still open:
+    section 3.3's backfill preflights a block that predates the check right here, synchronously, against exactly
+    what is on disk, and the result stored before this launch is allowed to proceed -- the loop's own bounded
+    sweep (`loop.Supervisor.preflight_backfill`) covers whatever this window does not reach first. Once the sweep
+    records that nothing is left pending, the window is closed and `stored_preflight_reason` refuses an absent
+    preflight outright, the same as a failed one always has, and this branch is never reached. A failure here is
+    stored the same for any task, but opens an owner item only when `task.status` is not `TERMINAL` -- a
+    `COMPLETE` task cannot launch again to act on it, and the owner item exists so someone can; see
+    `loop.preflight_backfill`'s own docstring for why `CANCELLED` is still swept rather than skipped."""
+    job = preflight_binding(task, adapter_name, kind)
+    if job is None:
+        return None
+    reason = stored_preflight_reason(layout, job)
+    if reason is not None or job.preflight is not None:
+        return reason
+    from . import preflight as preflight_mod
+    from . import tasks as tasks_mod
+    pf = tasks_mod.backfill_job_preflight(layout, task.id)
+    if pf is None:
+        return "preflight missing: write the job block again to record one"
+    if not pf.ok:
+        if task.status not in TERMINAL:
+            preflight_mod.report_backfill_failure(layout, task, pf)
+        return _preflight_failure_reason(pf)
     return None
 
 
