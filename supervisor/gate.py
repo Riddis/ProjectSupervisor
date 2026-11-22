@@ -107,6 +107,36 @@ def role_config(layout: Layout | None, role: str | None) -> dict:
     return entry if isinstance(entry, dict) else {}
 
 
+def removed_routing_settings(layout: Layout | None) -> list[str]:
+    """One line per key `routing_doc()` still carries that R-26 found no reader for — a warning for `doctor`,
+    never a refusal: a document carrying one of these keeps loading exactly as it does today; the key is simply
+    never consulted. `version` (top-level) was never checked against anything (unlike `job_templates.yaml`'s own
+    `version`, which `templates.py` does check). `roles.<role>.active_from` and `roles.<role>.second_opinion` were
+    always informational: no scheduler path reads either. `resources.<name>.single_job` is `needs.resources_declared`'s
+    own documented exception — read back unexamined, never interpreted as the "one job at a time" rule (that rule
+    is `limits.max_resource_jobs` plus the job record's `gpu` flag, untouched; see docs/plan/LONG_WORK.md section 5.1)."""
+    doc = routing_doc(layout)
+    out = []
+    if "version" in doc:
+        out.append("routing.yaml: 'version' is no longer read; safe to delete")
+    roles = doc.get("roles")
+    if isinstance(roles, dict):
+        for role, entry in sorted(roles.items()):
+            if not isinstance(entry, dict):
+                continue
+            if "active_from" in entry:
+                out.append(f"routing.yaml: roles.{role}.active_from is no longer read; safe to delete")
+            if "second_opinion" in entry:
+                out.append(f"routing.yaml: roles.{role}.second_opinion is no longer read; safe to delete")
+    resources = doc.get("resources")
+    if isinstance(resources, dict):
+        for name, section in sorted(resources.items()):
+            if isinstance(section, dict) and "single_job" in section:
+                out.append(f"routing.yaml: resources.{name}.single_job is not read by the framework "
+                           f"(limits.max_resource_jobs and a job's own gpu flag already serialise it); safe to delete")
+    return out
+
+
 def role_inactive(layout: Layout | None, role: str | None) -> bool:
     """True when the role is configured `active: false`: a dormant role never launches, on any lane and by any
     path (plan, queued record, review, continuation). An unconfigured role, or one without the key, is active."""

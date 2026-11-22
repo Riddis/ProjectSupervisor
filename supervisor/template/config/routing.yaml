@@ -1,6 +1,5 @@
 # Routing policy. Roles never choose models; this file does. The setup skill fills in roles, models and limits for
 # the project; everything here can change without a release.
-version: 1
 
 # Capacity floors, per engine and measured window: automation waits while a window's remaining share is at or below
 # its floor. reserve_percent is the 5-hour window's floor, weekly_gate_percent the 7-day window's. Both are editable
@@ -44,8 +43,9 @@ cost_lanes:
 #   card             agents/<file>, or null while the role is dormant
 #   active           true once the role has work; a dormant role costs nothing - its tasks are parked by the
 #                    scheduler (logged `schedule_skip`), never dispatched on another lane
-#   active_from      the first phase the role has work in
-#   result_kinds     schemas in agents/schemas/ this role may produce
+#   result_kinds     schemas in agents/schemas/ this role may produce - enforced: `task import`/`task create`/
+#                    `supervisor check` warn when a task's owner_role would produce a kind (its `job.result_kind`,
+#                    default `delivery`) or a reviewer role would produce `review` outside this list
 #   senior_model     model for the second automatic revision
 #   review           confinement for a REVIEW job of this role (tools reviewer, write_scope run_dir by default)
 roles:
@@ -56,7 +56,6 @@ roles:
     tools: web
     card: senior_pm.md
     active: true
-    active_from: 0
     result_kinds: [delivery, review, assessment]
     review: {tools: reviewer, write_scope: run_dir}
   chief_architect:
@@ -66,7 +65,6 @@ roles:
     tools: writer
     card: chief_architect.md
     active: true
-    active_from: 0
     result_kinds: [delivery, review]
     review: {tools: reviewer, write_scope: run_dir}
   engineer:
@@ -77,7 +75,6 @@ roles:
     tools: writer
     card: engineer.md
     active: true
-    active_from: 0
     result_kinds: [delivery]
   code_review:
     adapter: codex_cli              # cross-vendor by construction: the implementer's lane never reviews itself
@@ -87,7 +84,6 @@ roles:
     tools: reader
     card: code_review.md
     active: true
-    active_from: 0
     result_kinds: [review]
     review: {sandbox: read-only}
     fallback: {adapter: claude_cli, model: opus, flag: same_vendor}   # only when codex capacity is out; recorded as same-vendor
@@ -98,15 +94,12 @@ roles:
     tools: web
     card: research_strategist.md
     active: true
-    active_from: 0
     result_kinds: [delivery, research_report, assessment]
-    second_opinion: codex_cli
   owner:
     adapter: human                  # inbox role: no model, no card, no tools
     tools: none
     card:
     active: true
-    active_from: 0
     result_kinds: []
     note: approvals, spend, logins, installs - final authority
   conversation:
@@ -116,7 +109,6 @@ roles:
     tools: reader
     card:
     active: true                    # informational: the chat lane is owner-driven, `active` never parks a reply
-    active_from: 0
     result_kinds: []
     note: a chat turn that dispatches work does so under the target role's own entry
 
@@ -202,6 +194,8 @@ plan:                                # recovery plans (RECOVERY_PLAN.md §2.7): 
                                       # resume/create_task/set_job -> A|B|owner); tightens only, never loosens
 # Two more sections, added when they are needed:
 #   resources:     shared resource policy plugins read with supervisor.plugin.resources(), e.g.
-#     gpu: {usable_vram_floor_mb: 6500, single_job: true}
+#     gpu: {usable_vram_floor_mb: 6500}
+#     (the "one job at a time" rule is limits.max_resource_jobs plus a job's own gpu flag, below - there is no
+#     separate single_job key: `doctor` warns if one is still here)
 #   plugins:    each plugin's own settings under its identity, validated by the schema its manifest names
 #     <identity>: {...}

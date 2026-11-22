@@ -17,14 +17,39 @@ from .paths import Layout
 
 DEFAULTS: dict[str, Any] = {
     "name": "Untitled project",
-    "description": "",
     "framework_version": __version__,
-    "repo": {"path": ".", "remote": None, "default_branch": "main"},
     "phases": {},            # {0: "Environment", 1: "Foundations", ...} — labels only; gating lives in state/gates.yaml
     "plugins": [],           # import paths relative to plugins/ (e.g. "my_adapter") or dotted module names
-    "ui": {"port": 8790, "title": None},
-    "owner": {"name": "owner"},
+    "ui": {"port": 8790},
 }
+
+# R-26: keys a project.yaml may still carry from before this release, that no version of the framework has ever
+# read. `description`, `repo.path`/`repo.remote`/`repo.default_branch` and `owner.name` were free text or always
+# equal to their own default (the git root is the project root; every inbox/human gate addresses the literal role
+# id "owner", never a configured name) and `ui.title` was never substituted for the pages' own fixed titles.
+# Listed, not removed from DEFAULTS' shape: a document that still carries one keeps loading (`load` merges whatever
+# it finds), `doctor` warns once, and `supervisor init`/`migrate` stop writing them.
+REMOVED_TOP_LEVEL = {
+    "description": "free text; nothing reads it",
+    "repo": "repo.path/repo.remote/repo.default_branch; nothing reads them (the git root is the project root)",
+    "owner": "owner.name; every inbox/human gate addresses the literal role id \"owner\"",
+}
+REMOVED_NESTED = {
+    ("ui", "title"): "every page's title is fixed text; nothing substitutes it",
+}
+
+
+def removed_settings(layout: Layout) -> list[str]:
+    """One line per key `raw()` still carries that R-26 found no reader for — a warning for `doctor`, never a
+    refusal: the key is simply never consulted, exactly as it was unread before this function existed."""
+    doc = raw(layout)
+    out = [f"project.yaml: {key!r} is no longer read ({note}); safe to delete"
+           for key, note in REMOVED_TOP_LEVEL.items() if key in doc]
+    for (parent, child), note in REMOVED_NESTED.items():
+        section = doc.get(parent)
+        if isinstance(section, dict) and child in section:
+            out.append(f"project.yaml: {parent}.{child!r} is no longer read ({note}); safe to delete")
+    return out
 
 
 def path(layout: Layout) -> Path:

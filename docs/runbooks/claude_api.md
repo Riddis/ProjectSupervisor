@@ -29,3 +29,8 @@ A single Messages API call per attempt, billed to an API key the owner put in `s
   and set the figure the owner actually approved.
 - Routing: `cost_category: paid` or `job.adapter: claude_api` always uses it; `supervisor run --unattended` with
   `capacity.unattended_prefers_api_credits: true` switches `claude_cli` picks to it while credits remain.
+- Which tasks the unattended switch may move: never one with an explicit `job.adapter` (a deliberate pick is never
+  overridden) or one whose contract declares `artifacts`, `tests` or `checks` (this lane has no tools, so such a
+  task could only fail here) — and even then only once opted in, per task (`job.api_credits: true`) or per role
+  (`claude_api.eligible_roles: [role, ...]`, empty by default; the owner/architect adds a role only once its tasks
+  are self-contained text jobs). Neither key moves work here on its own: both still pass the contract check above.

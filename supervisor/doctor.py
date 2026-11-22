@@ -40,7 +40,11 @@ def check_project(layout: Layout) -> Check:
     if note:
         return Check("project", False, f"{note}; root {layout.root}")
     # the root is part of the detail: a rehearsal on a copy must be able to show which tree doctor examined
-    return Check("project", True, f"{doc.get('name')} at {layout.root} (framework {__version__})")
+    detail = f"{doc.get('name')} at {layout.root} (framework {__version__})"
+    removed = project.removed_settings(layout)
+    if removed:
+        return Check("project", True, detail + " — " + "; ".join(removed), warn=True)
+    return Check("project", True, detail)
 
 
 def check_framework(layout: Layout) -> Check:
@@ -127,10 +131,14 @@ def check_routing(layout: Layout) -> Check:
     plan_cfg = doc.get("plan") or {}
     approvers = [str(r) for r in (plan_cfg.get("approver") or [])] if isinstance(plan_cfg, dict) else []
     unconfigured = [r for r in approvers if roles and r not in roles]
+    warnings = []
     if unconfigured:
-        return Check("routing", True, f"{len(roles)} role(s) configured; plan.approver names "
-                     f"{', '.join(unconfigured)}, absent from roles: — a plan with no other approver reaches "
-                     "the owner instead of that role", warn=True)
+        warnings.append(f"plan.approver names {', '.join(unconfigured)}, absent from roles: — a plan with no "
+                        "other approver reaches the owner instead of that role")
+    from . import gate as gate_mod
+    warnings += gate_mod.removed_routing_settings(layout)
+    if warnings:
+        return Check("routing", True, f"{len(roles)} role(s) configured; " + "; ".join(warnings), warn=True)
     return Check("routing", True, f"{len(roles)} role(s) configured")
 
 

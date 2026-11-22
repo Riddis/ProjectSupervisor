@@ -41,4 +41,8 @@ produce. Dormant roles keep `card: null`, `active: false` and a `note` saying wh
 | `research_report.json` | `research_strategist` | reviewers, the owner |
 | `assessment.json` | any role asked to score candidates independently | the manager's reconciliation |
 
-Each role's permitted kinds are listed as `result_kinds` in its routing entry.
+Each role's permitted kinds are listed as `result_kinds` in its routing entry, and enforced as a warning (not a
+refusal) by `task import`, `task create` and `supervisor check`: a role with `result_kinds` configured that would
+be asked to produce a kind outside it — its own delivery's `job.result_kind` (default `delivery`), or `review` for
+a reviewer — is named, with the kind and the list it fell outside. A role with no `result_kinds` key at all stays
+unrestricted.
