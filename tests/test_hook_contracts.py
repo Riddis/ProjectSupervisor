@@ -95,6 +95,9 @@ def test_every_documented_hook_is_exercised(lay):
         "adapter": reg.adapters == {"reference_lane": "reference"} and "reference_lane" in REGISTRY,
         "job_schema": (reg.job_schema_owners.get("reference_lane") == "reference"
                        and sorted(reg.job_schemas["reference_lane"].model_fields) == ["output"]),
+        "capabilities": (reg.capabilities_table_owners.get("reference_lane") == "reference"
+                         and reg.capabilities_table["reference_lane"] == {"durable": False, "network": False,
+                                                                           "max_duration_min": 10}),
         "python_job": reg.python_jobs == {"reference_count": "reference"} and "reference_count" in JOBS,
         "doctor_check": len(reg.doctor_checks) == 1,
         "overview_panel": len(reg.overview_panels) == 1,
@@ -141,6 +144,26 @@ def test_job_schema_refuses_a_misspelled_key_for_the_lane_that_declared_one(lay)
 
     with pytest.raises(tasks.TaskError, match="outpout"):
         tasks.patch_task(lay, "S", {"job": {"adapter": "reference_lane", "outpout": "out/s.txt"}}, actor="owner")
+
+
+def test_capabilities_matches_the_declared_lane_instead_of_warning_it_is_unknown(lay):
+    """The hook's contract: a lane with its own `registry.capabilities` declaration is matched against it (a
+    duration past the declared ceiling is refused, RF-28) instead of only ever warned `needs_lane_unknown`."""
+    from supervisor import capabilities, tasks
+    assert capabilities.for_lane(lay, "reference_lane") == {"durable": False, "network": False,
+                                                              "max_duration_min": 10}
+    _doc, errors, warnings = tasks.check_new(lay, {"id": "R1", "phase": 0, "title": "R1", "objective": "o",
+                                                    "owner_role": "engineer", "artifacts": ["x"],
+                                                    "cost_category": "deterministic",
+                                                    "job": {"adapter": "reference_lane", "output": "x"},
+                                                    "needs": {"duration_min": 5}}, actor="owner")
+    assert errors == [] and not any("needs_lane_unknown" in w for w in warnings)
+    _doc2, refused, _w2 = tasks.check_new(lay, {"id": "R2", "phase": 0, "title": "R2", "objective": "o",
+                                                "owner_role": "engineer", "artifacts": ["x"],
+                                                "cost_category": "deterministic",
+                                                "job": {"adapter": "reference_lane", "output": "x"},
+                                                "needs": {"duration_min": 20}}, actor="owner")
+    assert any("needs_exceed_lane" in e or "ceiling" in e for e in refused)
 
 
 def test_python_job_runs_through_the_python_lane(lay):

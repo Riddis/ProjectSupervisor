@@ -124,6 +124,28 @@ def test_needs_lane_unknown_is_a_warning_not_a_refusal(layout):
     assert out.get("warnings") and "mystery_lane" in out["warnings"][0]
 
 
+_WIDGET_CAPABILITIES_PLUGIN = '''
+def setup(registry):
+    registry.capabilities("widget_lane", {"durable": False, "network": True, "max_duration_min": 10})
+'''
+
+
+def test_a_plugin_declared_lane_is_matched_not_warned_unknown(tmp_path):
+    """section 3.2/9 step 2: a lane with its own `registry.capabilities` declaration is matched against it, not
+    left as the `needs_lane_unknown` warning a capability-less lane draws."""
+    from supervisor import capabilities as capabilities_mod, plugins, testing
+    lay = plugins.load(testing.project(tmp_path, modules={"widget": _WIDGET_CAPABILITIES_PLUGIN})).layout
+    assert capabilities_mod.for_lane(lay, "widget_lane") == {"durable": False, "network": True,
+                                                              "max_duration_min": 10}
+    with testing.lane(testing.FakeLane("widget_lane")):
+        out = tasks_mod.create(lay, _task_doc("T", job={"adapter": "widget_lane"},
+                                              needs={"duration_min": 5}), actor="owner")
+        assert out.get("warnings", []) == []     # matched against the declared ceiling, not warned unknown
+        with pytest.raises(tasks_mod.TaskError, match="needs.duration_min"):
+            tasks_mod.create(lay, _task_doc("T2", job={"adapter": "widget_lane"},
+                                           needs={"duration_min": 20}), actor="owner")   # 20 min > the declared 10
+
+
 def test_needs_unverifiable_resumable_with_no_template_at_all(layout):
     out = tasks_mod.create(layout, _task_doc("T", job={"adapter": "process", "argv": [PY, "-c", "pass"]},
                                              needs={"resumable": True}), actor="owner")
@@ -257,6 +279,46 @@ def test_extend_offers_default_to_a_single_hour(layout):
     assert timeouts.extend_offers(gate.routing_doc(layout)) == [timeouts.EXTEND_STEP_S]
     _write_routing(layout, {"timeouts": {"extend_offers": [1800, 14400]}})
     assert timeouts.extend_offers(gate.routing_doc(layout)) == [1800, 14400]
+
+
+# ---------------------------------------------------------------- the Control Center: one control per offer (section 4.3)
+
+def test_agent_page_renders_one_control_per_declared_offer(layout):
+    """A project configuring nothing sees exactly one control, today's +1h; one configuring `extend_offers`
+    sees one control per declared duration."""
+    from supervisor import testing
+    _running_job(layout, time.time() + 21600)
+    client = testing.ui_client(layout)
+    page = client.get("/agents/T.a1").text
+    assert page.count('action="/agents/T.a1/extend"') == 1
+    assert "Extend +1h" in page
+
+    _write_routing(layout, {"timeouts": {"extend_offers": [1800, 14400]}})
+    page = client.get("/agents/T.a1").text
+    assert page.count('action="/agents/T.a1/extend"') == 2
+    assert "Extend +30m" in page and "Extend +4h" in page
+
+
+def test_extend_from_the_control_center_states_the_resulting_deadline(layout):
+    """Every answer states the resulting deadline (section 4.3), including the dedupe window's no-op."""
+    import urllib.parse
+
+    from supervisor import testing
+    deadline = time.time() + 100
+    _running_job(layout, deadline)
+    client = testing.ui_client(layout)
+
+    def flash_of(response) -> str:
+        assert response.status_code == 303
+        return urllib.parse.unquote(response.headers["location"].split("flash=", 1)[1])
+
+    first = client.post("/agents/T.a1/extend", data={"csrf_token": testing.CSRF, "seconds": 1800},
+                        follow_redirects=False)
+    assert "applied" in flash_of(first) and "hard cap" in flash_of(first)
+
+    again = client.post("/agents/T.a1/extend", data={"csrf_token": testing.CSRF, "seconds": 1800},
+                        follow_redirects=False)
+    assert "hard cap" in flash_of(again)                     # the dedupe window's no-op states it too
 
 
 # ---------------------------------------------------------------- a resumable process job's cap-stop is a continuation
