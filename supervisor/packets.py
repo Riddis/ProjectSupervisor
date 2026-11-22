@@ -10,10 +10,8 @@ from __future__ import annotations
 import difflib
 import json
 
-import yaml
-
 from . import jobs as jobs_mod
-from . import policy, verify
+from . import policy, routing_config, verify
 from ._vendor.contract import manifest
 from .models.task import Task
 from .paths import Layout
@@ -53,10 +51,7 @@ def result_contract_delivery(layout: Layout, task: Task, model_lane: bool = True
 
 def role_card(layout: Layout, role: str) -> str:
     """Prompt card text for a role, or '' while the role is dormant/undefined."""
-    cfg = layout.config / "routing.yaml"
-    if not cfg.exists():
-        return ""
-    roles = (yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}).get("roles") or {}
+    roles = routing_config.load(layout).get("roles") or {}
     card = (roles.get(role) or {}).get("card")
     if not card:
         return ""

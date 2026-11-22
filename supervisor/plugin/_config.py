@@ -17,6 +17,7 @@ from pathlib import Path
 
 import yaml
 
+from .. import routing_config
 from ..plugins import PluginError
 from ..paths import Layout
 
@@ -38,10 +39,9 @@ def _routing(layout: Layout) -> dict:
     if not path.exists():
         return {}
     try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
+        return routing_config.read_raw(path)
+    except (OSError, yaml.YAMLError) as exc:
         raise PluginError(f"config/routing.yaml cannot be read: {exc}") from None
-    return doc if isinstance(doc, dict) else {}
 
 
 def _mapping(doc: dict, section: str) -> dict:

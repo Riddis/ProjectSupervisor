@@ -22,9 +22,7 @@ import time
 _now = time.time                               # patched in tests
 from pathlib import Path
 
-import yaml
-
-from . import checkpoint, store, tasks as tasks_mod
+from . import checkpoint, routing_config, store, tasks as tasks_mod
 from .models.task import TaskStatus
 from .paths import Layout
 
@@ -46,17 +44,11 @@ def _git(root: Path, *args: str, index: str | None = None) -> tuple[int, str, st
 
 def settings(layout: Layout) -> dict:
     out = {"enabled": True, "interval_minutes": 15.0}
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            data = {}
-        cp = data.get("checkpoint") or {}
-        if "state_commits" in cp:
-            out["enabled"] = bool(cp["state_commits"])
-        if cp.get("state_interval_minutes") is not None:
-            out["interval_minutes"] = float(cp["state_interval_minutes"])
+    cp = routing_config.load(layout).get("checkpoint") or {}
+    if "state_commits" in cp:
+        out["enabled"] = bool(cp["state_commits"])
+    if cp.get("state_interval_minutes") is not None:
+        out["interval_minutes"] = float(cp["state_interval_minutes"])
     return out
 
 

@@ -22,10 +22,10 @@ def task_list(request: Request, status: str = "", phase: str = "", layout: Layou
     elig_ids = {t.id for t in tasks_mod.eligible(layout, {t.id: t for t in tasks})}
     if status:
         tasks = [t for t in tasks if t.status.value == status]
-    if phase.isdigit():
+    if phase.isdecimal():     # isdigit() also accepts a superscript/subscript/circled digit, which int() then raises on
         tasks = [t for t in tasks if t.phase == int(phase)]
     return render(request, "tasks_list.html", {"tasks": tasks, "elig_ids": elig_ids, "filter_status": status,
-                                               "filter_phase": phase if phase.isdigit() else "",
+                                               "filter_phase": phase if phase.isdecimal() else "",
                                                "broken_tasks": tasks_mod.unreadable(layout),
                                                "statuses": [s.value for s in TaskStatus], "flash": decode_flash(request)})
 

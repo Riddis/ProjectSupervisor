@@ -1271,9 +1271,6 @@ def set_priority(layout: Layout, task_id: str, priority: int, actor: str = "owne
 
 # ------------------------------------------------------------------ delivery records and advance()
 
-VOLATILE_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
-
-
 # Authored records under state/: written by an agent or the owner as a deliverable and never rewritten by the loop,
 # so they can be frozen in a delivery digest. Everything else under state/ is the store and changes every tick.
 AUTHORED_STATE = ("state/decisions/",)
@@ -1320,7 +1317,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
             doc["paths"] = sorted({str(x) for x in paths if not volatile_state(str(x))
                                    and str(x) not in volatile})
     from . import verify as verify_mod                   # local: verify imports this module
-    volatile = VOLATILE_PROJECTIONS | verify_mod.excluded_files(layout)
+    volatile = verify_mod.excluded_files(layout)          # R-28: one set (built-in + plugin views), not two unioned
     t = _update(layout, task_id, fn)
     log(layout, "delivery", actor, task=task_id, digest=digest)
     return t

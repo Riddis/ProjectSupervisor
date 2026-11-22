@@ -14,10 +14,9 @@ import hashlib
 import re
 from pathlib import Path
 
-import yaml
-
 from . import jobs as jobs_mod
 from . import packets as packets_mod
+from . import routing_config
 from . import scheduler
 from . import store
 from . import tasks as tasks_mod
@@ -52,15 +51,10 @@ def _budget_config(layout: Layout) -> tuple[dict[str, int], dict[str, str]]:
     """(limits, causes) with config/routing.yaml's `escalation.budget` layered over the defaults above —
     missing file, missing section or an unreadable document all fall back to the defaults, never an error."""
     limits, causes = dict(DEFAULT_BUDGET_LIMITS), dict(DEFAULT_CAUSE_TABLE)
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            data = {}
-        budget = ((data.get("escalation") or {}).get("budget")) or {}
-        limits.update({str(k): int(v) for k, v in (budget.get("limits") or {}).items()})
-        causes.update({str(k): str(v) for k, v in (budget.get("causes") or {}).items()})
+    data = routing_config.load(layout)
+    budget = ((data.get("escalation") or {}).get("budget")) or {}
+    limits.update({str(k): int(v) for k, v in (budget.get("limits") or {}).items()})
+    causes.update({str(k): str(v) for k, v in (budget.get("causes") or {}).items()})
     return limits, causes
 
 

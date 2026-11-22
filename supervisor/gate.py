@@ -11,9 +11,7 @@ together; reviews (read-only lane) and chat turns own nothing and are never bloc
 """
 from __future__ import annotations
 
-import yaml
-
-from . import capacity, leases, runtime, tasks as tasks_mod
+from . import capacity, leases, routing_config, runtime, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, overlaps
 from .adapters import REGISTRY
 from .models.task import EXCLUSIVE, TERMINAL, Task
@@ -30,14 +28,11 @@ ACTIVE_PHASES = ("SUBMITTED", "RUNNING")
 
 
 def limits(layout: Layout) -> dict:
-    cfg = layout.config / "routing.yaml"
     out = dict(DEFAULT_LIMITS)
-    if cfg.exists():
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        lim = dict(data.get("limits") or {})
-        if "max_gpu_jobs" in lim and "max_resource_jobs" not in lim:      # pre-1.0 name
-            lim["max_resource_jobs"] = lim.pop("max_gpu_jobs")
-        out.update(lim)
+    lim = dict(routing_config.load(layout).get("limits") or {})
+    if "max_gpu_jobs" in lim and "max_resource_jobs" not in lim:      # pre-1.0 name
+        lim["max_resource_jobs"] = lim.pop("max_gpu_jobs")
+    out.update(lim)
     cats = out.get("resource_cost_categories")
     out["resource_cost_categories"] = [str(c) for c in (cats if isinstance(cats, (list, tuple)) else [cats] if cats else [])]
     return out
@@ -87,17 +82,9 @@ def lease_blocked(layout: Layout, task: Task | None, adapter_name: str, kind: st
 
 
 def routing_doc(layout: Layout | None) -> dict:
-    """config/routing.yaml as a mapping; {} when absent or malformed (every reader then uses its default)."""
-    if layout is None:
-        return {}
-    cfg = layout.config / "routing.yaml"
-    if not cfg.exists():
-        return {}
-    try:
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    """config/routing.yaml as a mapping; {} when absent or malformed (every reader then uses its default).
+    Delegates to `routing_config.load` -- the one place that opens and parses the file (R-28)."""
+    return routing_config.load(layout)
 
 
 def role_config(layout: Layout | None, role: str | None) -> dict:

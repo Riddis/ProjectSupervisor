@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from . import __version__, plugins, project
+from . import __version__, plugins, project, routing_config
 from .paths import Layout
 
 
@@ -121,8 +121,8 @@ def check_routing(layout: Layout) -> Check:
     if not cfg.exists():
         return Check("routing", False, "config/routing.yaml missing")
     try:
-        doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
+        doc = routing_config.read_raw(cfg)
+    except (OSError, yaml.YAMLError) as exc:
         return Check("routing", False, f"config/routing.yaml malformed: {exc}"[:200])
     roles = doc.get("roles") or {}
     missing = [r for r, p in roles.items() if (p or {}).get("card") and not (layout.agents / p["card"]).exists()]
@@ -161,11 +161,8 @@ def _lane_check(name: str, exe_names: tuple[str, ...], login_hint: str):
         from .adapters import REGISTRY
         if name not in REGISTRY:
             return Check(name, True, "adapter not registered in this process")
-        cfg = layout.config / "routing.yaml"
-        used = False
-        if cfg.exists():
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-            used = any((p or {}).get("adapter") == name for p in (doc.get("roles") or {}).values())
+        doc = routing_config.load(layout)
+        used = any((p or {}).get("adapter") == name for p in (doc.get("roles") or {}).values())
         exe = None
         if name == "claude_cli":
             from .adapters.claude_cli import executable

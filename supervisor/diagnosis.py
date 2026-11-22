@@ -31,7 +31,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from . import inbox as inbox_mod, jobs as jobs_mod, plans as plans_mod, store, tasks as tasks_mod
+from . import inbox as inbox_mod, jobs as jobs_mod, plans as plans_mod, routing_config, store, tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
@@ -70,19 +70,13 @@ RESULT_CONTRACT = (
 
 
 def settings(layout: Layout) -> dict:
-    cfg = layout.config / "routing.yaml"
     out = {"enabled": True, "roles": dict(DEFAULT_ROLES)}
-    if cfg.exists():
-        try:
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            data = {}
-        esc = data.get("escalation") or {}
-        if "diagnosis" in esc:
-            out["enabled"] = bool(esc["diagnosis"])
-        for level in LEVELS:
-            if esc.get(f"{level}_role"):
-                out["roles"][level] = str(esc[f"{level}_role"])
+    esc = routing_config.load(layout).get("escalation") or {}
+    if "diagnosis" in esc:
+        out["enabled"] = bool(esc["diagnosis"])
+    for level in LEVELS:
+        if esc.get(f"{level}_role"):
+            out["roles"][level] = str(esc[f"{level}_role"])
     return out
 
 

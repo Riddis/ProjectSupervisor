@@ -19,6 +19,7 @@ from . import plans as plans_mod
 from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, needs as needs_mod, preflight as preflight_mod
 from . import render, review as review_mod
+from . import routing_config
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from . import why_not_runnable as why_not_runnable_mod
@@ -212,15 +213,9 @@ def _restore_current_bytes(path: Path, current: bytes | None) -> bool:
 
 
 def scheduler_routing(layout: Layout) -> dict:
-    import yaml
-    cfg = layout.config / "routing.yaml"
-    try:
-        return (yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}) if cfg.exists() else {}
-    except (OSError, yaml.YAMLError):
-        return {}
+    """config/routing.yaml as a mapping; delegates to `routing_config.load` (R-28: one routing loader)."""
+    return routing_config.load(layout)
 
-
-RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
 
 class Supervisor:
     def __init__(self, layout: Layout, sleep_s: float = 5.0, render_every: int = 1, unattended: bool = False):
@@ -1015,7 +1010,7 @@ class Supervisor:
             # a worker may add deliverables, never narrow the list.
             patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
             files, missing = self._expand_artifacts(patterns)
-            rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and plugin views
+            rendered = verify_mod.excluded_files(self.layout)      # built-in and plugin views (R-28: one set, not two unioned)
             volatile = [f for f in files if tasks_mod.volatile_state(f) or f in rendered]
             if volatile:                                           # the store/projections change on every tick: never an
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input

@@ -33,8 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
+from . import routing_config
 from ._vendor.contract import changed_paths, contained, manifest
 from .models.task import Task
 from .paths import Layout
@@ -232,32 +231,20 @@ def limits(layout: Layout) -> dict:
     """The three test-evidence limits (G3, 2.4.0): `verification.per_command_timeout_s`, `budget_s` and
     `max_commands`, each falling back to this module's own constant when unconfigured or malformed."""
     out = {"per_command_timeout_s": TEST_TIMEOUT_S, "budget_s": TEST_BUDGET_S, "max_commands": MAX_TEST_COMMANDS}
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        v = (doc.get("verification") or {}) if isinstance(doc, dict) else {}
-        for key in ("per_command_timeout_s", "budget_s", "max_commands"):
-            if key in v:
-                try:
-                    out[key] = int(v[key])
-                except (TypeError, ValueError):
-                    pass
+    v = routing_config.load(layout).get("verification") or {}
+    for key in ("per_command_timeout_s", "budget_s", "max_commands"):
+        if key in v:
+            try:
+                out[key] = int(v[key])
+            except (TypeError, ValueError):
+                pass
     return out
 
 
 def allowed_test_commands(layout: Layout) -> list[str]:
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        configured = (doc.get("verification") or {}).get("allowed_test_commands")
-        if configured:
-            return [str(c) for c in configured]
+    configured = (routing_config.load(layout).get("verification") or {}).get("allowed_test_commands")
+    if configured:
+        return [str(c) for c in configured]
     return list(ALLOWED_TEST_COMMANDS)
 
 
@@ -507,15 +494,9 @@ def undeclared_residue(before: dict, after: dict, outside: list[str]) -> dict[st
 
 def as_job(layout: Layout) -> bool:
     """run the command part of verification as a tracked process job (default) instead of inside the loop."""
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        v = doc.get("verification_job") or {}
-        if "as_job" in v:
-            return bool(v["as_job"])
+    v = routing_config.load(layout).get("verification_job") or {}
+    if "as_job" in v:
+        return bool(v["as_job"])
     return True
 
 

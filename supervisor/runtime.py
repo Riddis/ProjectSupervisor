@@ -43,5 +43,17 @@ def heartbeat(layout: Layout, status: str = "RUNNING", **extra) -> dict:
 
 
 def is_live(layout: Layout, max_age_s: float = 180.0) -> bool:
+    """A fixed window alone (R-28) reads a turn that is still legitimately blocking -- a repo-wide snapshot, a
+    git commit -- as an offline loop the moment it runs longer than `max_age_s`, which also enables Start in the
+    Control Center on a loop that is still running. The window widens with the last turn's own recorded length
+    (`heartbeat()`'s `turn_s`, R-09), so a turn already inside its own precedent is never reported offline; a
+    loop whose last turn was ordinary and whose heartbeat is now far older than that still reads offline."""
     doc = read(layout)
-    return doc.get("status") in ("RUNNING", "PAUSED", "DRAINING") and (time.time() - float(doc.get("heartbeat_epoch", 0))) < max_age_s
+    if doc.get("status") not in ("RUNNING", "PAUSED", "DRAINING"):
+        return False
+    try:
+        turn_s = float(doc.get("turn_s") or 0)
+    except (TypeError, ValueError):
+        turn_s = 0.0
+    window = max(max_age_s, turn_s * 2)
+    return (time.time() - float(doc.get("heartbeat_epoch", 0))) < window

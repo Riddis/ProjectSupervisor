@@ -4,11 +4,10 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-import yaml
-
 from ._vendor import usage_policy as up
 from ._vendor.contract import CapacityDeferred
 from .paths import Layout
+from . import routing_config
 
 _configured_for: tuple | None = None       # (runtime dir, routing.yaml stamp) the floors were last read for
 
@@ -29,16 +28,13 @@ def configure(layout: Layout) -> None:
     stamp = _stamp(layout)
     reserve = {"claude": 10, "codex": 10}
     weekly = {"claude": 0, "codex": 0}
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        cap = data.get("capacity") or {}
-        for eng in reserve:
-            if isinstance(cap.get(eng), dict):
-                if "reserve_percent" in cap[eng]:
-                    reserve[eng] = int(cap[eng]["reserve_percent"])
-                if "weekly_gate_percent" in cap[eng]:
-                    weekly[eng] = int(cap[eng]["weekly_gate_percent"])
+    cap = routing_config.load(layout).get("capacity") or {}
+    for eng in reserve:
+        if isinstance(cap.get(eng), dict):
+            if "reserve_percent" in cap[eng]:
+                reserve[eng] = int(cap[eng]["reserve_percent"])
+            if "weekly_gate_percent" in cap[eng]:
+                weekly[eng] = int(cap[eng]["weekly_gate_percent"])
     up.configure(layout.runtime, reserve, weekly)
     _configured_for = (str(layout.runtime), stamp)
 

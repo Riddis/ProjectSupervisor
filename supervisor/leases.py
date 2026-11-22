@@ -33,8 +33,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from . import routing_config
 from ._vendor.contract import atomic_json, read_json
 from .locks import FileLock
 from .paths import Layout
@@ -74,10 +73,7 @@ class LeaseConfig:
 def _lease_config(layout: Layout, name: str) -> LeaseConfig | None:
     """`resources.<name>.lease` read straight from `config/routing.yaml` (never through the plugin config facade:
     core callers — `supervisor.gate`, `supervisor.doctor` — are not a plugin's own code)."""
-    cfg_path = layout.config / "routing.yaml"
-    if not cfg_path.exists():
-        return None
-    doc = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    doc = routing_config.load(layout)
     resources = doc.get("resources") if isinstance(doc, dict) else None
     section = (resources or {}).get(name) if isinstance(resources, dict) else None
     lease = (section or {}).get("lease") if isinstance(section, dict) else None

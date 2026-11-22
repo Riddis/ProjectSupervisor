@@ -14,13 +14,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-import yaml
-
 from .. import capacity
 from .. import handoff
 from .. import jobs as jobs_mod
 from .. import policy
 from .. import progress as progress_mod
+from .. import routing_config
 from .. import tasks as tasks_mod
 from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
@@ -229,8 +228,8 @@ GIT_DENY = ["Bash(git push *)", "Bash(git reset *)", "Bash(git checkout *)", "Ba
 
 
 def routing(layout: Layout) -> dict:
-    cfg = layout.config / "routing.yaml"
-    return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {} if cfg.exists() else {}
+    """config/routing.yaml as a mapping; delegates to `routing_config.load` (R-28: one routing loader)."""
+    return routing_config.load(layout)
 
 
 def cost_category(task) -> str:
