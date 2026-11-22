@@ -344,3 +344,100 @@ def test_the_guard_passes_on_an_empty_or_absent_archive(layout):
     _check_writer_guard(layout)                                            # no archive directory exists yet
     jobs_mod.archive_dir(layout, "T-ARCEMPTY").mkdir(parents=True, exist_ok=True)
     _check_writer_guard(layout)                                            # an archive directory that holds nothing
+
+
+# ---------------------------------------------------------------- 12. the guard's archive scan is bounded (RELEASE_
+# REVIEW_2.8.0_round2.md P3-R2-B): once a start-up has found the whole archive migration-stamped/allocator-written,
+# a marker records that, and the next start-up trusts it instead of reading every archived record again. A later
+# `jobs.archive_terminal` call (a task going terminal) invalidates the marker, because it is the one path that
+# moves a not-yet-seen file into the archive; nothing else is assumed to have left it alone.
+
+
+def _tracked_read_json(monkeypatch, seen):
+    """Wraps `loop.read_json` so a test can assert which files the guard's own scan actually opened, without
+    caring how many it merely stat'd through the directory listing."""
+    from supervisor import loop as loop_mod
+    real = loop_mod.read_json
+
+    def _tracking(p):
+        seen.append(Path(p))
+        return real(p)
+
+    monkeypatch.setattr(loop_mod, "read_json", _tracking)
+
+
+def test_second_start_up_on_an_unchanged_known_migrated_store_reads_no_archived_record(layout, monkeypatch):
+    from supervisor.loop import _check_writer_guard
+    archive = jobs_mod.archive_dir(layout, "T-MARKED")
+    archive.mkdir(parents=True, exist_ok=True)
+    archived = archive / "T-MARKED.a1.json"
+    archived.write_text(json.dumps(
+        {"attempt_id": "T-MARKED.a1", "task_id": "T-MARKED", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE",
+         "migrated": {"attempts": {"at": "2026-01-01T00:00:00+00:00"}}}), encoding="utf-8")
+    _check_writer_guard(layout)                       # first start-up: the archive is clean, the marker is written
+    assert jobs_mod.archive_known_migrated(layout)
+    seen = []
+    _tracked_read_json(monkeypatch, seen)
+    _check_writer_guard(layout)                       # second start-up on the same, unchanged store
+    assert archived not in seen, seen                 # the archived record itself was never opened again
+
+
+def test_archiving_a_task_invalidates_the_marker_and_the_next_start_up_reads_the_archive_again(layout, monkeypatch):
+    from supervisor.loop import _check_writer_guard
+    _check_writer_guard(layout)                       # establishes the marker on a store with no archive yet
+    assert jobs_mod.archive_known_migrated(layout)
+    jobs_mod.write(layout, {"attempt_id": "T-MARKARCH.a1", "task_id": "T-MARKARCH", "adapter": "claude_cli",
+                            "phase": "DONE", "result": "COMPLETE", "kind": "delivery", "attempt": 1, "seq": 1})
+    jobs_mod.archive_terminal(layout, "T-MARKARCH")   # moves the now-DONE record into the archive
+    assert not jobs_mod.archive_known_migrated(layout)        # the marker is gone
+    archived = jobs_mod.archive_dir(layout, "T-MARKARCH") / "T-MARKARCH.a1.json"
+    assert archived.exists()
+    seen = []
+    _tracked_read_json(monkeypatch, seen)
+    _check_writer_guard(layout)                       # the next start-up after the archive changed
+    assert archived in seen, seen                     # ... reads it again
+    assert jobs_mod.archive_known_migrated(layout)     # clean, so the marker is rebuilt
+
+
+def test_a_bare_record_anywhere_the_resolver_can_reach_is_still_named_with_the_marker_in_place(layout):
+    from supervisor.loop import _check_writer_guard, _unmigrated_job_files
+    _check_writer_guard(layout)                       # establishes the marker on a clean, empty archive
+    assert jobs_mod.archive_known_migrated(layout)
+    bad_path = layout.jobs / "T-BARE.a1.json"
+    jobs_mod.write(layout, {"attempt_id": "T-BARE.a1", "task_id": "T-BARE", "adapter": "claude_cli", "phase": "DONE",
+                            "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE"})
+    assert bad_path.name in _unmigrated_job_files(layout)      # the live scan always runs; the marker never hides it
+    assert jobs_mod.archive_known_migrated(layout)     # untouched: this record was never in the archive
+
+
+def test_a_corrupt_or_misplaced_archived_file_behaves_exactly_as_before_the_marker(layout):
+    from supervisor.loop import _check_writer_guard
+    archive = jobs_mod.archive_dir(layout, "T-ARCCORRUPT")
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "T-ARCCORRUPT.a1.json").write_text("not json", encoding="utf-8")       # corrupt: skipped (R-03)
+    (archive / "notes.txt").write_text("not a record", encoding="utf-8")              # not .json: skipped
+    (layout.jobs / "archive" / "T-ARCCORRUPT-ONE-LEVEL.json").write_text(
+        json.dumps({"attempt_id": "bad", "task_id": "bad"}), encoding="utf-8")        # misplaced one level up
+    deep = archive / "deeper"
+    deep.mkdir()
+    (deep / "T-ARCCORRUPT.a2.json").write_text(
+        json.dumps({"attempt_id": "bad2", "task_id": "bad2"}), encoding="utf-8")      # misplaced one level too deep
+    _check_writer_guard(layout)                       # none of the four lookalikes is named; the guard passes
+    assert jobs_mod.archive_known_migrated(layout)     # the one real (empty-of-records) archive folder is clean
+
+
+def test_the_refusal_message_names_the_archive_as_well_as_the_live_job_directory(layout):
+    from supervisor.loop import UnmigratedJobsError, _check_writer_guard
+    archive = jobs_mod.archive_dir(layout, "T-ARCMSG")
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "T-ARCMSG.a1.json").write_text(json.dumps(
+        {"attempt_id": "T-ARCMSG.a1", "task_id": "T-ARCMSG", "adapter": "claude_cli", "phase": "DONE",
+         "spec": {"kind": "delivery"}, "handle": None, "result": "COMPLETE"}), encoding="utf-8")
+    try:
+        _check_writer_guard(layout)
+    except UnmigratedJobsError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected UnmigratedJobsError")
+    assert "state/runtime/jobs/" in message and "archive" in message
