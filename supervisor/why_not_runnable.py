@@ -224,6 +224,16 @@ def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
                 return {"code": "resource_claimed", "detail": f"owned path error against {other_id}",
                        "blockers": [other_id]}
 
+    # docs/plan/LONG_WORK.md section 5.2: the same named-claim clause `gate.check` applies, so the waiter's own
+    # reason names the claim and its holder rather than falling through to the unclaimed fallback below.
+    from . import needs as needs_mod
+    claim = needs_mod.claim_for(layout, task, "delivery")
+    if claim:
+        holder = next((r["task_id"] for r in running if r.get("claim") == claim), None)
+        if holder:
+            return {"code": "resource_claimed", "detail": f"resource {claim!r} claimed by {holder}",
+                   "blockers": [holder]}
+
     return {"code": "resource_claimed", "detail": "nothing currently claims it; no diagnosis has resolved it yet",
            "blockers": []}
 

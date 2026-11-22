@@ -281,9 +281,61 @@ def check_gpu_lease(layout: Layout) -> Check:
     return Check("gpu_lease", True, detail[:300])
 
 
+def check_resource_claims(layout: Layout) -> Check:
+    """Every `resources.<name>` this project declares (docs/plan/LONG_WORK.md section 5): its current holder, an
+    open job record carrying `claim: <name>` (§5.2), and its waiter — the same reason `why_not_runnable` would
+    report, read here without a task to ask it for. Unconfigured (no `resources:` section, or none with claim
+    fields) is fine: every project before this release, and every one that opens no name to a plan. Also names a
+    template a plan may select (`may_be_set_by: [plan]`) whose own declared resource is owner-only (§6) — the
+    misconfiguration a plan's own refusal (RF-31) cannot see the cause of without this."""
+    from . import jobs as jobs_mod
+    from . import needs as needs_mod
+    from . import tasks as tasks_mod
+    from . import templates as templates_mod
+    from .models.task import TERMINAL
+    declared = needs_mod.resources_declared(layout)
+    if not declared:
+        return Check("resource_claims", True, "no resources declared (config/routing.yaml resources:)")
+    holders: dict[str, str] = {}
+    open_task_ids: set[str] = set()
+    for r in jobs_mod.open_records(layout):
+        open_task_ids.add(r["task_id"])
+        claim = r.get("claim")
+        if claim and claim not in holders:
+            holders[claim] = r["task_id"]
+    # The waiter: a non-terminal task with no open record of its own (so it is not itself a holder) whose
+    # effective need claims the name -- the same read `why_not_runnable` makes against a holder's open record,
+    # here with no task to ask, so a diagnosis only a task page can otherwise show is visible without one.
+    waiters: dict[str, str] = {}
+    for tid, t in sorted(tasks_mod.load_all(layout).items()):
+        if t.status in TERMINAL or tid in open_task_ids:
+            continue
+        claim = needs_mod.claim_for(layout, t, "delivery")
+        if claim and claim not in waiters:
+            waiters[claim] = tid
+    parts = []
+    for name in sorted(declared):
+        status = f"held by {holders[name]}" if name in holders else "free"
+        if name in waiters:
+            status += f", waited on by {waiters[name]}"
+        parts.append(f"{name}: {status}")
+    try:
+        tmpls = templates_mod.load(layout)
+    except templates_mod.TemplateError:
+        tmpls = {}
+    for tid, tmpl in sorted((tmpls or {}).items()):
+        if "plan" not in (tmpl.get("may_be_set_by") or []):
+            continue
+        resource = (tmpl.get("needs") or {}).get("resource")
+        if resource and resource in declared and "plan" not in needs_mod.resource_claimants(layout, resource):
+            parts.append(f"{tid!r} is may_be_set_by: [plan] but claims {resource!r}, "
+                        f"which is not may_be_claimed_by: plan")
+    return Check("resource_claims", True, "; ".join(parts)[:300])
+
+
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_gpu_lease, check_plugins, check_plugin_manifests,
-          check_plugin_imports]
+          check_git, check_claude_cli, check_codex_cli, check_gpu_lease, check_resource_claims, check_plugins,
+          check_plugin_manifests, check_plugin_imports]
 
 
 def run(layout: Layout) -> list[Check]:

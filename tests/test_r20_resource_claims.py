@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 
 import pytest
 import yaml
@@ -16,6 +17,7 @@ from supervisor import why_not_runnable
 from supervisor import testing
 from supervisor.adapters import REGISTRY, Result
 from supervisor.adapters.base import Adapter
+from supervisor.adapters.process import ProcessAdapter
 from supervisor.loop import Supervisor
 from tests.conftest import make_task
 
@@ -139,9 +141,16 @@ def test_two_tasks_claiming_one_resource_end_to_end(layout):
 
 # ---------------------------------------------------------------- RF-30, RF-31
 
+def _task_doc(tid, **extra):
+    doc = {"id": tid, "phase": 0, "title": tid, "objective": "o", "owner_role": "engineer",
+           "artifacts": ["x"], "cost_category": "deterministic"}
+    doc.update(extra)
+    return doc
+
+
 def test_rf30_an_undeclared_resource_name_is_refused_at_the_write(layout):
     with pytest.raises(tasks_mod.TaskError, match="printer"):
-        make_task(layout, "A", needs={"resource": "printer"})
+        tasks_mod.create(layout, _task_doc("A", needs={"resource": "printer"}), actor="owner")
 
 
 def test_a_declared_resource_round_trips_through_import(layout):
@@ -247,7 +256,8 @@ def test_claim_released_when_the_holder_died(layout):
         sup.once()
         events = _claim_events(layout)
         assert events and events[-1]["reason"] == "dead"
-        assert jobs.read(layout, "A.a1")["phase"] in ("DONE", "FAILED")
+        rec = jobs.for_task(layout, "A")[-1]
+        assert rec["phase"] in ("DONE", "FAILED")
 
 
 def test_a_loop_restart_with_the_holder_still_running_does_not_release_the_claim(layout):
@@ -257,12 +267,53 @@ def test_a_loop_restart_with_the_holder_still_running_does_not_release_the_claim
         make_task(layout, "A", job={"adapter": "fake_hold2"}, needs={"resource": "printer"})
         sup = Supervisor(layout, sleep_s=0)
         sup.once()
-        assert jobs.read(layout, "A.a1")["phase"] == "RUNNING"
+        attempt_id = jobs.for_task(layout, "A")[-1]["attempt_id"]
+        assert jobs.read(layout, attempt_id)["phase"] == "RUNNING"
         # a fresh Supervisor (the "restart") re-adopts the still-running record without touching its claim
         Supervisor(layout, sleep_s=0).once()
-        rec = jobs.read(layout, "A.a1")
+        rec = jobs.read(layout, attempt_id)
         assert rec["phase"] == "RUNNING" and rec["claim"] == "printer"
         assert _claim_events(layout) == []
+
+
+_SLEEP_ARGV = [PY, "-c", "import time; time.sleep(30)"]
+
+
+class _FastCapProcess(ProcessAdapter):
+    name = "process"
+
+    def prepare(self, layout, task, attempt_id):
+        spec = super().prepare(layout, task, attempt_id)
+        spec["timeout_s"] = 1
+        return spec
+
+
+def test_a_cap_stop_releases_the_claim_and_the_continuation_re_takes_it(layout, monkeypatch):
+    """§2.4's last residual, stated as behaviour rather than left to be discovered: a model-lane cap-stop and a
+    resumable process cap-stop both close the holding record (releasing the claim), and the continuation then
+    contends for it again like any other job -- here, with nothing else contending, it re-takes it."""
+    _write_routing(layout, {"resources": {"printer": {}}})
+    _write_templates(layout, {"t": {"adapter": "process", "argv": _SLEEP_ARGV, "may_be_set_by": ["owner"],
+                                     "params": {}, "resumable": True}})
+    monkeypatch.setitem(REGISTRY, "process", _FastCapProcess())
+    make_task(layout, "T", cost_category="deterministic", status="READY",
+              job={"adapter": "process", "template": "t", "params": {}, "argv": _SLEEP_ARGV},
+              needs={"resumable": True, "resource": "printer"})
+    sup = Supervisor(layout, sleep_s=0)
+    end = time.time() + 20
+    while time.time() < end and not any(r.get("continued") for r in jobs.for_task(layout, "T")):
+        sup.once()
+        time.sleep(0.2)
+    recs = jobs.for_task(layout, "T")
+    first = next(r for r in recs if r.get("seq") == 1)
+    assert first["phase"] == "DONE" and first.get("continued")
+    events = _claim_events(layout)
+    assert events and events[-1]["claim"] == "printer" and events[-1]["task"] == "T" and events[-1]["reason"] == "closed"
+    reopened = [r for r in jobs.open_records(layout) if r["task_id"] == "T"]
+    assert reopened and reopened[-1]["claim"] == "printer"            # the continuation contended for it and took it
+    for r in jobs.open_records(layout):
+        if r.get("handle"):
+            REGISTRY["process"].terminate(r["handle"])
 
 
 # ---------------------------------------------------------------- the machine-wide lease (section 5.4)
@@ -279,25 +330,139 @@ def test_a_slot_holder_carrying_a_leaseless_claim_still_takes_gpu(layout):
     assert leases.lease_name_for(layout, True, "printer") == "gpu"
 
 
+def test_a_leaseless_claim_on_a_job_holding_no_slot_takes_no_lease(layout):
+    _write_routing(layout, {"resources": {"printer": {}}})       # no lease: block under printer
+    assert leases.lease_name_for(layout, False, "printer") is None
+
+
+def test_a_slot_holder_carrying_a_claim_with_a_lease_block_takes_the_claims_name_not_gpu(layout):
+    """Section 5.4's stated cost: one record, one lease, and the claim -- the narrower, newer statement -- wins
+    over the slot's own literal even when the record also holds the slot."""
+    _write_routing(layout, {"resources": {"printer": {"lease": {"path": str(layout.root / "shared" / "p.lease")}}}})
+    assert leases.lease_name_for(layout, True, "printer") == "printer"
+
+
 def test_a_live_gpu_section_with_only_plugin_keys_loads_with_no_refusal(layout):
     _write_routing(layout, {"resources": {"gpu": {"single_job": True, "usable_vram_floor_mb": 1000, "devices": [0]}}})
     assert needs_mod.resources_declared(layout)["gpu"]["single_job"] is True
     assert leases.lease_name_for(layout, True, None) == "gpu"       # the slot's own case, untouched
 
 
+def _claim_lease_project(tmp_path, name, lease_path, resource="printer", label=None, stale_after_s=None):
+    lease_cfg = {"path": str(lease_path), "label": label or name}
+    if stale_after_s is not None:
+        lease_cfg["stale_after_s"] = stale_after_s
+    routing = {"resources": {resource: {"lease": lease_cfg}}}
+    return testing.project(tmp_path / name, routing=routing)
+
+
+def test_the_plan_time_peek_and_the_dispatch_time_sweep_agree_on_one_claims_lease_name(tmp_path):
+    """Section 5.4, section 9 step 6: `gate.lease_blocked`'s plan-time peek (before any record exists) and
+    `Supervisor._active_lease_names`'s dispatch-time sweep (the record's own `gpu`/`claim` fields) both resolve
+    through the one `leases.lease_name_for`, so the two can never disagree about which lease a claim-carrying job
+    takes -- no stand-in record is built anywhere to make the peek callable."""
+    lease_file = tmp_path / "shared" / "printer.lease"
+    lay_a = _claim_lease_project(tmp_path, "a", lease_file, label="project-a")
+    lane_a = HoldingLane("claim_lease_peek")
+    with testing.lane(lane_a):
+        make_task(lay_a, "A", job={"adapter": "claim_lease_peek"}, needs={"resource": "printer"})
+        task = tasks_mod.load(lay_a, "A")
+        peeked = leases.lease_name_for(lay_a, gate.holds_resource(lay_a, task, "claim_lease_peek", "delivery"),
+                                       needs_mod.claim_for(lay_a, task, "delivery"))
+        assert peeked == "printer"
+        assert gate.lease_blocked(lay_a, task, "claim_lease_peek", "delivery") is None     # free: nobody holds it yet
+
+        sup = Supervisor(lay_a, sleep_s=0)
+        sup.once()
+        rec = jobs.read(lay_a, "A.a1.s1")
+        assert rec["phase"] == "RUNNING" and rec["claim"] == "printer"
+        swept = leases.lease_name_for(lay_a, bool(rec.get("gpu")), rec.get("claim"))
+        assert swept == peeked == "printer"
+        assert sup._active_lease_names() == {"printer"}
+
+
+def test_a_job_carrying_a_claims_lease_is_peeked_acquired_and_released_across_projects(tmp_path):
+    """The same question the gpu-lease suite already answers for the slot, now answered for a claim whose
+    declaration carries a `lease:` block: two projects neither can see each other's job records, so only the
+    machine-wide lease file serialises them."""
+    lease_file = tmp_path / "shared" / "printer.lease"
+    lay_a = _claim_lease_project(tmp_path, "a", lease_file, label="project-a")
+    lay_b = _claim_lease_project(tmp_path, "b", lease_file, label="project-b")
+    lane_a, lane_b = HoldingLane("claim_lease_a"), HoldingLane("claim_lease_b")
+    with testing.lane(lane_a), testing.lane(lane_b):
+        # artifacts=[]: nothing declared, so a COMPLETE result closes the record outright instead of the loop's
+        # ordinary missing-deliverable revision -- irrelevant to this test, which is about the lease, not a delivery.
+        make_task(lay_a, "A", job={"adapter": "claim_lease_a"}, needs={"resource": "printer"}, artifacts=[])
+        make_task(lay_b, "B", job={"adapter": "claim_lease_b"}, needs={"resource": "printer"}, artifacts=[])
+        sup_a, sup_b = Supervisor(lay_a, sleep_s=0), Supervisor(lay_b, sleep_s=0)
+
+        sup_a.once()
+        assert lane_a.submitted == ["A.a1.s1"]
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
+
+        sup_b.once()
+        assert lane_b.submitted == []                              # b is held: a holds the claim's lease, cross-project
+        assert jobs.for_task(lay_b, "B") == []
+
+        lane_a.done["A.a1.s1"] = True
+        sup_a.once()                                                # settle() collects it; reconcile() releases
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "DONE"
+
+        sup_b.once()
+        assert lane_b.submitted == ["B.a1.s1"]                        # the lease is free: b may launch now
+        assert jobs.read(lay_b, "B.a1.s1")["phase"] == "RUNNING"
+
+
+def test_a_claims_lease_entry_is_renewed_so_it_outlives_stale_after_s(tmp_path):
+    lease_file = tmp_path / "shared" / "printer.lease"
+    stale_after_s = 1.0
+    lay_a = _claim_lease_project(tmp_path, "a", lease_file, label="project-a", stale_after_s=stale_after_s)
+    lay_b = _claim_lease_project(tmp_path, "b", lease_file, label="project-b", stale_after_s=stale_after_s)
+    lane_a = HoldingLane("claim_lease_renew")
+    with testing.lane(lane_a):
+        make_task(lay_a, "A", job={"adapter": "claim_lease_renew"}, needs={"resource": "printer"}, artifacts=[])
+        sup_a = Supervisor(lay_a, sleep_s=0)
+        sup_a.once()
+        assert jobs.read(lay_a, "A.a1.s1")["phase"] == "RUNNING"
+
+        deadline = time.monotonic() + stale_after_s * 1.6
+        while time.monotonic() < deadline:
+            time.sleep(stale_after_s / 4)
+            sup_a.once()                                            # each reconcile() must renew the live claim lease
+
+        assert leases.holder_label(lay_b, "printer") == "project-a"   # b's own peek still sees a's hold
+
+        lane_a.done["A.a1.s1"] = True
+        sup_a.once()                                                 # settle() collects it; reconcile() releases
+        assert leases.status(lay_a, "printer")["live"] == []          # left RUNNING: let go, not kept renewed
+
+
 # ---------------------------------------------------------------- doctor
 
-def test_doctor_lists_each_declared_resource_its_holder_and_a_misconfigured_template(layout):
+def test_doctor_lists_each_declared_resource_its_holder_its_waiter_and_a_misconfigured_template(layout):
+    """Section 5, §9 step 6: `doctor` names the waiter too -- the same `claim_for`-against-open-records read
+    `why_not_runnable` makes, computed here with no task to ask it for."""
     from supervisor import doctor
     _write_routing(layout, {"resources": {"printer": {"may_be_claimed_by": ["owner"]}}})
     _write_templates(layout, {"release": {"adapter": "process", "argv": [PY, "-c", "pass"],
                                           "may_be_set_by": ["plan"], "params": {}, "needs": {"resource": "printer"}}})
     make_task(layout, "A", needs={"resource": "printer"})
+    make_task(layout, "B", needs={"resource": "printer"})      # not dispatched: no open record of its own
     _running_claim(layout, "A", "printer")
     check = doctor.check_resource_claims(layout)
     assert check.ok
     assert "printer" in check.detail and "held by A" in check.detail
+    assert "waited on by B" in check.detail
     assert "release" in check.detail and "plan" in check.detail
+
+
+def test_doctor_names_no_waiter_when_nobody_else_claims_the_resource(layout):
+    from supervisor import doctor
+    _write_routing(layout, {"resources": {"printer": {}}})
+    make_task(layout, "A", needs={"resource": "printer"})
+    _running_claim(layout, "A", "printer")
+    check = doctor.check_resource_claims(layout)
+    assert check.ok and "held by A" in check.detail and "waited on by" not in check.detail
 
 
 def test_doctor_reports_no_resources_declared_when_the_project_opens_none(layout):

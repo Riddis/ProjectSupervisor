@@ -1,5 +1,5 @@
-"""Declared task needs, matched against declared lane capability data (docs/plan/LONG_WORK.md sections 3-4,
-D-028 decisions 1-4, 6, 7, 11). One pure-data matcher, called from every reader that needs to know whether a
+"""Declared task needs, matched against declared lane capability data (docs/plan/LONG_WORK.md sections 3-5,
+D-028 decisions 1-5, 6, 7, 11). One pure-data matcher, called from every reader that needs to know whether a
 declaration and a lane agree -- the write-time checks (`tasks.check_new`/`import_seed`/`patch_task`), the launch
 gate's re-match (`gate.check`), `why_not_runnable`, and every `prepare()` that resolves a budget -- so the two can
 never drift into two different answers for the same question.
@@ -7,6 +7,11 @@ never drift into two different answers for the same question.
 `match()` takes no `kind`: a write is about the contract's own work and has no job record to scope by, so every
 write-time caller passes the delivery's effective need unconditionally. `applies_to`/`needs_for` carry the
 delivery-only scoping (section 3.5) for the launch-side callers that do have a kind to scope by.
+
+`resources_declared`/`resource_claimants`/`plan_claim_refusal`/`claim_for` are section 5's named-claim reads: an
+undeclared `needs.resource` is a refusal `match()` itself produces (RF-30, since it needs no writer context), while
+`plan_claim_refusal` is a second, writer-scoped check only a plan's own validator calls (RF-31's
+`may_be_claimed_by` half) -- the owner may claim any declared resource, so nothing here restricts an owner write.
 """
 from __future__ import annotations
 
@@ -91,6 +96,50 @@ def needs_for(layout: Layout, task: "Task | None", kind: str) -> dict | None:
     return effective_for(layout, task)
 
 
+def resources_declared(layout: Layout) -> dict:
+    """`config/routing.yaml` `resources:`, raw and whole (section 5.1) -- the same section the machine-wide lease
+    already lives under (`leases.lease_config`), read tolerantly here too: a live `resources.gpu` carrying a
+    plugin's own keys (`single_job`, `usable_vram_floor_mb`, `devices`) is still a declarable name, and nothing
+    here refuses a key it does not itself define. `{}` for a project with no section -- every claim-related check
+    below is then a no-op, the same bargain the lease already makes."""
+    from . import gate as gate_mod
+    resources = gate_mod.routing_doc(layout).get("resources")
+    return {str(k): v for k, v in resources.items() if isinstance(v, dict)} if isinstance(resources, dict) else {}
+
+
+def resource_claimants(layout: Layout, name: str) -> list[str]:
+    """`resources.<name>.may_be_claimed_by`, default `["owner"]` (section 5.1) -- who may write a `needs.resource`
+    naming it. Called only for a name `resources_declared` already has; an undeclared name is RF-30's, not this
+    function's."""
+    section = resources_declared(layout).get(name) or {}
+    claimants = section.get("may_be_claimed_by")
+    return [str(c) for c in claimants] if isinstance(claimants, list) else ["owner"]
+
+
+def plan_claim_refusal(layout: Layout, effective_need: dict) -> str | None:
+    """None unless `effective_need`'s resource is one a plan may not claim (section 6, RF-31's `may_be_claimed_by`
+    half) -- called on the **effective** need, so a plan's `set_job` selecting a template whose own
+    `needs.resource` is owner-only is refused too, even though the plan itself wrote no name (the permission is
+    the project's own line of data; nothing here may loosen it to make a template usable). `None` for an
+    undeclared name too: RF-30 already refuses that, and this function is never the second refusal for one cause."""
+    resource = effective_need.get("resource")
+    if not resource or resource not in resources_declared(layout):
+        return None
+    if "plan" in resource_claimants(layout, resource):
+        return None
+    return (f"needs.resource {resource!r} is not resources.{resource}.may_be_claimed_by: [... 'plan' ...] "
+            "(the project has not opened this claim to a plan)")
+
+
+def claim_for(layout: Layout, task: "Task | None", kind: str) -> str | None:
+    """The named resource (`needs.resource`) this job's **delivery** would claim while it runs, or `None`
+    (section 5.2) -- shares `applies_to(kind)` with `needs_for` so a claim and a match can never disagree about
+    which job a declaration describes. Only a delivery claims; a review, a verify job and a chat turn claim
+    nothing, and a task with no effective `resource` claims nothing either."""
+    eff = needs_for(layout, task, kind)
+    return eff.get("resource") if eff else None
+
+
 def match(layout: Layout, task: "Task", adapter: str, effective_need: dict) -> list[dict]:
     """[{code, tier, need, message}] for `effective_need` against `adapter`'s capability data (section 3.3): a
     "refusal" tier entry is what a write refuses (or the gate re-match defers on); a "warning" tier entry never
@@ -103,6 +152,11 @@ def match(layout: Layout, task: "Task", adapter: str, effective_need: dict) -> l
         a, b = effective_need["resource_conflict"]
         out.append({"code": "resource_conflict", "tier": "refusal", "need": "resource",
                     "message": f"needs.resource on the task ({a!r}) and on its job's template ({b!r}) differ"})
+    resource = effective_need.get("resource")
+    if resource and resource not in resources_declared(layout):
+        out.append({"code": "claim_unknown", "tier": "refusal", "need": "resource",
+                    "message": f"needs.resource {resource!r} names a resource config/routing.yaml does not "
+                               f"declare (no resources.{resource})"})
     caps = capabilities_mod.for_lane(layout, adapter)
     if not caps:
         if any(k in effective_need for k in VOCABULARY):

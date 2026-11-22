@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import gate, jobs as jobs_mod, tasks as tasks_mod
+from . import gate, jobs as jobs_mod, needs as needs_mod, tasks as tasks_mod
 from . import review as review_mod
 from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
@@ -184,6 +184,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
     running_task_ids = {r["task_id"] for r in running}
     chosen: list[tuple[Task, str]] = []
     chosen_paths: list[tuple[str, str]] = []
+    chosen_claims: list[tuple[str, str]] = []
     extra_agent = extra_gpu = 0
     prefer_api = unattended and unattended_prefers_api_credits(layout)
     for t in tasks_mod.eligible(layout, tasks):
@@ -211,7 +212,8 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
         if name not in REGISTRY:
             continue                                   # adapter not built yet, or not registered in this process
         reason = gate.check(layout, t, name, "delivery", running, extra_paths=chosen_paths,
-                            extra_agent=extra_agent, extra_gpu=extra_gpu, decision="RUN", tasks=tasks)
+                            extra_agent=extra_agent, extra_gpu=extra_gpu, extra_claims=chosen_claims,
+                            decision="RUN", tasks=tasks)
         if reason:
             if reason.startswith("owned path error"):
                 tasks_mod.log(layout, "schedule_skip", "loop", task=t.id, reason=reason)
@@ -222,6 +224,9 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             continue
         chosen.append((t, name))
         chosen_paths += [(t.id, p) for p in gate.owned_for(t, name, "delivery")]
+        claim = needs_mod.claim_for(layout, t, "delivery")
+        if claim:
+            chosen_claims.append((t.id, claim))
         if gate.holds_resource(layout, t, name, "delivery"):
             extra_gpu += 1
         if name in MODEL_LANES:

@@ -534,6 +534,15 @@ def _check_create_task(i: int, op: dict, layout: Layout, tasks: dict[str, Task],
     for e in errors:
         code = "RF-17" if "cycle" in e else "RF-02"
         out.append(_rf(code, "I3 §1.2" if code == "RF-02" else "I2 §1.2", i, "task", _safe(e, layout)))
+    if not out:
+        # D-028 decision 7, docs/plan/LONG_WORK.md section 6 (RF-31's `may_be_claimed_by` half): a plan may name
+        # only a resource the project opened to plans. Checked on the **effective** need (no job block exists on
+        # a create_task, so this is the task's own `needs.resource` alone) so the permission stays the project's
+        # line of data, never something this write grants itself.
+        from . import needs as needs_mod
+        refusal = needs_mod.plan_claim_refusal(layout, needs_mod.effective(full_doc.get("needs") or {}, {}))
+        if refusal:
+            out.append(_rf("RF-31", "I2 §1.2", i, "task.needs.resource", _safe(refusal, layout)))
     if not out and warnings:
         task_obj = Task.model_validate({**full_doc, "status": "NOT_STARTED", "attempts": [], "result": None,
                                         "paths": []})
@@ -740,6 +749,18 @@ def _check_set_job(i: int, op: dict, layout: Layout, tasks: dict[str, Task], sco
             continue
         out += _param_refusals(i, name, value, slot, layout)
     preflight_entry = None
+    if not out:
+        # D-028 decision 7, docs/plan/LONG_WORK.md section 6 (RF-31's `may_be_claimed_by` half): checked on the
+        # **effective** need -- the task's own `needs.resource` (when `t` is stored; a task this same plan is
+        # also creating has none visible here, the existing gap `needs.results_for(layout, None, ...)` already
+        # has below) beside *this* template's own, so a plan cannot launder an owner-only claim onto itself by
+        # selecting a template that carries it, even though the plan itself writes no resource name.
+        from . import needs as needs_mod
+        template_needs = tmpl.get("needs") if isinstance(tmpl.get("needs"), dict) else {}
+        task_needs = t.needs.model_dump(exclude_none=True) if (t is not None and t.needs) else {}
+        refusal = needs_mod.plan_claim_refusal(layout, needs_mod.effective(task_needs, template_needs))
+        if refusal:
+            out.append(_rf("RF-31", "I2 §1.2", i, "template.needs.resource", _safe(refusal, layout)))
     if not out:
         # Every earlier check in this function passed, so this is the one shape worth the cost of actually
         # running the preflight: an operation already refused on another ground (RF-06, RF-07, RF-09, RF-11,

@@ -397,7 +397,8 @@ def _agent_terminate(layout, payload, actor):
     ad = REGISTRY.get(rec["adapter"])
     if ad is not None and rec.get("handle"):
         ad.terminate(rec["handle"])
-    jobs_mod.set_phase(layout, attempt_id, "FAILED", error=f"terminated by {actor}", finished=now_iso())
+    jobs_mod.set_phase(layout, attempt_id, "FAILED", error=f"terminated by {actor}", finished=now_iso(),
+                       release_reason="cancelled")
     try:
         tasks_mod.set_status(layout, rec["task_id"], "FAILED", actor=actor, note=f"{attempt_id}: terminated by {actor}")
     except tasks_mod.TaskError:

@@ -93,17 +93,21 @@ def read(layout: Layout, attempt_id: str) -> dict:
 
 
 def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, *,
-           kind: str | None = None, attempt: int | None = None, seq: int | None = None, parent: str | None = None,
-           cause: str | None = None, scope: str | None = None, env_digest: str | None = None, **extra) -> dict:
+           claim: str | None = None, kind: str | None = None, attempt: int | None = None, seq: int | None = None,
+           parent: str | None = None, cause: str | None = None, scope: str | None = None,
+           env_digest: str | None = None, **extra) -> dict:
     """One durable record before the job is launched; `extra` (review_role, review_digest, ...) belongs in the same
     write, never in a second one a crash could lose. `kind`/`attempt`/`seq`/`parent`/`cause`/`scope`/`env_digest`
     are the identity fields the attempt model adds (§2.6); each is omitted (not written as null) when not given,
-    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet."""
+    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet.
+    `claim` is the named resource (docs/plan/LONG_WORK.md section 5.2) this record holds while open, written where
+    `gpu` is written — the same rule the gpu flag already uses for "busy" — and `None` for every job no declaration
+    names one for, which is every job before this release and every job of a project that declares no resource."""
     identity = {"kind": kind, "attempt": attempt, "seq": seq, "parent": parent, "cause": cause, "scope": scope,
                "env_digest": env_digest}
     extra = {**{k: v for k, v in identity.items() if v is not None}, **extra}
     return write(layout, {"attempt_id": attempt_id, "task_id": task_id, "adapter": adapter, "phase": "PREPARED",
-                          "spec": spec, "handle": None, "gpu": gpu, "created": now_iso(), **extra})
+                          "spec": spec, "handle": None, "gpu": gpu, "claim": claim, "created": now_iso(), **extra})
 
 
 def _task_id_of(job_id: str) -> str:
@@ -130,13 +134,25 @@ def resolve(layout: Layout, job_id: str) -> dict | None:
         return None
 
 
-def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
+def set_phase(layout: Layout, attempt_id: str, phase: str, *, release_reason: str | None = None, **fields) -> dict:
+    """`release_reason` names why a claim-carrying record is leaving the open set (docs/plan/LONG_WORK.md section
+    5.3): `None` (read as `"closed"`) for the ordinary case — the adapter's own result, a continuation's own
+    close, a reroute — and an explicit override for the three callers that know a different one: `jobs.retire`
+    (`"terminal"`, a task reaching COMPLETE/CANCELLED), `agent.terminate` (`"cancelled"`, the owner's own stop),
+    and `Supervisor.ingest` (`"dead"`, a `collect()` that found the process gone). One release point: whichever
+    phase a caller moves a claim-carrying record *to*, leaving PREPARED/SUBMITTED/RUNNING always logs
+    `claim_released` here, so a fifth way of stopping a job needs no caller to remember this."""
     if phase not in PHASES:
         raise ValueError(phase)
     rec = read(layout, attempt_id)
+    was_open, claim = rec.get("phase") in OPEN_PHASES, rec.get("claim")
     rec["phase"] = phase
     rec.update(fields)
     out = write(layout, rec)
+    if was_open and phase not in OPEN_PHASES and claim:
+        from . import tasks as tasks_mod
+        tasks_mod.log(layout, "claim_released", "loop", claim=claim, task=rec.get("task_id"),
+                      attempt=attempt_id, reason=release_reason or "closed")
     if phase in ("DONE", "FAILED"):
         # R-23: the job that is itself completing a task's final transition is still PREPARED/SUBMITTED/RUNNING
         # at the moment advance()/set_status() archives everything else of this task (archive_terminal only
@@ -287,7 +303,7 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
                 with contextlib.suppress(Exception):  # the task retires either way
                     ad.terminate(rec["handle"])
         set_phase(layout, rec["attempt_id"], "DONE", result=CLOSED_RESULT, error=reason, finished=now_iso(),
-                 closed_by=actor)
+                 closed_by=actor, release_reason="terminal")
         closed.append(rec["attempt_id"])
     return closed
 

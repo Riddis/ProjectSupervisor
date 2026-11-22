@@ -112,9 +112,26 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   no-op, states the resulting deadline. The unattended credit preference now skips (never refuses) moving a task
   onto `claude_api` when its own declared need would be refused there. A plan's `create_task` may declare `needs`
   on the task it creates; a `duration_min` above `plan.max_duration_min` (unconfigured default: that lane's own
-  resolved policy cap) raises the plan to the owner authority class instead of refusing it. **Not built in this
-  release** (named so, not deferred silently): named resource claims (`needs.resource` is validated for shape and
-  for a task/template conflict, but serialising a claim through the launch gate is a separate build task).
+  resolved policy cap) raises the plan to the owner authority class instead of refusing it.
+
+- **A named external resource, declared by the project, serialises two tasks that would otherwise both publish to
+  the same target (D-028, R-20).** A project declares `resources.<name>` under `config/routing.yaml` (the section
+  the machine-wide lease already lives under), optionally naming `description` and `may_be_claimed_by` (default
+  `[owner]`); a task claims it with `needs.resource: <name>`, already shaped and conflict-checked by the previous
+  entry. An undeclared name is refused at the write (`claim_unknown`); a plan may name only a resource the project
+  opened to it, whether it writes the name itself or selects a template that carries it. The launch gate holds the
+  claim to one open job record at a time, modelled on the owned-path overlap clause it already runs: a second
+  claimant stays PREPARED and is retried, with `why_not_runnable`'s `resource_claimed` naming the claim and its
+  holder; a task's own continuation is never blocked by the record it replaces. There is no new store, TTL,
+  heartbeat or reaper — the claim is the open job record and nothing else, so every way a job already stops
+  (finishing, its task reaching COMPLETE/CANCELLED, the owner terminating it, or a crash `reconcile()` finds)
+  releases it, each logged (`claim_taken`/`claim_released`, with its reason), and a loop restart with the holder
+  still running does not. Across projects, the machine-wide lease (R4) now serves a claim too: a claim whose own
+  declaration configures a `lease:` block is leased under its own name; a job holding the resource slot (the `gpu`
+  flag) keeps the literal `"gpu"` lease exactly as before, including one that also carries a leaseless claim. A
+  project that declares no resource sees no behaviour change, and the framework ships no resource name.
+  `supervisor doctor` lists each declared resource with its current holder and waiter, and names a plan-selectable
+  template whose own claim the project has not opened to a plan.
 
 ## 2.8.0 — 2026-11-16
 

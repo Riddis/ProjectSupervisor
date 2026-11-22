@@ -17,7 +17,8 @@ from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import plans as plans_mod
 from . import progress as progress_mod
-from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, preflight as preflight_mod, render, review as review_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, needs as needs_mod, preflight as preflight_mod
+from . import render, review as review_mod
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
 from . import why_not_runnable as why_not_runnable_mod
@@ -276,6 +277,7 @@ class Supervisor:
             job_extra["contract_rev"] = stored.contract_rev
             if kind == "delivery":
                 job_extra["job_fingerprint"] = _job_fingerprint(stored)
+        claim = needs_mod.claim_for(self.layout, task, kind)
         run_dir = self.layout.runs / task.id / attempt_id
         try:
             if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
@@ -284,7 +286,7 @@ class Supervisor:
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
+                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), claim=claim,
                                    kind=kind, attempt=job_attempt, seq=job_seq, parent=parent, cause=cause,
                                    scope=job_scope, **job_extra)
             self._adapter_failed(rec, "prepare", exc)
@@ -303,10 +305,12 @@ class Supervisor:
         # One durable write carries everything a continuation or ingestion needs: a crash between prepare() and a
         # second record write used to leave a review job without its role and discard the finished verdict.
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                               gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
+                               gpu=gate.holds_resource(self.layout, task, adapter_name, kind), claim=claim,
                                kind=kind, attempt=job_attempt, seq=job_seq, parent=parent, cause=cause,
                                scope=job_scope, env_digest=spec.get("env_digest"),
                                **job_extra)                   # durable BEFORE launch
+        if claim:
+            tasks_mod.log(self.layout, "claim_taken", "loop", claim=claim, task=task.id, attempt=attempt_id)
         if kind != "conversation":            # the attempt itself was already recorded when the id was allocated
             tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
@@ -588,10 +592,11 @@ class Supervisor:
         prior_held = rec.get("held")
         if prior_held:
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
-        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
+        lease_name = leases.lease_name_for(self.layout, bool(rec.get("gpu")), rec.get("claim"))
+        if lease_name and not leases.resource_lease(self.layout, lease_name).acquire(wait_s=0):
             # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
-            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
-            reason = "gpu lease unavailable: another project holds it"
+            # before submit(), so a job that never reaches this line never claims a lease gate.check() did not mean.
+            reason = f"{lease_name} lease unavailable: another project holds it"
             if prior_held != reason:
                 tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
@@ -907,6 +912,10 @@ class Supervisor:
         Either kind of substantive failure hands off to supervisor.escalation for the retry/issue decision."""
         task_id = rec["task_id"]
         kind = (rec.get("spec") or {}).get("kind", "delivery")
+        # docs/plan/LONG_WORK.md section 5.3's "dying" row: `settle()` already wrote this prefix onto `result.error`
+        # once `collect()` found the process gone, so this is the one place `ingest()` can tell a claim's holder
+        # died from an ordinary finish, without a second liveness check of its own.
+        release_reason = "dead" if isinstance(result.error, str) and result.error.startswith("lost:") else None
         if kind == "conversation":
             # No Task backs a thread and no retry chain applies (supervisor.conversations.ingest handles COMPLETE/
             # DEFERRED/FAILED itself, straight into the thread file) — bypass the delivery/review machinery below.
@@ -923,7 +932,8 @@ class Supervisor:
             # already tried to retire it; reaching a result here means the race window between that write and this
             # one. Record the result on the job alone: no delivery, verification, review or diagnosis for a task
             # that is already done.
-            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                               error=result.error, release_reason=release_reason)
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                           error=result.error, terminal_task=True)
             return
@@ -947,7 +957,8 @@ class Supervisor:
                 # F1: the task file turned unreadable while this job ran (e.g. the job itself wrote a broken
                 # document before returning). Close the record with the result that did arrive, the same shape
                 # the terminal-task branch above already uses, rather than raising past once().
-                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                                   error=result.error, release_reason=release_reason)
                 tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                               error=result.error, task_unreadable=True)
                 return
@@ -1025,7 +1036,8 @@ class Supervisor:
                 outcome = verify_mod.Outcome(False, head + (f"\n\nWorker report:\n{report}" if report else ""))
             self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE",
                                 worker_status=result.status, worker_raw=result.raw)
-        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
+        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                           release_reason=release_reason)
         tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
 
     def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None,
@@ -1199,14 +1211,23 @@ class Supervisor:
         self._renew_gpu_lease_if_active()
         self._release_gpu_lease_if_idle()
 
+    def _active_lease_names(self) -> set[str]:
+        """Every machine-wide lease name one of this project's own open records currently takes
+        (`leases.lease_name_for`, docs/plan/LONG_WORK.md section 5.4), from exactly the two fields dispatch wrote
+        onto each record (`gpu`, `claim`) — never a second derivation of the same two facts `gate.lease_blocked`'s
+        own peek already makes from `holds_resource`/`needs.claim_for`, so the peek and this sweep can never
+        disagree about which lease a job takes."""
+        return {name for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES
+               for name in [leases.lease_name_for(self.layout, bool(r.get("gpu")), r.get("claim"))] if name}
+
     def _renew_gpu_lease_if_active(self) -> None:
-        """Refresh this project's own entry in the machine-wide GPU lease (R4) each reconcile() for as long as
-        one of its own jobs still holds the resource slot, so a job that outlives `stale_after_s` (a render, a
-        local-model benchmark) is not pruned as abandoned while it is still running — the same walk over open
-        records that `_release_gpu_lease_if_idle()` makes right after decides whether to renew or to let go, so
-        the two can never disagree about whether this project is still active. A record that has left RUNNING
-        (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out of `open_records()` and is
-        never renewed, and — for the same reason — never re-taken below.
+        """Refresh this project's own entry in every machine-wide lease (R4) one of its own open records currently
+        takes, each `reconcile()`, for as long as that record still holds it — so a job that outlives
+        `stale_after_s` (a render, a local-model benchmark, a long claim) is not pruned as abandoned while it is
+        still running. The same set `_release_gpu_lease_if_idle()` computes right after decides whether to renew
+        or to let go for each name, so the two can never disagree about whether this project is still active. A
+        record that has left RUNNING (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out
+        of `open_records()` and is never renewed, and — for the same reason — never re-taken below.
 
         F19: the entry `launch()` wrote names the pid of the process that called `submit()`; a loop that
         restarts while that job is still RUNNING (`supervisor stop`/start, a crash, a runtime move) is a new
@@ -1222,21 +1243,26 @@ class Supervisor:
         documents. A refusal means another project's own entry is already live there — the job already lost
         the cards to someone else — and is logged with whatever holder the peek finds rather than passed over
         in silence; the job record itself is not touched either way, so a refusal never wedges it."""
-        if not any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
-            return
-        lease = leases.resource_lease(self.layout, "gpu")
-        if lease.renew():
-            return
-        if not leases._reclaim(self.layout, "gpu"):
-            tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop",
-                          holder=leases.holder_label(self.layout, "gpu"))
+        for name in self._active_lease_names():
+            lease = leases.resource_lease(self.layout, name)
+            if lease.renew():
+                continue
+            if not leases._reclaim(self.layout, name):
+                tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop", lease=name,
+                              holder=leases.holder_label(self.layout, name))
 
     def _release_gpu_lease_if_idle(self) -> None:
-        """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
-        resource slot, so a quiet project never keeps another one waiting longer than its own last job's work."""
-        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
-            return
-        leases.resource_lease(self.layout, "gpu").release()
+        """Let go of every machine-wide lease name none of this project's own open records takes any more (the
+        `gpu` slot's own literal lease, and any claim's own configured one): a quiet project never keeps another
+        one waiting longer than its own last job's work. Every declared resource name is tried (`release()` is a
+        no-op when unconfigured or not held, the same bargain the single `"gpu"` release already made), not only
+        the ones a record of this turn happens to carry, so a name a crash dropped from `open_records()` without
+        ever reaching `collect()` is still released."""
+        from . import needs as needs_mod
+        active = self._active_lease_names()
+        for name in {"gpu"} | set(needs_mod.resources_declared(self.layout)):
+            if name not in active:
+                leases.resource_lease(self.layout, name).release()
 
     def dispatch_reviews(self) -> None:
         """Review dispatch: one review job per (WAITING_FOR_REVIEW task, missing reviewer role) under

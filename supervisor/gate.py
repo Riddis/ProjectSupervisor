@@ -63,20 +63,27 @@ def holds_resource(layout: Layout, task: Task | None, adapter_name: str, kind: s
 
 
 def lease_blocked(layout: Layout, task: Task | None, adapter_name: str, kind: str) -> str | None:
-    """None when this job's resource work may launch now as far as the machine-wide GPU lease (R4) is concerned;
-    else who holds it. A read-only peek against `resources.gpu.lease` (`supervisor.leases.holder_label`): the
-    loop takes the lease for real only right before `submit()` (`Supervisor.launch`), so a record this refuses
-    stays PREPARED and is retried, exactly as every other gate refusal is. This peek is also the only place a
-    loop ever learns another project holds the lease — launch() never reaches acquire() when this refuses — so
-    it is also where the loop must record its own wait (R4's fairness clause, F2): a live foreign holder makes
-    this project's `release_requested_by` its own, through `leases._record_waiting_from_peek()`, so the holder's own
-    processes (its server watchdog) see it and can yield early instead of only ever being started on top of."""
-    if not holds_resource(layout, task, adapter_name, kind):
+    """None when this job's resource work may launch now as far as the machine-wide lease (R4, docs/plan/LONG_WORK.md
+    section 5.4) it would take is concerned; else who holds it. The lease itself is `leases.lease_name_for`'s own
+    two-case choice between the slot's `"gpu"` and a claim's own configured name — this peek composes the same two
+    facts dispatch will later write onto the record (`holds_resource`, `needs.claim_for`), so the peek and the
+    loop's own acquire/renew/reclaim/release sweeps can never disagree about which lease a job takes. A read-only
+    peek (`supervisor.leases.holder_label`): the loop takes the lease for real only right before `submit()`
+    (`Supervisor.launch`), so a record this refuses stays PREPARED and is retried, exactly as every other gate
+    refusal is. This peek is also the only place a loop ever learns another project holds the lease — launch()
+    never reaches acquire() when this refuses — so it is also where the loop must record its own wait (R4's
+    fairness clause, F2): a live foreign holder makes this project's `release_requested_by` its own, through
+    `leases._record_waiting_from_peek()`, so the holder's own processes (its server watchdog) see it and can yield
+    early instead of only ever being started on top of."""
+    from . import needs as needs_mod
+    name = leases.lease_name_for(layout, holds_resource(layout, task, adapter_name, kind),
+                                 needs_mod.claim_for(layout, task, kind) if task is not None else None)
+    if name is None:
         return None
-    label = leases.holder_label(layout, "gpu")
+    label = leases.holder_label(layout, name)
     if label:
-        leases._record_waiting_from_peek(layout, "gpu")
-    return f"gpu lease held by {label}" if label else None
+        leases._record_waiting_from_peek(layout, name)
+    return f"{name} lease held by {label}" if label else None
 
 
 def routing_doc(layout: Layout | None) -> dict:
@@ -240,10 +247,13 @@ def busy_paths(layout: Layout, running: list[dict], tasks: dict[str, Task] | Non
 
 def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, running: list[dict],
           extra_paths: list[tuple[str, str]] = (), extra_agent: int = 0, extra_gpu: int = 0,
+          extra_claims: list[tuple[str, str]] = (),
           decision: str | None = None, tasks: dict[str, Task] | None = None, role: str | None = None) -> str | None:
     """None when the job may launch now, else the reason it may not. `running` are the job records that count as
     busy (callers choose: all open records when planning, only SUBMITTED/RUNNING when launching a PREPARED one);
-    `extra_*` let the scheduler account for picks made earlier in the same plan. `role` is the agent role the job
+    `extra_*` let the scheduler account for picks made earlier in the same plan -- `extra_claims` is `[(task_id,
+    claim), ...]`, the same shape `extra_paths` already uses, so `scheduler.plan()` can never admit two claimants
+    of one name in the same tick (docs/plan/LONG_WORK.md section 5.2). `role` is the agent role the job
     runs as (a review's reviewer role, say); for a delivery it defaults to the task's owner role. A role configured
     `active: false` is refused here, so a record queued before the owner disabled the role never launches either.
     A `delivery` whose task is `held` is refused here too (F11), whatever queued it or which lane it is on.
@@ -309,4 +319,16 @@ def check(layout: Layout, task: Task | None, adapter_name: str, kind: str, runni
                     return f"owned paths overlap with {other_id} ({theirs})"
         except ValueError as exc:                        # link in an owned path: refuse, never crash the loop
             return f"owned path error: {exc}"
+    from . import needs as needs_mod
+    claim = needs_mod.claim_for(layout, task, kind) if task is not None else None
+    if claim:
+        # docs/plan/LONG_WORK.md section 5.2: the holder is an open job record carrying this same claim, the rule
+        # the `gpu` flag already uses -- modelled on the owned-path overlap clause just above, including its
+        # same-task exclusion (a task's own continuation or re-adopted record never blocks itself, §5.2 point 3).
+        holder = next((tid for tid, c in extra_claims if c == claim), None)
+        if holder is None:
+            holder = next((r["task_id"] for r in running
+                          if (task is None or r["task_id"] != task.id) and r.get("claim") == claim), None)
+        if holder:
+            return f"resource {claim!r} claimed by {holder}"
     return None
