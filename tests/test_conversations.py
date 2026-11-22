@@ -192,6 +192,44 @@ def test_a_fresh_supervisor_recovers_a_submitted_turn_after_a_restart(layout):
     assert conversations.load(layout, thread_id)["turns"][-1]["text"] == "recovered reply"
 
 
+# ------------------------------------------------------------------ turn order past nine turns (C-3 deferral)
+
+
+def _conversation_job(layout, thread_id, turn):
+    task_id = f"conv-{thread_id}"
+    job_id = f"{task_id}.a{turn}"
+    jobs_mod.prepare(layout, task_id, job_id, "claude_cli", {"adapter": "claude_cli", "kind": "conversation"},
+                     conversation_thread=thread_id, conversation_turn=turn)
+    jobs_mod.set_phase(layout, job_id, "DONE")
+
+
+def test_jobs_for_task_mis_orders_a_conversation_thread_past_nine_turns(layout):
+    """A conversation record is permanently exempt from the allocator (`loop.dispatch`'s own `kind ==
+    "conversation"` branch), so it never carries `attempt`/`kind`/`seq`, and `jobs.sort_key` has no
+    id-suffix fallback since the writers switch (C-3): past the ninth turn every record ties at the same key
+    and the tie-break is a lexicographic compare of the id -- turn 10 sorts right after turn 1, before turn 2.
+    Documented here, not fixed in `jobs.py`: a thread's order is the thread reader's own business
+    (`conversations.turn_jobs`), never `jobs.for_task`'s -- this case must keep failing exactly this way."""
+    meta = conversations.create(layout)
+    thread_id = meta["id"]
+    for turn in range(1, 13):
+        _conversation_job(layout, thread_id, turn)
+
+    by_sort_key = [r["conversation_turn"] for r in jobs_mod.for_task(layout, f"conv-{thread_id}")]
+    assert by_sort_key != list(range(1, 13))
+    assert by_sort_key[1] == 10
+
+
+def test_turn_jobs_lists_a_conversation_threads_turns_in_order_past_nine_turns(layout):
+    meta = conversations.create(layout)
+    thread_id = meta["id"]
+    for turn in range(1, 13):
+        _conversation_job(layout, thread_id, turn)
+
+    ordered = conversations.turn_jobs(layout, thread_id)
+    assert [r["conversation_turn"] for r in ordered] == list(range(1, 13))
+
+
 # ------------------------------------------------------------------ convert-to-*
 
 
