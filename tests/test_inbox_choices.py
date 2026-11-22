@@ -58,11 +58,15 @@ def test_two_op_choice_label_is_rendered_from_both_operations(layout):
     assert "; then " in label
 
 
-def test_choice_naming_an_owner_only_effect_without_its_running_loop_is_refused_at_create(layout):
+def test_a_diagnose_now_choice_is_offered_at_create(layout):
+    """Step 10 (RECOVERY_PLAN.md section 9) wires `diagnose_now` through a `loop.Supervisor` built for the one
+    call (`inbox._apply_diagnose_now`) — it is an ordinary owner-only effect at create() time now, not refused
+    the way an effect with no path to apply at all would be."""
     make_task(layout, "T1", status="BLOCKED")
-    with pytest.raises(inbox.InboxError, match="diagnose_now"):
-        inbox.create(layout, for_role="owner", subject="s", summary="body", task_id="T1",
-                    choices=[{"id": "diag", "effect": {"op": "diagnose_now", "task": "T1"}}])
+    item = inbox.create(layout, for_role="owner", subject="s", summary="body", task_id="T1",
+                        choices=[{"id": "diag", "effect": {"op": "diagnose_now", "task": "T1"}}])
+    assert item["choices"][0]["id"] == "diag"
+    assert "diagnos" in item["choices"][0]["label"].lower()
 
 
 def test_owner_only_choice_missing_its_required_operand_is_refused_at_create(layout):
