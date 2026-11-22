@@ -52,10 +52,31 @@ def test_start_is_not_enabled_while_that_long_turn_is_still_running(layout):
 
 
 def test_a_genuinely_dead_loop_still_reads_offline(layout):
-    """The window widens with the last turn's length, but a loop whose last turn was ordinary (a few seconds) and
-    whose heartbeat is now far older than that must still read offline -- the fix must not make every stall silent."""
+    """A legacy-shaped document (no {pid, create_time} recorded -- the fallback path, R-09's turn_s=2.0 pattern
+    pre-dates it) with an ordinary last turn and a heartbeat now far older than that must still read offline --
+    the fix must not make every stall silent."""
     runtime.write(layout, status="RUNNING", pid=12345, heartbeat_epoch=time.time() - 400, turn_s=2.0)
     assert not runtime.is_live(layout)
+
+
+def test_a_dead_process_reads_offline_even_right_after_a_long_turn(layout):
+    """The window-scaling fix alone has no ceiling: a turn that legitimately ran a whole verification
+    (verify.TEST_BUDGET_S = 900s) would read live for that long doubled even after the process backing it is
+    gone. `heartbeat()` records {pid, create_time}; `is_live()` must believe a document that records a real pid
+    only while that exact process is still running, not however old the window math would otherwise allow. 999999
+    with create_time=1.0 is the exited-process identity already used in tests/test_leases.py."""
+    runtime.write(layout, status="RUNNING", pid=999999, create_time=1.0,
+                  heartbeat_epoch=time.time() - 30, turn_s=900.0)
+    assert not runtime.is_live(layout), "a dead {pid, create_time} must never read as live, no matter the window"
+
+
+def test_the_writing_process_itself_reads_live_after_a_long_turn(layout):
+    """The positive side of the same check: the real {pid, create_time} `heartbeat()` records for the process
+    actually running this test is still alive, so a long recorded turn is read as live by process liveness, not
+    by a window that could otherwise be made to lie."""
+    runtime.heartbeat(layout, "RUNNING", turn_s=900.0)
+    runtime.write(layout, heartbeat_epoch=time.time() - 30)      # age the heartbeat; pid/create_time stay this test's own
+    assert runtime.is_live(layout)
 
 
 # ---------------------------------------------------------------- 2. the whole-tree hash: once per dispatch, once
@@ -83,7 +104,11 @@ def test_snapshot_is_taken_at_most_twice_for_one_writing_delivery(layout, monkey
             sup.once()
             if tasks_mod_status(layout) == "COMPLETE":
                 break
-    assert len(calls) <= 2, f"the working tree was hashed {len(calls)} times for one writing delivery: {calls}"
+    # Exactly 2, not "at most 2": the floor guards the evidence the verifier diffs (lose the before-dispatch
+    # snapshot and this would still pass at 0). The two calls are Supervisor.dispatch's before_manifest.json
+    # (loop.py) and verify.verify()'s after snapshot (verify.py) -- different points in time, never the same
+    # work done twice.
+    assert len(calls) == 2, f"expected exactly 2 (before-dispatch, after-delivery), got {len(calls)} for task A: {calls}"
 
 
 def tasks_mod_status(layout):
@@ -126,7 +151,13 @@ def _routing_yaml_safe_load_functions() -> list[str]:
     reimplementing the one loader's own job. A function that reads the *raw text* into a variable first (a
     migration's text-preserving edit, Settings' own read-modify-write) is a different, legitimate concern and
     does not match: it keeps the original bytes to write back, which `routing_config.load()` -- {} on any error,
-    no text kept -- cannot do for it."""
+    no text kept -- cannot do for it.
+
+    This matches today's idiom textually (the exact `config / "routing.yaml"` spelling and a direct
+    `yaml.safe_load(x.read_text(` call), not the behaviour in general: a reader that built the path through a
+    variable or a layout helper, used `open()`, or called `yaml.load`/`yaml.full_load` would not be caught. It is
+    a ratchet against a new copy of this one pattern, not a guarantee the invariant holds for every possible
+    inline reader -- see docs/releases/2.9.0/R-28-smaller-items.md."""
     hits = []
     for path in SUPERVISOR_ROOT.rglob("*.py"):
         if path.name == "routing_config.py":
