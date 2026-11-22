@@ -178,7 +178,8 @@ def _tests_heading(task: Task) -> str:
 def delivery_brief(layout: Layout, task: Task) -> str:
     card = role_card(layout, task.owner_role)
     return policy.assert_packet_clean(((card + "\n\n") if card else "") + (
-        f"# Task {task.id}: {task.title}\n\nRole: {task.owner_role}\nRepository: {layout.root}\n\n"
+        f"# Task {task.id}: {task.title}\n\nRole: {task.owner_role}\nRepository: {layout.root}\n"
+        f"Contract rev: {task.contract_rev}\n\n"
         f"## Objective\n{task.objective}\n\n## Actions\n" + "\n".join(f"- {a}" for a in task.actions) +
         "\n\n## Expected artifacts (all of these; you may add more, never fewer)\n" + "\n".join(f"- {a}" for a in task.artifacts) +
         "\n\nFiles under `runs/` are this attempt's own working notes (handoff, logs, evidence): never list them in "

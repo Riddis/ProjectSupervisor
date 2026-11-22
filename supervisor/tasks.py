@@ -46,6 +46,37 @@ REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_ro
 # identity is `gates.is_owner_actor` — the framework's one such rule, not a second copy of it — so a bare queued
 # command or a default parameter value (neither of which asserts an identity) never inherits it.
 
+# What a review is judged against (RECOVERY_PLAN.md section 5, D-027 decision 12): the subset of CONTRACT_FIELDS
+# whose change makes a recorded ACCEPT stale. `actions` and `objective` move `contract_rev` like any other
+# contract field but never supersede a review — the work changed, not the bar it is judged against.
+JUDGED_FIELDS = frozenset({"tests", "checks", "acceptance", "artifacts", "reviewer", "review_note", "evidence"})
+
+
+def _bump_contract_rev(doc: dict, before: dict) -> None:
+    """The one place `contract_rev` moves: both `_apply_patch` and `_refresh_contract` call this last, after every
+    other mutation, so a plan's `patch_contract`, an owner's `task.patch` and a seed refresh all bump it the same
+    way and nowhere else bumps it by hand. Distinct from `rev`, which `store.update` bumps on every write
+    including a status change, an attempt entry or a note (`rev` answers "did this document move"); `contract_rev`
+    answers "did the brief move", and only a real value change in CONTRACT_FIELDS counts — `before` is the
+    document exactly as it was read, so a patch that resends a field's current value moves neither.
+
+    When the change touches JUDGED_FIELDS, every live review of the current delivery digest is superseded: the
+    ACCEPT it recorded was read against a contract that no longer exists, so `_evaluate()`'s `not r.superseded`
+    filter (and `review.py`'s own copies of it) must stop counting it, exactly as a new delivery digest already
+    supersedes an old review. Verification is deliberately left alone — it re-runs the CURRENT checks against the
+    delivered bytes every time a digest is verified, so a contract edit cannot make a stale verification wrong,
+    only a stale review's reading of it."""
+    changed = {k for k in CONTRACT_FIELDS if doc.get(k) != before.get(k)}
+    if not changed:
+        return
+    doc["contract_rev"] = int(doc.get("contract_rev") or 1) + 1
+    if changed & JUDGED_FIELDS:
+        d = doc.get("delivery") or {}
+        digest = d.get("digest")
+        for r in d.get("reviews") or []:
+            if r.get("digest") == digest and not r.get("superseded"):
+                r["superseded"] = True
+
 
 def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
     """RECOVERY_PLAN.md section 3.4: the owner (`gates.is_owner_actor`: the CLI's `owner`, the Control Center's
@@ -609,6 +640,7 @@ def _refresh_contract(layout: Layout, doc: dict, t: dict, actor: str = "cli") ->
     left at whatever the document already had. `job` is never cleared by omission either (it is not a
     CONTRACT_FIELDS key at all); when the seed row names one, the writer-authority rule of section 3.4 decides
     whether it may be applied."""
+    before = dict(doc)
     if "job" in t:
         _write_job(layout, doc, t["job"], actor)
     for k in CONTRACT_FIELDS:
@@ -616,6 +648,7 @@ def _refresh_contract(layout: Layout, doc: dict, t: dict, actor: str = "cli") ->
             doc[k] = t[k]
         elif k not in REFRESH_STICKY_FIELDS:
             doc.pop(k, None)
+    _bump_contract_rev(doc, before)
     Task.model_validate(doc)
     return doc
 
@@ -628,6 +661,7 @@ def _apply_patch(layout: Layout, doc: dict, fields: dict, actor: str = "cli") ->
     CONTRACT_FIELDS assignment, `add_dependency`/`remove_dependency` (an id, or a list) against the document's
     OWN current `depends_on` — never a caller's possibly-stale copy of it, so two concurrent dependency edits
     cannot race each other — or `job`, under the writer-authority rule of section 3.4."""
+    before = dict(doc)
     deps = list(doc.get("depends_on") or [])
     for dep in ([fields["add_dependency"]] if isinstance(fields.get("add_dependency"), str)
                 else list(fields.get("add_dependency") or [])):
@@ -644,6 +678,7 @@ def _apply_patch(layout: Layout, doc: dict, fields: dict, actor: str = "cli") ->
     for k, v in fields.items():
         if k in CONTRACT_FIELDS:
             doc[k] = v
+    _bump_contract_rev(doc, before)
     Task.model_validate(doc)
     return doc
 
@@ -671,7 +706,23 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
     if errors:
         raise TaskError("patch invalid: " + "; ".join(errors))
-    store.update(path_for(layout, task_id), lambda doc: _apply_patch(layout, doc, fields, actor), lock_path=layout.state / ".tasks.lock")
+
+    def fn(doc):
+        before = dict(doc)
+        result = _apply_patch(layout, doc, fields, actor)
+        if result == before:
+            raise _NoChange()
+        return result
+    try:
+        store.update(path_for(layout, task_id), fn, lock_path=layout.state / ".tasks.lock")
+    except _NoChange:
+        # Resent fields that match the stored document exactly (a plan or operator replaying the same patch):
+        # nothing to write, so neither `rev` nor `contract_rev` moves — the same "nothing to do" idiom
+        # `set_status`/`hold` already use.
+        out = {"id": task_id}
+        if warnings:
+            out["warnings"] = warnings
+        return out
     log(layout, "task_patch", actor, task=task_id, fields=sorted(fields))
     out = {"id": task_id}
     if warnings:

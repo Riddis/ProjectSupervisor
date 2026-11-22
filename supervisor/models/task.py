@@ -250,6 +250,13 @@ class Task(BaseModel):
     created: Optional[str] = None
     updated: Optional[str] = None
     rev: int = 0
+    contract_rev: int = 1               # RECOVERY_PLAN.md section 5, D-027 decision 12: distinct from `rev`, which
+                                          # `store.update` bumps on every write (a status change, an attempt entry,
+                                          # a note); this moves only when `tasks._bump_contract_rev` sees a
+                                          # CONTRACT_FIELDS value actually change — "did the brief move", not
+                                          # "did this document move". The job record and the delivery brief state
+                                          # the generation they were built from; a review recorded against an
+                                          # older one is superseded once a judged-set field changes under it.
 
     model_config = {"extra": "allow", "use_enum_values": False}
 

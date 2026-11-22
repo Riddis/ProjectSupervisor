@@ -268,11 +268,14 @@ class Supervisor:
                                             new_attempt=new_attempt, resource=adapter_name, parent=parent, note=note)
             attempt_id = job_id.id
             job_attempt, job_seq, job_scope = job_id.attempt, job_id.seq, job_id.scope
+            # R-12 / RECOVERY_PLAN.md section 5: the STORED contract, re-read after allocate_job's own write — a
+            # revision's prompt or a fallback's model override decorates the SAME attempt, never changes what a
+            # `task.patch`/`task.set_job` could. `contract_rev` names the generation this job's brief was built
+            # from, on every kind that has a task; `job_fingerprint` stays delivery-only (R-12's own narrower use).
+            stored = tasks_mod.load(self.layout, task.id)
+            job_extra["contract_rev"] = stored.contract_rev
             if kind == "delivery":
-                # R-12: the STORED contract, re-read after allocate_job's own write — a revision's prompt or a
-                # fallback's model override decorates the SAME attempt, never changes what a `task.patch`/
-                # `task.set_job` could.
-                job_extra["job_fingerprint"] = _job_fingerprint(tasks_mod.load(self.layout, task.id))
+                job_extra["job_fingerprint"] = _job_fingerprint(stored)
         run_dir = self.layout.runs / task.id / attempt_id
         try:
             if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
