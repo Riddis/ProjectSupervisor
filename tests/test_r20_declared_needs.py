@@ -13,7 +13,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from supervisor import (capabilities, commands, gate, jobs, needs as needs_mod, plans, scheduler,
+from supervisor import (commands, gate, jobs, needs as needs_mod, plans, scheduler,
                         tasks as tasks_mod, timeouts, why_not_runnable)
 from supervisor.adapters import REGISTRY
 from supervisor.adapters.process import ProcessAdapter
