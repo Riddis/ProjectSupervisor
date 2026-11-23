@@ -187,7 +187,7 @@ limits:
   max_resource_jobs: 1              # concurrent holders of the single heavy local resource (plugin lanes with gpu=True)
   resource_cost_categories: []      # cost categories whose DELIVERY also holds that resource slot, on any lane — e.g. [local]
                                     # when an agent session does the resource's own engineering work (installs, runs, benchmarks it)
-plan:                                # recovery plans (RECOVERY_PLAN.md §2.7): who approves what a plan proposes
+plan:                                # recovery plans: who approves what a plan proposes before any of it runs
   approver: [chief_architect, senior_pm]   # ordered; the first of these also named under roles: below, that is
                                             # not the plan's own proposer and is active, reviews a plan that
                                             # creates work on an unmetered lane (class B) — name a role here with

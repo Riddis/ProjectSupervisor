@@ -372,7 +372,7 @@ def test_an_already_invalid_input_is_not_blamed_on_the_rewrite():
 
 
 # Review 2.0.0 ("Migration safety"): the review could not get a successful apply, a second run or a halfway-failure
-# recovery past its own sandbox (docs/releases/2.0.0/EXECUTION_CONTEXT.md §2). Each test below crashes `migrations.
+# recovery past its own sandbox, so none of the three was ever observed. Each test below crashes `migrations.
 # run` at one of the three points the migration itself is not atomic across — the key rename, the folder move, the
 # manifest rewrite — by making exactly the next write raise, then undoes the injected failure and reruns the same
 # `Layout` to show the remaining steps complete and `framework_version` is recorded only once everything else is.

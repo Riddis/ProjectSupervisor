@@ -15,8 +15,8 @@ JSON, or writes `matrix=` and `count=` to `--github-output`.
    to that ref's own commit time; the package's wheel is built *twice*, from a copy of its folder, with
    SOURCE_DATE_EPOCH set to the package's own last commit time - and `run` refuses if the two sha256 differ (2.5.0's
    M1: a rebuild of one source, one toolchain, one run reproduces its own digest; it does not promise that a rebuild
-   on another machine or another day reproduces a *published* digest - see docs/releases/2.5.0/
-   CI_PACKAGE_RECORD.md);
+   on another machine or another day reproduces a *published* digest - a toolchain, interpreter or platform change
+   still moves one);
 2. a fresh virtual environment there gets the framework wheel with its `dev` and `ui` extras, then the package's;
 3. tools/ci_installed_plugin.py proves it installed (found, loaded, G5, a task on its lane or python job), with
    the options the package's pyproject.toml gives under `[tool.supervisor.ci]`: `lane`, `python_job`, and a
@@ -120,8 +120,8 @@ def commit_epoch(repo: Path, ref: str, path: str | None = None) -> str:
 def reproducible_wheel(src: Path, out: Path, epoch: str) -> tuple[str, str]:
     """Build src's wheel twice into separate folders under `out`, both with SOURCE_DATE_EPOCH=`epoch`, and refuse
     when the two sha256 differ. Proves "two builds of one source, one toolchain, one run produce one digest" - not
-    that a rebuild on another machine or another day reproduces a *published* digest (docs/releases/2.5.0/
-    CI_PACKAGE_RECORD.md names what else can still move one)."""
+    that a rebuild on another machine or another day reproduces a *published* digest (a toolchain, interpreter or
+    platform change still moves one)."""
     env = {**os.environ, "SOURCE_DATE_EPOCH": epoch}
     name, digests = None, []
     for leg in ("a", "b"):

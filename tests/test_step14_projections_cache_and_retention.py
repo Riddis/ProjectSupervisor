@@ -3,7 +3,9 @@
 Covers: render only what changed (R-22), the document cache's key and filesystem assumption (R-09 step 2,
 already shipped — these two tests pin it down rather than change it), the archive behind the resolver so a
 finished job record leaves the loop's own scan (R-23), the log rotating by size and being tailed by byte
-offset (R-23), and two of astra's load_all/turn-snapshot questions (F-load-all-sharing, F-mid-turn-create).
+offset (R-23), and two questions the independent review asked about load_all and the turn snapshot: what the
+sharing of Task instances inside one turn is allowed to promise, and whether a task created mid-turn is visible
+for the rest of it.
 
 The review-round section at the bottom covers three findings raised against the first delivery of this task:
 jobs.read() left as a second, archive-blind by-id lookup that production code (loop.dispatch/reroute/launch)
@@ -196,7 +198,7 @@ def test_the_log_is_tailed_by_byte_offset_not_read_whole(layout, monkeypatch):
     assert not calls, "the log tail must seek from the end, not call read_text() on the whole file"
 
 
-# ------------------------------------------------------------------ astra: load_all sharing, and mid-turn creation
+# ------------------------------------------------------- the review's questions: load_all sharing, mid-turn create
 
 def test_load_all_hands_out_the_same_task_object_across_calls_in_one_turn():
     """Ruling (documented, not changed): inside a turn_snapshot, load_all() returns a fresh dict but the SAME

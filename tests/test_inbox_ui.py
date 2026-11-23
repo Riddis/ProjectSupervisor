@@ -50,7 +50,7 @@ def test_inbox_page_renders_and_groups_by_kind(layout, auth_client):
 def test_h001_style_item_renders_fully(layout, auth_client):
     """An H-001-style item: markdown-ish summary plus Q1..Q8 sub-items (per-topic defaults, not score blocks)."""
     inbox_mod.create(layout, for_role="owner", subject="Approve the architecture & implementation plan",
-                     summary="Plan at docs/plan/ARCHITECTURE_AND_IMPLEMENTATION_PLAN.md.\n\n- whole vs cherry-pick\n- keep on D:",
+                     summary="Plan at docs/plan/PROJECT_PLAN.md.\n\n- whole vs cherry-pick\n- one volume",
                      kind="gate", allowed_responses=["APPROVE", "MODIFY", "REJECT"])
     item_id = inbox_mod.open_items(layout)[0]["id"]
 

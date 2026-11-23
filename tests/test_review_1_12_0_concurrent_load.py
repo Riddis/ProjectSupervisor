@@ -54,7 +54,7 @@ def concurrent(layout, sync):
 
 
 def test_a_reader_during_a_failing_setup_waits_and_then_sees_the_failure(tmp_path, sync):
-    """Astra's probe: before, the reader got 1 screen and no blocking reason, then kept a screen that was rolled back."""
+    """The reviewer's probe: before, the reader got 1 screen and no blocking reason, then kept a rolled-back one."""
     layout = testing.project(tmp_path, modules={"slow": SLOW.format(end='raise RuntimeError("failed setup")')})
     returned_early, reg = concurrent(layout, sync)
     assert not returned_early

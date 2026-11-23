@@ -148,7 +148,7 @@ def test_a_diagnosis_job_whose_lane_reports_login_required_reroutes_with_its_own
 
 
 def test_a_flagless_login_reroute_keeps_the_fallback_s_keys_and_records_same_vendor_false(layout):
-    """T2-108 (release review 2.2.0 finding F2, chief_architect revision): `_lane_login_failed()`'s reroute wrote
+    """Release review 2.2.0 finding F2, the revision round: `_lane_login_failed()`'s reroute wrote
     `extra = {"same_vendor": True} if same_vendor else None`, so a flag-less fallback block's reroute recorded no
     `same_vendor` key at all - absent, not False - unlike dispatch_delivery()/review.dispatch() (release review
     2.2.0 F2's own finding 1). An absent key is indistinguishable from an ordinary, non-fallback dispatch, which

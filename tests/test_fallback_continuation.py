@@ -34,7 +34,7 @@ def deny_codex(monkeypatch):
 
 
 def fallen_back_delivery(layout, monkeypatch, tid="A", fallback=FALLBACK):
-    write_routing(layout, {"code_review": {"adapter": "codex_cli", "model": "gpt-6-astra", "effort": "high",
+    write_routing(layout, {"code_review": {"adapter": "codex_cli", "model": "gpt-6-codex", "effort": "high",
                                            "fallback": fallback}})
     make_task(layout, tid, owner_role="code_review")
     deny_codex(monkeypatch)
@@ -88,7 +88,7 @@ def test_a_rebuilt_fallback_review_keeps_the_fallback_s_keys_and_note(layout, mo
     """review.rebuild() (reached from requeue()'s review branch on a usage limit mid-review) must keep the
     fallback's model/effort too - the flag already survives (loop.py:216); the note must say so as well."""
     write_routing(layout, {"engineer": {"adapter": "claude_cli", "model": "sonnet"},
-                           "code_review": {"adapter": "codex_cli", "model": "gpt-6-astra", "effort": "high",
+                           "code_review": {"adapter": "codex_cli", "model": "gpt-6-codex", "effort": "high",
                                            "fallback": FALLBACK}})
     make_task(layout, "RV2", owner_role="engineer", reviewer=["code_review"], status="IN_PROGRESS")
     tasks.allocate_job(layout, "RV2", "delivery", attempt=1, cause="scheduled")   # seeds counters.attempt = 1
@@ -111,13 +111,13 @@ def test_a_rebuilt_fallback_review_keeps_the_fallback_s_keys_and_note(layout, mo
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# T2-108 (release review 2.2.0 finding F2, chief_architect revision): a FLAG-LESS fallback block's own continuation
-# must keep the fallback's model/effort too, with `same_vendor` recorded False (not absent). The first T2-108 fix
+# Release review 2.2.0 finding F2, the revision round: a FLAG-LESS fallback block's own continuation
+# must keep the fallback's model/effort too, with `same_vendor` recorded False (not absent). The first fix for it
 # only closed the gate at first dispatch (`dispatch_delivery()`); `fallback_overrides()` still keyed on
 # `rec.get("same_vendor")` truthy, so a flag-less fallback's own continuation (requeue(), repair_continuations())
 # silently dropped the fallback's model/effort and re-dispatched on the fallback LANE with the role profile's OWN
-# model - for code_review's codex_cli/gpt-6-astra primary with a Claude fallback, `claude_cli --model gpt-6-astra`:
-# exactly the unrunnable combination F2 exists to prevent. These fail at 02c2bc5 (T2-108's first fix) and pass once
+# model - for code_review's codex_cli/gpt-6-codex primary with a Claude fallback, `claude_cli --model gpt-6-codex`:
+# exactly the unrunnable combination F2 exists to prevent. These fail at 02c2bc5 (that first fix) and pass once
 # `fallback_overrides()`'s predicate is "ran on a fallback lane" (`"same_vendor" in rec`) rather than the flag's
 # own truth value, with the note/flag copies at loop.py's three continuation sites following the same shape.
 

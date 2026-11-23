@@ -32,7 +32,7 @@ def project(tmp_path, early: str = INTERRUPTED):
 
 
 def test_an_interrupted_load_blocks_instead_of_passing(tmp_path):
-    """Astra's probe: the host survives the SystemExit and asks again."""
+    """The reviewer's probe: the host survives the SystemExit and asks again."""
     layout = project(tmp_path)
     with pytest.raises(SystemExit):
         plugins.load(layout)

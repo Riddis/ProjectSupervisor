@@ -426,8 +426,8 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   longer leaks a resident server that nothing notices or stops (F5/F14), its worker fails loudly on a truncated
   or broken stream instead of reporting it COMPLETE (F6), its context-budget ratio is a conservative, overridable
   setting instead of a flat guess (F7), and a lane that defers for two continuous hours raises one idempotent
-  owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each has its own record
-  under `docs/releases/local-lane/`.
+  owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each finding has its
+  own record, kept with the planning records of the project that commissioned the work, not here.
 
 - **Hardened once more before release: the round-2 review's five remaining findings on the lease hand-over
   protocol and the bundled package.** The package's
@@ -441,8 +441,8 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   guarantee (F2) unchanged (F20); the bundled package's README now documents every `Settings` key, including
   `defer_budget_s` and `hand_over_grace_s`, and the check that enforces it runs in both directions (F21); and a
   failed Windows Job Object assignment is now logged with its own error code, with the doctor's healthy line
-  saying plainly whether the running server is tied (F22, advisory). Each has its own record under
-  `docs/releases/local-lane/`.
+  saying plainly whether the running server is tied (F22, advisory). Each finding has its own record, kept with
+  the planning records of the project that commissioned the work, not here.
 
 ## 2.5.1 — 2026-11-10
 
@@ -669,7 +669,7 @@ instead of a failed attempt.
 
 **Migration:** none.
 
-- **Fixed: astra's own release-review tasks waited for Codex however long it took, with no fallback.**
+- **Fixed: the review role's own release-review tasks waited for Codex however long it took, with no fallback.**
   `review.lane_for()` always re-derived the adapter from the role's own `roles.<role>.adapter`, so it could only
   ever answer "is this role's configured lane available" - not "is the lane this job actually resolved to
   (`job.adapter`, a `cost_lanes` override) available". It now takes an optional `primary` adapter to ask about
@@ -812,8 +812,8 @@ it already understood.
   offered a process job's command (R1, F1, F5, F8, F10, F14-F17) — nine of the release's seventeen findings, for
   a case seen once whose cause phase 2 already removed. A process job whose own command is wrong now
   reaches the owner as a question naming the `task.set_job` change the task needs; `task.set_job`
-  (`commands.apply_job`) stays the only writer of a job block. `docs/releases/2.1.0/SCOPE-CUT-job-fix.md` has the
-  removed commits, symbols and files, and the regression that proves a `job_fix` on a `requeue` now changes
+  (`commands.apply_job`) stays the only writer of a job block. The removed commits, symbols and files are listed
+  in that release's own scope-cut record, with the regression that proves a `job_fix` on a `requeue` now changes
   nothing.
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
@@ -1167,7 +1167,7 @@ reconcile first (rollback B).
 An extension without a manifest still loads in 1.12.x, with a doctor WARN; a later major release requires one.
 
 **Review:** the G4 review covers `v1.11.0..` this release commit, including the carried pinned-checkout commits.
-Astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1 of the 1.12.0 review, on
+The independent review covered `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1, on
 `f8b0e52`, closed the pinned-checkout findings R2-1 and R2-2 and found four issues in the extension standard. Round 2,
 on `92caa7c`, closed two of them and found three gaps in the other two. Each is fixed below with regression tests.
 

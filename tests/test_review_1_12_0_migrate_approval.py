@@ -32,7 +32,7 @@ def _clean():
 
 @pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "apply"])
 def test_a_manifest_the_loader_refuses_moves_nothing_and_runs_no_migration_code(tmp_path, dry_run):
-    """Astra's probe: legacy section `limits` belongs to the framework."""
+    """The reviewer's probe: legacy section `limits` belongs to the framework."""
     marker = tmp_path / "migration-ran"
     extra = ('migrations = "bad_migrations"\n[config]\nsection = "plugins.bad"\nschema = "bad:Settings"\n'
              'legacy_sections = ["limits"]\n')

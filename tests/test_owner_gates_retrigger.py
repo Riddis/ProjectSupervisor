@@ -1,5 +1,7 @@
-"""Owner responses must re-trigger the tasks they gate. Two bridges are under test: the loop's `approval` inbox item +
-inbox.apply_approval for human_approval=required tasks, and owner_tasks.set_status(done) releasing `blocks`."""
+"""Owner responses must re-trigger the tasks they gate. Both bridges once stopped at the answer: an APPROVE left
+the task it gated in WAITING_FOR_HUMAN, and an owner task marked done left the task it blocked FAILED. The two
+under test are the loop's `approval` inbox item + inbox.apply_approval for human_approval=required tasks, and
+owner_tasks.set_status(done) releasing `blocks`."""
 
 from supervisor import commands as commands_mod
 from supervisor import inbox as inbox_mod

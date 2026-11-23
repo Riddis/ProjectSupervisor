@@ -984,7 +984,8 @@ def _sync_turn_snapshot(task: Task) -> None:
     """This turn's snapshot, if one is open, kept in step with a write `_update()` did not make — `create()` and
     `import_seed()`'s own new-row branch write with `store.write_new()` directly, not through `_update()`, so
     without this a task created mid-turn stayed invisible to `load_all()` for the rest of that turn even though
-    `_update()`'s own writes were already promised to be seen by it (astra: load_all/turn-snapshot visibility)."""
+    `_update()`'s own writes were already promised to be seen by it: within one turn `load_all()` sees every row
+    that turn wrote, whichever writer made it."""
     snap = _TURN_SNAPSHOT.get()
     if snap is not None:
         snap[task.id] = task

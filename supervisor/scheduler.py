@@ -201,8 +201,8 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             if claude_api.credits_remaining(layout) and claude_api.unattended_eligible(layout, t, job_spec(t)):
                 name = "claude_api"
         # A role's OWN delivery task falls back the same way a review of someone else's
-        # delivery already does (review.lane_for) - whoever owns this job's lane, not only astra reviewing
-        # another role's work. A role with no configured fallback still just waits here, token-free, exactly as
+        # delivery already does (review.lane_for) - whoever owns this job's lane, not only the review role when
+        # it judges another role's work. A role with no configured fallback still just waits here, token-free, as
         # before: lane_for() re-raises CapacityDeferred and the task is skipped like any other capacity hold.
         role = job_spec(t).get("role") or t.owner_role
         try:

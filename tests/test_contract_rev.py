@@ -1,7 +1,8 @@
 """`contract_rev` is a generation counter distinct from `rev` —
 `rev` (`store.update`) answers "did this document move", `contract_rev` answers "did the brief move". It moves
-only when a CONTRACT_FIELDS value actually changes, and exists to close a gap the recovery plan's own first
-no-human-in-the-loop contract writer would otherwise open: a plan may tighten a contract, and without this field an ACCEPT recorded under the looser one would still count afterwards."""
+only when a CONTRACT_FIELDS value actually changes, and exists to close a gap the first contract writer that
+needs no human in the loop would otherwise open: a plan may tighten a contract, and without this field an ACCEPT
+recorded under the looser one would still count afterwards."""
 from __future__ import annotations
 
 from supervisor import commands, jobs, packets, tasks

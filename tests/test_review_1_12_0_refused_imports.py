@@ -40,7 +40,7 @@ def project(tmp_path, marker, *, good: str = "from . import bad  # noqa: F401\nd
 
 
 def test_a_sibling_import_does_not_run_a_refused_plugin(tmp_path):
-    """Astra's probe: `good` imports the refused `bad` without declaring it."""
+    """The reviewer's probe: `good` imports the refused `bad` without declaring it."""
     marker = tmp_path / "refused-ran"
     reg = plugins.load(project(tmp_path, marker))
     assert not marker.exists()

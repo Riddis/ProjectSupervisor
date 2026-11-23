@@ -157,7 +157,7 @@ def _routing_yaml_safe_load_functions() -> list[str]:
     `yaml.safe_load(x.read_text(` call), not the behaviour in general: a reader that built the path through a
     variable or a layout helper, used `open()`, or called `yaml.load`/`yaml.full_load` would not be caught. It is
     a ratchet against a new copy of this one pattern, not a guarantee the invariant holds for every possible
-    inline reader -- see docs/releases/2.9.0/R-28-smaller-items.md."""
+    inline reader."""
     hits = []
     for path in SUPERVISOR_ROOT.rglob("*.py"):
         if path.name == "routing_config.py":

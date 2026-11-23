@@ -488,7 +488,7 @@ def test_the_g1d_entrypoint_also_refuses_the_bang_lookalike(tmp_path, monkeypatc
     assert not any(path.startswith("packages/") for path, _l, _w in found)
 
 
-# ----------------------------------------------------- the catalog index : an
+# ----------------------------------------------------- the catalog index: an
 # in-repo package's own name may also appear in plugins-catalog/index.yaml, and only there, and only inside that
 # package's own entry (_catalog_path, _catalog_line_distributions) - not a second mechanism, a per-line scope over
 # the same file. Everywhere else, and in any other listed package's entry, the word is still a hit.

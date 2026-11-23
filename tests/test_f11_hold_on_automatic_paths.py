@@ -1,4 +1,5 @@
-"""
+"""An owner's Hold must survive every automatic path that moves a task.
+
 F9's durable `held` field (`models/task.py:160`) was read by only two of the automatic paths that move a task -
 `diagnosis.ingest`'s requeue branch and `loop._repair_capped_escalation` - so the loop's own continuation launch
 still reversed a Hold. `Supervisor.requeue` (`loop.py:151-208`) queued a continuation for any DEFERRED delivery
