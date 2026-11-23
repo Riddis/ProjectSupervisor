@@ -31,7 +31,8 @@ The **contract** fields (what the setup skill and the Senior PM write; `supervis
 | `approval_note` | what the owner should look at when approving |
 | `cost_category` | `deterministic` / `local` / `claude` / `codex` / `human` / `mixed` / `paid` → default adapter via `routing.yaml cost_lanes` |
 | `priority` | higher first among eligible tasks |
-| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}` (it runs in the project root and ends by writing `result.json`, `{status, artifacts, notes}`, into the folder `$SUPERVISOR_RUN_DIR` names; a python `fn` is one a plugin registers with `registry.python_job(name, fn)` in its `setup()`), `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}` (ACCEPT, APPROVE or free text completes it; any other answer fails it with the answer as the note), `{adapter: claude_api, role?, api_credits?, max_tokens?}` (metered Messages API; `api_credits: true` opts this one task into the unattended switch's metered lane — see `docs/runbooks/claude_api.md`), or a plugin lane |
+| `needs` | optional: `{duration_min, network, resource, resumable}` (2.9.0, R-20) — what the work's delivery requires, matched against the dispatched lane's own declared capability data (`registry.capabilities`); an unknown key, or a value of the wrong type, is refused (RF-27). The owner may write it anywhere a contract is written (create, import, patch); a plan may declare it only on the task it creates (`create_task`'s own optional fields), never add it to one that already exists. Sticky like `owned_paths`: a refresh that omits it leaves it as it was; an explicit empty block clears it, reported as `needs_cleared` rather than refused |
+| `job` | optional: `{adapter, ...}` overrides the lane — `{adapter: python, fn, params}`, `{adapter: process, argv, timeout_s}` (it runs in the project root and ends by writing `result.json`, `{status, artifacts, notes}`, into the folder `$SUPERVISOR_RUN_DIR` names; a python `fn` is one a plugin registers with `registry.python_job(name, fn)` in its `setup()`), `{adapter: claude_cli, model?, effort?, tools?, prompt?/prompt_file?, write_scope?, timeout_s?, idle_timeout_s?}` (`timeout_s` = hard cap, `idle_timeout_s` = stop after this long quiet, 0 = never; defaults from routing.yaml `timeouts`), `{adapter: human, subject, summary, allowed_responses?, free_text?}` (ACCEPT, APPROVE or free text completes it; any other answer fails it with the answer as the note), `{adapter: claude_api, role?, api_credits?, max_tokens?}` (metered Messages API; `api_credits: true` opts this one task into the unattended switch's metered lane — see `docs/runbooks/claude_api.md`), or a plugin lane. **Writer rule, not a rule on the field** (2.9.0, R-11): the owner — any actor `gates.is_owner_actor` recognises (the CLI's `owner`, the Control Center's `owner-ui`, or any `owner-<channel>`) — may write any job block this way, including a literal `argv`, through a create, a seed import, a patch or `task.set_job`; a plan may write only `job.template` and typed `job.params` (never a literal command, never a first job on a task it did not create); nothing else may write one at all. `job` stays outside the contract fields above and never moves `contract_rev`: it names what the task runs, not the bar a delivery is judged against |
 
 Since 1.13.0 `task import` (and its `--dry-run`), `task create` and `supervisor check` also **warn** about a
 contract the project cannot serve: an `owner_role` or `reviewer` routing does not configure or has made inactive, a
@@ -41,7 +42,7 @@ nor a plugin's manifest (`provides`) declares. No plugin is set up for this, so 
 
 The **runtime** fields the supervisor maintains: `status`, `attempts` (one per dispatch), `history` (status
 changes), `delivery` (`digest`, `verification`, `reviews[]`, `approvals[]`, all bound to the digest of the current
-artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `forced`, `rev`, `created`, `updated`.
+artifacts), `result`, `paths`, `notes`, `guidance` (from a diagnosis requeue or the owner's REQUEUE text — the next packet carries it), `forced`, `rev`, `contract_rev` (2.9.0 — bumped only when a contract field above actually changes, never by a status change, an attempt entry or a note, which move `rev` instead; a review's ACCEPT or an owner's approval recorded against an older `contract_rev` is superseded the moment a judged field — `tests`, `checks`, `acceptance`, `artifacts`, `reviewer`, `review_note`, `evidence` — changes under it; `actions`/`objective`/`title` move it too but never supersede anything, since they describe the work, not the bar it is judged against), `created`, `updated`.
 
 ### Lifecycle
 
@@ -66,15 +67,25 @@ the manager role (`routing.yaml escalation`) which can requeue with guidance, de
 open an owner inbox item; a review escalation that happens because `substance` is spent skips the diagnosis —
 another round would only repeat what the review already found — and opens the owner inbox item directly.
 
-A **defer** names what releases the task, structurally: `new_task`, the contract of work that does not exist yet
-(the fields `supervisor task create` takes; `phase` and `priority` default to the deferred task's; never a `job` or a
-runtime field), and/or `wait_for`, ids of existing unfinished tasks. The supervisor creates the new task through the
-same checks as `task create` (contract, graph with the new dependency in place, ownership, artifacts; a contract
-warning such as an unconfigured role is a refusal here), adds both to the deferred task's `depends_on`, grants it a
-fresh retry budget and sets it READY, so it runs once they are COMPLETE. At most two defers per task are released
-this way. A defer that names nothing, or one the supervisor refuses, opens one owner decision item that says why
-instead of parking the task: prose in `blocked_on` alone is never acted on. A task created this way is not in the
-seed; a later `task import --update-contracts` of the deferred task replaces its `depends_on` with the seed's. Capacity limits never spend an attempt: the job
+A **defer** names what releases the task, structurally: a `plan` (2.9.0) — `reason` (one paragraph: what it
+repairs) plus `operations`, drawn from a closed vocabulary of six typed
+steps, in this order and shape: `create_task` (a contract, the fields `supervisor task create` takes, never a
+`job`; `phase` and `priority` default to the deferred task's own and may not be named), `add_dependency`/
+`remove_dependency` (edges among the subject, a task the plan creates, or the subject's direct neighbours),
+`patch_contract` (named contract fields only, never loosened), `set_job` (a template id and typed params, never a
+literal command) and exactly one `resume` (always last, always on this task). `supervisor.plans` validates,
+journals and applies it — the same mechanism an owner's own inbox choice uses, never a second writer. A plan the
+validator refuses gets exactly one more session of the SAME diagnosis job to correct (`cause: continuation`),
+carrying only the frozen evidence, the refused plan verbatim and its refusal list; corrected and re-validated, it
+is proposed and released — a fresh retry budget, the task back to READY. Still refused after that one correction
+(or when the correction's own role has no adapter registered at all), it reaches the owner with both versions of
+the plan and both refusal lists, as one inbox item offering `cancel_task`/`hold` — never `apply_plan`, since what
+reaches the owner here is refused whole either way. Whether a validated plan applies on its own or first needs one
+approval session (never the proposer's) follows its authority class (`routing.yaml`'s `plan.authority`/
+`plan.approver`): touching routing, authority or an existing task's own lane always reaches the owner, and
+creating a task is class A or B by its own lane's metering. A defer whose plan the supervisor refuses twice, or
+whose correction could never be dispatched, opens one owner decision item that says why instead of parking the
+task silently: prose in `blocked_on` alone is never acted on. Capacity limits never spend an attempt: the job
 is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
 
 Nothing stops silently. A worker that ends **BLOCKED** goes straight to that diagnosis (no blind retry of the same

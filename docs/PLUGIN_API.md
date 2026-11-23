@@ -280,7 +280,12 @@ A dataclass, what `collect()` returns.
 ### `job_spec`
 
 `job_spec(task) -> dict`: a copy of the task's `job:` block (`{}` when it has none), what a lane's `prepare()` reads
-to build its spec: `job: {adapter: render, scene: ...}` in the task contract. The task `prepare()` receives also has
+to build its spec: `job: {adapter: render, scene: ...}` in the task contract. `task.job` is a typed `Job` model
+(2.9.0, R-11); its framework-known keys are `adapter`, `template` (a plan's own writer: a reference, never a
+command), `params`, `argv` (the owner's own writer only), `fn`, `timeout_s`, `idle_timeout_s`, `retry_on`,
+`stdin_file`, `model`, `effort`, `prompt` and `result_kind` — an adapter's own keys beyond these are declared
+through `registry.job_schema()` above, not here. `job_spec()` still returns a copy of exactly the keys the stored
+block carries, never a typed field's own default the block never named. The task `prepare()` receives also has
 `id`, the attempt's run folder name; plugins read nothing else from it.
 
 ### `CapacityDeferred`

@@ -102,6 +102,12 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   one caller that builds a document itself (a plan's `create_task` — the only path a diagnosis reaches this
   through) may not name `job` at all.
 
+- **Plugin API: `job_spec`'s own section names the typed `Job`'s framework-known keys (editorial).** The section
+  described `job:` as an arbitrary mapping (`{adapter: render, scene: ...}`); the entry above already made the
+  keys fixed and typed, this just names them where a plugin author actually reads `job_spec`'s own doc. No
+  behaviour changes: `job_spec()` still returns a copy of exactly the keys the stored block carries, never a typed
+  field's own default the block never named.
+
 - **`config/job_templates.yaml`, the preflight, and a launch gate that requires one.** A project's own template file declares the executable line a `process`/`python` job may
   reference (`supervisor.templates`): an argv whose slots are one argv element each, typed parameters, a probe,
   `may_be_set_by`, a timeout cap and a `needs` block — the framework ships none of its own, and a template
@@ -119,6 +125,17 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   pre-existing `process`/`python` job block with no stored preflight does not launch after this release; the
   backfill that preflights one at the gate on its first launch, until a one-time sweep is recorded complete,
   ships in a follow-on step of the same release.
+
+- **Upgrading in place: a one-time sweep preflights every pre-release `process`/`python` job block, no
+  `supervisor migrate` needed.** The first loop turn after this release backfills `job.preflight` onto every
+  existing `process`/`python` task with none (oldest first, bounded per turn), so the launch gate above does not
+  stop a store written before this release; before the sweep completes, an absent preflight is instead checked
+  synchronously at that task's own first launch. A block that fails gets no retry loop: one deduped owner item
+  names the task and the refusal, and a task still able to launch shows `preflight_failed` as its reason; a
+  task already terminal (`COMPLETE`, `CANCELLED`) is swept the same way with no owner item, since none could act
+  on it. The sweep rewrites each touched task's whole stored `job` block (the canonical dump the preflight ran
+  against, not merely an added key), so an operator auditing the upgrade's own git history should expect one
+  large, mechanical commit across every legacy task file, not a small one.
 
 - **A task declares `needs: {duration_min, network, resource, resumable}`, matched against lane capability data
   at the write; a job's time budget derives from a declared duration instead of a fixed default; Extend takes a
