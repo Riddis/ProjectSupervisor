@@ -215,3 +215,15 @@ def test_the_framework_package_passes_its_own_boundary_check():
     report = boundary.check(REPO, user_names=[])
     assert report.ok, "\n".join(str(f) for f in report.violations)
     assert report.notes == [], report.notes
+
+
+def test_the_self_check_never_reads_the_machines_real_project_terms_file(monkeypatch):
+    """R-27/F21: the self-check above must pass on a machine with no local project-terms file, and must not depend
+    on whatever words a contributor's own file happens to list. Prove it by making the real loaders explode: the
+    self-check must still pass, because it hands G1d its own injected (empty) word list instead of falling through
+    to `boundary.check`'s load-from-home-directory sentinel."""
+    def boom(*_a, **_kw):
+        raise AssertionError("the self-check must not read the machine's real project-terms file")
+    monkeypatch.setattr(boundary, "load_project_terms", boom)
+    monkeypatch.setattr(boundary, "load_package_allowances", boom)
+    test_the_framework_package_passes_its_own_boundary_check()
