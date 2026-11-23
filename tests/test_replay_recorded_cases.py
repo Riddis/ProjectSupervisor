@@ -4,8 +4,9 @@ manual import and no owner item.
 
 Each test below replays one of the three recorded cases and is named after it:
 
-- a dependency inversion, which needs an edge *removed* on a neighbour -- the reason the validator's own scope
-  rule reaches a direct neighbour at all, not only the subject and whatever the plan creates;
+- a dependency inversion, which needs the wrong edge *removed* from a neighbour and the right one added on the
+  subject -- the reason the validator's own scope rule reaches a direct neighbour at all, not only the subject
+  and whatever the plan creates;
 - a proposal refused for prose in `checks`, which the `checks_to_tests` normalisation and the one correction turn
   the validator grants exist to resolve without ever reaching the owner;
 - an agent-shaped task split into a harness, a process run and a report -- three creations plus a `set_job` from a
@@ -43,19 +44,20 @@ def _write_templates(layout, templates: dict):
 # ======================================================================= replay 1: the dependency inversion
 
 def test_replay_dependency_inversion_an_edge_removed_on_a_neighbour(layout):
-    """The subject must run *after* a task that currently depends on it. Only a direct-neighbour scope can express
-    that: the edge removed belongs to the neighbour, not to the subject or anything the plan created."""
-    make_task(layout, "T0", status="NOT_STARTED", owned_paths=["x"], tests=["t0"])
-    make_task(layout, "T1", status="BLOCKED", deps=["T0"], owned_paths=["x"], tests=["t1"])
+    """The real repair edits the NEIGHBOUR, not the subject: the neighbour's own wrong edge onto the subject is
+    removed, and the edge the subject needs is added on the subject itself. Only a direct-neighbour scope can
+    reach the neighbour's edge at all, not only the subject and whatever the plan creates."""
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"], tests=["t1"])
+    make_task(layout, "T0", status="BLOCKED", deps=["T1"], owned_paths=["x"], tests=["t0"])
     rev0 = tasks_mod.load(layout, "T0").rev
     rev1 = tasks_mod.load(layout, "T1").rev
     doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"},
-           "reason": "T1 must run after T0, not before it",
+           "reason": "T0 was made to wait on T1 by mistake; T1 must wait on T0 instead",
            "expected_rev": {"T0": rev0, "T1": rev1},
            "operations": [
-               {"op": "remove_dependency", "task": "T1", "depends_on": ["T0"]},
-               {"op": "add_dependency", "task": "T0", "depends_on": ["T1"]},
-               {"op": "resume", "task": "T1", "as": "ready"},
+               {"op": "remove_dependency", "task": "T0", "depends_on": ["T1"]},
+               {"op": "add_dependency", "task": "T1", "depends_on": ["T0"]},
+               {"op": "resume", "task": "T1", "as": "blocked_on_dependencies"},
            ]}
 
     # the plan's own class: routine repair, needing no approval at all
@@ -77,12 +79,12 @@ def test_replay_dependency_inversion_an_edge_removed_on_a_neighbour(layout):
     # end state: every task involved
     t0 = tasks_mod.load(layout, "T0")
     t1 = tasks_mod.load(layout, "T1")
-    assert t1.status == TaskStatus.READY
-    assert t0.status == TaskStatus.NOT_STARTED, "the neighbour's own status is untouched by the inversion"
+    assert t1.status == TaskStatus.BLOCKED, "the subject now waits on T0, which has not finished"
+    assert t0.status == TaskStatus.BLOCKED, "the neighbour's own status is untouched by the inversion"
 
     # end state: the edges
-    assert t1.depends_on == [], "the inverted edge is gone from the subject"
-    assert t0.depends_on == ["T1"], "the neighbour now depends on the subject"
+    assert t1.depends_on == ["T0"], "the subject now carries the edge the neighbour used to carry"
+    assert t0.depends_on == [], "the wrong edge is gone from the neighbour"
 
     # end state: the contract fields -- nothing outside the two edges moved
     assert t0.tests == ["t0"] and t1.tests == ["t1"]
