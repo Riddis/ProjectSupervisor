@@ -144,7 +144,7 @@ def contract(*artifacts):
 @pytest.mark.parametrize("bad", ["bench/runs/<id>/summary.json", "sims/cycle_N/", "/abs/file.txt", "../outside.txt",
                                  "C:/x.txt", "dir/", " padded.txt", ""])
 def test_unsatisfiable_artifact_entries_are_named(bad):
-    errors = tasks.artifact_errors([contract(bad)])
+    errors, _warnings = tasks.artifact_problems([contract(bad)])
     assert len(errors) == 1 and repr(bad) in errors[0]
 
 
@@ -169,19 +169,19 @@ def test_an_odd_name_that_exists_on_disk_raises_no_warning(layout):
                                   "bench/runs/*/summary.json", "strategies/S[1-6].yaml", "workflows/flow_v1.json",
                                   "state/decisions/D-900-widget.md"])
 def test_real_paths_and_globs_pass(good):
-    assert tasks.artifact_errors([contract(good)]) == []
+    assert tasks.artifact_problems([contract(good)])[0] == []
 
 
 def test_a_path_under_state_outside_decisions_is_refused_even_though_it_looks_like_a_real_path():
     """2.4.0, G4: no file under `state/` outside `state/decisions/` can ever be a deliverable — this used to be
     accepted as a merely odd-looking but legal artifact entry (`state/tasks/T10-0[2-9].yaml`)."""
-    assert tasks.artifact_errors([contract("state/tasks/T10-0[2-9].yaml")]) != []
+    assert tasks.artifact_problems([contract("state/tasks/T10-0[2-9].yaml")])[0] != []
 
 
 def test_an_existing_directory_is_refused_when_the_root_is_known(layout):
     (layout.root / "experiments").mkdir(exist_ok=True)
-    assert tasks.artifact_errors([contract("experiments")], root=layout.root)
-    assert tasks.artifact_errors([contract("experiments")]) == []
+    assert tasks.artifact_problems([contract("experiments")], root=layout.root)[0]
+    assert tasks.artifact_problems([contract("experiments")])[0] == []
 
 
 def test_import_and_create_accept_an_odd_name_with_a_warning(layout):

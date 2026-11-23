@@ -350,7 +350,6 @@ def setup(registry):
     from supervisor import render
     render.render_all(layout)
     assert plugins.known_projection_paths(layout) == {"WEEKLY.md"}
-    assert plugins._recorded_projections(layout) == {"weekly": ["WEEKLY.md"]}
     doc = dict(project.load(layout))
     doc["plugins"] = []
     project.write(layout, doc)

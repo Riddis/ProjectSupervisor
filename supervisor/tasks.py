@@ -3,7 +3,7 @@
 Rules:
 - every status change happens here, inside the store lock, deciding from the freshly read document (no stale reads);
 - `_evaluate()` is the one rule: verification ∧ every required review ACCEPT on the current digest ∧ (no approval
-  needed ∨ owner ACCEPT for this digest) → COMPLETE. `advance()` applies it; `completion_check()` reports it;
+  needed ∨ owner ACCEPT for this digest) → COMPLETE. `advance()` applies it;
 - a new delivery digest supersedes older verification/review/approval records;
 - `set_status()` never reaches COMPLETE except when the owner forces it with a note (persisted, rendered, logged).
 """
@@ -412,11 +412,6 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
                 warnings.append(f"{t.id}: artifact {a!r} looks like a placeholder ({{...}}, a..b, xx, _N) — fine if "
                                 "that is the real file name; otherwise use a glob such as S[1-6].yaml")
     return errors, warnings
-
-
-def artifact_errors(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
-    """Artifact entries no file can ever satisfy (artifact_problems errors)."""
-    return artifact_problems(tasks, root)[0]
 
 
 def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
@@ -916,11 +911,6 @@ def _evaluate(task: Task) -> tuple[TaskStatus, str]:
             return TaskStatus.IN_PROGRESS, f"owner response is {approvals[-1].response.value}"
     return TaskStatus.COMPLETE, "verified, reviewed and approved as required"
 
-
-def completion_check(task: Task) -> str | None:
-    """None when the task may COMPLETE; otherwise why not."""
-    target, note = _evaluate(task)
-    return None if target == TaskStatus.COMPLETE else note
 
 
 # ------------------------------------------------------------------ mutation helpers (all decide on the locked doc)

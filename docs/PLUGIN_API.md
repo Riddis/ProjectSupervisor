@@ -265,8 +265,8 @@ A dataclass, what `collect()` returns.
 | `digest: str \| None` | **reserved, unset; deprecated.** The loop computes a delivery's digest itself from `artifacts`; nothing reads this field, and no lane need set it. Removal is announced for the next major version |
 | `artifacts: list[str]` | root-relative paths of the files the job produced |
 | `notes: str` | free text for the owner |
-| `model`, `session_id: str \| None` | what ran, when a lane knows it |
-| `usage: dict` | measured usage, lane-defined |
+| `model`, `session_id: str \| None` | **reserved, unset.** No built-in lane sets either any more: nothing in the framework ever read them (R-25), so collecting them cost a parse and a dict lookup for no reader. A plugin lane may still set them for its own future reader |
+| `usage: dict` | **reserved, unset** for the same reason as `model`/`session_id` above; a plugin lane may still set it for its own future reader |
 | `error: str \| None` | why it failed |
 | `raw: dict` | the lane's raw result, kept with the record |
 | `reset_epoch: float \| None` | `DEFERRED` only: the earliest re-dispatch time |

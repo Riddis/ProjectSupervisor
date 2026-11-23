@@ -396,8 +396,8 @@ class ClaudeApiAdapter(Adapter):
         # that produced no structured object falls back to the envelope, which carries the error.
         obj = payload.get("result")
         return Result(status=payload.get("status", "FAILED"), artifacts=payload.get("artifacts", []),
-                      notes=payload.get("notes", ""), error=payload.get("error"), model=payload.get("model"),
-                      usage=payload.get("usage", {}), raw=obj if isinstance(obj, dict) else payload)
+                      notes=payload.get("notes", ""), error=payload.get("error"),
+                      raw=obj if isinstance(obj, dict) else payload)
 
 
 register(ClaudeApiAdapter())

@@ -102,17 +102,6 @@ def _read_projection_record(layout: Layout) -> dict:
     return {"projections": out, "legacy": legacy}
 
 
-def _recorded_projections(layout: Layout) -> dict[str, list[str]]:
-    """{plugin name: [root-relative paths]} currently recorded, for inspection and tests."""
-    out: dict[str, set[str]] = {}
-    for key, entry in _read_projection_record(layout)["projections"].items():
-        plugin = key.split(":", 1)[0]
-        out.setdefault(plugin, set()).update(entry["declared"])
-        if entry["rendered"]:
-            out[plugin].add(entry["rendered"])
-    return {k: sorted(v) for k, v in out.items()}
-
-
 def known_projection_paths(layout: Layout) -> set[str]:
     """Root-relative projection files recorded by earlier renders of this project, for the plugins project.yaml
     configures NOW. Rendering happens in the loop; verification may run in a child or after a restart, so what a
@@ -1018,13 +1007,13 @@ def _load_into(layout: Layout, reg: Registry) -> None:
                 setup(reg)
             finally:
                 reg._setting_up = None
-            if found.manifest is not None:
+            if found.legacy:                                 # found, usable, no manifest (discovery.Found.legacy)
+                reg.unmanifested.append(name)
+            else:
                 extra = _undeclared(found.manifest, reg._registered)
                 if extra:
                     raise PluginError(f"setup() registered what {found.manifest.source} does not declare in "
                                          f"provides: {', '.join(extra)}; nothing of it was kept")
-            else:
-                reg.unmanifested.append(name)
             reg._commit()
             reg.loaded.append(name)
         except BaseException as exc:                        # noqa: BLE001 - recorded; a required one blocks the loop

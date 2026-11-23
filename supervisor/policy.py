@@ -663,7 +663,7 @@ def find_secrets(text: str, layout: Layout | None = None) -> list[str]:
 
     Callers that *enforce* something must consult `secret_scan_problems()` as well, or use the one-scan path in
     `assert_packet_clean()`: like `secret_values()`, this answers "what was found", not "what is there"."""
-    return _find_in(text, _scan(layout)[0], layout)
+    return _find_in(text, secret_values(layout), layout)
 
 
 UNSCREENED_FIELD = "policy_unscreened"
@@ -677,7 +677,7 @@ def _redaction(layout: Layout | None = None):
     cfg = _clamped_secrets(layout)
     values, problems = _scan(layout)
     literals = [v for v in list(values.values()) + list(env_secret_values(layout).values()) if v]
-    return (str(cfg["redaction_placeholder"]), literals, secret_patterns(layout), problems,
+    return (placeholder(layout), literals, secret_patterns(layout), problems,
             max(1, int(cfg["min_value_length"])))
 
 

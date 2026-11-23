@@ -145,17 +145,6 @@ def phase_labels(layout: Layout) -> dict[int, str]:
     return out
 
 
-def plugins(layout: Layout) -> list[str]:
-    """Configured plugin names. Entries are a bare name or a mapping with `name` (and `required`, see
-    supervisor.plugins.specs); this returns the names only."""
-    names = []
-    for x in load(layout).get("plugins") or []:
-        name = x.get("name") if isinstance(x, dict) else x
-        if name:
-            names.append(str(name))
-    return names
-
-
 def ui_port(layout: Layout) -> int:
     try:
         return int((load(layout).get("ui") or {}).get("port") or 8790)

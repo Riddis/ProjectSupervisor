@@ -18,6 +18,16 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
   now uses `isdecimal()`, exactly the predicate `int()` itself parses.
 
+- **Plugin API: `Result.model`, `.session_id` and `.usage` are reserved now, not populated (R-25).** Every
+  built-in lane (`claude_cli`, `claude_api`, `codex_cli`) used to forward the model id, the CLI/API session id and
+  the measured token usage into the `Result` it returned; nothing in the framework ever had a reader for any of
+  the three (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so the plumbing cost a parse
+  and a dict lookup for no one. The three fields stay declared, with their documented defaults (`None`/`None`/
+  `{}`), so a plugin lane that already sets them keeps working unchanged; the built-in lanes simply stop setting
+  them. `docs/PLUGIN_API.md`'s `Result` section says so. This follows `Result.digest`'s own precedent for a
+  public field nothing reads: the signature stays and only the behaviour behind it changes, so no major version
+  is needed.
+
 - **Plugin API: `Registry.job_schema(adapter, model)`.** Additive. A plugin
   adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
   fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no

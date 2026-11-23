@@ -57,7 +57,7 @@ def classify_status(obj: dict) -> str:
     return status if status in ("COMPLETE", "PARTIAL", "BLOCKED", "FAILED") else "PARTIAL"
 
 
-def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw=None) -> Result:
+def limit_result(layout: Layout, engine: str, message: str, raw=None) -> Result:
     """A CLI-reported usage limit: record a conservative synthetic window unless a measured one already gates, then DEFERRED."""
     from .._vendor import usage_policy as up
     capacity.ensure(layout)
@@ -66,7 +66,7 @@ def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw
     if until is None:
         up.record(engine, [{"name": "cli_limit", "used_percent": 100, "reset_epoch": time.time() + FALLBACK_LIMIT_S}], message[:200])
         until = up.reserve_until(engine) or time.time() + FALLBACK_LIMIT_S
-    return Result(status="DEFERRED", error=f"usage limit reported by the CLI: {message[:200]}", session_id=session_id,
+    return Result(status="DEFERRED", error=f"usage limit reported by the CLI: {message[:200]}",
                   raw={**(raw or {}), "measured_window": measured}, reset_epoch=until)
 
 
@@ -484,21 +484,19 @@ class ClaudeCliAdapter(ProcessAdapter):
         if final.get("is_error"):
             diag += "\n" + text
             if final.get("subtype") == "error_max_turns":
-                return Result(status="FAILED", error="max turns reached", session_id=meta["session_id"], raw=meta)
+                return Result(status="FAILED", error="max turns reached", raw=meta)
             if LIMIT_RE.search(diag):                     # limits arrive as an is_error result; a limit is not a failure
-                return limit_result(layout, self.engine, text[-300:], session_id=meta["session_id"], raw=meta)
+                return limit_result(layout, self.engine, text[-300:], raw=meta)
             if AUTH_FAILURE_RE.search(diag):
                 return Result(status="FAILED", error="login_required: run `claude /login` on the workstation",
-                              session_id=meta["session_id"], raw=meta)
-            return Result(status="FAILED", error=f"CLI error: {text[:300]}", session_id=meta["session_id"],
-                          usage=meta["model_usage"] or {}, raw=meta)
+                              raw=meta)
+            return Result(status="FAILED", error=f"CLI error: {text[:300]}", raw=meta)
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
         except ValueError as exc:
             obj = self.follow_up(spec, meta["session_id"], str(exc))
             if obj is None:
-                return Result(status="FAILED", error="no structured result after follow-up", session_id=meta["session_id"],
-                              usage=meta["model_usage"] or {}, raw=meta)
+                return Result(status="FAILED", error="no structured result after follow-up", raw=meta)
         status = classify_status(obj)
         notes = str(obj.get("notes") or obj.get("summary") or "")
         error = None
@@ -509,8 +507,7 @@ class ClaudeCliAdapter(ProcessAdapter):
             obj["permission_denials"] = [str((d.get("tool_input") or {}).get("command", d.get("tool_name")))[:160]
                                          for d in denials if isinstance(d, dict)][:20]
         atomic_json(run_dir / "result.json", obj)
-        return Result(status=status, artifacts=list(obj.get("artifacts") or []), notes=notes, error=error,
-                      model=spec.get("model"), session_id=meta["session_id"], usage=meta["model_usage"] or {}, raw=obj)
+        return Result(status=status, artifacts=list(obj.get("artifacts") or []), notes=notes, error=error, raw=obj)
 
     def follow_up(self, spec, session_id, error: str = ""):
         """One tool-less resume asking only for the JSON block. `error` is the contract's own description of what

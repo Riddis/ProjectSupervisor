@@ -71,13 +71,13 @@ def test_an_accept_against_an_older_contract_rev_is_superseded_when_a_judged_fie
     _, role = _delivered_and_reviewed(layout)
     t = tasks.load(layout, "A")
     assert not t.delivery.reviews[-1].superseded
-    assert tasks.completion_check(t) is None, "the recorded ACCEPT already satisfies completion"
+    assert tasks._evaluate(t)[0] == TaskStatus.COMPLETE, "the recorded ACCEPT already satisfies completion"
 
     tasks.patch_task(layout, "A", {"tests": ["a new criterion"]}, actor="plan")   # tests is a judged field
 
     t2 = tasks.load(layout, "A")
     assert t2.delivery.reviews[-1].superseded, "a judged-set change must supersede the recorded ACCEPT"
-    assert tasks.completion_check(t2) == f"awaiting review from {role}"
+    assert tasks._evaluate(t2) == (TaskStatus.WAITING_FOR_REVIEW, f"awaiting review from {role}")
 
 
 def test_an_accept_against_an_older_contract_rev_stands_when_only_actions_changes(layout):
@@ -89,7 +89,7 @@ def test_an_accept_against_an_older_contract_rev_stands_when_only_actions_change
     t2 = tasks.load(layout, "A")
     assert t2.contract_rev == before_rev + 1, "actions is still a contract field: contract_rev moves"
     assert not t2.delivery.reviews[-1].superseded, "actions is outside the judged set: the ACCEPT still stands"
-    assert tasks.completion_check(t2) is None
+    assert tasks._evaluate(t2)[0] == TaskStatus.COMPLETE
 
 
 def test_a_verification_is_never_superseded_by_a_contract_change(layout):

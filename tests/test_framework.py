@@ -64,7 +64,7 @@ def test_project_yaml_is_stamped_with_name_and_version(fresh):
 def test_project_defaults_apply_without_a_file(tmp_path):
     layout = Layout(tmp_path)
     assert project.name(layout) == "Untitled project"
-    assert project.plugins(layout) == []
+    assert plugins.specs(layout) == []
 
 
 def test_template_contains_no_task_history_references():
@@ -209,7 +209,7 @@ def test_plugin_new_scaffolds_and_registers(fresh, monkeypatch):
     r = runner.invoke(app, ["plugin", "new", "mytool"])
     assert r.exit_code == 0, r.output
     assert (fresh / "plugins" / "mytool.py").exists()
-    assert project.plugins(Layout(fresh)) == ["mytool"]
+    assert plugins.specs(Layout(fresh)) == [("mytool", True)]
     plugins.reset()
     r = runner.invoke(app, ["plugin", "list"])
     assert "loaded mytool" in r.output
@@ -394,7 +394,7 @@ def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
     r = runner.invoke(app, ["plugin", "new", "demo_job"])
     assert r.exit_code == 0, r.output
     after = layout.project_file.read_text(encoding="utf-8")
-    assert project.plugins(layout) == ["demo_job"] and "demo_job" in after
+    assert plugins.specs(layout) == [("demo_job", True)] and "demo_job" in after
     for comment in ("# project.yaml - what makes this folder", "# checked by `supervisor doctor`", "# Phase labels only."):
         assert comment in before and comment in after
     assert after.count("#") == before.count("#")

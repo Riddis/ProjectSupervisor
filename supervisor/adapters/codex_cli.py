@@ -170,20 +170,20 @@ class CodexCliAdapter(ProcessAdapter):
         if LIMIT_RE.search(blob):
             layout = Layout(spec["root"])
             poll_capacity(layout)                                # measured windows if the RPC works, else synthetic (limit_result)
-            return limit_result(layout, self.engine, blob[-300:], session_id=session, raw=meta)
+            return limit_result(layout, self.engine, blob[-300:], raw=meta)
         if AUTH_FAILURE_RE.search(blob) or "codex login" in blob.lower() or "401 unauthorized" in blob.lower():
-            return Result(status="FAILED", error="login_required: run `codex login` on the workstation", session_id=session, raw=meta)
+            return Result(status="FAILED", error="login_required: run `codex login` on the workstation", raw=meta)
         if not completed or failed:
             return Result(status="FAILED", error=f"codex turn failed: {json.dumps(failed[-1]) if failed else 'no turn.completed'}"[:400],
-                          session_id=session, raw=meta)
+                          raw=meta)
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
         except ValueError:
-            return Result(status="FAILED", error="no structured result in codex answer", session_id=session, usage=usage, raw=meta)
+            return Result(status="FAILED", error="no structured result in codex answer", raw=meta)
         atomic_json(run_dir / "result.json", obj)
         return Result(status=classify_status(obj),
                       artifacts=list(obj.get("artifacts") or []), notes=str(obj.get("notes") or obj.get("summary") or ""),
-                      model=spec.get("model"), session_id=session, usage=usage, raw=obj)
+                      raw=obj)
 
 
 def poll_capacity(layout: Layout, max_age_s: float = 0) -> dict | None:

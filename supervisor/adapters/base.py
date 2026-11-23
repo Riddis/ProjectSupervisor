@@ -9,12 +9,13 @@ from pydantic import BaseModel
 @dataclass
 class Result:
     status: str                      # COMPLETE | PARTIAL | BLOCKED | FAILED | DEFERRED (capacity: re-queue, no attempt consumed)
-    digest: Optional[str] = None     # artifact digest the adapter computed (loop re-verifies)
+    digest: Optional[str] = None     # reserved, unset: the loop computes a delivery's digest itself; no lane need set
+                                     # this (deprecated, removal announced for the next major version)
     artifacts: list[str] = field(default_factory=list)
     notes: str = ""
-    model: Optional[str] = None
-    session_id: Optional[str] = None
-    usage: dict[str, Any] = field(default_factory=dict)
+    model: Optional[str] = None      # reserved: no built-in lane sets this any more (R-25, 2.9.0) -- nothing reads it
+    session_id: Optional[str] = None # reserved: no built-in lane sets this any more (R-25, 2.9.0) -- nothing reads it
+    usage: dict[str, Any] = field(default_factory=dict)  # reserved: no built-in lane sets this any more (R-25, 2.9.0)
     error: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
     reset_epoch: Optional[float] = None   # DEFERRED only: earliest re-dispatch time
