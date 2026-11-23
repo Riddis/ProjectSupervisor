@@ -4,6 +4,18 @@ Projects install the framework **editable** from a local clone (`pip install -e 
 commit is live in every project on that machine the next time a process starts. That is the point — one fix, every
 project — and it is also why the framework carries a version and migrations.
 
+## Supported upgrade floor
+
+A project may run `supervisor migrate` straight through to this release only from framework **2.0.0 or later**;
+one recording an older `framework_version` must first update to 2.0.0 by the ordinary steps above (pull or
+checkout its tag, reinstall, `supervisor migrate`, `supervisor doctor`, all against that older checkout) and only
+then continue updating from there — `supervisor migrate` refuses a project below the floor outright, naming it and
+the same path through it, rather than running a long-removed compatibility fallback that may no longer cover its
+shape correctly. 2.0.0 is where this floor sits because it was this framework's own "a later major release reads
+only the new names" release (the plugin rename, `CHANGELOG.md`'s `## 2.0.0` entry): every runtime fallback the
+review found still carrying an older shape promised exactly that cutover, so once a project is on 2.0.0 none of
+them has anything left to do.
+
 ## As a project owner
 
 You normally do nothing by hand. When the Control Center launches (`start_control_center.bat`) it fetches the
