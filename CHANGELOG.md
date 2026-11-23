@@ -3,7 +3,7 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
-## Unreleased
+## 2.9.0 — 2026-11-23
 
 - **A supported upgrade floor, and the compatibility shims it makes dead.** `supervisor migrate` still carries a
   project of any recorded version forward — the migration transforms themselves are unaffected — but a project
@@ -203,6 +203,96 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   `supervisor doctor` lists each declared resource with its current holder and waiter, and names a plan-selectable
   template whose own claim the project has not opened to a plan.
 
+- **Fixed: thirteen settings a `project.yaml` or `routing.yaml` could carry had no reader anywhere, and two
+  settings the loader already read had no documentation (R-26).** `description`, `repo.*`, `ui.title` and
+  `owner.name` (`project.yaml`), and `version`, `roles.<role>.active_from`, `roles.<role>.second_opinion` and
+  `resources.<name>.single_job` (`routing.yaml`) are gone from the loader, every shipped template and the setup
+  docs; the "one job at a time" rule `single_job` looked like it configured stays exactly what it already was,
+  `limits.max_resource_jobs` plus a job's own `gpu` flag — the two in-repo GPU-lane plugins now name that
+  rule in their own docstrings instead of the key nothing read. `roles.<role>.result_kinds` — documented as a
+  permission and, until now, never enforced — is implemented: `task import`, `task create` and `supervisor check`
+  warn, and a plan's `create_task`/`patch_contract` refuse (RF-18, the same as any other contract warning on that
+  path), when a role whose `result_kinds` is a non-empty list would be asked to produce a kind outside it; a role
+  with no `result_kinds` key at all, or an explicit `result_kinds: []` (the shipped `owner` and `conversation`
+  entries' own idiom for a lane with no result document — `adapter: human`, or a job that always sets a
+  non-document `result_kind`), is not checked. `claude_api.eligible_roles` and `job.api_credits`, already read,
+  are now documented (`docs/runbooks/claude_api.md`, `docs/TASK_CONTRACT.md`).
+
+  **Migration:** none added; `supervisor migrate` is unchanged. A `project.yaml` or `routing.yaml` carrying any of
+  the ten removed keys (`repo.*` is three) keeps loading exactly as before — the loader never read the key and
+  still does not — `doctor` now names it and says it is safe to delete, a warning and never a refusal.
+
+- **A diagnosis (or a human) can now propose a `plan` — a typed, six-operation document the framework itself
+  validates, journals and applies — instead of writing `new_task`/`wait_for` prose a human had to turn into tasks
+  by hand.** `supervisor.plans` is a closed vocabulary (`create_task`, `add_dependency`, `remove_dependency`,
+  `patch_contract`, `set_job`, `resume`) over a plan's own scope and monotonicity rules: `validate()` refuses the
+  whole document on any of 26 named codes — a plan authors no executable string (no `argv`/`cmd`/`fn`/`shell`
+  field exists anywhere in the schema for one to reach), a secret- or path-shaped value is refused and never
+  echoed back in the refusal, and a loosened contract field, a stale rev, a held subject or a graph cycle is
+  refused the same way. A validated plan is written to its own journal (`state/plans/<id>.yaml`) before anything
+  else is touched; `apply()` runs the applier's fixed order (create, dependency edits, contract patches, `set_job`,
+  `resume` — always last, so nothing is released before every other operation has landed) idempotently, persisting
+  each operation's own index to `done` before the next one starts, so a crash between any two operations resumes
+  on the next turn exactly where it stopped; a plan that cannot finish after `plan.max_resumes` attempts goes
+  `stuck` with one deduped owner item, nothing rolled back, and `cancel_plan` is the only way out of it. `set_job`
+  is the one operation that can change what a task runs, and it is bound to the same real preflight
+  (`config/job_templates.yaml`) a write-time job block gets, with the preflight transcript's own digest recorded on
+  the plan. `supervisor plan validate|apply|cancel|show <id>` (CLI) and a read-only `/plans`/`/plans/<id>` Control
+  Center page read and drive it.
+
+- **An inbox item's buttons now carry a typed effect, not a keyword a human-written label merely hinted at.** A
+  choice's label and detail are always rendered from its own effect (`plans.render_choice`, over a closed
+  twelve-effect vocabulary) rather than trusted as the caller's prose; an owner-only effect (`hold`,
+  `release_hold`, `cancel_task`, `resume`, `diagnose_now`) is checked for its required operand at creation, and a
+  plan-tier effect is validated as the exact plan `apply_choice` would propose, so a choice already refused can
+  never be offered. An answer reaches an effect only by naming a choice and carrying the digest of the choices it
+  was shown (refused otherwise as `choice_not_offered` or `choice_stale`, "reload"); free text that merely begins
+  with a choice's own keyword names nothing and is recorded as a comment, which reopens the item exactly as
+  before. A failed effect is recorded (`choice_applied: {ok: false, error}`) before any reopen is attempted, so an
+  answered item can no longer go quiet with neither an effect nor a record of why.
+
+- **A plan now carries one of three authority classes — routine repair applies on the validator's word alone,
+  shaping work waits for one other role's own read, spend reaches the owner as a button — instead of a validated
+  plan applying itself the instant it validates.** `plans.authority()` classifies a plan by the highest-ranked
+  class among its own operations; class A applies immediately once `resume_plans()` routes it; class B opens
+  exactly one `plan_review` job (an additive job kind, letter `p`, scoped to the subject's own attempt) for the
+  first configured `plan.approver` role that is not the proposer, whose `APPROVE`/`REVISE`/`OWNER` verdict applies
+  the plan, returns it to `refused` with findings, or opens an owner question; a plan the owner authority class
+  reaches, or a class B plan for which no approver is available, opens the owner's existing typed `apply_plan`
+  choice — never prose. `supervisor doctor` warns when `plan.approver` names a role `routing.yaml` does not
+  configure.
+
+- **A diagnosis `defer` now proposes a `plan` instead of a `new_task`/`wait_for` block a human had to act on by
+  hand.** A refused proposal gets exactly one more session of the same diagnosis job (`cause: continuation`,
+  carrying only the frozen evidence, the refused plan and its refusal list — never a fresh look at the store) to
+  correct it once; a plan refused a second time, or one the first session could not itself normalise into
+  something valid, reaches the owner with both versions and both refusal lists, and never offers `apply_plan` for
+  a plan already known to be refused. `diagnosis.RESULT_CONTRACT`'s `new_task`/`wait_for` keys,
+  `diagnosis.NEW_TASK_FIELDS`, `diagnosis.release_plan` and the defer-counting half of `DIAGNOSIS_BUDGET` are
+  retired; nothing reads them.
+
+- **The idle alert, the Overview's "Up next" card and a task's own page now all read one computed reason for why
+  a non-terminal task is not running, instead of the idle alert quoting an agent's last note about something else
+  while the other two said nothing at all.** `supervisor.why_not_runnable.why_not_runnable()` computes one of nine
+  closed codes (`unmet_dependency`, `phase_gate`, `role_inactive`, `lane_unregistered`, `preflight_failed`,
+  `capacity_floor`, `resource_claimed`, `awaiting_review`, `awaiting_approval`) from the same deterministic
+  primitives a delivery launch's own gate uses, with the same choices (`diagnose_now`, `cancel_task`, `hold`)
+  offered everywhere that code is read; the loop's own PAUSE/DRAIN/STOP decision is read once as a caller guard
+  ahead of it, never as a tenth code, since it blocks every task identically rather than naming a fact about the
+  one task shown.
+
+- **A task's contract now carries its own generation counter, `contract_rev`, bumped only by a real
+  contract-field change — and a recorded ACCEPT or owner approval is superseded the instant a judged-set field
+  (`tests`, `checks`, `acceptance`, `artifacts`, `reviewer`, `review_note`, `evidence`) changes under it.** This
+  closes a gap left open before the plan applier existed, when nothing yet wrote a task's contract without a
+  human in the loop: without a counter, an ACCEPT given under a looser contract would still count after a plan
+  tightened it. A non-judged contract field (`actions`,
+  `depends_on`, and the scope/routing/authority fields) still moves `contract_rev` but never supersedes anything
+  already recorded; `job` is outside `CONTRACT_FIELDS` entirely and never moves it. Every non-conversation job
+  record and the delivery brief state the `contract_rev` the dispatch was built from; a review packet's
+  prior-round block now names the contract change that superseded a pass instead of rendering the re-dispatched
+  review as if it were the digest's first.
+
 ## 2.8.0 — 2026-11-16
 
 - **Plugin API: additive, for the attempt-identity change.**
@@ -300,25 +390,6 @@ run (an un-migrated record is still read, by its own job id, through the fallbac
 start-up guard refuses to dispatch once any job record exists that is neither migration-stamped nor
 allocator-written, so a project upgrading in place runs `migrate attempts --dry-run` then `--apply` (reviewed
 first) in the same stopped window it upgrades in, before restarting the loop.
-
-- **Fixed: thirteen settings a `project.yaml` or `routing.yaml` could carry had no reader anywhere, and two
-  settings the loader already read had no documentation (R-26).** `description`, `repo.*`, `ui.title` and
-  `owner.name` (`project.yaml`), and `version`, `roles.<role>.active_from`, `roles.<role>.second_opinion` and
-  `resources.<name>.single_job` (`routing.yaml`) are gone from the loader, every shipped template and the setup
-  docs; the "one job at a time" rule `single_job` looked like it configured stays exactly what it already was,
-  `limits.max_resource_jobs` plus a job's own `gpu` flag — the two in-repo GPU-lane plugins now name that
-  rule in their own docstrings instead of the key nothing read. `roles.<role>.result_kinds` — documented as a
-  permission and, until now, never enforced — is implemented: `task import`, `task create` and `supervisor check`
-  warn, and a plan's `create_task`/`patch_contract` refuse (RF-18, the same as any other contract warning on that
-  path), when a role whose `result_kinds` is a non-empty list would be asked to produce a kind outside it; a role
-  with no `result_kinds` key at all, or an explicit `result_kinds: []` (the shipped `owner` and `conversation`
-  entries' own idiom for a lane with no result document — `adapter: human`, or a job that always sets a
-  non-document `result_kind`), is not checked. `claude_api.eligible_roles` and `job.api_credits`, already read,
-  are now documented (`docs/runbooks/claude_api.md`, `docs/TASK_CONTRACT.md`).
-
-  **Migration:** none added; `supervisor migrate` is unchanged. A `project.yaml` or `routing.yaml` carrying any of
-  the ten removed keys (`repo.*` is three) keeps loading exactly as before — the loader never read the key and
-  still does not — `doctor` now names it and says it is safe to delete, a warning and never a refusal.
 
 ## 2.7.0 — 2026-11-15
 
