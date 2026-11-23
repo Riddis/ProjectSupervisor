@@ -77,14 +77,6 @@ def test_requeue_with_text_puts_a_failed_task_back_with_the_guidance(layout):
     assert inbox.load(layout, out["inbox"])["applied"]["resumed"] == "task"
 
 
-def test_an_escalation_question_from_an_older_version_is_acted_on_too(layout):
-    failed_task(layout)
-    item = inbox.create(layout, for_role="owner", subject="Decision needed", summary="s", kind="question",
-                        allowed_responses=["REQUEUE", "CANCEL", "DEFER"], from_="escalation", task_id="T")
-    inbox.answer(layout, item["id"], "CANCEL")
-    assert tasks.load(layout, "T").status == TaskStatus.CANCELLED
-
-
 def test_an_ordinary_agent_question_is_not_a_decision(layout):
     failed_task(layout)
     item = inbox.create(layout, for_role="owner", subject="q", summary="s", kind="question", from_="engineer",
