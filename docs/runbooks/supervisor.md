@@ -8,9 +8,9 @@
 - Single writer, two kinds of mutating CLI command. Most task commands (`task set-status/create/set-job/deliver/
   verify/review/approve/advance/note/import`, `pause/resume/stop/reload/drain`, `cmd <kind> <json>`) go through
   `submit_or_apply`: with a loop running they queue a command file the loop applies; without one the CLI applies
-  them directly. The few that write `state/` themselves (`task migrate-ownership`, `gate set/ack`,
-  `inbox answer`, `migrate`) refuse while a supervisor holds `state/.lock`; stop the loop first, or use the Control
-  Center / `supervisor cmd` equivalents (`gate.set`, `gate.ack`).
+  them directly. The few that write `state/` themselves (`gate set/ack`, `inbox answer`, `migrate`) refuse while a
+  supervisor holds `state/.lock`; stop the loop first, or use the Control Center / `supervisor cmd` equivalents
+  (`gate.set`, `gate.ack`).
 - Control (any shell or the Control Center): `supervisor pause` (dispatch stops at the next iteration, running jobs
   finish), `resume`, `stop`, `reload`, `drain [--shutdown]`. These queue command files in `state/commands/`; the loop
   applies them within one iteration (≤ 5 s; immediately via the wake file). With no loop running the CLI applies

@@ -35,9 +35,8 @@ CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "a
                    "approval_note", "cost_category", "evidence", "test_roots", "needs"]
 # A refresh is a whole-contract replace: a seed row that omits a CONTRACT_FIELDS key clears it (R-07d, by design —
 # use patch_task for a change to one field without resending the rest). These four are the exception: once set,
-# they outlive a seed row that does not mention them, the same way the store itself (migrate_ownership) may set
-# owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
-# refresh touching only an unrelated field would have silently reset them to their defaults.
+# they outlive a seed row that does not mention them. evidence/test_roots joined CONTRACT_FIELDS in this change;
+# without the exemption a refresh touching only an unrelated field would have silently reset them to their defaults.
 REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots", "needs"})
 # `needs` joins the sticky set because it coordinates a launch (a budget, a lane
 # match) rather than describing the work's shape, exactly as `owned_paths` does, and a refresh that touches an
@@ -83,10 +82,10 @@ def _contract_fields_changed(doc: dict, before: dict) -> list[str]:
 
 def _bump_contract_rev(doc: dict, before: dict) -> None:
     """The one function that moves `contract_rev`: every writer of a CONTRACT_FIELDS value calls this last, after
-    its own mutation — `_apply_patch`/`_refresh_contract` (the patch/seed-refresh path), and the two writers that
-    set a contract field without going through either, named at their own call site rather than through a
-    generic chokepoint (`commands.apply_job`'s `cost_category`, `migrate_ownership`'s `owned_paths`) — nowhere
-    else bumps it by hand. Distinct from `rev`, which `store.update` bumps on every write including a status
+    its own mutation — `_apply_patch`/`_refresh_contract` (the patch/seed-refresh path), and the one writer that
+    sets a contract field without going through either, named at its own call site rather than through a
+    generic chokepoint (`commands.apply_job`'s `cost_category`) — nowhere else bumps it by hand. Distinct from
+    `rev`, which `store.update` bumps on every write including a status
     change, an attempt entry or a note (`rev` answers "did this document move"); `contract_rev` answers "did the
     brief move", and only a real value change in CONTRACT_FIELDS counts, each side read through
     `_contract_fields_changed`/`_contract_value` so an absent key and its own default compare equal.
@@ -185,8 +184,9 @@ class TaskError(ValueError):
 
 def ownership_errors(tasks: Iterable[Task], layout: Layout | None = None) -> list[str]:
     """A task whose delivery runs on a model lane must say what it owns — explicit roots, or `["."]` for
-    exclusive mode. Applied to tasks being created or imported; the runtime (supervisor.gate) treats an old record
-    without it as exclusive, and `migrate_ownership()` makes that explicit."""
+    exclusive mode. Applied to tasks being created or imported — this has refused one lacking it since 1.0.0, so
+    below the supported upgrade floor (2.0.0, docs/UPDATING.md) there is nothing left that could still lack it —
+    and the runtime (supervisor.gate) treats a record without it as exclusive regardless."""
     from . import scheduler                      # local: scheduler imports this module
     return [f"{t.id}: a {scheduler.adapter_name(t, layout)} task must declare owned_paths (explicit roots, or ['.'] for exclusive mode)"
             for t in tasks if scheduler.writing_lane(t, layout) and not t.owned_paths]
@@ -807,30 +807,6 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     return out
 
 
-def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
-    """One-off migration: every live task on a writing lane that declares no ownership becomes explicitly exclusive
-    (`owned_paths: ["."]`), with a note in its record. Terminal tasks are left alone. Idempotent.
-
-    `owned_paths` is a CONTRACT_FIELDS member: this always moves
-    it from empty to `["."]` for a task the loop above selected, so the write below always bumps `contract_rev`
-    — a reviewer who already judged the task is now reading a scope that just narrowed."""
-    from . import scheduler
-    from .models.task import EXCLUSIVE, TERMINAL
-    migrated = []
-    for t in load_all(layout).values():
-        if t.status in TERMINAL or t.owned_paths or not scheduler.writing_lane(t, layout):
-            continue
-
-        def fn(doc):
-            before = dict(doc)
-            doc["owned_paths"] = [EXCLUSIVE]
-            doc.setdefault("notes", []).append({"at": store.now_iso(), "by": actor,
-                                                "note": "owned_paths set to ['.'] (exclusive mode) by migrate-ownership"})
-            _bump_contract_rev(doc, before)
-        _update(layout, t.id, fn)
-        migrated.append(t.id)
-    log(layout, "ownership_migrated", actor, tasks=migrated)
-    return {"migrated": migrated}
 
 
 # ------------------------------------------------------------------ logging
@@ -927,10 +903,9 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
     every stored writer at once: this is also the one function several test fixtures use to set up a document's
     `artifacts`/`owned_paths`/... directly as a shortcut, with no contract-change intent at all — bumping on
     every one of those would move `contract_rev` and, worse, supersede a live review for a reason no production
-    writer ever gave. A caller whose write IS a real contract change (`commands.apply_job`'s `cost_category`,
-    `migrate_ownership`'s `owned_paths`) calls `_bump_contract_rev` itself, the same way
-    `_apply_patch`/`_refresh_contract` do around their own mutation — named at each of those two call sites, not
-    folded in here."""
+    writer ever gave. A caller whose write IS a real contract change (`commands.apply_job`'s `cost_category`)
+    calls `_bump_contract_rev` itself, the same way `_apply_patch`/`_refresh_contract` do around their own
+    mutation — named at its own call site, not folded in here."""
     def wrapped(doc):
         from . import preflight as preflight_mod
         before_job = preflight_mod.block_digest(doc.get("job") or {})

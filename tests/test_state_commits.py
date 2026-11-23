@@ -152,7 +152,7 @@ def test_migrate_commits_what_it_rewrote_but_not_a_file_that_had_changes_before(
     record.write_text(re.sub(r"(?m)^cost_category: .*$", "cost_category: local_gpu",
                              record.read_text(encoding="utf-8")), encoding="utf-8")
     assert "cost_category: local_gpu" in record.read_text(encoding="utf-8")
-    (layout.root / "project.yaml").write_text('name: "Demo"\nframework_version: "1.12.0"\n', encoding="utf-8")
+    (layout.root / "project.yaml").write_text('name: "Demo"\nframework_version: "2.1.0"\n', encoding="utf-8")   # at or above the supported upgrade floor (2.0.0)
     routing = layout.config / "routing.yaml"
     routing.parent.mkdir(parents=True, exist_ok=True)
     routing.write_text("# routing\n", encoding="utf-8")

@@ -30,8 +30,6 @@ ACTIVE_PHASES = ("SUBMITTED", "RUNNING")
 def limits(layout: Layout) -> dict:
     out = dict(DEFAULT_LIMITS)
     lim = dict(routing_config.load(layout).get("limits") or {})
-    if "max_gpu_jobs" in lim and "max_resource_jobs" not in lim:      # pre-1.0 name
-        lim["max_resource_jobs"] = lim.pop("max_gpu_jobs")
     out.update(lim)
     cats = out.get("resource_cost_categories")
     out["resource_cost_categories"] = [str(c) for c in (cats if isinstance(cats, (list, tuple)) else [cats] if cats else [])]

@@ -6,15 +6,15 @@ their phase-2 signatures:
 - `plugin.config(layout, <legacy section>)` is the sub-section of that name (a plugin `render` reads `encoder`
   this way).
 
-Until the migration has run (step 7), the values still come from the old top-level sections the manifest lists in
-`config.legacy_sections`, with a DeprecationWarning: the section named like the identity merges in at the top, any
-other nests under its own name. `plugin.resources()` reads `resources.gpu`, else the old top-level `gpu` (warned); an
-plugin with a manifest sees only the resources it declares in `requires.resources`. Plugins without a manifest
-keep the phase-2 facade unchanged (tests/test_plugin_config.py)."""
+`plugin.resources()` reads `resources.gpu`; a plugin with a manifest sees only the resources it declares in
+`requires.resources`. Plugins without a manifest keep the phase-2 facade unchanged (tests/test_plugin_config.py).
+The pre-1.12.0 reads of the top-level sections `config.legacy_sections` names, and of a top-level `gpu`, are gone
+(2.9.0, the supported upgrade floor: `supervisor migrate` has already moved them by the time a project reaches
+2.0.0) — `legacy_sections` is still a manifest field, validated the same way at load time
+(tests/test_migrations_phase3.py), it is just no longer a second place this facade reads from."""
 from __future__ import annotations
 
 import sys
-import warnings
 
 import pytest
 
@@ -81,17 +81,17 @@ def test_the_plugins_own_section_is_read_validated_and_completed_by_its_schema(t
     assert read["resources"] == {"gpu": {"usable_vram_floor_mb": 6500}}
 
 
-def test_before_the_migration_the_legacy_sections_are_read_with_a_warning(tmp_path):
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        reg, read = load(tmp_path, {"notes": {"base_url": "http://127.0.0.1:9"}, "media": {"binary": "avconv"},
-                                    "gpu": {"usable_vram_floor_mb": 6000}})
-    assert reg.loaded == ["notes"]
-    assert read["whole"]["base_url"] == "http://127.0.0.1:9" and read["media"]["binary"] == "avconv"
-    assert read["resources"] == {"gpu": {"usable_vram_floor_mb": 6000}}
-    texts = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
-    assert any("plugins.notes" in t and "supervisor migrate" in t for t in texts)
-    assert any("resources.gpu" in t for t in texts)
+def test_old_top_level_sections_are_no_longer_read_a_project_below_the_floor_must_migrate_first(tmp_path):
+    """Pre-1.12.0 top-level `notes`/`media`/`gpu` sections used to be read with a DeprecationWarning until
+    `supervisor migrate` moved them; below the supported floor (2.0.0, docs/UPDATING.md) that migration has not
+    necessarily run, but this facade no longer carries the fallback that papered over it — `plugins.notes` reads
+    empty, so the schema's required `base_url` is missing and the plugin fails to load, the same as any other
+    project whose config omits a required field, rather than silently and warningly finding it at the old names."""
+    reg, _read = load(tmp_path, {"notes": {"base_url": "http://127.0.0.1:9"}, "media": {"binary": "avconv"},
+                                 "gpu": {"usable_vram_floor_mb": 6000}})
+    assert not reg.loaded
+    error = next(e for e in reg.errors if e.startswith("notes:"))
+    assert "plugins.notes" in error and "base_url" in error
 
 
 @pytest.mark.parametrize("required", [True, False], ids=["required", "optional"])

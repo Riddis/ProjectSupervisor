@@ -249,11 +249,11 @@ def test_doctor_on_a_fresh_project_reports_project_state_and_routing(fresh):
 def test_doctor_flags_a_framework_version_mismatch_and_migrate_fixes_it(fresh):
     layout = Layout(fresh)
     raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
-    raw["framework_version"] = "0.9.0"
-    project.write(layout, raw)
+    raw["framework_version"] = "2.1.0"              # at or above the supported upgrade floor (2.0.0); see
+    project.write(layout, raw)                      # test_dead_shims_and_handlers_2_9_0.py for the floor itself
     cfg = layout.config / "routing.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace("max_resource_jobs", "max_gpu_jobs"), encoding="utf-8")
-    assert "0.9.0" in doctor.check_project(layout).detail
+    assert "2.1.0" in doctor.check_project(layout).detail
     notes = migrations.run(layout, dry_run=True)
     assert any("max_gpu_jobs" in n for n in notes) and any("framework_version" in n for n in notes)
     assert "max_gpu_jobs" in cfg.read_text(encoding="utf-8")       # dry run wrote nothing
@@ -400,12 +400,15 @@ def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
     assert after.count("#") == before.count("#")
 
 
-def test_the_old_limit_name_is_still_understood_at_runtime(fresh):
+def test_the_old_limit_name_is_no_longer_understood_at_runtime_only_migrate_renames_it(fresh):
+    """2.9.0 removed gate.limits()'s own pre-1.0 fallback (below the supported floor, docs/UPDATING.md): the old
+    name now just sits unrecognised until `supervisor migrate` renames it (test_doctor_flags_a_framework_version_
+    mismatch_and_migrate_fixes_it, above, covers that migration)."""
     from supervisor import gate
     layout = Layout(fresh)
     cfg = layout.config / "routing.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace("max_resource_jobs: 1", "max_gpu_jobs: 3"), encoding="utf-8")
-    assert gate.limits(layout)["max_resource_jobs"] == 3
+    assert gate.limits(layout)["max_resource_jobs"] == gate.DEFAULT_LIMITS["max_resource_jobs"]   # unrenamed now
 
 
 def test_control_center_start_refuses_on_a_version_mismatch(fresh, monkeypatch):

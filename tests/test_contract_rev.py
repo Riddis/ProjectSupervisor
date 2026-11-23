@@ -128,7 +128,10 @@ def test_the_job_record_and_the_delivery_brief_state_the_contract_rev_they_were_
 
 def test_apply_jobs_cost_category_write_moves_contract_rev(layout):
     """`commands.apply_job` writes `cost_category` (a CONTRACT_FIELDS member) through `tasks._update`, never
-    through `_apply_patch` — it must still reach `_bump_contract_rev`, not only a `patch_task` call."""
+    through `_apply_patch` — it must still reach `_bump_contract_rev`, not only a `patch_task` call. (2.9.0
+    removed `migrate_ownership`, the one other such writer this block used to cover alongside this one —
+    below the supported upgrade floor, docs/UPDATING.md, no live task can still lack the `owned_paths`
+    `ownership_errors` has refused at creation since 1.0.0.)"""
     make_task(layout, "A", cost_category="deterministic")
     before = tasks.load(layout, "A")
 
@@ -136,21 +139,6 @@ def test_apply_jobs_cost_category_write_moves_contract_rev(layout):
 
     after = tasks.load(layout, "A")
     assert after.cost_category.value == "codex"
-    assert after.contract_rev == before.contract_rev + 1
-
-
-def test_migrate_ownerships_owned_paths_write_moves_contract_rev(layout):
-    """`migrate_ownership` writes `owned_paths` (a CONTRACT_FIELDS member) through `tasks._update` too — the
-    same bypass as the case above, a different writer, reused from
-    test_execution_safeguards.test_migrate_ownership_makes_live_writing_tasks_explicitly_exclusive's own setup."""
-    make_task(layout, "A")   # conftest.make_task's default cost_category ("claude") is a writing lane
-    before = tasks.load(layout, "A")
-
-    out = tasks.migrate_ownership(layout)
-
-    assert out["migrated"] == ["A"]
-    after = tasks.load(layout, "A")
-    assert after.owned_paths == ["."]
     assert after.contract_rev == before.contract_rev + 1
 
 

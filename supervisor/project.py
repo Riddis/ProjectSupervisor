@@ -7,9 +7,23 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from packaging.version import InvalidVersion, Version
 
 from . import __version__, store, yaml_edit
 from .paths import Layout
+
+# docs/UPDATING.md, "Supported upgrade floor": `supervisor migrate` still carries a project of any recorded
+# version forward (the migration transforms themselves are kept, not floor-gated), but below this version the
+# runtime no longer carries a compatibility fallback for every shape a migration already rewrites (the 2.9.0
+# dead-code closure) — so a project must migrate before it runs, not merely before a report calls it current.
+SUPPORTED_FLOOR = "2.0.0"
+
+
+def below_floor(recorded: str) -> bool:
+    try:
+        return Version(recorded) < Version(SUPPORTED_FLOOR)
+    except InvalidVersion:
+        return False                   # an unparsable version is `problem`'s to report, not this one's
 
 # `write` changes only what differs (supervisor.yaml_edit): project.yaml is born from the commented template, and
 # the comments and the owner's layout are what most owners read, so an update (migration, `plugin new`) keeps
@@ -167,11 +181,19 @@ def write(layout: Layout, doc: dict) -> Path:
 
 def version_mismatch(layout: Layout) -> str | None:
     """A one-line note when project.yaml cannot be trusted (see `problem`) or records a framework version other
-    than the installed one, else None. The doctor's project check and the Control Center's Start use it."""
+    than the installed one, else None. The doctor's project check and the Control Center's Start use it. Below
+    the supported upgrade floor the note names it and the path through it, rather than only "run migrate" —
+    `supervisor migrate` still takes the project the rest of the way there in the same one step, same as any
+    other mismatch; what changes is that the runtime no longer tolerates the gap silently in the meantime."""
     note = problem(layout)
     if note:
         return note
     recorded = str(load(layout).get("framework_version") or "")
+    if recorded and below_floor(recorded):
+        return (f"project.yaml records framework {recorded}, below the supported upgrade floor {SUPPORTED_FLOOR} "
+                f"(docs/UPDATING.md, \"Supported upgrade floor\") — run `supervisor migrate` now: it carries a "
+                f"project of any recorded version to {__version__} in one step, the same command as any other "
+                f"version mismatch")
     if recorded and recorded != __version__:
         return f"project.yaml records framework {recorded}; installed {__version__} — run `supervisor migrate`"
     return None

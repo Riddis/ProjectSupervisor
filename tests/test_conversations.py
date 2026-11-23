@@ -44,7 +44,7 @@ def routing(layout):
     (layout.config / "routing.yaml").write_text(yaml.safe_dump({
         "roles": {"conversation": {"adapter": "claude_cli", "model": "opus", "effort": "medium", "tools": "reader"},
                  "senior_pm": {"adapter": "claude_cli", "model": "opus", "effort": "high", "tools": "writer"}},
-        "limits": {"max_agent_jobs": 2, "max_gpu_jobs": 1}}), encoding="utf-8")
+        "limits": {"max_agent_jobs": 2, "max_resource_jobs": 1}}), encoding="utf-8")
     return layout
 
 

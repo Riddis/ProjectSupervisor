@@ -5,6 +5,29 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 ## Unreleased
 
+- **A supported upgrade floor, and the compatibility shims it makes dead.** `supervisor migrate` still carries a
+  project of any recorded version forward — the migration transforms themselves are unaffected — but a project
+  must run it before it runs the loop: below framework 2.0.0 (the plugin rename, whose own warning promised "a
+  later major release reads only the new names"), the doctor's project check and the Control Center's Start now
+  name the floor and the path through it (`docs/UPDATING.md`, "Supported upgrade floor") rather than the ordinary
+  version-mismatch note. Seven runtime fallbacks that existed only to carry a shape a migration already rewrites
+  are gone, each checked against the floor on its own terms: `gate.limits()`'s pre-1.0 `max_gpu_jobs` reader, the
+  1.2.1 flat/by-plugin projection-cache shapes (self-heals regardless), a model lane's pre-1.7.0 spec missing
+  `idle_s` (such a job cannot still be open), a pre-1.4.0 question-shaped inbox decision item, a release tag
+  naming only the pre-2.0.0 contract file names, and the one-off `tasks.migrate_ownership` / `task
+  migrate-ownership` (import has refused a task with no `owned_paths` since 1.0.0).
+- **Plugin API: `config()` and `resources()` no longer fall back to the pre-1.12.0 config shapes (compatible).**
+  Until `supervisor migrate` had moved them, `config(layout, <legacy section>)` also read the manifest's
+  `config.legacy_sections` straight off their old top-level routing.yaml sections, and `resources(layout)` fell
+  back to an old top-level `gpu`, each with a `DeprecationWarning`. Below the supported upgrade floor (2.0.0)
+  neither fallback is reached any more; both functions read only `plugins.<identity>` / `resources.gpu`, exactly
+  as documented for a project already migrated. `config.legacy_sections` is still a manifest field (it still
+  names a section's own sub-parts); it is simply no longer a second place either function reads from.
+- **`supervisor lane reset <lane>` and the generic command's own entry point.** `lane.reset` had no CLI
+  subcommand and no button, only `supervisor cmd lane.reset` (the framework review's "Handlers with no
+  producer", alongside `issue.resolve`, which got its own entry point in an earlier release). Queued like every
+  other command; the generic path keeps working unchanged.
+
 - **Fixed: five small items from the framework review (R-28).** `runtime.heartbeat` now records the writer's
   own `{pid, create_time}`; `runtime.is_live` believes a document with that recorded only while the exact
   process is still running, so a turn of any length (a repo-wide snapshot, a git commit, a whole verification)

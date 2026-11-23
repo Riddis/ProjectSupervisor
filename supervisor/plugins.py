@@ -77,8 +77,11 @@ PROJECTIONS_FILE = "projection_paths.json"          # state/runtime/: projection
 
 def _read_projection_record(layout: Layout) -> dict:
     """The projection record as written: {"projections": {"<plugin>:<fn>": {"declared": [...], "rendered": path|None}},
-    "legacy": [...]}. A 1.2.1 file (`paths`: a flat list, unattributed) is carried as `legacy` until every projection
-    of the current registry has rendered once, so an upgrade never loses the exclusions of untouched views."""
+    "legacy": [...]}. `legacy` is carried until every projection of the current registry has rendered once, so an
+    upgrade never loses the exclusions of untouched views; the 1.2.1 shapes it replaced (a flat `paths` list, or
+    the interim `by_plugin` mapping) self-heal the same way and are gone below the supported floor (2.9.0,
+    docs/UPDATING.md) — a record still carrying only one of them is treated as carrying no legacy entries at all,
+    which the one render after an upgrade would have done to it anyway."""
     try:
         data = read_json(layout.runtime / PROJECTIONS_FILE)
     except (OSError, ValueError):
@@ -93,12 +96,8 @@ def _read_projection_record(layout: Layout) -> dict:
         declared = entry.get("declared") if isinstance(entry.get("declared"), list) else []
         rendered = entry.get("rendered") if isinstance(entry.get("rendered"), str) else None
         out[str(key)] = {"declared": sorted({str(x) for x in declared}), "rendered": rendered}
-    legacy = data.get("legacy") if isinstance(data.get("legacy"), list) else data.get("paths")   # 1.2.1 format
+    legacy = data.get("legacy")
     legacy = sorted({str(x) for x in legacy}) if isinstance(legacy, list) else []
-    # 1.2.1.x interim format: {"by_plugin": {plugin: [paths]}} - attributed to the plugin but not the projection
-    by_ext = data.get("by_plugin")
-    if isinstance(by_ext, dict) and not projections:
-        legacy = sorted(set(legacy) | {str(x) for v in by_ext.values() if isinstance(v, list) for x in v})
     return {"projections": out, "legacy": legacy}
 
 

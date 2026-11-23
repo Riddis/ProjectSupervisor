@@ -128,14 +128,15 @@ def test_plain_process_jobs_keep_their_cap_and_get_no_idle_limit(layout):
 
 # ------------------------------------------------------------------ model lanes
 
-def test_a_session_prepared_before_the_change_moves_onto_the_new_policy(tmp_path):
-    started = time.time() - 3500
-    spec = {"root": str(tmp_path), "role": "engineer", "timeout_s": 3600, "run_dir": str(tmp_path)}   # no idle_s
-    handle = {"started": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(started)), "deadline": started + 3600}
-    deadline, idle_s, _ = model_limits(REGISTRY["claude_cli"], spec, handle)
-    assert deadline == pytest.approx(started + 21600, abs=2) and idle_s == 1200
-    chat = dict(spec, timeout_s=600)                                   # a deliberate cap is kept
-    assert model_limits(REGISTRY["claude_cli"], chat, {**handle, "deadline": started + 600})[0] == started + 600
+def test_a_model_lane_spec_resolves_through_the_process_adapter(tmp_path):
+    """`model_limits` (claude_cli's `.limits`) is a thin wrap of `ProcessAdapter.limits` now that every spec a
+    model lane prepares carries `idle_s` (the pre-1.7.0 fallback for one that did not is gone below the supported
+    floor, docs/UPDATING.md): the deliberate chat-turn cap (timeout_s=600) is still kept, from the handle alone."""
+    started = time.time() - 100
+    spec = {"root": str(tmp_path), "role": "engineer", "timeout_s": 600, "idle_s": 1200, "idle_cpu_s": 5.0,
+           "run_dir": str(tmp_path)}
+    handle = {"started": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(started)), "deadline": started + 600}
+    assert model_limits(REGISTRY["claude_cli"], spec, handle) == (started + 600, 1200, 5.0)
 
 
 class ModelLane(ProcessAdapter):
@@ -251,112 +252,6 @@ def test_control_center_shows_the_cap_and_extends_it(layout):
     rows = now_running(jobs.open_records(layout), tasks.load_all(layout), now=started + 600)
     assert rows[0]["timeout_s"] == 21600 + 3600 and rows[0]["extended_s"] == 3600
     assert "Extend +1h" in client.get("/agents/T.a1").text
-
-
-# ------------------------------------------------------------------ upgrade edges (review of 1.7.0)
-
-class LegacyClaude(ProcessAdapter):
-    """The real subprocess path with the real claude_cli limits (model_limits): no model client is involved."""
-    name = "claude_cli"
-    handoff_before_cap = True
-    limits = model_limits
-
-
-def _legacy_spec(tmp_path, code):
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    return {"argv": [sys.executable, "-c", code], "timeout_s": 3600, "run_dir": str(run_dir),   # no idle_s: pre-1.7.0
-            "root": str(tmp_path), "role": "engineer", "attempt_id": "L.a1"}
-
-
-def _iso(epoch: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(epoch))
-
-
-def _wait_growth(run_dir: Path, seconds: float = 10) -> None:
-    out, end = run_dir / "stdout.jsonl", time.time() + seconds
-    while time.time() < end and not (out.exists() and out.stat().st_size):
-        time.sleep(0.05)
-
-
-def test_a_busy_legacy_session_survives_its_first_collect(tmp_path):
-    """Adopted after the upgrade 30 minutes into its run (idle limit 20 min), with no activity.json yet and its old
-    deadline still ahead: the first look must not call it idle while its output is growing."""
-    ad = LegacyClaude()
-    spec = _legacy_spec(tmp_path, "import time\nfor i in range(400):\n    print(i, flush=True); time.sleep(0.05)")
-    handle = ad.submit(spec)
-    try:
-        handle["started"] = _iso(time.time() - 1800)
-        handle["deadline"] = time.time() + 1800
-        _wait_growth(Path(spec["run_dir"]))
-        assert not (Path(spec["run_dir"]) / timeouts.ACTIVITY_FILE).exists()
-        assert ad.collect(spec, handle) is None                        # busy: kept running
-        time.sleep(0.3)
-        assert ad.collect(spec, handle) is None
-        assert time.time() - timeouts.read_activity(spec["run_dir"]) < 5
-    finally:
-        ad.terminate(handle)
-
-
-def test_a_quiet_legacy_session_is_still_stopped_after_a_full_idle_window(tmp_path):
-    import yaml
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "routing.yaml").write_text(yaml.safe_dump({"timeouts": {"idle_s": 1}}), encoding="utf-8")
-    ad = LegacyClaude()
-    spec = _legacy_spec(tmp_path, "import time; time.sleep(30)")
-    handle = ad.submit(spec)
-    try:
-        handle["started"] = _iso(time.time() - 1800)                   # long past the 1 s idle limit
-        assert ad.collect(spec, handle) is None                        # first sample: the window opens now
-        res = _wait_result(ad, spec, handle, 10)
-        assert res is not None and res.raw == {"timeout": "idle"}
-    finally:
-        ad.terminate(handle)
-
-
-def _legacy_job(layout, started):
-    run_dir = layout.runs / "T" / "T.a1"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    make_task(layout, "T")
-    handle = {"kind": "process", "pid": 999999, "create_time": 0, "started": _iso(started), "deadline": started + 3600}
-    jobs.prepare(layout, "T", "T.a1", "claude_cli", {"run_dir": str(run_dir), "root": str(layout.root),
-                                                     "role": "engineer", "timeout_s": 3600})   # pre-1.7.0 spec
-    jobs.set_phase(layout, "T.a1", "RUNNING", handle=handle)
-    atomic_json(run_dir / "status.json", {"status": "RUNNING", **handle})
-    return run_dir
-
-
-def test_extend_on_a_legacy_session_extends_its_effective_cap(layout):
-    """5h55m into a pre-1.7.0 session: the effective (six-hour) cap is 5 min away and the session was asked for its
-    handoff. Extend must add the hour to that cap, record it, show it, and withdraw the request."""
-    import yaml
-    from supervisor.ui.routes.agents import _enrich
-    from supervisor.ui.routes.overview import now_running
-    # Two genuinely separate requests for another hour, not the rapid-click burst timeouts.extend_dedupe_s exists
-    # to collapse (see test_a_second_same_duration_extend_inside_the_window_is_a_no_op) -- disabled here so both
-    # register.
-    layout.config.mkdir(parents=True, exist_ok=True)
-    (layout.config / "routing.yaml").write_text(yaml.safe_dump({"timeouts": {"extend_dedupe_s": 0}}), encoding="utf-8")
-    now = time.time()
-    started = now - (5 * 3600 + 55 * 60)
-    run_dir = _legacy_job(layout, started)
-    effective = timeouts.effective_limits("claude_cli", jobs.read(layout, "T.a1")["spec"], jobs.read(layout, "T.a1")["handle"])[0]
-    assert effective == pytest.approx(started + 21600, abs=2)
-    atomic_json(run_dir / "HANDOFF_REQUEST.json", {"requested": True, "reason": "time limit"})
-    out = commands.HANDLERS["agent.extend"](layout, {"attempt_id": "T.a1", "_id": "c1"}, "owner-ui")
-    assert out["deadline"] == pytest.approx(started + 21600 + 3600, abs=2)
-    rec = jobs.read(layout, "T.a1")
-    assert rec["handle"]["deadline"] == pytest.approx(out["deadline"])                   # recorded = effective
-    assert timeouts.effective_limits("claude_cli", rec["spec"], rec["handle"])[0] == pytest.approx(out["deadline"])
-    assert not (run_dir / "HANDOFF_REQUEST.json").exists()                               # keeps working
-    assert read_json(run_dir / "status.json")["deadline"] == pytest.approx(out["deadline"])
-    assert ProcessAdapter().recover({"run_dir": str(run_dir)})["deadline"] == pytest.approx(out["deadline"])
-    row = now_running(jobs.open_records(layout), tasks.load_all(layout), now=time.time())[0]
-    assert row["timeout_s"] == pytest.approx(21600 + 3600, abs=2) and row["idle_s"] == 1200
-    assert _enrich(layout, rec)["cap_left_s"] == pytest.approx(65 * 60, abs=5)
-    commands.HANDLERS["agent.extend"](layout, {"attempt_id": "T.a1", "_id": "c2"}, "owner-ui")   # a second hour
-    rec = jobs.read(layout, "T.a1")
-    assert timeouts.effective_limits("claude_cli", rec["spec"], rec["handle"])[0] == pytest.approx(started + 21600 + 7200, abs=2)
 
 
 def test_replaying_extend_repairs_an_interrupted_update(layout, monkeypatch):

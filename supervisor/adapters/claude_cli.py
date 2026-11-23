@@ -238,21 +238,10 @@ def cost_category(task) -> str:
 
 
 def model_limits(adapter, spec: dict, handle: dict):
-    """ProcessAdapter.limits for a model lane. A job prepared before 1.7.0 carries no `idle_s` and a fixed 3600 s
-    deadline: it is moved onto the current policy (routing.yaml `timeouts`) instead of being killed at the old
-    hour — unless its spec set a different cap on purpose (a chat turn's 600 s)."""
-    deadline, idle_s, idle_cpu_s = ProcessAdapter.limits(adapter, spec, handle)
-    if "idle_s" in spec:
-        return deadline, idle_s, idle_cpu_s
-    try:
-        layout = Layout(spec["root"])
-        lim = timeouts.resolve(routing(layout), None, role_profile(layout, spec.get("role") or ""), {})
-    except Exception:                                    # unreadable config must never kill a running job
-        lim = timeouts.resolve({})
-    if int(spec.get("timeout_s") or 3600) == 3600:
-        started = timeouts._epoch(handle.get("started")) or float(handle.get("create_time") or time.time())
-        deadline = max(deadline, started + lim["hard_cap_s"] + sum(int(e.get("seconds") or 0) for e in handle.get("extensions") or []))
-    return deadline, lim["idle_s"], lim["idle_cpu_s"]
+    """ProcessAdapter.limits for a model lane: every spec a model lane prepares carries `idle_s` (since 1.7.0,
+    activity-based time limits), so this is a plain wrap — kept as the adapter's own named `.limits` rather than
+    the base class directly, since `effective_limits` (supervisor.timeouts) resolves it by name."""
+    return ProcessAdapter.limits(adapter, spec, handle)
 
 
 def role_profile(layout: Layout, role: str) -> dict:

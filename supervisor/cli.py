@@ -41,6 +41,7 @@ task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
 issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in the Control Center)")
+lane_app = typer.Typer(help="model/API lanes (routing.yaml adapters): forget a lane-level unavailability")
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
@@ -50,6 +51,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(issue_app, name="issue")
+app.add_typer(lane_app, name="lane")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
@@ -322,14 +324,6 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
         typer.echo(f"warning: {w}")
 
 
-@task_app.command("migrate-ownership")
-def task_migrate_ownership():
-    """Give every live writing-lane task without owned_paths explicit exclusive ownership (['.'])."""
-    r = tasks_mod.migrate_ownership(_writer(), actor="cli")
-    render.render_all(_layout())
-    typer.echo(f"migrated {len(r['migrated'])}: {', '.join(r['migrated']) or 'nothing to do'}")
-
-
 @task_app.command("create")
 def task_create(file: str):
     """Add one task from a YAML file (same fields as the seed) through the command queue."""
@@ -429,6 +423,21 @@ def issue_resolve(issue_id: str, resolution: str = "", resolving_task: str = "",
     _echo_cmd(commands_mod.submit_or_apply(_layout(), "issue.resolve",
                                            {"issue_id": issue_id, "resolution": resolution,
                                             "resolving_task": resolving_task or None}, by, job_id=_job_id()), issue_id)
+
+
+@lane_app.command("reset")
+def lane_reset(lane: str, by: str = "owner"):
+    """Forget a lane-level unavailability (a spent credit balance, say): `lane.reset`'s own CLI verb, queued like
+    every other command, alongside `issue resolve` as the dead-code review's "handlers with no producer"."""
+    outcome = commands_mod.submit_or_apply(_layout(), "lane.reset", {"lane": lane}, by, job_id=_job_id())
+    if outcome.get("queued"):
+        typer.echo(f"{lane}: queued ({outcome['id']}) — the running supervisor applies it within one iteration")
+        return
+    if not outcome.get("ok", True):
+        raise typer.BadParameter(f"{lane}: {outcome.get('error')}")
+    render.render_all(_layout())
+    cleared = (outcome.get("result") or {}).get("cleared")
+    typer.echo(f"{lane}: reset" + ("" if cleared else " (nothing to clear)"))
 
 
 @gate_app.command("show")

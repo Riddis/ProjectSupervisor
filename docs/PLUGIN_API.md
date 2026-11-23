@@ -96,10 +96,12 @@ it changes nothing, and a later call sees the file as it is then.
 - `config(layout, <name>)` for a name in the manifest's `config.legacy_sections` is the sub-section of that name
   (`{}` when absent).
 
-Until `supervisor migrate` has moved them, the values are read from the old top-level sections in
-`config.legacy_sections`, with a `DeprecationWarning`. The section named like the identity merges in at the top,
-and any other nests under its own name. A section that does not match the model is a `PluginError` naming every
-field. At load, that failure leaves nothing of the plugin registered.
+The section named like the identity merges in at the top, and any other nests under its own name. A section that
+does not match the model is a `PluginError` naming every field. At load, that failure leaves nothing of the
+plugin registered. (Before 2.9.0, until `supervisor migrate` had moved them, the values were also read from the
+old top-level sections `config.legacy_sections` names, with a `DeprecationWarning` — gone below the supported
+upgrade floor, `docs/UPDATING.md`: `config.legacy_sections` is still a manifest field, naming the sub-section
+names above, just no longer a second place this reads from.)
 
 **Any other plugin** reads the top-level `section` it declared with `registry.config_sections()`, as in 1.11.0.
 `{}` when the file or the section is absent.
@@ -124,8 +126,9 @@ owner.
 ### `resources`
 
 `resources(layout) -> dict`: the shared resource policy, `{"gpu": {...}}`, a copy parsed for this call. It is read
-from `routing.yaml`'s `resources.gpu` (since 1.12.0), else from the old top-level `gpu` section with a
-`DeprecationWarning` until `supervisor migrate` has moved it, and is `{}` inside when both are absent.
+from `routing.yaml`'s `resources.gpu` (since 1.12.0), `{}` inside when absent. (Before 2.9.0, until `supervisor
+migrate` had moved it, it also fell back to the old top-level `gpu` section with a `DeprecationWarning` — gone
+below the supported upgrade floor, `docs/UPDATING.md`.)
 
 A plugin with a manifest sees only the resources it declares in `requires.resources`: without `gpu` there, the
 result is `{}`. A plugin without a manifest sees all of it, as in 1.11.0.

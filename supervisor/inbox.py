@@ -405,14 +405,10 @@ OWNER_DECISION_MARK = "owner decision needed"
 
 def is_decision(item: dict) -> bool:
     """A REQUEUE/CANCEL/DEFER item about one task: the loop's `decision` items (Supervisor.request_owner_decisions)
-    and the owner route of a diagnosis (diagnosis.route_to_owner). Framework versions before 1.4.0 wrote the latter
-    as kind `question`; those are recognised by origin and responses so an answer to one still takes effect."""
-    if not item.get("task_id"):
-        return False
-    if item.get("kind") == DECISION_KIND:
-        return True
-    return (item.get("kind") == "question" and item.get("from") == "escalation"
-            and set(item.get("allowed_responses") or []) == set(DECISION_RESPONSES))
+    and the owner route of a diagnosis (diagnosis.route_to_owner). Framework versions before 1.4.0 wrote the
+    latter as kind `question`; below the supported upgrade floor (2.0.0, docs/UPDATING.md) that shape is no
+    longer specially recognised — an item open that long predates every project this still runs on."""
+    return bool(item.get("task_id")) and item.get("kind") == DECISION_KIND
 
 
 def add_guidance(layout: Layout, task_id: str, item_id: str, text: str, resume: str = "task",

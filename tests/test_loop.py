@@ -282,7 +282,7 @@ def test_cli_mutation_queues_while_loop_holds_lock(layout):
         r = CliRunner().invoke(app, ["task", "note", "A", "hi"])
         assert r.exit_code == 0 and "queued" in r.output
         assert not (tasks.load(layout, "A").model_extra or {}).get("notes")
-        r2 = CliRunner().invoke(app, ["task", "migrate-ownership"])         # direct-mutation commands still refuse
+        r2 = CliRunner().invoke(app, ["gate", "set", "G1", "PASSED"])       # direct-mutation commands still refuse
         assert r2.exit_code != 0 and "supervisor holds" in (r2.output + str(r2.exception))
         r3 = CliRunner().invoke(app, ["task", "import"])                    # import goes through the queue instead
         assert r3.exit_code == 0 and "queued" in r3.output
