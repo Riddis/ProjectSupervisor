@@ -21,12 +21,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 - **Plugin API: `Result.model`, `.session_id` and `.usage` are reserved now, not populated (R-25).** Every
   built-in lane (`claude_cli`, `claude_api`, `codex_cli`) used to forward the model id, the CLI/API session id and
   the measured token usage into the `Result` it returned; nothing in the framework ever had a reader for any of
-  the three (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so the plumbing cost a parse
-  and a dict lookup for no one. The three fields stay declared, with their documented defaults (`None`/`None`/
-  `{}`), so a plugin lane that already sets them keeps working unchanged; the built-in lanes simply stop setting
-  them. `docs/PLUGIN_API.md`'s `Result` section says so. This follows `Result.digest`'s own precedent for a
-  public field nothing reads: the signature stays and only the behaviour behind it changes, so no major version
-  is needed.
+  the three (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so that `Result(...)`
+  assignment cost a dict lookup for no one. Each lane still parses the same session id, model id and usage it
+  always did, for its own `raw`/`result_meta.json`/usage-ledger purposes; only the unread copy onto `Result` is
+  gone. The three fields stay declared, with their documented defaults (`None`/`None`/`{}`), so a plugin lane
+  that already sets them keeps working unchanged; the built-in lanes simply stop setting them. `docs/PLUGIN_API.md`'s
+  `Result` section says so. This follows `Result.digest`'s own precedent for a public field nothing reads: the
+  signature stays and only the behaviour behind it changes, so no major version is needed.
 
 - **Plugin API: `Registry.job_schema(adapter, model)`.** Additive. A plugin
   adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known

@@ -265,8 +265,8 @@ A dataclass, what `collect()` returns.
 | `digest: str \| None` | **reserved, unset; deprecated.** The loop computes a delivery's digest itself from `artifacts`; nothing reads this field, and no lane need set it. Removal is announced for the next major version |
 | `artifacts: list[str]` | root-relative paths of the files the job produced |
 | `notes: str` | free text for the owner |
-| `model`, `session_id: str \| None` | **reserved, unset.** No built-in lane sets either any more: nothing in the framework ever read them (R-25), so collecting them cost a parse and a dict lookup for no reader. A plugin lane may still set them for its own future reader |
-| `usage: dict` | **reserved, unset** for the same reason as `model`/`session_id` above; a plugin lane may still set it for its own future reader |
+| `model`, `session_id: str \| None` | **reserved, unset.** No built-in lane forwards either onto the `Result` it returns any more: nothing in the framework ever read them there (R-25) (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so only that unread assignment was removed. Each lane still parses the same session id and model id for its own `raw`/`result_meta.json`. A plugin lane may still set these fields for its own future reader |
+| `usage: dict` | **reserved, unset** on `Result`, for the same reason as `model`/`session_id` above: the built-in lanes still parse and record token usage for their own ledgers (`record_usage`, `result_meta.json`), only the unread `Result.usage=` assignment is gone. A plugin lane may still set it for its own purposes -- one in-tree lane already does, for a reading that is not token usage at all |
 | `error: str \| None` | why it failed |
 | `raw: dict` | the lane's raw result, kept with the record |
 | `reset_epoch: float \| None` | `DEFERRED` only: the earliest re-dispatch time |

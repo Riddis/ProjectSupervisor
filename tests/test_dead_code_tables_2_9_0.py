@@ -1,4 +1,4 @@
-"""The framework review's three remaining dead-code tables (FRAMEWORK_REVIEW_2026-11-14.md, "Dead code: what can
+"""The framework review's three remaining dead-code tables ("Dead code: what can
 be removed"): Dependencies, Used only by tests, and Dead data fields. Each item gets one case here, naming the
 verdict the release record states -- a production reader wired in, the surface removed with its test rewritten,
 or (Dependencies, `find_secrets`, `redact`, `Result.digest`) confirmation that an earlier step already closed it.
