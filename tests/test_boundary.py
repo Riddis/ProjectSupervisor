@@ -212,7 +212,11 @@ def test_a_root_without_the_package_cannot_pass(tmp_path):
 
 
 def test_the_framework_package_passes_its_own_boundary_check():
-    report = boundary.check(REPO, user_names=[])
+    """G1a-c against this repository's own baseline. G1d (project information) runs here with an injected, empty
+    word list -- its own machine-dependent self-check, with the real local file, is
+    test_boundary_project_info.py::test_the_framework_repository_holds_no_project_information, which skips cleanly
+    when a machine has no such file (R-27/F21: this test must not)."""
+    report = boundary.check(REPO, user_names=[], terms={}, allowed={})
     assert report.ok, "\n".join(str(f) for f in report.violations)
     assert report.notes == [], report.notes
 

@@ -250,7 +250,7 @@ def test_doctor_flags_a_framework_version_mismatch_and_migrate_fixes_it(fresh):
     layout = Layout(fresh)
     raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
     raw["framework_version"] = "2.1.0"              # at or above the supported upgrade floor (2.0.0); see
-    project.write(layout, raw)                      # test_dead_shims_and_handlers_2_9_0.py for the floor itself
+    project.write(layout, raw)                      # test_compat_shims_and_dead_handlers.py for the floor itself
     cfg = layout.config / "routing.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace("max_resource_jobs", "max_gpu_jobs"), encoding="utf-8")
     assert "2.1.0" in doctor.check_project(layout).detail

@@ -41,6 +41,13 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
   now uses `isdecimal()`, exactly the predicate `int()` itself parses.
 
+- **Plugin API: `Layout`'s own doc corrected, not changed (editorial, R-27/F21).** `docs/PLUGIN_API.md` said
+  `NoProject` is raised when no `project.yaml` is found and `SUPERVISOR_ROOT` is unset; `Layout()` has never done
+  that — it falls back to the current working directory, exactly as `supervisor.paths`'s own module docstring
+  already said (so `supervisor init .` can bootstrap an empty folder). The doc now says so. `NoProject` is for a
+  caller that wants to refuse before building a `Layout` at all, the CLI's own pattern (`find_root()` is `None` ->
+  raise, before `Layout(root)`); nothing about `Layout()`'s behaviour changes.
+
 - **Plugin API: `Result.model`, `.session_id` and `.usage` are reserved now, not populated (R-25).** Every
   built-in lane (`claude_cli`, `claude_api`, `codex_cli`) used to forward the model id, the CLI/API session id and
   the measured token usage into the `Result` it returned; nothing in the framework ever had a reader for any of

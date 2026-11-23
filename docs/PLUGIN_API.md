@@ -139,8 +139,11 @@ result is `{}`. A plugin without a manifest sees all of it, as in 1.11.0.
 
 `Layout(base: Path | None = None)`: the paths of one project. `base` is the project root (resolved to an absolute
 path; a relative one against the current directory); without it, the root is found from `SUPERVISOR_ROOT` or the
-nearest folder above the current directory holding `project.yaml`, and `NoProject` is raised when there is none.
-Every attribute is a `pathlib.Path` under `root`; nothing is created until `ensure()`.
+nearest folder above the current directory holding `project.yaml`, and **falls back to the current working
+directory when neither is found** (so `supervisor init .` can bootstrap an empty folder) — `Layout()` itself never
+raises. `NoProject` exists for a caller that wants to refuse first: call `find_root()` and raise it yourself before
+constructing a `Layout`, the pattern the CLI's own commands use. Every attribute is a `pathlib.Path` under `root`;
+nothing is created until `ensure()`.
 
 | Attribute | Path | Attribute | Path |
 |---|---|---|---|
