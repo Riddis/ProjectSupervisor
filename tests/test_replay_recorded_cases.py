@@ -1,18 +1,18 @@
-"""Step 13 of the recovery plan (RECOVERY_PLAN.md §9, §11): the release's own acceptance. Three repairs that were
-once applied by a human's own hand now reach the same end state through `supervisor.plans` alone, on neutral
-fixtures, with no manual import and no owner item.
+"""The release's own acceptance for the recovery plan's recorded repairs: three repairs that were once applied by
+a human's own hand now reach the same end state through `supervisor.plans` alone, on neutral fixtures, with no
+manual import and no owner item.
 
 Each test below replays one of the three recorded cases and is named after it:
 
-- a dependency inversion, which needs an edge *removed* on a neighbour (§2.3's reason for including direct
-  neighbours in scope at all);
-- a proposal refused for prose in `checks`, which the `checks_to_tests` normalisation (§1.3) and the one
-  correction turn (§2.5) exist to resolve without ever reaching the owner;
-- an agent-shaped task split into a harness, a process run and a report — three creations plus a `set_job` from a
-  template on one of them, on a lane deterministic from the subject's own agent lane (§2.4).
+- a dependency inversion, which needs an edge *removed* on a neighbour -- the reason the validator's own scope
+  rule reaches a direct neighbour at all, not only the subject and whatever the plan creates;
+- a proposal refused for prose in `checks`, which the `checks_to_tests` normalisation and the one correction turn
+  the validator grants exist to resolve without ever reaching the owner;
+- an agent-shaped task split into a harness, a process run and a report -- three creations plus a `set_job` from a
+  template on one of them, on a lane deterministic from the subject's own agent lane.
 
-Each assertion is on the *end state* — every involved task's final status, the edges, the contract fields, the
-plan's own authority class, how many approvals were taken, and that no owner item ever opened — never on the path
+Each assertion is on the *end state* -- every involved task's final status, the edges, the contract fields, the
+plan's own authority class, how many approvals were taken, and that no owner item ever opened -- never on the path
 taken to get there. No fixture, task id or assertion here names a project, a task, an issue or a decision id."""
 from __future__ import annotations
 
@@ -43,8 +43,8 @@ def _write_templates(layout, templates: dict):
 # ======================================================================= replay 1: the dependency inversion
 
 def test_replay_dependency_inversion_an_edge_removed_on_a_neighbour(layout):
-    """The subject must run *after* a task that currently depends on it. Only §2.3's direct-neighbour scope can
-    express that: the edge removed belongs to the neighbour, not to the subject or anything the plan created."""
+    """The subject must run *after* a task that currently depends on it. Only a direct-neighbour scope can express
+    that: the edge removed belongs to the neighbour, not to the subject or anything the plan created."""
     make_task(layout, "T0", status="NOT_STARTED", owned_paths=["x"], tests=["t0"])
     make_task(layout, "T1", status="BLOCKED", deps=["T0"], owned_paths=["x"], tests=["t1"])
     rev0 = tasks_mod.load(layout, "T0").rev
@@ -58,7 +58,7 @@ def test_replay_dependency_inversion_an_edge_removed_on_a_neighbour(layout):
                {"op": "resume", "task": "T1", "as": "ready"},
            ]}
 
-    # the plan's own class: routine repair, nobody approves it
+    # the plan's own class: routine repair, needing no approval at all
     assert plans.authority(doc, {}) == plans.CLASS_A
 
     proposed = plans.propose(layout, doc, by="diagnosis")
@@ -94,8 +94,9 @@ def test_replay_dependency_inversion_an_edge_removed_on_a_neighbour(layout):
 
 def test_replay_refused_prose_in_checks_is_normalised_and_applied(layout):
     """Every proposal refused for this one recorded cause carried a `checks` entry that was prose, not a command.
-    `checks_to_tests` (§1.3) moves it to `tests` before any refusal is computed, so the plan this test proposes
-    never trips a refusal at all and never spends the one correction turn (§2.5) the mechanism exists to grant."""
+    The `checks_to_tests` normalisation moves it to `tests` before any refusal is computed, so the plan this test
+    proposes never trips a refusal at all and never spends the one correction turn the mechanism exists to
+    grant."""
     make_task(layout, "T1", status="BLOCKED", owned_paths=["src"], tests=["existing test command"])
     rev = tasks_mod.load(layout, "T1").rev
     doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"},
