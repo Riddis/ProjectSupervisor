@@ -6,14 +6,15 @@ project — and it is also why the framework carries a version and migrations.
 
 ## Supported upgrade floor
 
-A project may run `supervisor migrate` straight through to this release only from framework **2.0.0 or later**;
-one recording an older `framework_version` must first update to 2.0.0 by the ordinary steps above (pull or
-checkout its tag, reinstall, `supervisor migrate`, `supervisor doctor`, all against that older checkout) and only
-then continue updating from there — `supervisor migrate` refuses a project below the floor outright, naming it and
-the same path through it, rather than running a long-removed compatibility fallback that may no longer cover its
-shape correctly. 2.0.0 is where this floor sits because it was this framework's own "a later major release reads
-only the new names" release (the plugin rename, `CHANGELOG.md`'s `## 2.0.0` entry): every runtime fallback the
-review found still carrying an older shape promised exactly that cutover, so once a project is on 2.0.0 none of
+`supervisor migrate` is never floor-gated: the migration transforms (`supervisor/migrations.py`'s `MIGRATIONS`
+list) are kept forever, and a project recording any older `framework_version` still reaches this release in the
+same one `supervisor migrate` call as any other version mismatch. The floor is about what runs *before* that call:
+below framework **2.0.0** the runtime no longer carries a compatibility fallback for a shape a migration already
+rewrites (the 2.9.0 dead-code closure), so `supervisor doctor` and the Control Center's Start action name the
+floor and tell the owner to run `supervisor migrate` now, rather than giving the ordinary one-line mismatch note.
+2.0.0 is where this floor sits because it was this framework's own "a later major release reads only the new
+names" release (the plugin rename, `CHANGELOG.md`'s `## 2.0.0` entry): every runtime fallback the review found
+still carrying an older shape promised exactly that cutover, so once a project has migrated past 2.0.0 none of
 them has anything left to do.
 
 ## As a project owner

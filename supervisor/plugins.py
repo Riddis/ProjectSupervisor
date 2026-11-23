@@ -79,7 +79,7 @@ def _read_projection_record(layout: Layout) -> dict:
     """The projection record as written: {"projections": {"<plugin>:<fn>": {"declared": [...], "rendered": path|None}},
     "legacy": [...]}. `legacy` is carried until every projection of the current registry has rendered once, so an
     upgrade never loses the exclusions of untouched views; the 1.2.1 shapes it replaced (a flat `paths` list, or
-    the interim `by_plugin` mapping) self-heal the same way and are gone below the supported floor (2.9.0,
+    the interim `by_plugin` mapping) self-heal the same way and are gone below the supported floor (2.0.0,
     docs/UPDATING.md) — a record still carrying only one of them is treated as carrying no legacy entries at all,
     which the one render after an upgrade would have done to it anyway."""
     try:
