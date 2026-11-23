@@ -41,6 +41,27 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
   now uses `isdecimal()`, exactly the predicate `int()` itself parses.
 
+- **Fixed: `migrate attempts --apply` rewrote an allocator-written record's own `cause` back to `scheduled`
+  instead of verifying it, and `check_attempts` named a deleted job record under two assertions instead of one
+  (both carried from the 2.8.0 round-2 review).** Apply now classifies a resolved record into three buckets —
+  stamped, allocator-written-but-unstamped (verified on `attempt`/`kind`/`seq`/`parent` only, never on
+  `cause`/`scope`), and bare — so a record the allocator already wrote keeps the `cause` it was opened with.
+  `check_attempts`'s assertion 2 is skipped for a job id that does not resolve at all: assertion 1 has already
+  named it, and a missing record is not a second, different kind of failure. A conversation thread past nine
+  turns now has its own ordered reader, `conversations.turn_jobs(layout, thread_id)` — additive; the Control
+  Center's chat view already reads a thread's turns from its own file in file order, so nothing production calls
+  it yet, but it is the reader available wherever one needs a thread's own order.
+
+- **Fixed: the start-up guard read and parsed every archived job record on every `supervisor run` process start,
+  with no way to tell an already-known-migrated archive from one that still needed checking, and its refusal
+  message named only `state/runtime/jobs/` even though the same message's `bad[]` list already named archived
+  files (both carried from the 2.8.0 round-2 review).** A stat-only fingerprint of the archive's own listing —
+  never a bare existence flag — lets a start-up skip re-reading every file an earlier start-up already found
+  clean; a restored backup, an out-of-band write into an already-archived folder, or an existing archived
+  record's own bytes changing underneath it each change that listing and are caught on the next comparison, not
+  trusted on the marker's word alone. The refusal message now names the archive alongside the live job
+  directory.
+
 - **Plugin API: `Layout`'s own doc corrected, not changed (editorial, R-27/F21).** `docs/PLUGIN_API.md` said
   `NoProject` is raised when no `project.yaml` is found and `SUPERVISOR_ROOT` is unset; `Layout()` has never done
   that — it falls back to the current working directory, exactly as `supervisor.paths`'s own module docstring
