@@ -331,3 +331,107 @@ def test_the_cancel_plan_effect_abandons_a_stuck_plan_through_the_answer_path(la
     applied = inbox.load(layout, item["id"])["choice_applied"]
     assert applied["ok"], applied
     assert plans.load_plan(layout, "P1")["status"] == "abandoned"
+
+
+# ------------------------------------------------------------------ P2-4: a decision item's own legacy keyword
+# parser (`apply_decision`) must defer to the typed path above, not re-read the first word of any answer
+#
+# `is_decision()` items (kind=DECISION_KIND, a task_id) are the one shape where a *second* keyword parser
+# (`inbox.apply_decision`) used to run after `answer()` and reparse the raw response for CANCEL/REQUEUE/DEFER —
+# regardless of `choices`, and regardless of whether `answer()` itself had already classified the answer as
+# `text` because no choice matched. A decision item carrying a `cancel`/`cancel_task` choice, answered with prose
+# that merely begins with that choice's own derived keyword, was cancelling (or requeuing) the task through this
+# second parser even though the typed path (above) had correctly recorded the same answer as a comment.
+
+
+def test_keyword_prose_on_a_decision_item_with_a_same_named_choice_is_a_comment_never_an_effect(layout):
+    """The suite's own fixture shape: a DECISION_KIND item carrying a `cancel` choice, answered with prose that
+    begins with that choice's own derived keyword. `answer()` already records this as a comment (kind: text,
+    no `choice`); `apply_decision` must not re-read the first word and cancel the task anyway."""
+    from supervisor import tasks as tasks_mod
+    from supervisor.models.task import TaskStatus
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
+    item = inbox.create(layout, for_role="owner", subject="Decision needed: T1", summary="pick one",
+                        kind=inbox.DECISION_KIND, choices=[_single_choice("cancel")], free_text=True,
+                        from_="loop", task_id="T1")
+    assert item["allowed_responses"] == ["CANCEL"]
+    inbox.answer(layout, item["id"], "CANCEL after the other one lands, not now",
+                choices_digest=item["choices_digest"])
+    answered = inbox.load(layout, item["id"])
+    assert answered["answer"]["kind"] == "text"
+    assert "choice" not in answered["answer"]
+    assert "choice_applied" not in answered
+    assert answered["applied"]["skipped"] == "deferred"
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.BLOCKED
+    reopened = inbox.load(layout, answered["applied"]["reopened"])
+    assert reopened["choices"] == item["choices"]
+    assert reopened["status"] == "open"
+
+
+def test_requeue_prose_on_the_route_plan_to_owner_shape_does_not_release_the_task_around_the_refused_plan(layout):
+    """The production shape `diagnosis._route_plan_to_owner` creates: a decision item carrying `cancel_task` and
+    `hold` choices (never `apply_plan` — a twice-refused plan has nothing to apply). Answered "REQUEUE ..." —
+    prose that begins with a legacy keyword that is not even one of this item's own choices — must not release
+    the task around the plan the diagnosis refused."""
+    from supervisor import diagnosis, tasks as tasks_mod
+    from supervisor.models.task import TaskStatus
+    make_task(layout, "T1", status="IN_PROGRESS", owned_paths=["."])
+    tasks_mod.set_status(layout, "T1", "FAILED", actor="escalation", note="diagnosis exhausted")
+    task = tasks_mod.load(layout, "T1")
+    plan = {"id": "T1.d1", "reason": "repair the neighbour instead", "revisions": [],
+            "refusals": [{"code": "RF-13", "message": "a neighbour's own contract may not be patched here"}],
+            "operations": [{"op": "patch_contract", "task": "NOPE", "fields": {"tests": ["x"]}}]}
+    out = diagnosis._route_plan_to_owner(layout, task, {}, "senior_pm", plan,
+                                         "no adapter is registered for the senior_pm role")
+    item = inbox.load(layout, out["inbox"])
+    assert {c["id"] for c in item["choices"]} == {"cancel_task", "hold"}
+    inbox.answer(layout, item["id"], "REQUEUE after the other one lands, not now",
+                choices_digest=item["choices_digest"])
+    answered = inbox.load(layout, item["id"])
+    assert answered["answer"]["kind"] == "text"
+    assert "choice" not in answered["answer"]
+    assert "choice_applied" not in answered
+    assert answered["applied"]["skipped"] == "deferred"
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.FAILED, "the refused plan's subject was released"
+
+
+def test_a_keyword_answer_on_a_decision_item_with_no_choices_still_acts_exactly_as_today(layout):
+    """The control: `apply_decision`'s legacy keyword parser is untouched for an item with no `choices` key at
+    all (the block route's own shape, loop.request_owner_decisions) — CANCEL still cancels on the first word."""
+    from supervisor import tasks as tasks_mod
+    from supervisor.models.task import TaskStatus
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
+    item = inbox.create(layout, for_role="owner", subject="Decision needed: T1", summary="pick one",
+                        kind=inbox.DECISION_KIND, allowed_responses=list(inbox.DECISION_RESPONSES), free_text=True,
+                        from_="loop", task_id="T1")
+    assert "choices" not in item
+    inbox.answer(layout, item["id"], "CANCEL after the other one lands, not now")
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.CANCELLED
+
+    make_task(layout, "T2", status="BLOCKED", owned_paths=["src/t2"])
+    item2 = inbox.create(layout, for_role="owner", subject="Decision needed: T2", summary="pick one",
+                         kind=inbox.DECISION_KIND, allowed_responses=list(inbox.DECISION_RESPONSES), free_text=True,
+                         from_="loop", task_id="T2")
+    inbox.answer(layout, item2["id"], "REQUEUE use the cached outputs")
+    assert tasks_mod.load(layout, "T2").status == TaskStatus.READY
+
+
+def test_the_typed_digest_path_is_untouched_on_a_decision_item(layout):
+    """Controls beside the behaviour change: a named choice on a decision item still needs its digest (RF-25),
+    a card whose choices moved on disk is still refused, and the two-tier applier binding is unaffected."""
+    from supervisor import tasks as tasks_mod
+    from supervisor.models.task import TaskStatus
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
+    item = inbox.create(layout, for_role="owner", subject="Decision needed: T1", summary="pick one",
+                        kind=inbox.DECISION_KIND, choices=[_single_choice("cancel")], free_text=True,
+                        from_="loop", task_id="T1")
+    with pytest.raises(inbox.InboxError, match="RF-25"):
+        inbox.answer(layout, item["id"], choice="cancel", choices_digest="not-the-shown-digest")
+    assert inbox.load(layout, item["id"])["status"] == "open"
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.BLOCKED
+
+    inbox.answer(layout, item["id"], choice="cancel", choices_digest=item["choices_digest"])
+    answered = inbox.load(layout, item["id"])
+    assert answered["choice_applied"]["ok"], answered.get("choice_applied")
+    assert answered["applied"]["choice"] == "cancel"
+    assert tasks_mod.load(layout, "T1").status == TaskStatus.CANCELLED
