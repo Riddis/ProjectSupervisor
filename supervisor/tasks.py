@@ -415,7 +415,7 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
 
 
 def owned_path_problems(tasks: Iterable[Task]) -> list[str]:
-    """Errors for an `owned_paths` entry outside the project root (RELEASE_REVIEW_2.9.0.md P2-2) — the write
+    """Errors for an `owned_paths` entry outside the project root (P2-2) — the write
     scope a model-lane job is dispatched with, so an entry a created task declares above the root would hand that
     job a write scope `verify.contained` never bounds to the tree. `EXCLUSIVE` ("."), meaning the whole tree, is
     not a path to resolve and is never flagged. Checked only at `check_new` (create time, both writers it

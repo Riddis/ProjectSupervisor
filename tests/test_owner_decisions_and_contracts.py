@@ -189,7 +189,7 @@ def test_import_and_create_accept_an_odd_name_with_a_warning(layout):
 
 
 # ------------------------------------------------------------------ P2-2: owned_paths containment (beside
-# artifact_problems's own rule above — RELEASE_REVIEW_2.9.0.md P2-2, `tasks.check_new`)
+# artifact_problems's own rule above — P2-2, `tasks.check_new`)
 
 def owned(*owned_paths):
     return Task.model_validate({"id": "C", "phase": 0, "title": "c", "objective": "o", "owner_role": "engineer",

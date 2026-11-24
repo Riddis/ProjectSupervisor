@@ -298,7 +298,7 @@ def test_rf18_contract_refused(layout):
 
 
 # ------------------------------------------------------------------ P2-2: a created task's owned_paths stays inside
-# the project root (RELEASE_REVIEW_2.9.0.md P2-2) — `tasks.check_new` has no containment rule for `owned_paths`,
+# the project root (P2-2) — `tasks.check_new` has no containment rule for `owned_paths`,
 # only for `artifacts`, so a plan's create_task could declare a write scope above the root.
 
 @pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
