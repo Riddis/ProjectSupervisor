@@ -1741,17 +1741,24 @@ def cancel_plan(layout: Layout, plan_id: str, by: str = "owner") -> dict:
 
 
 # ----------------------------------------------------------------------- routing a freshly validated plan by its
-# own authority class (§2.7): class A is applied on the spot (below, in `resume_plans`); class B opens exactly
-# one `plan_review` job and waits for its typed verdict; the owner class opens exactly one inbox item carrying
-# the `apply_plan` choice and waits for the owner. Each of the three entry points here is idempotent on the field
-# it writes (`plan_review`, `owner_item`), so calling any of them again once that field is set is a no-op — the
-# sweep that drives them may run every turn without ever opening a second job or a second item.
+# own authority class (§2.7): class A is applied on the spot (below, in `resume_plans`); the owner class opens
+# exactly one inbox item carrying the `apply_plan` choice and waits for the owner. Class B is meant to open one
+# `plan_review` job and wait for its typed verdict (`open_plan_review`/`apply_plan_review`, built and tested
+# below) — but nothing in this tree submits that job to an adapter yet (no packet builder, no loop ingest hook,
+# no `agents/schemas/plan_review.json`; P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so minting
+# the id and stopping there leaves the plan `awaiting_approval` forever with no job behind it and nothing in the
+# inbox. Until that dispatch is built, `resume_plans()` routes class B through this same owner path instead of
+# through `open_plan_review` — not a second, dead-end lane. Each of the two entry points here is idempotent on
+# the field it writes (`owner_item`), so calling either again once that field is set is a no-op — the sweep that
+# drives them may run every turn without ever opening a second item.
 
 def _open_owner_choice(layout: Layout, plan_id: str, doc: dict, *, reason: str | None = None) -> dict:
     """Exactly one inbox item carrying the owner-only `apply_plan` choice (§2.7's owner class, §4.1's typed
     choices) — a typed button, never prose. Reached by a plan whose own class is `owner` (a metered
-    `create_task`), and by a class B plan for which `approver_role()` found nobody available (§2.7: "if none is,
-    the plan goes to the owner with the reason named")."""
+    `create_task`); by a class B plan for which `approver_role()` found nobody available (§2.7: "if none is,
+    the plan goes to the owner with the reason named"); by every other class B plan, until the `plan_review`
+    dispatch exists (P1-3, above); and by a plan found `awaiting_approval` with a `plan_review` naming a job
+    that is not live (`_plan_review_job_live`, below) — a store written by an earlier version, or a job lost."""
     if doc.get("owner_item"):
         return doc
     effect = {"op": "apply_plan", "plan": plan_id}
@@ -1904,11 +1911,35 @@ def _refuse_held_subject(layout: Layout, plan_id: str, subject_id: str) -> dict:
     return doc
 
 
+def _plan_review_job_live(layout: Layout, doc: dict) -> bool:
+    """Whether the job id a plan's own `plan_review` names actually has a record behind it
+    (`jobs.prepare` was called for it — an adapter dispatch happened or is about to). `open_plan_review` only
+    ever mints the id (P1-3): nothing in this tree submits it, so this is `False` for every `plan_review` this
+    release's own routing writes. It exists for the shape the id-minting still has to answer honestly — a plan
+    document carrying `plan_review` with no job behind it at all, whether from a store an earlier version wrote
+    or from a job lost after it was prepared — so `resume_plans` can notice and escalate rather than leaving the
+    plan `awaiting_approval` forever with nothing watching it."""
+    from . import jobs as jobs_mod
+    review = doc.get("plan_review") or {}
+    job_id = review.get("job")
+    subject_id = (doc.get("subject") or {}).get("task")
+    if not job_id or not subject_id:
+        return False
+    return any(r.get("attempt_id") == job_id for r in jobs_mod.for_task(layout, subject_id))
+
+
 def resume_plans(layout: Layout) -> list[str]:
     """The loop's own turn (§2.6 rule 5, extended by §2.7/step 8): route every plan still `awaiting_approval` and
-    not yet routed by its own authority class (class A applied on the spot; class B and the owner class each
-    open exactly one approval record and wait — see the routing functions above), then continue every plan still
-    `applying` from its own journal. A `stuck` plan's operations are left alone — only the owner's
+    not yet routed, then continue every plan still `applying` from its own journal. Class A applies on the spot.
+    Class B and the owner class each reach the owner's one typed `apply_plan` choice (`_open_owner_choice`) — the
+    `plan_review` dispatch class B is designed for (`open_plan_review`/`apply_plan_review`) does not exist yet
+    (P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so routing a class B plan there and stopping
+    would leave it `awaiting_approval` with no job behind it and nothing in the inbox; routing it to the owner
+    instead gives every validated plan a human-actionable end, exactly as the owner class always has. A plan
+    already found `awaiting_approval` with a `plan_review` naming a job that turns out not to be live —
+    `_plan_review_job_live` above — is noticed here too and escalated to the owner the same way, exactly once,
+    however many sweeps run (the `owner_item` field it writes is the same idempotence guard every other entry
+    point here already uses). A `stuck` plan's operations are left alone — only the owner's
     apply_plan/cancel_plan choice decides what happens to them next, never an automatic retry that would keep
     reopening the question the owner item already asked — but a `stuck` plan still missing its owner item (F1:
     the inbox was full when it first tried) gets one more attempt to open it, independent of and never re-running
@@ -1920,7 +1951,12 @@ def resume_plans(layout: Layout) -> list[str]:
         plan_id = doc.get("id")
         try:
             status = doc.get("status")
-            if status == "awaiting_approval" and not doc.get("plan_review") and not doc.get("owner_item"):
+            if (status == "awaiting_approval" and doc.get("plan_review") and not doc.get("owner_item")
+                   and not _plan_review_job_live(layout, doc)):
+                _open_owner_choice(layout, plan_id, doc,
+                                  reason="no plan_review job is live behind this approval record")
+                acted.append(plan_id)
+            elif status == "awaiting_approval" and not doc.get("plan_review") and not doc.get("owner_item"):
                 tasks_now = tasks_mod.load_all(layout) if tasks_now is None else tasks_now
                 subject_id = (doc.get("subject") or {}).get("task")
                 subject_task = tasks_now.get(subject_id)
@@ -1932,7 +1968,8 @@ def resume_plans(layout: Layout) -> list[str]:
                 if cls == CLASS_A:
                     apply(layout, plan_id)
                 elif cls == CLASS_B:
-                    open_plan_review(layout, plan_id)
+                    _open_owner_choice(layout, plan_id, doc,
+                                      reason="class B: the plan_review dispatch is not built yet")
                 else:
                     _open_owner_choice(layout, plan_id, doc)
                 acted.append(plan_id)

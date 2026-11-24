@@ -1,7 +1,9 @@
 """supervisor/plans.py's authority classes and the approval lane: `plans.authority()` classifies every validated plan into A, B or the owner class,
 total over the closed vocabulary; `resume_plans()` routes a freshly validated plan by that class — class A on the
-spot, class B behind exactly one `plan_review` job, the owner class behind exactly one typed choice; and the
-approver is never the proposer (RF-23)."""
+spot, class B and the owner class each behind exactly one typed `apply_plan` choice. Class B is designed for a
+`plan_review` job instead (`open_plan_review`/`apply_plan_review`, tested below as standalone building blocks),
+but nothing in this tree dispatches that job yet (P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so
+`resume_plans()` does not route there until the dispatch exists. The approver is never the proposer (RF-23)."""
 from __future__ import annotations
 
 import pytest
@@ -188,7 +190,7 @@ def test_open_plan_review_job_is_attempt_scoped_when_the_subject_names_an_attemp
     doc = base_plan(subject="T1", ops=[_create_op("T2")])
     doc["subject"]["attempt"] = 1
     plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
-    plans.resume_plans(layout)
+    plans.open_plan_review(layout, "T1.d1")
     stored = plans.load_plan(layout, "T1.d1")
     assert stored["plan_review"]["job"] == "T1.a1.p1"
     task = tasks_mod.load(layout, "T1")
@@ -215,7 +217,12 @@ def test_class_a_dependency_inversion_applies_with_no_approval_at_all(layout):
     assert inbox_mod.all_items(layout) == []
 
 
-def test_class_b_waits_for_exactly_one_plan_review_job_never_the_proposer(layout):
+def test_class_b_reaches_the_owner_as_one_typed_choice_until_the_dispatch_exists(layout):
+    """P1-3 (RELEASE_REVIEW_2.9.0.md, closed by docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md):
+    `open_plan_review` only ever mints a `plan_review` job id — nothing in this tree submits it to an adapter —
+    so routing a class B plan there and stopping left it `awaiting_approval` forever with no job behind it and
+    an empty inbox. Until that dispatch exists, `resume_plans()` routes class B through the same owner path the
+    owner authority class and the no-approver escalation already use, never minting a dead `plan_review`."""
     from tests.conftest import make_task
     _write_routing(layout, APPROVER_ROUTING)
     make_task(layout, "T1", status="BLOCKED")
@@ -226,16 +233,17 @@ def test_class_b_waits_for_exactly_one_plan_review_job_never_the_proposer(layout
     stored = plans.load_plan(layout, "T1.d1")
     assert stored["status"] == "awaiting_approval", "a class B plan is never auto-applied"
     assert not (layout.tasks / "T2.yaml").exists()
-    review = stored["plan_review"]
-    assert review["role"] == "chief_architect"
-    assert review["role"] != "senior_pm"
-    assert review["job"] == "T1.p1"
-    assert inbox_mod.all_items(layout) == [], "class B never reaches the owner as prose"
+    assert not stored.get("plan_review"), "no dead job id is minted for a plan nothing will ever dispatch"
+    items = inbox_mod.open_items(layout, "owner")
+    assert len(items) == 1
+    item = items[0]
+    assert item["choices"][0]["id"] == "apply_plan"
+    assert item["choices"][0]["effect"] == {"op": "apply_plan", "plan": "T1.d1"}
+    assert "class B" in item["summary"], item["summary"]
 
-    # idempotent: a second sweep (a retried turn) never opens a second job
+    # idempotent: a second sweep (a retried turn) never opens a second item
     plans.resume_plans(layout)
-    again = plans.load_plan(layout, "T1.d1")
-    assert again["plan_review"] == review
+    assert len(inbox_mod.open_items(layout, "owner")) == 1
 
 
 def test_owner_class_reaches_the_owner_as_one_typed_choice_not_prose(layout):
@@ -307,7 +315,10 @@ def test_a_hold_placed_after_validation_is_refused_before_any_approval_record_op
     assert inbox_mod.all_items(layout) == []
 
 
-# ------------------------------------------------------------------ apply_plan_review(): the typed result
+# ------------------------------------------------------------------ apply_plan_review(): the typed result.
+# `resume_plans()` no longer routes a class B plan through `open_plan_review` (P1-3: nothing dispatches the job
+# it mints) — these tests are about `apply_plan_review()`'s own handling of a verdict once a review job exists,
+# so the fixture calls `open_plan_review()` directly rather than going through the sweep.
 
 def _propose_class_b(layout, plan_id="T1.d1"):
     from tests.conftest import make_task
@@ -315,7 +326,7 @@ def _propose_class_b(layout, plan_id="T1.d1"):
     make_task(layout, "T1", status="BLOCKED")
     doc = base_plan(subject="T1", ops=[_create_op("T2")], plan_id=plan_id)
     plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
-    plans.resume_plans(layout)
+    plans.open_plan_review(layout, plan_id)
     return plans.load_plan(layout, plan_id)
 
 

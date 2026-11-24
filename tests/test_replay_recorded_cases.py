@@ -216,9 +216,11 @@ def test_replay_agent_shaped_task_split_into_harness_process_and_report(layout):
     proposed = plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
     assert proposed["status"] == "awaiting_approval" and proposed["refusals"] == []
 
-    acted = plans.resume_plans(layout)
-    assert acted == ["T1.d1"]
-    stored = plans.load_plan(layout, "T1.d1")
+    # open_plan_review/apply_plan_review (the plan_review dispatch's own mechanics, exercised directly: nothing
+    # in this tree submits the job it mints yet -- P1-3 -- so `resume_plans()` itself no longer routes a class B
+    # plan here; it reaches the owner instead, exactly as docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md
+    # records, and that path is covered in tests/test_plan_authority.py)
+    stored = plans.open_plan_review(layout, "T1.d1")
     assert stored["status"] == "awaiting_approval", "class B is never auto-applied"
     review = stored["plan_review"]
     assert review["role"] == "chief_architect" and review["role"] != "senior_pm", "the approver is never the proposer"

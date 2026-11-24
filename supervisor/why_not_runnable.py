@@ -135,6 +135,38 @@ def _awaiting_review(task: Task, layout: Layout) -> dict:
     return {"code": "awaiting_review", "detail": "; ".join(parts), "blockers": list(pending)}
 
 
+def _plan_waiting(task: Task, layout: Layout) -> dict | None:
+    """A plan already proposed for this subject and not yet finished (§2.6/§2.7's `awaiting_approval` /
+    `applying` / `stuck`) is checked first, ahead of every other structural fact below: a diagnosis has already
+    looked at this task and is mid-repair, which none of the dependency/gate/role/lane/preflight/capacity/
+    resource checks can know, and which the `resource_claimed` fallback's unclaimed branch used to misname as
+    "nothing currently claims it; no diagnosis has resolved it yet" (P3-4) -- a code that contradicted its own
+    detail for the one case a diagnosis plainly had resolved. Reuses the existing `awaiting_approval` code
+    (never a tenth) with a detail that actually names the plan and what it is waiting on."""
+    from . import plans as plans_mod
+    plan = next((d for d in plans_mod.all_plans(layout)
+                if (d.get("subject") or {}).get("task") == task.id
+                and d.get("status") in ("awaiting_approval", "applying", "stuck")), None)
+    if plan is None:
+        return None
+    plan_id = plan.get("id")
+    status = plan.get("status")
+    if status == "applying":
+        detail = f"plan {plan_id} is applying"
+    elif status == "stuck":
+        item = plan.get("owner_item")
+        detail = (f"plan {plan_id} is stuck; awaiting the owner, inbox item {item}" if item
+                 else f"plan {plan_id} is stuck, awaiting the owner")
+    elif plan.get("owner_item"):
+        detail = f"plan {plan_id} awaits the owner's apply_plan choice, inbox item {plan['owner_item']}"
+    elif (plan.get("plan_review") or {}).get("job"):
+        review = plan["plan_review"]
+        detail = f"plan {plan_id} awaits {review.get('role')}'s plan_review verdict, job {review['job']}"
+    else:
+        detail = f"plan {plan_id} is awaiting approval routing"
+    return {"code": "awaiting_approval", "detail": detail, "blockers": [plan_id]}
+
+
 def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
     from . import gate as gate_mod
     from . import gates as gates_mod
@@ -143,6 +175,10 @@ def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
     from . import tasks as tasks_mod
     from ._vendor.contract import CapacityDeferred, overlaps
     from .adapters import REGISTRY
+
+    plan_wait = _plan_waiting(task, layout)
+    if plan_wait is not None:
+        return plan_wait
 
     dep = tasks_mod.unmet_dependency(layout, task, tasks)
     if dep:
