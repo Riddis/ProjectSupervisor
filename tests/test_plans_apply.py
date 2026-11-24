@@ -502,3 +502,63 @@ def test_the_control_center_plans_page_shows_the_current_status(layout):
 
     missing = client.get("/plans/nope")
     assert missing.status_code == 404
+
+
+# ======================================================================= P1-2: `before`, on a `patch_contract`,
+# is whatever `getattr(task, k)` returns -- `Check` model objects for `checks`, an `Evidence` enum member for
+# `evidence` -- and `propose()`/`revise()` write it onto the plan document through `yaml.safe_dump`. Serialised,
+# not raised: the two cases the review found, each on a plan that validates clean.
+
+def test_propose_serialises_the_before_value_of_a_checks_patch_over_an_existing_check(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"], tests=["t0"],
+              checks=[{"command": f"{PY} -c pass"}])
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"}, "reason": "r",
+           "expected_rev": {"T1": rev},
+           "operations": [{"op": "patch_contract", "task": "T1", "fields": {"checks": ["prose, not a command"]}},
+                          {"op": "resume", "task": "T1", "as": "ready"}]}
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == [], refusals
+    before = report.graph_diff["contract_patches"][0]["before"]
+    yaml.safe_dump(before)                     # must not raise: this is what store.dump does to it
+    assert before["checks"] == [{"command": f"{PY} -c pass", "timeout_s": None, "cwd": None}]
+    proposed = plans.propose(layout, doc)
+    assert proposed["status"] == "awaiting_approval"
+    assert plans.load_plan(layout, "T1.d1") is not None
+
+
+def test_propose_serialises_the_before_value_of_an_evidence_tightening(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"], tests=["t0"])
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"}, "reason": "r",
+           "expected_rev": {"T1": rev},
+           "operations": [{"op": "patch_contract", "task": "T1", "fields": {"evidence": "commands"}},
+                          {"op": "resume", "task": "T1", "as": "ready"}]}
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == [], refusals
+    before = report.graph_diff["contract_patches"][0]["before"]
+    yaml.safe_dump(before)                     # must not raise
+    assert before["evidence"] == "auto"
+    proposed = plans.propose(layout, doc)
+    assert proposed["status"] == "awaiting_approval"
+    assert plans.load_plan(layout, "T1.d1") is not None
+
+
+def test_a_patch_contract_with_no_executable_or_enum_field_is_unaffected(layout):
+    """The control: a patch naming only plain-string/list fields -- no existing check, no `evidence` key --
+    behaved like this before P1-2's fix and must behave identically after it."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"], tests=["t0"])
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"}, "reason": "r",
+           "expected_rev": {"T1": rev},
+           "operations": [{"op": "patch_contract", "task": "T1", "fields": {"tests": ["t0", "t1"]}},
+                          {"op": "resume", "task": "T1", "as": "ready"}]}
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == [], refusals
+    before = report.graph_diff["contract_patches"][0]["before"]
+    assert before == {"tests": ["t0"]}
+    proposed = plans.propose(layout, doc)
+    assert proposed["status"] == "awaiting_approval"

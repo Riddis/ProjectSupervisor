@@ -251,3 +251,50 @@ def test_a_held_task_declines_the_defer_and_proposes_no_plan(layout):
     t = tasks.load(layout, "T")
     assert t.status == TaskStatus.BLOCKED and t.held
     assert jobs.read(layout, "T.a9")["diag_action"] == "held"
+
+
+def test_a_proposer_exception_inside_defer_becomes_a_visible_owner_item_not_a_lost_result(layout, monkeypatch):
+    """P1-2's second half: whatever makes `plans.propose()`/`plans.revise()` raise -- the serialisation bug this
+    release fixes, or any future one -- must not leave `ingest()` raising with the diagnosis job record already
+    `DONE` (diagnosis.py's own close-before-propose, so the plan it is proposing never refuses RF-20 on itself)
+    and the subject silently `BLOCKED` with no plan, no owner item and no note. The guard in `diagnosis._defer_plan`
+    is generic: it does not know or care what the proposer raised."""
+    stopped(layout)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("synthetic proposer crash")
+    monkeypatch.setattr(plans, "propose", boom)
+    rec = diag_rec(layout)
+    out = defer(layout, rec=rec)
+    assert out["action"] == "owner"
+    assert plans.load_plan(layout, "T.a9") is None, "the proposer never got to write a document"
+    job = jobs.read(layout, "T.a9")
+    assert job["phase"] == "DONE" and job["diag_action"] == "owner"
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1, "the outcome is a visible owner item, not a lost result"
+    text = items[0]["summary"] + (items[0].get("detail") or "")
+    assert "synthetic proposer crash" in text, "the record quotes what the operator sees"
+    t = tasks.load(layout, "T")
+    assert t.status == TaskStatus.BLOCKED            # not silently released; the owner item is the visible stop
+
+
+def test_a_proposer_exception_during_the_correction_session_also_reaches_the_owner(layout, monkeypatch, fake_claude):
+    """The same guard on `revise()`'s own call, the correction-session half of `_defer_plan`."""
+    stopped(layout)
+    original = diag_rec(layout)
+    out = defer(layout, rec=original, **out_of_scope_proposal())
+    assert out["action"] == "defer"
+    recs = diag_records(layout)
+    continuation = next(r for r in recs if r["attempt_id"] != "T.a9")
+
+    def boom(*_a, **_k):
+        raise RuntimeError("synthetic reviser crash")
+    monkeypatch.setattr(plans, "revise", boom)
+    out = defer(layout, rec=continuation)
+    assert out["action"] == "owner"
+    job = jobs.read(layout, continuation["attempt_id"])
+    assert job["phase"] == "DONE" and job["diag_action"] == "owner"
+    items = inbox.open_items(layout, "owner")
+    assert len(items) == 1
+    text = items[0]["summary"] + (items[0].get("detail") or "")
+    assert "synthetic reviser crash" in text

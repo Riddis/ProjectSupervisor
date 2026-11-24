@@ -136,6 +136,51 @@ def test_replay_refused_prose_in_checks_is_normalised_and_applied(layout):
     assert t1.tests == ["existing test command", "the documented behaviour parses correctly"]
 
 
+# ======================================================================= replay 2, on a task that already
+# carries a real check -- the shape the fixture above never exercised, and the one P1-2 crashed `propose()` on
+
+def test_replay_refused_prose_in_checks_beside_an_existing_check_keeps_the_real_check(layout):
+    """The same recorded cause, on a task that already carries a real check: the `checks_to_tests` move must merge
+    the task's existing checks back in rather than discard them, and `propose()` must write the document -- its
+    `before` is the task's own `Check` model object, which `yaml.safe_dump` cannot write unserialised."""
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["src"], tests=["existing test command"],
+              checks=[{"command": f"{PY} -c pass"}])
+    rev = tasks_mod.load(layout, "T1").rev
+    doc = {"plan_schema": 1, "id": "T1.d1", "subject": {"task": "T1"},
+           "reason": "the documented behaviour needs a test asserting it",
+           "expected_rev": {"T1": rev},
+           "operations": [
+               {"op": "patch_contract", "task": "T1",
+                "fields": {"checks": ["the documented behaviour parses correctly"]}},
+               {"op": "resume", "task": "T1", "as": "ready"},
+           ]}
+
+    assert plans.authority(doc, {}) == plans.CLASS_A
+
+    proposed = plans.propose(layout, doc, by="diagnosis")
+    assert proposed["refusals"] == [], "prose in checks is normalised away before any refusal is computed"
+    assert [n["code"] for n in proposed["report"]["normalised"]] == ["checks_to_tests"]
+    assert proposed.get("revisions") == [], "the normalisation alone resolves it; no correction turn was spent"
+
+    acted = plans.resume_plans(layout)
+    assert acted == ["T1.d1"]
+    stored = plans.load_plan(layout, "T1.d1")
+
+    # end state: the plan
+    assert stored["status"] == "applied"
+    assert not stored.get("plan_review"), "class A: zero approvals taken"
+    assert not stored.get("owner_item")
+    assert inbox_mod.all_items(layout) == [], "no owner item opened, start to finish"
+
+    # end state: the task
+    t1 = tasks_mod.load(layout, "T1")
+    assert t1.status == TaskStatus.READY
+
+    # end state: the contract fields -- the real check survives the move; only the prose becomes a test
+    assert [c.command for c in t1.checks] == [f"{PY} -c pass"], "the real check was dropped by the move"
+    assert t1.tests == ["existing test command", "the documented behaviour parses correctly"]
+
+
 # ======================================================================= replay 3: the agent-shaped task split
 
 def test_replay_agent_shaped_task_split_into_harness_process_and_report(layout):
