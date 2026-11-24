@@ -35,6 +35,7 @@ import json
 import re
 import shutil
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -1018,6 +1019,23 @@ def _subject_refusals(doc: dict, layout: Layout, tasks: dict[str, Task]) -> list
     return out
 
 
+def _plain(value: Any) -> Any:
+    """`before`, straight off the `Task` model, is whatever pydantic actually built — a list of `Check` model
+    objects for `checks`, an `Evidence` enum member for `evidence` — not the plain data `yaml.safe_dump` (what
+    `store.dump` runs on the whole plan document) can write. The same conversion `_normalise_fields` already
+    applies to `existing_checks`, generalised to every value a patch's `before` can hold: every member of
+    PATCH_ALLOWED_FIELDS is a plain string, a list of plain strings, a list of `Check`, or an `Evidence` member —
+    checked against the `Task` model directly rather than assumed — so a list is walked, a `BaseModel` is
+    `model_dump(mode="json")`, an `Enum` member is its `.value`, and anything else (already plain) passes through."""
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
 def _graph_diff(doc: dict, tasks: dict[str, Task]) -> dict:
     added, removed, patched, created = [], [], [], []
     for op in doc.get("operations") or []:
@@ -1031,7 +1049,7 @@ def _graph_diff(doc: dict, tasks: dict[str, Task]) -> dict:
                 removed.append([op.get("task"), d])
         elif op.get("op") == "patch_contract":
             t = tasks.get(op.get("task"))
-            before = {k: getattr(t, k) for k in (op.get("fields") or {})} if t else {}
+            before = {k: _plain(getattr(t, k)) for k in (op.get("fields") or {})} if t else {}
             patched.append({"task": op.get("task"), "before": before, "after": op.get("fields")})
         elif op.get("op") == "create_task":
             created.append((op.get("task") or {}).get("id"))

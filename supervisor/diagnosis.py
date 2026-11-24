@@ -186,9 +186,23 @@ def _defer_plan(supervisor, task: Task, rec: dict, role: str, obj: dict) -> tupl
     if existing is not None and existing.get("status") != "refused":
         return existing, "", False                             # a replayed ingest: already proposed, nothing to redo
     if existing is None:
-        plan = plans_mod.propose(layout, doc, by=role, proposer_role=role)
+        try:
+            plan = plans_mod.propose(layout, doc, by=role, proposer_role=role)
+        except Exception as exc:                                # noqa: BLE001 - I3 §1.2: never silently. Whatever
+            # the proposer raises (a validator bug, a store write failure, anything not already a refusal) must
+            # not leave this diagnosis job DONE (it already is, by the time this runs) with no plan, no owner
+            # item and no note: see "what this task did not cover" for the one named exception this also covers
+            # without yet fixing (P2-3's ValueError on a symlinked path slot).
+            why = f"the plan could not be proposed ({type(exc).__name__}: {str(exc)[:200]})"
+            tasks_mod.log(layout, "diagnosis_plan_error", "escalation", task=task.id, role=role, error=why[:300])
+            return None, why, False
     elif is_correction and not existing.get("revisions"):
-        plan = plans_mod.revise(layout, plan_id, doc, by=role)
+        try:
+            plan = plans_mod.revise(layout, plan_id, doc, by=role)
+        except Exception as exc:                                # noqa: BLE001 - see above, the correction half
+            why = f"the corrected plan could not be proposed ({type(exc).__name__}: {str(exc)[:200]})"
+            tasks_mod.log(layout, "diagnosis_plan_error", "escalation", task=task.id, role=role, error=why[:300])
+            return None, why, False
     else:
         plan = existing                                          # a replayed correction: already revised once
     if plan.get("status") != "refused":
@@ -540,5 +554,13 @@ def ingest(supervisor, rec: dict, result) -> dict | None:
         tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred, but {owner_why[:300]} — owner decision",
                            actor="escalation")
         return _route_plan_to_owner(layout, task, rec, role, plan, owner_why)
+    if owner_why:
+        # `_defer_plan` caught a proposer exception: there is no plan document at all (the crash happened before
+        # `propose()`/`revise()` could write one), so `_route_plan_to_owner`'s two-version render has nothing to
+        # show. The generic owner route still names the reason — never just "needs the owner" — so the operator
+        # sees what crashed, not only that something did.
+        tasks_mod.add_note(layout, task.id, f"{role} diagnosis: deferred, but {owner_why[:300]} — owner decision",
+                           actor="escalation")
+        return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), owner_why)
     tasks_mod.add_note(layout, task.id, f"{role} diagnosis: owner decision — {summary[:200]}", actor="escalation")
     return route_to_owner(layout, task, rec, summary, str(obj.get("question") or ""), "needs the owner")
