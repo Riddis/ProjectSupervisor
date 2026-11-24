@@ -1,9 +1,10 @@
-"""P2-3 (docs/reviews/RELEASE_REVIEW_2.9.0.md): a `path` slot through a symlink makes `_vendor.contract.contained`
-raise `ValueError("Paths must not traverse links")`, and `plans._param_refusals` let that exception out of
-`validate()`, against its own "never raises" contract. Case (a) is deterministic (patches `contained` itself, so
-it runs on every machine); case (b) is the real shape, a symlink inside the declared root, skipped where the
-platform or the privilege does not allow creating one. The rest are controls: every other path-slot refusal of
-RELEASE_REVIEW_2.9.0.md section 2 must still hold, and a legitimate in-root path must still be admitted."""
+"""P2-3: a `path` slot through a symlink makes `_vendor.contract.contained` raise `ValueError("Paths must not
+traverse links")`, and `plans._param_refusals` let that exception out of `validate()`, against its own "never
+raises" contract. Case (a) is deterministic (patches `contained` itself, so it runs on every machine); case (b) is
+the real shape, a symlink inside the declared root, skipped where the platform or the privilege does not allow
+creating one. The rest are controls: every other path-slot refusal (an outside-root relative path, an absolute
+path, a `..`-escape, a backslash shape, a `~`-prefixed path) must still hold, and a legitimate in-root path must
+still be admitted."""
 from __future__ import annotations
 
 import os
