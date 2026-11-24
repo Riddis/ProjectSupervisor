@@ -352,6 +352,17 @@ def _secret_shaped_refusals(op_index: int, op: dict, layout: Layout) -> list[Ref
     return out
 
 
+def _redacted_reason(reason: Any, layout: Layout) -> Any:
+    """`reason` is free prose outside the operations `_secret_shaped_refusals` scans, but RF-21's own rationale
+    ("a plan is written to the store, rendered, and quoted into packets") holds for it exactly the same. Unlike
+    an operation's own values, free text is never executed, so there is no reason to refuse the whole plan over
+    it: it is redacted the same way `policy.redact` already redacts everything else headed for those same three
+    places, at the one point (here) both `propose()` and `revise()` write it, so the stored document, its later
+    rendering and the owner's inbox summary — all three read this same stored field back — agree by
+    construction."""
+    return policy_mod.redact(reason, layout) if isinstance(reason, str) else reason
+
+
 # ----------------------------------------------------------------------- normalisation (§1.3), closed
 
 def _resolves(first_token: str) -> bool:
@@ -1348,7 +1359,7 @@ def propose(layout: Layout, doc: dict, by: str = "diagnosis", proposer_role: str
     normalised_doc, _ = normalise(doc, tasks_now)
     report, refusals = validate(doc, layout, tasks=tasks_now)
     base = {"plan_schema": doc.get("plan_schema"), "id": plan_id, "subject": doc.get("subject"),
-            "reason": doc.get("reason"), "expected_rev": doc.get("expected_rev"),
+            "reason": _redacted_reason(doc.get("reason"), layout), "expected_rev": doc.get("expected_rev"),
             "operations": normalised_doc.get("operations"), "revisions": [], "proposer_role": proposer_role,
             # Written whether or not the plan validates: a `set_job` refused for a failed preflight (RF-08) is
             # refused *because* this ran, and the approver of a plan that does validate needs the same transcript
@@ -1389,7 +1400,7 @@ def revise(layout: Layout, plan_id: str, doc: dict, by: str) -> dict:
     def fn(d):
         d["revisions"] = list(d.get("revisions") or []) + [revision_entry]
         d["operations"] = normalised_doc.get("operations")
-        d["reason"] = doc.get("reason")
+        d["reason"] = _redacted_reason(doc.get("reason"), layout)
         d["expected_rev"] = doc.get("expected_rev")
         d["report"] = report.as_dict()
         to = "refused" if refusals else "awaiting_approval"
