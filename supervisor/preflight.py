@@ -44,9 +44,22 @@ def _fail(code: str, message: str, *, template: str | None, digest: str, probe_d
             "detail": {"code": code, "message": message, "block_digest": digest}}
 
 
-def _pass(*, template: str | None, digest: str, probe_digest: str | None = None) -> dict:
-    return {"ok": True, "at": now_iso(), "template": template, "probe_digest": probe_digest,
-            "detail": {"block_digest": digest}}
+def _pass(*, template: str | None, digest: str, probe_digest: str | None = None,
+          template_digest: str | None = None) -> dict:
+    detail: dict[str, Any] = {"block_digest": digest}
+    if template_digest is not None:
+        detail["template_digest"] = template_digest
+    return {"ok": True, "at": now_iso(), "template": template, "probe_digest": probe_digest, "detail": detail}
+
+
+def _resolved_digest(resolved: dict) -> str:
+    """Identifies the one command a templated block resolves to -- its substituted `argv` or its `fn` -- recorded
+    in `_pass`'s own detail (`template_digest`) beside `block_digest`, and recomputed by `resolve_for_launch` at
+    launch time: the same template id with the same params can still resolve to a different command once the
+    template's own body is edited, which neither `block_digest` (the block, not the template) nor the digest of
+    the template file as a whole (every other template's edits would needlessly invalidate this one) would catch."""
+    blob = json.dumps(resolved, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def _resolve_executable(executable: str, layout: Layout, allowed: list[str] | None) -> bool:
@@ -296,7 +309,8 @@ def _run_python(layout: Layout, job: dict, tmpl: dict, params: dict, template_id
     except TypeError as exc:
         return _fail("params_signature_mismatch", f"params do not match {fn_name}'s signature: {exc}",
                     template=template_id, digest=digest)
-    return _pass(template=template_id, digest=digest)
+    template_digest = _resolved_digest({"fn": fn_name}) if tmpl else None
+    return _pass(template=template_id, digest=digest, template_digest=template_digest)
 
 
 def _run_process(layout: Layout, job: dict, tmpl: dict, params: dict, template_id: str | None, digest: str) -> dict:
@@ -321,7 +335,8 @@ def _run_process(layout: Layout, job: dict, tmpl: dict, params: dict, template_i
         if failure:
             return _fail(failure["code"], failure["message"], template=template_id, digest=digest,
                         probe_digest=probe_digest)
-    return _pass(template=template_id, digest=digest, probe_digest=probe_digest)
+    template_digest = _resolved_digest({"argv": argv}) if tmpl else None
+    return _pass(template=template_id, digest=digest, probe_digest=probe_digest, template_digest=template_digest)
 
 
 def attach(layout: Layout, doc: dict) -> None:
@@ -365,6 +380,77 @@ def _task_of(doc: dict, canonical: dict):
         return Task.model_validate({**doc, "job": {k: v for k, v in canonical.items() if k != "preflight"}})
     except Exception:                                   # noqa: BLE001 - nothing here may raise (see `attach`)
         return None
+
+
+class LaunchResolutionError(RuntimeError):
+    """Raised by `resolve_for_launch` instead of guessing a launch spec: the block names a template that is no
+    longer in `config/job_templates.yaml`, the block's own digest no longer matches the one its stored preflight
+    was recorded against, or the template resolves to a different command than the one its stored preflight
+    recorded (`detail['template_digest']`) -- the template's body was edited after the block's preflight passed,
+    with the block itself left byte-identical. The two built-in adapters let this propagate out of `prepare()`;
+    the loop's own `except Exception` around that call (R-12) turns it into a failed attempt, never a launch."""
+
+
+def resolve_for_launch(layout: Layout, task) -> dict:
+    """The launch spec for a `process`/`python` task's own job block: a literal block (no `template`) is
+    returned exactly as stored -- it already declares `argv`/`fn` directly, by design (section 1.4), and there
+    is nothing here to resolve. A templated block (the only shape a plan's `set_job` can write, RF-04) has its
+    `template` + `params` resolved to `argv` (process) or `fn` (python) through the same `_substitute` the
+    preflight itself ran, so a launch and the preflight that cleared it read the same template the same way.
+
+    Raises `LaunchResolutionError` rather than falling back to the adapter's own default when the resolution
+    cannot be trusted, against three things the stored preflight recorded:
+    - the block's own digest no longer matches `detail['block_digest']` (the same staleness
+      `gate.stored_preflight_reason` already refuses on at dispatch time -- repeated here so `prepare()` never
+      resolves a block its own stored preflight does not describe, whatever path reaches it);
+    - the named template is no longer in `config/job_templates.yaml` at all;
+    - the template resolves (through the same `_substitute` call made here) to a command whose digest no longer
+      matches `detail['template_digest']` -- the template's own body moved since the preflight ran, with the
+      block itself unchanged, so neither of the first two checks would have caught it. A preflight recorded before
+      this check existed carries no `template_digest`; that absence is read as "not recorded", never as a
+      mismatch, so no block already on disk is held by an upgrade -- the next write that re-preflights it (the
+      backfill sweep, a patch, a plan) is what starts recording one. The consequence an owner feels: after a
+      template's body is edited, every block that references it is held at launch until its preflight is re-run.
+
+    A task with no `job` block returns `{}` -- the adapter's own hard-coded default is untouched by this release
+    (invariant 7's own exemption, `gate.preflight_binding`)."""
+    job = task.job
+    if job is None:
+        return {}
+    jobspec = job.model_dump(mode="json", exclude_none=True, exclude_unset=True)
+    jobspec.pop("preflight", None)
+    template_id = jobspec.get("template")
+    if template_id is None:
+        return jobspec            # literal, owner-authored block: nothing to resolve
+
+    pf = job.preflight
+    pf_ok = pf is not None and pf.ok
+    pf_detail = (pf.detail or {}) if pf_ok else {}
+    if pf_ok and block_digest(jobspec) != pf_detail.get("block_digest"):
+        raise LaunchResolutionError(f"{task.id}: job block changed since its preflight was recorded")
+    try:
+        templates = templates_mod.load(layout)
+    except templates_mod.TemplateError as exc:
+        raise LaunchResolutionError(f"{task.id}: config/job_templates.yaml: {exc}") from exc
+    tmpl = templates.get(str(template_id))
+    if tmpl is None:
+        raise LaunchResolutionError(f"{task.id}: template {template_id!r} is not in config/job_templates.yaml")
+
+    resolved = dict(jobspec)
+    if jobspec.get("adapter") == "python":
+        fn = jobspec.get("fn") or tmpl.get("fn")
+        resolved["fn"] = fn
+        resolved_digest = _resolved_digest({"fn": fn})
+    else:
+        argv = _substitute(tmpl.get("argv") or [], dict(jobspec.get("params") or {}))
+        resolved["argv"] = argv
+        resolved_digest = _resolved_digest({"argv": argv})
+
+    stored_template_digest = pf_detail.get("template_digest")
+    if stored_template_digest is not None and stored_template_digest != resolved_digest:
+        raise LaunchResolutionError(
+            f"{task.id}: template {template_id!r} resolves to a different command than its preflight recorded")
+    return resolved
 
 
 # ---------------------------------------------------------------- the backfill sweep

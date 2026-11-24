@@ -36,7 +36,8 @@ class PythonAdapter(Adapter):
     name = "python"
 
     def prepare(self, layout, task, attempt_id):
-        jobspec = job_spec(task)
+        from .. import preflight as preflight_mod
+        jobspec = preflight_mod.resolve_for_launch(layout, task)
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         return {"adapter": "python", "task_id": task.id, "attempt_id": attempt_id, "fn": jobspec.get("fn", "noop"),
