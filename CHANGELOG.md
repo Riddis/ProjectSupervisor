@@ -273,15 +273,20 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   answered item can no longer go quiet with neither an effect nor a record of why.
 
 - **A plan now carries one of three authority classes — routine repair applies on the validator's word alone,
-  shaping work waits for one other role's own read, spend reaches the owner as a button — instead of a validated
-  plan applying itself the instant it validates.** `plans.authority()` classifies a plan by the highest-ranked
-  class among its own operations; class A applies immediately once `resume_plans()` routes it; class B opens
-  exactly one `plan_review` job (an additive job kind, letter `p`, scoped to the subject's own attempt) for the
-  first configured `plan.approver` role that is not the proposer, whose `APPROVE`/`REVISE`/`OWNER` verdict applies
-  the plan, returns it to `refused` with findings, or opens an owner question; a plan the owner authority class
-  reaches, or a class B plan for which no approver is available, opens the owner's existing typed `apply_plan`
-  choice — never prose. `supervisor doctor` warns when `plan.approver` names a role `routing.yaml` does not
-  configure.
+  shaping work and spend each reach a human — instead of a validated plan applying itself the instant it
+  validates.** `plans.authority()` classifies a plan by the highest-ranked class among its own operations; class
+  A applies immediately once `resume_plans()` routes it. Class B (shaping work: creating a task on an unmetered
+  lane) and the owner authority class (spend) each reach the owner's one typed `apply_plan` choice — never prose
+  — the moment `resume_plans()` routes them; class B is designed to wait instead for one other configured
+  `plan.approver` role's own `plan_review` verdict (`plans.open_plan_review`/`apply_plan_review`,
+  `APPROVE`/`REVISE`/`OWNER`), but nothing in this release dispatches that job to an adapter yet — no packet
+  builder, no loop ingest hook, no result schema — so `resume_plans()` does not route a class B plan there until
+  that dispatch exists; a class B plan for which no approver is configured reaches the owner the same way. A
+  plan already found `awaiting_approval` with a `plan_review` record that names a job with no live record behind
+  it at all — a store an earlier version wrote, or a job lost — is noticed by the same sweep and escalated to
+  the owner too, exactly once. `why_not_runnable` now names a subject's own waiting plan directly (its id and
+  what it is waiting on) rather than reporting the unclaimed-resource fallback. `supervisor doctor` warns when
+  `plan.approver` names a role `routing.yaml` does not configure.
 
 - **A diagnosis `defer` now proposes a `plan` instead of a `new_task`/`wait_for` block a human had to act on by
   hand.** A refused proposal gets exactly one more session of the same diagnosis job (`cause: continuation`,
