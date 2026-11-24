@@ -263,14 +263,16 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 - **An inbox item's buttons now carry a typed effect, not a keyword a human-written label merely hinted at.** A
   choice's label and detail are always rendered from its own effect (`plans.render_choice`, over a closed
-  twelve-effect vocabulary) rather than trusted as the caller's prose; an owner-only effect (`hold`,
-  `release_hold`, `cancel_task`, `resume`, `diagnose_now`) is checked for its required operand at creation, and a
-  plan-tier effect is validated as the exact plan `apply_choice` would propose, so a choice already refused can
-  never be offered. An answer reaches an effect only by naming a choice and carrying the digest of the choices it
-  was shown (refused otherwise as `choice_not_offered` or `choice_stale`, "reload"); free text that merely begins
-  with a choice's own keyword names nothing and is recorded as a comment, which reopens the item exactly as
-  before. A failed effect is recorded (`choice_applied: {ok: false, error}`) before any reopen is attempted, so an
-  answered item can no longer go quiet with neither an effect nor a record of why.
+  twelve-effect vocabulary) rather than trusted as the caller's prose; an owner-only effect (`apply_plan`,
+  `cancel_plan`, `cancel_task`, `hold`, `release_hold`, `diagnose_now`) is checked for its required operand at
+  creation, and a plan-tier effect is validated as the exact plan `apply_choice` would propose, so a choice
+  already refused can never be offered. An answer reaches an effect only by naming a choice and carrying the
+  digest of the choices it was shown (refused otherwise as `choice_not_offered` or `choice_stale`, "reload");
+  free text that merely begins with a choice's own keyword names nothing and is recorded as a comment, which
+  reopens the item exactly as before — on a `decision`-kind item as on any other, so a choice carried there is no
+  longer a second way for the same prose to read as an effect. A failed effect is recorded
+  (`choice_applied: {ok: false, error}`) before any reopen is attempted, so an answered item can no longer go
+  quiet with neither an effect nor a record of why.
 
 - **A plan now carries one of three authority classes — routine repair applies on the validator's word alone,
   shaping work and spend each reach a human — instead of a validated plan applying itself the instant it
