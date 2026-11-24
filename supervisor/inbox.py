@@ -505,18 +505,24 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
             out["message"] = "recorded as a comment; the task is still stopped"
             # Neither DEFER nor free text resumes the task - it is still BLOCKED/FAILED. Opening a fresh decision
             # item here, naming what just happened, is the common case that keeps it in the owner's list with a
-            # way to act (REQUEUE/CANCEL/DEFER again); an owner who keeps writing free text keeps getting a fresh
-            # one, same as before this item was answered. But this create() can fail for want of room in the
-            # owner's inbox, so the guarantee that the task stays watched must not live here alone: loop.py's
-            # sweep_stalled never treats `skipped: "deferred"` (set just above, whether or not the reopen below
-            # succeeds) as a resolved stop, so a stall still escalated on its own schedule even when the cap
-            # leaves this reopen with nowhere to go (R-06).
+            # way to act (REQUEUE/CANCEL/DEFER again, or its own choices again); an owner who keeps writing free
+            # text keeps getting a fresh one, same as before this item was answered. But this create() can fail
+            # for want of room in the owner's inbox, so the guarantee that the task stays watched must not live
+            # here alone: loop.py's sweep_stalled never treats `skipped: "deferred"` (set just above, whether or
+            # not the reopen below succeeds) as a resolved stop, so a stall still escalated on its own schedule
+            # even when the cap leaves this reopen with nowhere to go (R-06).
             try:
                 choices = item.get("choices")
+                # a choice-carrying item's successor must never name a keyword outside its own allowed_responses
+                # (create() derives those from the choice ids below) - REQUEUE/CANCEL/DEFER are the no-choices
+                # item's own keywords, not this one's, so the reopen text is built from the choices themselves
+                if choices:
+                    action_text = "Pick one of the choices above, or answer in free text."
+                else:
+                    action_text = "REQUEUE = re-run it; CANCEL = cancel it; DEFER = leave it stopped."
                 reopened = create(layout, for_role="owner", subject=item.get("subject") or f"Decision needed: {task_id}",
                                   summary=f"{item['id']} was answered ({out['response']}): recorded as a comment; "
-                                          f"{task_id} has not moved and is still stopped. REQUEUE = re-run it; "
-                                          "CANCEL = cancel it; DEFER = leave it stopped.",
+                                          f"{task_id} has not moved and is still stopped. {action_text}",
                                   kind=DECISION_KIND, allowed_responses=(None if choices else list(DECISION_RESPONSES)),
                                   choices=choices, free_text=True, from_="loop", task_id=task_id,
                                   extra={"resume": item.get("resume") or "task", "blocked_at": item.get("blocked_at"),
