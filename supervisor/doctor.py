@@ -133,8 +133,9 @@ def check_routing(layout: Layout) -> Check:
     unconfigured = [r for r in approvers if roles and r not in roles]
     warnings = []
     if unconfigured:
-        warnings.append(f"plan.approver names {', '.join(unconfigured)}, absent from roles: — a plan with no "
-                        "other approver reaches the owner instead of that role")
+        warnings.append(f"plan.approver names {', '.join(unconfigured)}, absent from roles: — a class B plan "
+                        "reaches the owner regardless until the plan_review dispatch exists, but this name would "
+                        "still be skipped, never resolved, once it does")
     from . import gate as gate_mod
     warnings += gate_mod.removed_routing_settings(layout)
     if warnings:

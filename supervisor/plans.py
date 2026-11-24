@@ -1745,10 +1745,10 @@ def cancel_plan(layout: Layout, plan_id: str, by: str = "owner") -> dict:
 # exactly one inbox item carrying the `apply_plan` choice and waits for the owner. Class B is meant to open one
 # `plan_review` job and wait for its typed verdict (`open_plan_review`/`apply_plan_review`, built and tested
 # below) — but nothing in this tree submits that job to an adapter yet (no packet builder, no loop ingest hook,
-# no `agents/schemas/plan_review.json`; P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so minting
-# the id and stopping there leaves the plan `awaiting_approval` forever with no job behind it and nothing in the
-# inbox. Until that dispatch is built, `resume_plans()` routes class B through this same owner path instead of
-# through `open_plan_review` — not a second, dead-end lane. Each of the two entry points here is idempotent on
+# no `agents/schemas/plan_review.json`; P1-3), so minting the id and stopping there leaves the plan
+# `awaiting_approval` forever with no job behind it and nothing in the inbox. Until that dispatch is built,
+# `resume_plans()` routes class B through this same owner path instead of through `open_plan_review` — not a
+# second, dead-end lane. Each of the two entry points here is idempotent on
 # the field it writes (`owner_item`), so calling either again once that field is set is a no-op — the sweep that
 # drives them may run every turn without ever opening a second item.
 
@@ -1933,8 +1933,8 @@ def resume_plans(layout: Layout) -> list[str]:
     not yet routed, then continue every plan still `applying` from its own journal. Class A applies on the spot.
     Class B and the owner class each reach the owner's one typed `apply_plan` choice (`_open_owner_choice`) — the
     `plan_review` dispatch class B is designed for (`open_plan_review`/`apply_plan_review`) does not exist yet
-    (P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so routing a class B plan there and stopping
-    would leave it `awaiting_approval` with no job behind it and nothing in the inbox; routing it to the owner
+    (P1-3), so routing a class B plan there and stopping would leave it `awaiting_approval` with no job behind it
+    and nothing in the inbox; routing it to the owner
     instead gives every validated plan a human-actionable end, exactly as the owner class always has. A plan
     already found `awaiting_approval` with a `plan_review` naming a job that turns out not to be live —
     `_plan_review_job_live` above — is noticed here too and escalated to the owner the same way, exactly once,

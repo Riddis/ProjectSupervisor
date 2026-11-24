@@ -2,8 +2,8 @@
 total over the closed vocabulary; `resume_plans()` routes a freshly validated plan by that class — class A on the
 spot, class B and the owner class each behind exactly one typed `apply_plan` choice. Class B is designed for a
 `plan_review` job instead (`open_plan_review`/`apply_plan_review`, tested below as standalone building blocks),
-but nothing in this tree dispatches that job yet (P1-3, docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md), so
-`resume_plans()` does not route there until the dispatch exists. The approver is never the proposer (RF-23)."""
+but nothing in this tree dispatches that job yet (P1-3), so `resume_plans()` does not route there until the
+dispatch exists. The approver is never the proposer (RF-23)."""
 from __future__ import annotations
 
 import pytest
@@ -218,11 +218,11 @@ def test_class_a_dependency_inversion_applies_with_no_approval_at_all(layout):
 
 
 def test_class_b_reaches_the_owner_as_one_typed_choice_until_the_dispatch_exists(layout):
-    """P1-3 (RELEASE_REVIEW_2.9.0.md, closed by docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md):
-    `open_plan_review` only ever mints a `plan_review` job id — nothing in this tree submits it to an adapter —
-    so routing a class B plan there and stopping left it `awaiting_approval` forever with no job behind it and
-    an empty inbox. Until that dispatch exists, `resume_plans()` routes class B through the same owner path the
-    owner authority class and the no-approver escalation already use, never minting a dead `plan_review`."""
+    """P1-3: `open_plan_review` only ever mints a `plan_review` job id — nothing in this tree submits it to an
+    adapter — so routing a class B plan there and stopping left it `awaiting_approval` forever with no job behind
+    it and an empty inbox. Until that dispatch exists, `resume_plans()` routes class B through the same owner
+    path the owner authority class and the no-approver escalation already use, never minting a dead
+    `plan_review`."""
     from tests.conftest import make_task
     _write_routing(layout, APPROVER_ROUTING)
     make_task(layout, "T1", status="BLOCKED")
@@ -268,18 +268,21 @@ def test_owner_class_reaches_the_owner_as_one_typed_choice_not_prose(layout):
 
 
 def test_class_b_with_no_approver_available_escalates_to_the_owner_with_the_reason(layout):
+    """`open_plan_review`'s own no-candidate branch (`approver_role()` resolving to `(None, reason)` because the
+    only configured approver is the proposer, RF-23) — exercised directly, since `resume_plans()` no longer
+    reaches `open_plan_review` for class B at all (every class B plan escalates to the owner regardless of
+    `plan.approver`, until the dispatch exists) and so can no longer be the thing that proves this branch."""
     from tests.conftest import make_task
     _write_routing(layout, "plan:\n  approver: [senior_pm]\n")
     make_task(layout, "T1", status="BLOCKED")
     doc = base_plan(subject="T1", ops=[_create_op("T2")])
     plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
-    plans.resume_plans(layout)
-    stored = plans.load_plan(layout, "T1.d1")
-    assert not stored.get("plan_review")
+    stored = plans.open_plan_review(layout, "T1.d1")
+    assert not stored.get("plan_review"), "no job is minted when no candidate qualifies"
     items = inbox_mod.open_items(layout, "owner")
     assert len(items) == 1
     assert items[0]["choices"][0]["id"] == "apply_plan"
-    assert items[0]["summary"]
+    assert "RF-23" in items[0]["summary"], items[0]["summary"]
 
 
 def test_held_subject_is_refused_rf22_and_never_reaches_the_owner(layout):
@@ -425,11 +428,11 @@ def test_doctor_does_not_warn_when_every_plan_approver_is_configured(layout):
     assert not check.warn
 
 
-# ------------------------------------------------------------------ P1-3 (RELEASE_REVIEW_2.9.0.md): the class B
+# ------------------------------------------------------------------ P1-3: the class B
 # approval lane is a dead end under the real loop -- `open_plan_review` mints a `plan_review` job id nothing ever
 # dispatches, `resume_plans()` never revisits an `awaiting_approval` plan once that field is set, and a subject
 # waiting on it reads `why_not_runnable`'s `resource_claimed` fallback ("nothing currently claims it"), a code
-# that contradicts its own detail (P3-4). See docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md.
+# that contradicts its own detail (P3-4).
 
 CLASS_B_LOOP_ROUTING = ("plan:\n  approver: [chief_architect, senior_pm]\nroles:\n  chief_architect:\n"
                        "    adapter: claude_cli\n  senior_pm:\n    adapter: claude_cli\n  engineer:\n"

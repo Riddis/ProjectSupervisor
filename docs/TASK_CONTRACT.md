@@ -81,12 +81,13 @@ is proposed and released — a fresh retry budget, the task back to READY. Still
 (or when the correction's own role has no adapter registered at all), it reaches the owner with both versions of
 the plan and both refusal lists, as one inbox item offering `cancel_task`/`hold` — never `apply_plan`, since what
 reaches the owner here is refused whole either way. Whether a validated plan applies on its own or first needs one
-approval session (never the proposer's) follows its authority class (`routing.yaml`'s `plan.authority`/
-`plan.approver`): touching routing, authority or an existing task's own lane always reaches the owner, and
-creating a task is class A or B by its own lane's metering. A defer whose plan the supervisor refuses twice, or
-whose correction could never be dispatched, opens one owner decision item that says why instead of parking the
-task silently: prose in `blocked_on` alone is never acted on. Capacity limits never spend an attempt: the job
-is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
+approval session follows its authority class (`routing.yaml`'s `plan.authority`/`plan.approver`): touching
+routing, authority or an existing task's own lane always reaches the owner, and creating a task is class A
+(applies on the spot) or class B (one approval session — the owner's own `apply_plan` choice today, until a
+`plan_review` dispatch to one other configured role exists) by its own lane's metering. A defer whose plan the
+supervisor refuses twice, or whose correction could never be dispatched, opens one owner decision item that says
+why instead of parking the task silently: prose in `blocked_on` alone is never acted on. Capacity limits never
+spend an attempt: the job is DEFERRED and continued (max 3 continuations) from its `HANDOFF.md`.
 
 Nothing stops silently. A worker that ends **BLOCKED** goes straight to that diagnosis (no blind retry of the same
 brief). An agent run that ends FAILED/PARTIAL, crashes, times out or is lost gets the normal revision budget. A
