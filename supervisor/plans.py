@@ -807,7 +807,13 @@ def _param_refusals(op_index: int, name: str, value: Any, slot: dict, layout: La
     elif ptype == "path":
         from ._vendor.contract import contained
         roots = slot.get("roots") or []
-        if not isinstance(value, str) or not roots or not contained(value, roots, layout.root):
+        try:
+            inside = isinstance(value, str) and roots and contained(value, roots, layout.root)
+        except ValueError:
+            # A link anywhere in the path (`contained` -> `resolve`) is itself outside the contract's
+            # containment guarantee, not a crash: `validate()` never raises.
+            inside = False
+        if not inside:
             out.append(_rf("RF-07", "I1 §1.2", op_index, field_path, f"{field_path!r} does not resolve inside its declared roots"))
         elif slot.get("must_exist") and not (layout.root / value).exists():
             out.append(_rf("RF-08", "I1 §1.2", op_index, field_path, f"{field_path!r} does not exist"))
