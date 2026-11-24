@@ -25,8 +25,8 @@ from pydantic import ValidationError
 from . import gates as gates_mod
 from . import policy as policy_mod
 from . import store
-from .models.task import (ALLOWED, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval, JobPreflight,
-                          ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
+from .models.task import (ALLOWED, EXCLUSIVE, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval,
+                          JobPreflight, ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
 from .paths import Layout
 
 ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED}
@@ -414,6 +414,22 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
     return errors, warnings
 
 
+def owned_path_problems(tasks: Iterable[Task]) -> list[str]:
+    """Errors for an `owned_paths` entry outside the project root (RELEASE_REVIEW_2.9.0.md P2-2) — the write
+    scope a model-lane job is dispatched with, so an entry a created task declares above the root would hand that
+    job a write scope `verify.contained` never bounds to the tree. `EXCLUSIVE` ("."), meaning the whole tree, is
+    not a path to resolve and is never flagged. Checked only at `check_new` (create time, both writers it
+    serves); a row already on disk keeps loading regardless of what its `owned_paths` says, same as `artifacts`."""
+    errors = []
+    for t in tasks:
+        for p in t.owned_paths:
+            if p == EXCLUSIVE:
+                continue
+            if p.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", p) or ".." in Path(p).parts:
+                errors.append(f"{t.id}: owned_paths {p!r} must be a path relative to the project root")
+    return errors
+
+
 def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
@@ -581,6 +597,7 @@ def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
+    art_errors += owned_path_problems([task])
     warnings += contract_warnings([task], layout)
     job_errors, job_warnings = job_schema_problems(layout, task.job)
     art_errors += job_errors
