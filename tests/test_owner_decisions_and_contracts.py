@@ -188,6 +188,51 @@ def test_import_and_create_accept_an_odd_name_with_a_warning(layout):
     assert r["id"] == "NEW2" and "round_N_results.txt" in r["warnings"][0]
 
 
+# ------------------------------------------------------------------ P2-2: owned_paths containment (beside
+# artifact_problems's own rule above — RELEASE_REVIEW_2.9.0.md P2-2, `tasks.check_new`)
+
+def owned(*owned_paths):
+    return Task.model_validate({"id": "C", "phase": 0, "title": "c", "objective": "o", "owner_role": "engineer",
+                                "actions": ["a"], "artifacts": ["x"], "tests": ["t"], "acceptance": "ok",
+                                "escalation": "none", "human_approval": "none", "cost_category": "claude",
+                                "owned_paths": list(owned_paths)})
+
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_owned_path_problems_names_the_path_and_the_rule(bad):
+    errors = tasks.owned_path_problems([owned(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", "."])
+def test_owned_path_problems_accepts_legitimate_shapes(good):
+    assert tasks.owned_path_problems([owned(good)]) == []
+
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_the_owners_task_create_refuses_owned_paths_outside_the_root(layout, bad):
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": ["x"], "owned_paths": [bad]}
+    with pytest.raises(tasks.TaskError, match="project root"):
+        tasks.create(layout, doc, actor="owner")
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created"])
+def test_the_owners_task_create_accepts_legitimate_owned_paths(layout, good):
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": ["x"], "owned_paths": [good]}
+    r = tasks.create(layout, doc, actor="owner")
+    assert r["id"] == "NEW"
+
+
+def test_a_task_already_in_the_store_with_an_unusual_owned_paths_entry_still_loads(layout):
+    """check_new's new containment rule governs what may be created, not a migration: a row already on disk
+    (written before this rule existed, or by hand) must keep loading unchanged."""
+    make_task(layout, "OLD", owned_paths=["../legacy"])
+    assert tasks.load(layout, "OLD").owned_paths == ["../legacy"]
+
+
 def test_import_and_create_still_refuse_an_unsatisfiable_artifact(layout):
     failed_task(layout)
     write_seed(layout, ["runs/<id>/summary.json"])

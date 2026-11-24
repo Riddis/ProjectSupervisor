@@ -297,6 +297,33 @@ def test_rf18_contract_refused(layout):
     assert_only(refusals, "RF-18")
 
 
+# ------------------------------------------------------------------ P2-2: a created task's owned_paths stays inside
+# the project root (RELEASE_REVIEW_2.9.0.md P2-2) — `tasks.check_new` has no containment rule for `owned_paths`,
+# only for `artifacts`, so a plan's create_task could declare a write scope above the root.
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_create_task_owned_paths_outside_the_root_is_refused(layout, bad):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": [bad], "artifacts": ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
+
+
+@pytest.mark.parametrize("good", [["x"], ["x/y.txt"], ["a/b/c"], ["not/yet/created"], ["."]])
+def test_create_task_owned_paths_inside_the_root_is_accepted(layout, good):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": good, "artifacts": ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == [], refusals
+
+
 # ------------------------------------------------------------------ application: RF-19, RF-20, RF-22
 
 def test_rf19_stale_inputs(layout):
