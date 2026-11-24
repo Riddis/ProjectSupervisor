@@ -8,10 +8,21 @@ not two separate writes. No test here touches the plan validator's own refusal c
 a choice's effect through `plans.validate`/`plans.render_choice`."""
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from supervisor import inbox, plans
 from tests.conftest import make_task
+
+
+def _assert_summary_names_no_stray_keyword(reopened):
+    """A reopened item's own summary must never name a legacy keyword (REQUEUE/CANCEL/DEFER) that is not among
+    its own `allowed_responses` - the keywords belong to the no-choices item, not to this one, whose choices may
+    carry none of those three names (`cancel_task`/`hold`, not `cancel`/`requeue`)."""
+    allowed = set(reopened.get("allowed_responses") or [])
+    named = {w for w in re.findall(r"[A-Z_]+", reopened["summary"]) if w in inbox.DECISION_RESPONSES}
+    assert named <= allowed, (named, allowed, reopened["summary"])
 
 
 def _two_op_choice():
@@ -366,6 +377,7 @@ def test_keyword_prose_on_a_decision_item_with_a_same_named_choice_is_a_comment_
     reopened = inbox.load(layout, answered["applied"]["reopened"])
     assert reopened["choices"] == item["choices"]
     assert reopened["status"] == "open"
+    _assert_summary_names_no_stray_keyword(reopened)
 
 
 def test_requeue_prose_on_the_route_plan_to_owner_shape_does_not_release_the_task_around_the_refused_plan(layout):
@@ -393,6 +405,9 @@ def test_requeue_prose_on_the_route_plan_to_owner_shape_does_not_release_the_tas
     assert "choice_applied" not in answered
     assert answered["applied"]["skipped"] == "deferred"
     assert tasks_mod.load(layout, "T1").status == TaskStatus.FAILED, "the refused plan's subject was released"
+    reopened = inbox.load(layout, answered["applied"]["reopened"])
+    assert {c["id"] for c in reopened["choices"]} == {"cancel_task", "hold"}
+    _assert_summary_names_no_stray_keyword(reopened)
 
 
 def test_a_keyword_answer_on_a_decision_item_with_no_choices_still_acts_exactly_as_today(layout):
@@ -418,7 +433,10 @@ def test_a_keyword_answer_on_a_decision_item_with_no_choices_still_acts_exactly_
 
 def test_the_typed_digest_path_is_untouched_on_a_decision_item(layout):
     """Controls beside the behaviour change: a named choice on a decision item still needs its digest (RF-25),
-    a card whose choices moved on disk is still refused, and the two-tier applier binding is unaffected."""
+    a card whose choices moved on disk is still refused, and the two-tier applier binding is unaffected — and,
+    the behaviour change itself, a named choice leaves `apply_decision`'s own marker with neither `skipped` nor
+    a spurious `reopened` successor (at this task's starting head it fell into the comment-and-reopen branch
+    anyway, a second defect beside the missing `choice` key this test used to stop at)."""
     from supervisor import tasks as tasks_mod
     from supervisor.models.task import TaskStatus
     make_task(layout, "T1", status="BLOCKED", owned_paths=["."])
@@ -435,3 +453,7 @@ def test_the_typed_digest_path_is_untouched_on_a_decision_item(layout):
     assert answered["choice_applied"]["ok"], answered.get("choice_applied")
     assert answered["applied"]["choice"] == "cancel"
     assert tasks_mod.load(layout, "T1").status == TaskStatus.CANCELLED
+    # a named choice is never also "deferred": apply_decision's own comment-and-reopen branch (and the spurious
+    # successor item it would otherwise open) is reached only when no choice was named
+    assert "skipped" not in answered["applied"]
+    assert "reopened" not in answered["applied"]
