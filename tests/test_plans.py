@@ -696,3 +696,72 @@ def test_owner_only_effect_does_not_truncate_the_refusal_list(layout):
     _, refusals = plans.validate(doc, layout)
     assert "RF-26" in codes(refusals)
     assert "RF-22" in codes(refusals), "the held subject is reported too, not suppressed by the owner-only effect"
+
+
+# ------------------------------------------------------------------ P2-1: `reason` is screened like an
+# operation's own values — RF-21 scans `operations` only (`_secret_shaped_refusals`); `reason` is free prose
+# outside them, and `propose()`/`revise()` used to write it to disk, into a replayed read, and into the owner's
+# inbox summary unscreened.
+
+def test_a_secret_shaped_reason_is_not_stored_on_the_plan_document(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = f"token {SECRET} leaked"
+    proposed = plans.propose(layout, doc)
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a secret-shaped reason reached state/plans/<id>.yaml"
+    assert SECRET not in (proposed.get("reason") or ""), "a secret-shaped reason survived into the returned document"
+    reloaded = plans.load_plan(layout, "T1.d1")
+    assert SECRET not in (reloaded.get("reason") or ""), "a secret-shaped reason survived a fresh read of the store"
+
+
+def test_an_ordinary_reason_is_stored_byte_identical(layout):
+    """The control beside the case above: screening a credential-shaped reason must not touch one that holds
+    nothing secret-shaped."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = "repair the broken contract patch"
+    proposed = plans.propose(layout, doc)
+    assert proposed["reason"] == "repair the broken contract patch"
+
+
+def test_a_secret_shaped_operation_value_is_still_rf21_refused_beside_a_clean_reason(layout):
+    """The fix must not narrow what RF-21 already refuses in the operations: a credential-shaped operation value
+    is refused exactly as before, whatever the plan's own `reason` says."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"review_note": SECRET}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-21")
+
+
+def test_a_secret_shaped_reason_carried_through_revise_is_screened_too(layout):
+    """§2.5's correction turn writes a fresh `reason` over a refused plan's own (`revise()`); the same screening
+    must hold there, not only on the first `propose()`."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "bogus", "task": "T1"}])            # refused whole: RF-01
+    plans.propose(layout, doc)
+    corrected = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    corrected["reason"] = f"token {SECRET} leaked"
+    revised = plans.revise(layout, "T1.d1", corrected, by="diagnosis")
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a secret-shaped reason reached state/plans/ through revise()"
+    assert SECRET not in (revised.get("reason") or "")
+
+
+def test_a_secret_shaped_reason_is_screened_out_of_the_owner_approval_summary(layout):
+    """`_open_owner_choice` quotes `doc['reason']` into the inbox summary the owner reads; it must read the same
+    screened value `propose()` wrote, never the model's raw text."""
+    from tests.conftest import make_task
+    from supervisor import inbox as inbox_mod
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = f"token {SECRET} leaked"
+    proposed = plans.propose(layout, doc)
+    out = plans._open_owner_choice(layout, "T1.d1", proposed)
+    item = inbox_mod.load(layout, out["owner_item"])
+    text = item["summary"] + (item.get("detail") or "")
+    assert SECRET not in text, "a secret-shaped reason reached the owner's inbox item"
