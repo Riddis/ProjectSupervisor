@@ -434,23 +434,36 @@ def apply_decision(layout: Layout, item: dict, by: str = "owner") -> dict | None
     resets the task's escalation budget (spent revisions, failure signatures). Text after the keyword ("REQUEUE use
     the cached outputs") becomes owner guidance that the next delivery brief (or, for a review resume, the next
     review brief) carries, plus a task note for the record. Idempotent: the outcome is written to the item as
-    `applied` and an applied item is never acted on twice."""
+    `applied` and an applied item is never acted on twice.
+
+    An item carrying `choices` defers to that typed path (section 4.1): once `answer()` has resolved the answer to
+    one of the item's own choices (`answer.choice`), this legacy keyword parser does nothing but record that it
+    deferred — `apply_choice`, called right after this by `answer()`, is what actually applies the effect, with
+    its own digest check. Prose or a keyword that named none of the item's choices is never read as CANCEL/REQUEUE
+    here either, even when it happens to begin with one of those words: on a choice-carrying item the only way to
+    reach an effect is to name a choice, so anything else is the same comment-and-reopen outcome DEFER already is."""
     if item.get("status") != "answered" or not is_decision(item) or item.get("applied"):
         return None
     from . import jobs as jobs_mod
     from .models.task import TaskStatus
     task_id = item.get("task_id")
     answer = item.get("answer") or {}
-    token = str(answer.get("response") or "").split(None, 1)[0].upper()
+    has_choices = bool(item.get("choices"))
+    named = str(answer.get("choice") or "") if has_choices else ""
+    # on a choice-carrying item the legacy keyword scan never runs at all - named or not, only `answer.choice`
+    # (set by answer() only when a choice was actually named) decides what happens below
+    token = "" if has_choices else str(answer.get("response") or "").split(None, 1)[0].upper()
     # the Control Center sends a button plus typed text as one response ("REQUEUE <text>"): the words after the
     # keyword are the guidance
     raw = str(answer.get("response") or "").strip()
     arg = raw.split(None, 1)[1].strip() if answer.get("kind") != "text" and len(raw.split(None, 1)) > 1 else ""
     note = (answer.get("note") or "").strip() or arg or (raw if answer.get("kind") == "text" else "")
-    out: dict = {"response": token if token in DECISION_RESPONSES else "text"}
+    out: dict = {"response": "choice" if named else (token if token in DECISION_RESPONSES else "text")}
     try:
         task = tasks_mod.load(layout, task_id)
-        if task.status not in (TaskStatus.BLOCKED, TaskStatus.FAILED):
+        if named:
+            out["choice"] = named
+        elif task.status not in (TaskStatus.BLOCKED, TaskStatus.FAILED):
             out["skipped"] = f"task is {task.status.value}"
         elif token == "CANCEL":
             tasks_mod.set_status(layout, task_id, TaskStatus.CANCELLED, actor="owner", note=f"{item['id']}: cancelled by owner")
