@@ -412,3 +412,88 @@ def test_doctor_does_not_warn_when_every_plan_approver_is_configured(layout):
     check = doctor_mod.check_routing(layout)
     assert check.ok
     assert not check.warn
+
+
+# ------------------------------------------------------------------ P1-3 (RELEASE_REVIEW_2.9.0.md): the class B
+# approval lane is a dead end under the real loop -- `open_plan_review` mints a `plan_review` job id nothing ever
+# dispatches, `resume_plans()` never revisits an `awaiting_approval` plan once that field is set, and a subject
+# waiting on it reads `why_not_runnable`'s `resource_claimed` fallback ("nothing currently claims it"), a code
+# that contradicts its own detail (P3-4). See docs/releases/2.9.0/P1-3-R1-class-b-approval-lane.md.
+
+CLASS_B_LOOP_ROUTING = ("plan:\n  approver: [chief_architect, senior_pm]\nroles:\n  chief_architect:\n"
+                       "    adapter: claude_cli\n  senior_pm:\n    adapter: claude_cli\n  engineer:\n"
+                       "    adapter: claude_cli\n")
+
+
+def test_class_b_under_the_real_loop_reaches_an_actionable_state_within_bounded_turns(layout):
+    """The review's own turn-by-turn case: a class B plan proposed under the real loop (`Supervisor.once()`,
+    not `resume_plans()` called alone and not `apply_plan_review()` called by hand) must not merely sit
+    `awaiting_approval` forever with a minted `plan_review` id nothing dispatches, `jobs.for_task` empty and the
+    inbox empty. Within a bounded number of turns it must reach either a dispatched `plan_review` job with a
+    real job record behind it, or an owner item -- something an operator can act on."""
+    from supervisor import jobs as jobs_mod
+    from supervisor.loop import Supervisor
+    from tests.conftest import make_task
+    _write_routing(layout, CLASS_B_LOOP_ROUTING)
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    plans.propose(layout, doc, by="senior_pm", proposer_role="senior_pm")
+    sup = Supervisor(layout, sleep_s=0)
+    for _ in range(4):
+        sup.once()
+    stored = plans.load_plan(layout, "T1.d1")
+    job = (stored.get("plan_review") or {}).get("job")
+    job_live = bool(job) and any(r.get("attempt_id") == job for r in jobs_mod.for_task(layout, "T1"))
+    owner_items = inbox_mod.open_items(layout, "owner")
+    assert job_live or owner_items, (
+        f"a class B plan must reach a dispatched plan_review job or an owner item within a bounded number of "
+        f"turns under the real loop; stored={stored!r}, owner_items={owner_items!r}")
+
+
+def test_awaiting_approval_plan_with_no_live_job_behind_it_is_noticed_exactly_once(layout):
+    """An `awaiting_approval` plan whose `plan_review` names a job id with no record behind it at all -- a
+    store written by an earlier version, or a job lost -- must be noticed by `resume_plans()` (a stall sweep)
+    and reach the owner, exactly once however many sweeps run; it must never stay silently `awaiting_approval`
+    just because the `plan_review` field is already set."""
+    from tests.conftest import make_task
+    _write_routing(layout, APPROVER_ROUTING)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
+
+    def fn(d):
+        d["status"] = "awaiting_approval"
+        d["plan_review"] = {"job": "T1.p1", "role": "chief_architect"}
+        return d
+    store.update(plans.path_for(layout, "T1.d1"), fn)
+
+    acted = plans.resume_plans(layout)
+    assert acted == ["T1.d1"], "the sweep must notice and act on the orphaned plan_review"
+    stored = plans.load_plan(layout, "T1.d1")
+    items = inbox_mod.open_items(layout, "owner")
+    assert len(items) == 1
+    assert items[0]["choices"][0]["id"] == "apply_plan"
+    assert stored.get("owner_item") == items[0]["id"]
+
+    again = plans.resume_plans(layout)
+    assert again == [], "nothing left to act on"
+    assert len(inbox_mod.open_items(layout, "owner")) == 1, "never a second item on a repeat sweep"
+
+
+def test_why_not_runnable_for_a_subject_waiting_on_a_plan_approval_names_the_real_reason(layout):
+    """P3-4: a BLOCKED subject whose own plan sits `awaiting_approval` must not read `resource_claimed` /
+    "nothing currently claims it; no diagnosis has resolved it yet" -- a code that contradicts its own detail,
+    since a diagnosis plainly has resolved it (a plan). It must answer a code whose detail names the plan."""
+    from supervisor.why_not_runnable import why_not_runnable
+    from tests.conftest import make_task
+    _write_routing(layout, APPROVER_ROUTING)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(subject="T1", ops=[_create_op("T2")])
+    plans.propose(layout, doc, by="diagnosis", proposer_role="senior_pm")
+    plans.resume_plans(layout)
+    stored = plans.load_plan(layout, "T1.d1")
+    assert stored["status"] == "awaiting_approval"
+    task = tasks_mod.load(layout, "T1")
+    why = why_not_runnable(task, {"T1": task}, layout)
+    assert not (why["code"] == "resource_claimed" and "nothing currently claims it" in why["detail"]), why
+    assert "T1.d1" in why["detail"], why
