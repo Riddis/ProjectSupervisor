@@ -323,15 +323,24 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 - **Fixed: an ordinary hyphenated or underscored word could trip the secret scanner, and a packet it refused
   could stop the loop entirely.** The built-in `openai_api_key`, `anthropic_api_key`, `github_token`,
-  `slack_token`, `aws_access_key_id`, `google_api_key` and `jwt` patterns now carry a left boundary: a match may
+  `slack_token`, `aws_access_key_id`, `google_api_key`, `meta_graph_token` and `jwt` patterns now carry a left
+  boundary: a match may
   not start mid-word, so a word that merely glues a key-shaped tail onto an unrelated head is no longer mistaken
   for a credential, while every real shape in its real place (line start, after a space, quote, backtick, `=`,
   `:`, `(`, `KEY=sk-...`, `"Bearer sk-..."`) is still caught and redacted exactly as before. Separately, a
-  genuine refusal building one task's own packet (a revision, review or diagnosis brief) is now caught at the
-  dispatch boundary that raised it: the task leaves the retry path (BLOCKED or a note, per the owner routing
-  every other stopped retry chain already uses) carrying the refusal's own message, never the matched text,
-  and every other task keeps dispatching — a false positive on one task can no longer raise out of `settle()`
-  on every later turn until the loop-error breaker stops the loop.
+  genuine refusal building one task's own packet (a revision, review or diagnosis brief, including the rebuild of
+  one for a continuation after a capacity deferral or a lane reroute) is now caught at the dispatch boundary that
+  raised it: that one task stops for the owner (BLOCKED, with the one owner decision card a stopped task already
+  gets — not a fresh card per turn, so one task's refusal can no longer spend the shared per-role inbox budget
+  every other task's decisions and approvals need) carrying the refusal's own message, never the matched text,
+  and every other task keeps dispatching. A false positive on one task can no longer raise out of `settle()` on
+  every later turn until the loop-error breaker stops the loop, and nothing re-offers the refused packet next
+  turn. The two fail-closed conditions that are *not* about one packet's text — the credential store could not be
+  enumerated, and a required packet-screen plugin would not load — still stop the loop rather than walking the
+  task list one BLOCKED task at a time: nothing dispatches either way, and a machine-wide misconfiguration is
+  reported as one. Plugin API (additive, compatible): `policy.PolicyViolation` now carries `scope`, `"task"` for
+  a screen's own refusal of a packet (the default, and what a plugin screen raising one gets) or `"machine"` for
+  a condition that refuses every packet on the machine.
 
 ## 2.8.0 — 2026-11-16
 
