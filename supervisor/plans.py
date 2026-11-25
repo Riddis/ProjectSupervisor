@@ -662,7 +662,14 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict, layout: Layout) -> lis
         elif old_paths and EXCLUSIVE not in old_paths:
             from ._vendor.contract import contained
             for p in new_paths:
-                if not contained(p, old_paths):
+                try:
+                    inside = contained(p, old_paths)
+                except ValueError:
+                    # A link anywhere on `p`'s resolved chain (`contained` -> `resolve`) is itself outside
+                    # the monotonicity guarantee, not a crash: validate() never raises (P3-R2-2, d4c6802's own
+                    # named follow-up for this call site).
+                    inside = False
+                if not inside:
                     out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths",
                                    f"patch_contract widens owned_paths beyond {old_paths} ({p!r})"))
                     break
