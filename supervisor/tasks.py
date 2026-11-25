@@ -418,8 +418,10 @@ def owned_path_problems(tasks: Iterable[Task]) -> list[str]:
     """Errors for an `owned_paths` entry outside the project root (P2-2) — the write
     scope a model-lane job is dispatched with, so an entry a created task declares above the root would hand that
     job a write scope `verify.contained` never bounds to the tree. `EXCLUSIVE` ("."), meaning the whole tree, is
-    not a path to resolve and is never flagged. Checked only at `check_new` (create time, both writers it
-    serves); a row already on disk keeps loading regardless of what its `owned_paths` says, same as `artifacts`.
+    not a path to resolve and is never flagged. Checked wherever a writer sets `owned_paths`: `check_new` (create
+    time, both writers it serves) and `plans._monotonicity_refusals` for a patched value no existing scope of the
+    task's own could already bound. A row already on disk keeps loading regardless of what its `owned_paths`
+    says, same as `artifacts` — this is a write-time rule, never a load-time one.
     The traversal segment is split on either separator (`re.split`, not `Path(p).parts`): a `\\`-joined entry
     (`..\\x`) is one literal path component to `pathlib.Path` on a POSIX worker, so the `..` segment it hides
     would otherwise pass there and only there."""
