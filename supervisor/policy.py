@@ -102,7 +102,7 @@ DEFAULTS: dict = {
             {"name": "slack_token", "regex": r"(?<![A-Za-z0-9_\-])xox[abpsr]-[A-Za-z0-9\-]{12,}"},
             {"name": "aws_access_key_id", "regex": r"(?<![A-Za-z0-9_\-])AKIA[0-9A-Z]{16}"},
             {"name": "google_api_key", "regex": r"(?<![A-Za-z0-9_\-])AIza[0-9A-Za-z_\-]{35}"},
-            {"name": "meta_graph_token", "regex": r"EAA[A-Za-z0-9]{24,}"},
+            {"name": "meta_graph_token", "regex": r"(?<![A-Za-z0-9_\-])EAA[A-Za-z0-9]{24,}"},
             {"name": "jwt", "regex": r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"},
             # The whole block, not just the marker: `redact()` substitutes what the pattern matches, so matching
             # the BEGIN line alone left the base64 body and the END line in the log. A block with no END line
