@@ -663,6 +663,21 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict, layout: Layout) -> lis
     if "owned_paths" in fields:
         new_paths = fields["owned_paths"] or []
         old_paths = t.owned_paths or []
+        if not isinstance(new_paths, list) or not all(isinstance(p, str) for p in new_paths):
+            # The shape first, because neither check below may read a value that is not a list of strings:
+            # `owned_path_problems` calls `str.startswith` and `contained` calls `Path(p)`, so a non-string
+            # entry — `[None]`, what a plain YAML `- ` with no item after it produces — would raise out of
+            # `validate()`, whose own contract is that it never raises. Nothing before this branch types it
+            # either: `fields` is a bare dict, the content checks exempt `fields.*` from the separator clause,
+            # and `normalise` leaves `owned_paths` alone. Refused here rather than left to the patched
+            # contract's own `Task.model_validate` a step later, because that one does not refuse every wrong
+            # shape: `Task._owned` is a `mode="before"` validator whose `EXCLUSIVE in v` is a *substring* test
+            # on a bare string, so a whole-list string containing a dot would be accepted as `["."]` — the
+            # exclusive scope the branch below this one exists to refuse. The value itself is never quoted back.
+            out.append(_rf("RF-02", "I3 §1.2", i, "fields.owned_paths",
+                           "patch_contract.fields.owned_paths must be a list of paths relative to the project "
+                           "root"))
+            return out
         if EXCLUSIVE in new_paths and EXCLUSIVE not in old_paths:
             out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths", "patch_contract widens owned_paths to exclusive"))
         elif old_paths and EXCLUSIVE not in old_paths:
