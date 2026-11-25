@@ -301,10 +301,10 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
 
 - **The idle alert, the Overview's "Up next" card and a task's own page now all read one computed reason for why
   a non-terminal task is not running, instead of the idle alert quoting an agent's last note about something else
-  while the other two said nothing at all.** `supervisor.why_not_runnable.why_not_runnable()` computes one of nine
+  while the other two said nothing at all.** `supervisor.why_not_runnable.why_not_runnable()` computes one of ten
   closed codes (`unmet_dependency`, `phase_gate`, `role_inactive`, `lane_unregistered`, `preflight_failed`,
-  `capacity_floor`, `resource_claimed`, `awaiting_review`, `awaiting_approval`) from the same deterministic
-  primitives a delivery launch's own gate uses, with the same choices (`diagnose_now`, `cancel_task`, `hold`)
+  `capacity_floor`, `resource_claimed`, `awaiting_review`, `awaiting_approval`, `needs_mismatch`) from the same
+  deterministic primitives a delivery launch's own gate uses, with the same choices (`diagnose_now`, `cancel_task`, `hold`)
   offered everywhere that code is read; the loop's own PAUSE/DRAIN/STOP decision is read once as a caller guard
   ahead of it, never as a tenth code, since it blocks every task identically rather than naming a fact about the
   one task shown.
