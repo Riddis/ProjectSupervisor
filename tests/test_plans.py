@@ -352,8 +352,8 @@ def _create_then_patch_owned_paths(layout, value):
 def test_patch_contract_owned_paths_outside_the_root_is_refused_for_a_just_created_task(layout, bad):
     doc = _create_then_patch_owned_paths(layout, bad)
     _, refusals = plans.validate(doc, layout)
-    assert refusals, (bad, "create_task + patch_contract accepted an out-of-root owned_paths in one plan")
-    assert not any(bad in (r["message"] or "") for r in refusals if r["code"] == "RF-21")
+    assert_only(refusals, "RF-02")                             # the same code the create side already produces
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
 
 
 @pytest.mark.parametrize("good", _P2_R2_1_GOOD)
@@ -363,16 +363,33 @@ def test_patch_contract_owned_paths_legitimate_shapes_still_accepted_for_a_just_
     assert refusals == [], (good, refusals)
 
 
-def test_patch_contract_owned_paths_create_then_patch_never_applies_an_out_of_root_scope(layout):
-    """The review's own case: proposed, applied, and the created task's scope on disk — plus the write scope
-    `gate.owned_for` would hand a dispatched delivery — must never carry `../sibling`."""
-    from supervisor import gate, tasks as tasks_mod
+def test_patch_contract_owned_paths_create_then_patch_is_refused_and_stores_nothing(layout):
+    """The review's own case as one document: validated, then proposed — the plan is stored `refused` and the
+    task it would have created never reaches the store at all. What such a task's scope would mean for a
+    dispatched delivery (`gate.owned_for`) is the applier's own side of this case, asserted in
+    tests/test_plans_apply.py, where applying a plan belongs."""
     doc = _create_then_patch_owned_paths(layout, "../sibling")
     _, refusals = plans.validate(doc, layout)
-    assert refusals, "the created task's owned_paths can still be patched above the root in one plan"
+    assert_only(refusals, "RF-02")
     proposed = plans.propose(layout, doc, by="senior_pm", proposer_role="senior_pm")
     assert proposed["status"] == "refused"
     assert not (layout.tasks / "T9.yaml").exists()
+
+
+@pytest.mark.parametrize("value", [[None], [123], [["../x"]], "../sibling", {"../sibling": 1}])
+@pytest.mark.parametrize("old", [[], ["x"]], ids=["no-scope-yet", "an-existing-scope"])
+def test_patch_contract_owned_paths_of_the_wrong_shape_is_refused_not_raised(layout, old, value):
+    """A patched `owned_paths` whose value is not a list of strings is a shape error (RF-02, from the patched
+    contract's own validation one step later), never read by either containment check: `owned_path_problems`
+    calls `str.startswith` and `contained` calls `Path(p)`, so reading `[None]` — what a plain YAML `- ` with no
+    item after it produces — would raise out of `validate()`, whose own contract is that it never raises. Both
+    old scopes are parametrized because the two checks divide on exactly that: an empty old scope reaches the
+    root check, a non-empty one reaches `contained()`."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=old)
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": value}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
 
 
 def test_patch_contract_owned_paths_on_an_existing_scope_is_still_rf16(layout):
@@ -385,15 +402,21 @@ def test_patch_contract_owned_paths_on_an_existing_scope_is_still_rf16(layout):
     assert_only(refusals, "RF-16")
 
 
-def test_rf16_monotonicity_owned_paths_contained_raising_returns_a_refusal_not_an_exception(layout, monkeypatch):
+@pytest.mark.parametrize("exc", [ValueError("Paths must not traverse links"), OSError("name too long"),
+                                 TypeError("argument should be a str, not NoneType")])
+def test_rf16_monotonicity_owned_paths_contained_raising_returns_a_refusal_not_an_exception(
+        layout, monkeypatch, exc):
     """P3-R2-2: `_monotonicity_refusals`'s own `contained(p, old_paths)` call (the record's own named follow-up
-    to P2-3) must not let a `ValueError` out of `validate()` — `validate()`'s own contract is "never raises"."""
+    to P2-3) must not let what `resolve()` can refuse out of `validate()` — `validate()`'s own contract is
+    "never raises". A link on the chain is the `ValueError` P2-3 names; a name the platform itself rejects is an
+    `OSError`; a `TypeError` is what `Path()` gives a value that is not a path at all, which the shape screen
+    above this branch already keeps away from here — guarded anyway, so this call site does not depend on it."""
     from tests.conftest import make_task
     import supervisor._vendor.contract as contract
     make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
 
     def boom(*a, **k):
-        raise ValueError("Paths must not traverse links")
+        raise exc
     monkeypatch.setattr(contract, "contained", boom)
     doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": ["x/sub"]}}])
     _, refusals = plans.validate(doc, layout)

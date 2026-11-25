@@ -562,3 +562,49 @@ def test_a_patch_contract_with_no_executable_or_enum_field_is_unaffected(layout)
     assert before == {"tests": ["t0"]}
     proposed = plans.propose(layout, doc)
     assert proposed["status"] == "awaiting_approval"
+
+
+# ------------------------------------------------------------------ the write scope a plan can hand a delivery
+
+def _create_then_patch_scope(value, plan_id):
+    """One document that creates a task and then patches the scope it was created without — the sequence a
+    create-time-only root check cannot see, since the task's `owned_paths` is still the model's own `[]` default
+    when the patch is checked."""
+    return {"plan_schema": 1, "id": plan_id, "subject": {"task": "T1"}, "reason": "repair this task",
+            "expected_rev": {"T1": 1},
+            "operations": [{"op": "create_task", "task": {"id": "T2", "title": "T2", "objective": "o",
+                                                           "owner_role": "engineer",
+                                                           "cost_category": "deterministic", "artifacts": ["x"]}},
+                           {"op": "patch_contract", "task": "T2", "fields": {"owned_paths": [value]}},
+                           {"op": "resume", "task": "T1", "as": "ready"}]}
+
+
+def test_no_sequence_of_operations_gives_a_plan_created_task_a_scope_above_the_root(layout):
+    """What the patch-time root check is *for*: `gate.owned_for` is the write scope a dispatched delivery is
+    given, so the guarantee is not only that the document is refused but that no task in the store can hand that
+    function a path outside the project root. Both halves run here: the out-of-root document is refused and
+    applies nothing, and its in-root twin applies and really does reach `owned_for` — without that second half
+    the assertion over the store would pass on an empty store and prove nothing."""
+    from supervisor import gate
+    from supervisor._vendor.contract import contained
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+
+    refused = plans.propose(layout, _create_then_patch_scope("../sibling", "T1.d1"))
+    assert refused["status"] == "refused"
+    assert [r["code"] for r in refused["refusals"]] == ["RF-02"]
+    assert plans.apply(layout, "T1.d1")["status"] == "refused"          # terminal: never half-applied
+    assert not (layout.tasks / "T2.yaml").exists(), "the plan created the task it was refused for"
+    for task in tasks_mod.load_all(layout).values():
+        for owned in gate.owned_for(task, "claude_cli", "delivery"):
+            assert contained(owned, [layout.root], layout.root), (task.id, owned)
+
+    # The same document, one character of its scope different: it applies, and the scope it applied is what a
+    # delivery on that task would own.
+    good = plans.propose(layout, _create_then_patch_scope("inside/dir", "T1.d2"))
+    assert good["status"] == "awaiting_approval", good.get("refusals")
+    assert plans.apply(layout, "T1.d2")["status"] == "applied"
+    created = tasks_mod.load(layout, "T2")
+    assert created.owned_paths == ["inside/dir"]
+    assert gate.owned_for(created, "claude_cli", "delivery") == ["inside/dir"]
+    assert contained("inside/dir", [layout.root], layout.root)
