@@ -306,7 +306,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   `capacity_floor`, `resource_claimed`, `awaiting_review`, `awaiting_approval`, `needs_mismatch`) from the same
   deterministic primitives a delivery launch's own gate uses, with the same choices (`diagnose_now`, `cancel_task`, `hold`)
   offered everywhere that code is read; the loop's own PAUSE/DRAIN/STOP decision is read once as a caller guard
-  ahead of it, never as a tenth code, since it blocks every task identically rather than naming a fact about the
+  ahead of it, never as an eleventh code, since it blocks every task identically rather than naming a fact about the
   one task shown.
 
 - **A task's contract now carries its own generation counter, `contract_rev`, bumped only by a real

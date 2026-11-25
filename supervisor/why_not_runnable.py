@@ -2,7 +2,7 @@
 
 Before this module each of the three surfaces either quoted a task's last note -- prose an agent wrote, often
 about something else -- or showed nothing. `why_not_runnable(task, tasks, layout)` computes the reason once, from
-the closed set of nine codes below, by calling the exact primitives `supervisor.gate.check` itself calls for a
+the closed set of ten codes below, by calling the exact primitives `supervisor.gate.check` itself calls for a
 delivery launch (`tasks.unmet_dependency`, `gates.phase_open`, `gate.role_inactive`, the adapter registry, the
 stored preflight, `capacity.require`, `gate.holds_resource`/`lease_blocked`/`owned_for`) -- never a second copy of
 that logic, so the two can never drift. `choices_for` then builds, from the same reason, only the choices the
@@ -15,8 +15,8 @@ A held task is never classified here: `loop.alert_if_idle` excludes it before ca
 pre-2.8.0 idle alert already did -- a hold is
 the owner's own call, never the pipeline's problem.
 
-The loop's own decision (PAUSE/DRAIN/STOP) is excluded the same way, for the same reason, and is never a tenth
-code: `gate.check`'s first non-terminal refusal (`decision != RUN`) blocks every delivery launch identically,
+The loop's own decision (PAUSE/DRAIN/STOP) is excluded the same way, for the same reason, and is never an
+eleventh code: `gate.check`'s first non-terminal refusal (`decision != RUN`) blocks every delivery launch identically,
 whatever the task, so it is not this module's per-task reason to compute. `decision_blocked` reads it once;
 every caller checks it -- before calling `why_not_runnable` for a task whose reason would otherwise come from the
 structural classifier -- exactly as a held task is excluded before it ever reaches this module at all. A task
@@ -84,7 +84,7 @@ def render_reason(why: dict) -> str:
 def decision_blocked(layout: Layout) -> str | None:
     """`None` while the loop's own decision is RUN; else the one sentence every surface shows instead of calling
     this module's structural classifier at all, for a task whose reason would otherwise come from it. Mirrors
-    `gate.check`'s own first non-terminal refusal (`decision != RUN`) -- not one of the nine codes, because a
+    `gate.check`'s own first non-terminal refusal (`decision != RUN`) -- not one of the ten codes, because a
     paused, draining or stopped loop blocks every delivery launch identically, whatever the task: a project-wide
     state, not a per-task reason, read once here rather than folded into `_structural`'s per-task classification.
     A task `WAITING_FOR_HUMAN` or `WAITING_FOR_REVIEW` does not launch through `gate.check` either way, so a
@@ -142,7 +142,7 @@ def _plan_waiting(task: Task, layout: Layout) -> dict | None:
     resource checks can know, and which the `resource_claimed` fallback's unclaimed branch used to misname as
     "nothing currently claims it; no diagnosis has resolved it yet" (P3-4) -- a code that contradicted its own
     detail for the one case a diagnosis plainly had resolved. Reuses the existing `awaiting_approval` code
-    (never a tenth) with a detail that actually names the plan and what it is waiting on."""
+    (never an eleventh) with a detail that actually names the plan and what it is waiting on."""
     from . import plans as plans_mod
     plan = next((d for d in plans_mod.all_plans(layout)
                 if (d.get("subject") or {}).get("task") == task.id
@@ -274,7 +274,7 @@ def _structural(task: Task, tasks: dict[str, Task], layout: Layout) -> dict:
 
 
 def why_not_runnable(task: Task, tasks: dict[str, Task], layout: Layout) -> dict[str, Any]:
-    """`{code, detail, blockers}` for `task`, one of the nine codes of `CODES` -- never raised for a non-terminal
+    """`{code, detail, blockers}` for `task`, one of the ten codes of `CODES` -- never raised for a non-terminal
     task, whatever its status. `tasks` is the preloaded graph `unmet_dependency` reads; callers that already hold
     one (the idle alert, the Overview, the task page) pass it so this never re-parses the store."""
     if task.status in TERMINAL:
