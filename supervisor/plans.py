@@ -685,10 +685,14 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict, layout: Layout) -> lis
             for p in new_paths:
                 try:
                     inside = contained(p, old_paths)
-                except ValueError:
-                    # A link anywhere on `p`'s resolved chain (`contained` -> `resolve`) is itself outside
-                    # the monotonicity guarantee, not a crash: validate() never raises (P3-R2-2, d4c6802's own
-                    # named follow-up for this call site).
+                except (ValueError, OSError, TypeError):
+                    # Anything `contained` -> `resolve` cannot resolve is itself outside the monotonicity
+                    # guarantee, not a crash: validate() never raises (P3-R2-2, d4c6802's own named follow-up
+                    # for this call site). A link anywhere on `p`'s resolved chain is the `ValueError` P2-3
+                    # names; a name the platform itself rejects is an `OSError`; `TypeError` is what `Path()`
+                    # gives a value that is not a path at all, which the shape check at the top of this branch
+                    # already keeps away from here — guarded anyway, so this call site does not depend on a
+                    # caller's screening for its own contract.
                     inside = False
                 if not inside:
                     out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths",
