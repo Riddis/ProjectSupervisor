@@ -611,7 +611,7 @@ def _check_patch_contract(i: int, op: dict, layout: Layout, tasks: dict[str, Tas
                                  f"or not at all)", layout)))
     if out or t is None:
         return out
-    out += _monotonicity_refusals(i, t, fields)
+    out += _monotonicity_refusals(i, t, fields, layout)
     if out:
         return out
     out += _patched_contract_refusals(i, t, fields, layout)
@@ -635,7 +635,7 @@ def _patched_contract_refusals(i: int, t: Task, fields: dict, layout: Layout) ->
             for w in tasks_mod.contract_warnings([patched], layout) if w not in before]
 
 
-def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
+def _monotonicity_refusals(i: int, t: Task, fields: dict, layout: Layout) -> list[Refusal]:
     out = []
     for key in PATCH_ADD_ONLY_FIELDS:
         if key not in fields:
@@ -666,6 +666,17 @@ def _monotonicity_refusals(i: int, t: Task, fields: dict) -> list[Refusal]:
                     out.append(_rf("RF-16", "I2 §1.2", i, "fields.owned_paths",
                                    f"patch_contract widens owned_paths beyond {old_paths} ({p!r})"))
                     break
+        else:
+            # Neither branch above runs for a task with no owned_paths yet (a just-created task's own
+            # default, `[]`) or one already exclusive — the one chokepoint `owned_path_problems` closes at
+            # create time (P2-2) never ran for this task's own scope, so a patch is the only place left that
+            # could still hand it an out-of-root one (P2-R2-1). Checked with the same function and the same
+            # message `check_new` already uses for the identical rule, RF-02 (not RF-16: this is not a
+            # widening relative to an old scope — there is none to widen from — it is the new value's own
+            # validity, exactly as it is at create time).
+            root_problems = tasks_mod.owned_path_problems([t.model_copy(update={"owned_paths": new_paths})])
+            if root_problems:
+                out.append(_rf("RF-02", "I3 §1.2", i, "fields.owned_paths", _safe(root_problems[0], layout)))
     return out
 
 
