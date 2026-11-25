@@ -30,9 +30,10 @@ Say which, with the evidence.
 
 - **Requeue with guidance:** the work was close; say exactly what to change. Answer the task's owner decision item
   REQUEUE with the guidance as its text: `supervisor inbox answer <item> "REQUEUE <guidance>"` (or the Control
-  Center). The next packet carries it, with a fresh retry budget. Without such an item, set the task READY with the
-  reason as the note: `supervisor cmd task.set_status --payload '{"task_id": "<id>", "status": "READY", "note":
-  "<why>"}'`.
+  Center). The next packet carries it, with a fresh retry budget. When the item carries its own choices (buttons),
+  that word names nothing there - pick the choice that resumes the task instead (its id, or the button); with no
+  such choice, or no item at all, set the task READY with the reason as the note: `supervisor cmd
+  task.set_status --payload '{"task_id": "<id>", "status": "READY", "note": "<why>"}'`.
 - **Fix the job's own code:** for a deterministic task, guidance changes nothing; the script or the registered
   function is wrong. Fix it in the project (and commit the fix), then requeue as above.
 - **Fix the contract first:** the task-author skill, then requeue.

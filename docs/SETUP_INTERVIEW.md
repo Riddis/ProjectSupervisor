@@ -31,8 +31,9 @@ and `plugins/` with generic defaults, and nothing but the plan is written before
 Each question lists what it decides and a default. Record every answer verbatim; they become the plan.
 
 **1. What is the project, in one paragraph, and what does "done" look like?**
-Decides: `project.yaml description`, plan §1. No default. If the owner cannot say what done looks like, the
-first phase is "define done" with a research/strategy task.
+Decides: plan §1 (the only place this is recorded; `project.yaml` carries no free-text description, nothing reads
+one). No default. If the owner cannot say what done looks like, the first phase is "define done" with a
+research/strategy task.
 
 **2. What kind of thing is it?**
 Options: software (library/app/service/game), content (documents, a book, a site), data/analysis, operations (a
@@ -117,9 +118,8 @@ author directly.
 
 0. *CLI* — if there is no `project.yaml`: `supervisor init <folder> --name "<name>"` (ask for the name if it is not
    obvious). This stamps generic defaults for everything below; the approved plan may still change any of them.
-1. `project.yaml`: `name`, `description`, `repo`, `phases` (labels), `ui.port`, `plugins` (names only; modules
-   come in step 6).
-2. `config/routing.yaml`: roles (adapter/model/effort/tools/card/active/active_from/result_kinds/review/fallback),
+1. `project.yaml`: `name`, `phases` (labels), `ui.port`, `plugins` (names only; modules come in step 6).
+2. `config/routing.yaml`: roles (adapter/model/effort/tools/card/active/result_kinds/review/fallback),
    `capacity`, `limits`, `verification.allowed_test_commands`, `claude.bash_allow`, `codex.model`, `cost_lanes`.
 3. `agents/<role>.md` for every active role (≤ 400 words; mandate, authority, escalates to, how you work, deliver,
    lines you do not cross; no model or vendor names). Remove cards for roles the owner dropped; keep schemas.

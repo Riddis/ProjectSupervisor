@@ -1,4 +1,4 @@
-"""Validates plugins-catalog/index.yaml (docs/releases/2.5.0/CONTRIBUTOR_RULING.md section 2): the framework's
+"""Validates plugins-catalog/index.yaml: the framework's
 plugin catalog, one list, both homes (a folder of this repository's own packages/<distribution>/, or anyone else's
 https:// repository). Deterministic only: fetches nothing, proves no author's ownership, never imports or runs a
 package's code. The maintainers' own G5 re-run on the exact artifact (the catalog-review skill) is the human half
@@ -109,7 +109,7 @@ def _tag_date(root: Path, tag: str) -> datetime.date | None:
 def _package_licence(folder: Path) -> str | None:
     """The package's own declared licence, read from its pyproject.toml (`[project] license`), a string or the
     classic `{text = "..."}` table. None when the package declares none, which is not itself a refusal: the
-    catalog records a licence and never approves one (CONTRIBUTOR_RULING.md 2.2)."""
+    catalog records a licence and never approves one."""
     doc = tomllib.loads((folder / "pyproject.toml").read_text(encoding="utf-8"))
     licence = (doc.get("project") or {}).get("license")
     if isinstance(licence, str):
@@ -201,7 +201,7 @@ def _check_entry(label: str, entry, root: Path, ci_package) -> list[str]:
     else:
         if not _FOREIGN_TAG.fullmatch(entry["tag"] or ""):
             problems.append(_problem(label, "tag", "must be vX.Y.Z for a foreign home"))
-        # the g5 date is attested, not checkable, for a foreign home (CONTRIBUTOR_RULING.md 2.5.8)
+        # the g5 date is attested, not checkable, for a foreign home: there is no tag in this repository to check it against
 
     return problems
 
@@ -251,7 +251,7 @@ def _check_packages_home(label: str, entry: dict, rel: str, root: Path, g5_date,
 
 
 def check(path: Path, root: Path | None = None) -> list[str]:
-    """Every refusal CONTRIBUTOR_RULING.md 2.5 names, for the index at `path`, read against the framework checkout
+    """Every refusal this module defines, for the index at `path`, read against the framework checkout
     `root` (default: this repository)."""
     root = Path(root) if root else ROOT
     doc = load(Path(path))

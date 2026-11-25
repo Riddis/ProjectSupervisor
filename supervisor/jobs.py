@@ -93,17 +93,21 @@ def read(layout: Layout, attempt_id: str) -> dict:
 
 
 def prepare(layout: Layout, task_id: str, attempt_id: str, adapter: str, spec: dict, gpu: bool = False, *,
-           kind: str | None = None, attempt: int | None = None, seq: int | None = None, parent: str | None = None,
-           cause: str | None = None, scope: str | None = None, env_digest: str | None = None, **extra) -> dict:
+           claim: str | None = None, kind: str | None = None, attempt: int | None = None, seq: int | None = None,
+           parent: str | None = None, cause: str | None = None, scope: str | None = None,
+           env_digest: str | None = None, **extra) -> dict:
     """One durable record before the job is launched; `extra` (review_role, review_digest, ...) belongs in the same
     write, never in a second one a crash could lose. `kind`/`attempt`/`seq`/`parent`/`cause`/`scope`/`env_digest`
     are the identity fields the attempt model adds (§2.6); each is omitted (not written as null) when not given,
-    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet."""
+    so a record prepared with none of them looks exactly as it did before this change — no caller passes them yet.
+    `claim` is the named resource this record holds while open, written where
+    `gpu` is written — the same rule the gpu flag already uses for "busy" — and `None` for every job no declaration
+    names one for, which is every job before this release and every job of a project that declares no resource."""
     identity = {"kind": kind, "attempt": attempt, "seq": seq, "parent": parent, "cause": cause, "scope": scope,
                "env_digest": env_digest}
     extra = {**{k: v for k, v in identity.items() if v is not None}, **extra}
     return write(layout, {"attempt_id": attempt_id, "task_id": task_id, "adapter": adapter, "phase": "PREPARED",
-                          "spec": spec, "handle": None, "gpu": gpu, "created": now_iso(), **extra})
+                          "spec": spec, "handle": None, "gpu": gpu, "claim": claim, "created": now_iso(), **extra})
 
 
 def _task_id_of(job_id: str) -> str:
@@ -130,13 +134,25 @@ def resolve(layout: Layout, job_id: str) -> dict | None:
         return None
 
 
-def set_phase(layout: Layout, attempt_id: str, phase: str, **fields) -> dict:
+def set_phase(layout: Layout, attempt_id: str, phase: str, *, release_reason: str | None = None, **fields) -> dict:
+    """`release_reason` names why a claim-carrying record is leaving the open set:
+    `None` (read as `"closed"`) for the ordinary case — the adapter's own result, a continuation's own
+    close, a reroute — and an explicit override for the three callers that know a different one: `jobs.retire`
+    (`"terminal"`, a task reaching COMPLETE/CANCELLED), `agent.terminate` (`"cancelled"`, the owner's own stop),
+    and `Supervisor.ingest` (`"dead"`, a `collect()` that found the process gone). One release point: whichever
+    phase a caller moves a claim-carrying record *to*, leaving PREPARED/SUBMITTED/RUNNING always logs
+    `claim_released` here, so a fifth way of stopping a job needs no caller to remember this."""
     if phase not in PHASES:
         raise ValueError(phase)
     rec = read(layout, attempt_id)
+    was_open, claim = rec.get("phase") in OPEN_PHASES, rec.get("claim")
     rec["phase"] = phase
     rec.update(fields)
     out = write(layout, rec)
+    if was_open and phase not in OPEN_PHASES and claim:
+        from . import tasks as tasks_mod
+        tasks_mod.log(layout, "claim_released", "loop", claim=claim, task=rec.get("task_id"),
+                      attempt=attempt_id, reason=release_reason or "closed")
     if phase in ("DONE", "FAILED"):
         # R-23: the job that is itself completing a task's final transition is still PREPARED/SUBMITTED/RUNNING
         # at the moment advance()/set_status() archives everything else of this task (archive_terminal only
@@ -242,7 +258,7 @@ def unreadable(layout: Layout, task_id: str | None = None) -> dict[str, str]:
     return out
 
 
-KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3}
+KIND_ORDER = {"delivery": 0, "verify": 1, "review": 2, "diagnosis": 3, "plan_review": 4}
 
 
 def kind_of(rec: dict) -> str:
@@ -253,7 +269,7 @@ def kind_of(rec: dict) -> str:
 
 def attempt_of(rec: dict) -> int | None:
     """This job's attempt number (`None` for a task-scoped job): the `attempt` field, taken as-is. The writer
-    switch (ATTEMPT_MODEL.md §8.6's start-up guard) is what makes this safe to read with no fallback — every
+    switch (the start-up guard) is what makes this safe to read with no fallback — every
     record on disk by then is either migration-stamped or allocator-written, so it always carries this field."""
     return rec.get("attempt")
 
@@ -287,7 +303,7 @@ def retire(layout: Layout, task_id: str, reason: str, actor: str = "loop") -> li
                 with contextlib.suppress(Exception):  # the task retires either way
                     ad.terminate(rec["handle"])
         set_phase(layout, rec["attempt_id"], "DONE", result=CLOSED_RESULT, error=reason, finished=now_iso(),
-                 closed_by=actor)
+                 closed_by=actor, release_reason="terminal")
         closed.append(rec["attempt_id"])
     return closed
 
@@ -345,11 +361,72 @@ def archive_terminal(layout: Layout, task_id: str) -> list[str]:
     return moved
 
 
+# P3-R2-B: the loop's start-up guard used to read and parse every archived job
+# record on every process start, once the archive holds thousands of finished tasks' history that never changes
+# again. The marker below lets it skip that read once a full scan has found the archive entirely migration-
+# stamped/allocator-written -- the live top level is cheap enough (bounded by work in flight, not by history) to
+# keep scanning every start-up regardless.
+#
+# The marker is not a bare flag: it carries a stat-only fingerprint (name, size, mtime_ns) of every file the clean
+# scan actually read, taken from that same listing. The guard trusts the marker only when a fresh, stat-only
+# listing matches it exactly, so any file added, removed or overwritten since -- `archive_terminal` moving one in,
+# an out-of-band restore of a pre-migration backup, any other write into an existing archive folder -- is detected
+# without needing to be told: there is no separate "invalidate" step to order against a crash, because nothing is
+# ever trusted that was not just re-verified. A clean scan that had to skip a file it could not read never writes
+# the marker at all (`mark_archive_migrated` is only called when the caller says every file was read).
+_ARCHIVE_MARKER_NAME = ".archive-migrated"
+
+
+def _archive_marker_path(layout: Layout) -> Path:
+    return layout.jobs / "archive" / _ARCHIVE_MARKER_NAME
+
+
+def _archive_fingerprint(layout: Layout, paths: list[Path]) -> list[list]:
+    """A stat-only manifest of `paths` (expected: the archive's own `*/*.json` listing): each entry is
+    `[path relative to the archive root, size, mtime_ns]`, sorted by that relative path. No file is opened."""
+    root = layout.jobs / "archive"
+    out = []
+    for p in paths:
+        try:
+            st = p.stat()
+        except OSError:
+            continue        # gone between the listing and the stat; the next real scan will see it either way
+        out.append([str(p.relative_to(root)), st.st_size, st.st_mtime_ns])
+    out.sort(key=lambda row: row[0])
+    return out
+
+
+def archive_known_migrated(layout: Layout, paths: list[Path] | None = None) -> bool:
+    """Whether the start-up guard can trust the archive without re-reading it: true only when a fresh stat-only
+    fingerprint of `paths` (the archive's current `*/*.json` listing, recomputed here when the caller has not
+    already taken it) still matches the one `mark_archive_migrated` stored. `paths` lets a caller that already
+    globbed the archive pass that listing through instead of paying for a second one."""
+    try:
+        marker = read_json(_archive_marker_path(layout))
+    except (OSError, ValueError):
+        return False
+    stored = marker.get("fingerprint")
+    if stored is None:
+        return False
+    if paths is None:
+        paths = sorted(layout.jobs.glob("archive/*/*.json"))
+    return _archive_fingerprint(layout, paths) == stored
+
+
+def mark_archive_migrated(layout: Layout, paths: list[Path]) -> None:
+    """Record that every file in `paths` -- the exact listing a clean scan just finished reading -- is migration-
+    stamped or allocator-written, fingerprinted so a later change to any of them is caught without an explicit
+    invalidation step. The caller must not call this when its own scan had to skip an unreadable file."""
+    p = _archive_marker_path(layout)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    atomic_json(p, {"checked": now_iso(), "fingerprint": _archive_fingerprint(layout, paths)})
+
+
 def attempt_for_digest(layout: Layout, task_id: str, digest: str) -> int | None:
     """The delivery attempt a past review digest belongs to, read from this task's own review job records (the
     store, never a run directory): the newest review job whose `review_digest` matches it names its own
     `attempt` — the same join `review._delivery_for_digest` uses from a verify job, available here too because
-    every review job already carries `attempt` once dispatched through the allocator (ATTEMPT_MODEL.md step 9).
+    every review job already carries `attempt` once dispatched through the allocator.
     `None` when no such record exists (a digest reviewed before this field existed, or never reviewed at all)."""
     matches = [r for r in for_task(layout, task_id) if kind_of(r) == "review" and r.get("review_digest") == digest]
     return attempt_of(matches[-1]) if matches else None

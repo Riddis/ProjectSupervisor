@@ -65,7 +65,7 @@ plugins:
 
 ```python
 # plugins/render_farm.py
-from supervisor.plugin import Check, ProcessAdapter
+from supervisor.plugin import Check, ProcessAdapter, job_spec
 
 class RenderAdapter(ProcessAdapter):
     name = "render"
@@ -75,7 +75,7 @@ class RenderAdapter(ProcessAdapter):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
-                "root": str(layout.root), "argv": ["render", "--scene", task.model_extra["job"]["scene"]],
+                "root": str(layout.root), "argv": ["render", "--scene", job_spec(task)["scene"]],
                 "timeout_s": 1800}
 
 def setup(registry):
@@ -98,6 +98,8 @@ What the registry offers (`supervisor/plugins.py`):
 | `projection(fn, path=None, name=None)` | `fn(layout) -> Path`; an extra rendered markdown file alongside `TASKS.md`. Like the built-in views it is never an artifact and never an "undeclared write" in verification; pass `path="WEEKLY.md"` (root-relative) to declare the file before the first render, otherwise it is learned from the first render. The exclusion follows the current registration: change the declared path, stop registering the projection, or remove the plugin, and the old file is an ordinary file again. Each projection is recorded as `<plugin>:<name>` — pass `name=` for a stable identity (two lambdas or two callbacks from one factory are otherwise told apart by registration order). The callback runs under `state/.render.lock`, like the built-in views (1.10.0): it may call a built-in `render_*` function (the lock is reentrant within a thread), but must not wait for another thread or process that renders. |
 | `cli(typer_app, name)` | a `supervisor <name> ...` command group. Looked up when `<name>` is not a built-in command, or when the whole command list is wanted (`supervisor --help`, top-level shell completion) (1.10.0): resolving a built-in command never sets the plugins up, so the read-only `supervisor status` runs without them; running another built-in command may load them. Kept per project root, rebuilt when that root's registry is reloaded. |
 | `python_job(name, fn)` | a deterministic job for `job: {adapter: python, fn: name, params: {...}}`; `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}`. A taken name is refused (1.11.0). |
+| `job_schema(adapter, model)` | a pydantic model for the keys your `adapter` lane's own job carries beyond the framework's typed `Job` fields. Checked at every write that carries a job for that adapter: an unknown key is refused once you declare a schema, and only ever a warning with none declared at all — so a plugin from before this release keeps working unchanged. One schema per adapter name. |
+| `capabilities(adapter, mapping)` | what your `adapter` lane can do, in the closed, framework-known vocabulary: `durable` (a stopped job resumes from its own on-disk state, bool), `network` (the lane can reach a service outside this machine, bool) and `max_duration_min` (the longest a job of this lane can usefully run, a positive int). Read by `supervisor.capabilities.for_lane` and matched against a task's declared `needs` (`needs.duration_min`/`needs.network`/`needs.resumable`) the same way the framework's own five lanes are; declare nothing and a declaration against your lane is only ever a warning (`needs_lane_unknown`), never a refusal. An unknown key, a wrong type, or one of the framework's own five lane names (`claude_cli`, `codex_cli`, `claude_api`, `process`, `python` — their capability data is `supervisor.capabilities`'s own stated table) is refused. One declaration per adapter name. |
 | `command(kind, fn)` | an owner command kind (`my_ext.submit`) applied by whoever holds the state lock — loop, Control Center, CLI — exactly like the built-in kinds: `fn(layout, payload, actor) -> dict`, idempotent by `payload["_id"]`. A kind that already exists is an error, never an overwrite. |
 | `inbox_kind(kind, label, page=None, answerable=False, show_evidence=True, score_keys=())` | claim an inbox item kind your plugin creates. `label` heads its group on the inbox page; `page` (`"/review/{id}"`) is linked from the card; `answerable=False` means the generic answer path (inbox form, `inbox.answer` command, `inbox.answer()`) refuses to close the item and only your code may, with `supervisor.plugin.close_owned_item()` (1.11.0; it and `owned_items`, `owned_item`, `update_owned_item` act only on kinds your plugin claimed); `show_evidence=False` keeps the per-option rows and their scores off the card (blind labelling — the owner sees a count and the link); `score_keys` names the sub-item fields that make a row a scored one. Built-in kinds (`gate`, `decision`, `approval`, `spend`, `policy`, `question`) cannot be claimed. |
 | `template_dir(path)` | Jinja templates for your pages. Loaded after the framework's, so a page can `{% extends "base.html" %}` and include the partials; a framework template is never overridden by a same-named file of yours. |

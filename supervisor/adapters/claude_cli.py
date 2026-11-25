@@ -12,21 +12,33 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-
-import yaml
+from typing import Optional
 
 from .. import capacity
 from .. import handoff
 from .. import jobs as jobs_mod
 from .. import policy
 from .. import progress as progress_mod
+from .. import routing_config
 from .. import tasks as tasks_mod
 from .. import timeouts
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
-from .base import Result, register
+from .base import Result, ReviewLaneKeys, register, register_job_schema
 from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
+
+
+class ClaudeCliJobExtra(ReviewLaneKeys):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md), plus the
+    review lane's own (`ReviewLaneKeys`): this lane confines through `write_scope` and ignores `sandbox`."""
+    role: Optional[str] = None
+    prompt_file: Optional[str] = None
+    executable: Optional[str] = None
+    add_dirs: Optional[list[str]] = None
+
+
+register_job_schema("claude_cli", ClaudeCliJobExtra)
 
 AUTH_FAILURE_RE = re.compile(r"failed to authenticate|oauth (session|token).{0,40}expired|invalid api key|please run /login|"
                              r'"type":\s*"authentication_error"', re.IGNORECASE)
@@ -45,7 +57,7 @@ def classify_status(obj: dict) -> str:
     return status if status in ("COMPLETE", "PARTIAL", "BLOCKED", "FAILED") else "PARTIAL"
 
 
-def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw=None) -> Result:
+def limit_result(layout: Layout, engine: str, message: str, raw=None) -> Result:
     """A CLI-reported usage limit: record a conservative synthetic window unless a measured one already gates, then DEFERRED."""
     from .._vendor import usage_policy as up
     capacity.ensure(layout)
@@ -54,7 +66,7 @@ def limit_result(layout: Layout, engine: str, message: str, session_id=None, raw
     if until is None:
         up.record(engine, [{"name": "cli_limit", "used_percent": 100, "reset_epoch": time.time() + FALLBACK_LIMIT_S}], message[:200])
         until = up.reserve_until(engine) or time.time() + FALLBACK_LIMIT_S
-    return Result(status="DEFERRED", error=f"usage limit reported by the CLI: {message[:200]}", session_id=session_id,
+    return Result(status="DEFERRED", error=f"usage limit reported by the CLI: {message[:200]}",
                   raw={**(raw or {}), "measured_window": measured}, reset_epoch=until)
 
 
@@ -139,7 +151,7 @@ def _produced_delivery(layout: Layout, entries, kinds, delivery_idx: int, idx: i
 
 def _new_shape_identity(entries, attempt_id: str) -> tuple[int, str, int, str | None] | None:
     """(attempt, kind, seq, parent) for `attempt_id`, when the task's own `attempts[]` already carries it in the
-    allocator-written shape (ATTEMPT_MODEL.md §2.7: a numbered attempt's own `jobs[]`, written by
+    allocator-written shape (a numbered attempt's own `jobs[]`, written by
     `tasks.allocate_job` before `prepare()` ever runs) — the direct read every new job gets, no reconstruction
     needed because the fields were never derived from a note or a suffix in the first place. `None` when
     `attempt_id` is not there (a legacy entry from before the writer switch, §6's "readers first, writers
@@ -216,8 +228,8 @@ GIT_DENY = ["Bash(git push *)", "Bash(git reset *)", "Bash(git checkout *)", "Ba
 
 
 def routing(layout: Layout) -> dict:
-    cfg = layout.config / "routing.yaml"
-    return yaml.safe_load(cfg.read_text(encoding="utf-8")) or {} if cfg.exists() else {}
+    """config/routing.yaml as a mapping; delegates to `routing_config.load` (R-28: one routing loader)."""
+    return routing_config.load(layout)
 
 
 def cost_category(task) -> str:
@@ -226,21 +238,10 @@ def cost_category(task) -> str:
 
 
 def model_limits(adapter, spec: dict, handle: dict):
-    """ProcessAdapter.limits for a model lane. A job prepared before 1.7.0 carries no `idle_s` and a fixed 3600 s
-    deadline: it is moved onto the current policy (routing.yaml `timeouts`) instead of being killed at the old
-    hour — unless its spec set a different cap on purpose (a chat turn's 600 s)."""
-    deadline, idle_s, idle_cpu_s = ProcessAdapter.limits(adapter, spec, handle)
-    if "idle_s" in spec:
-        return deadline, idle_s, idle_cpu_s
-    try:
-        layout = Layout(spec["root"])
-        lim = timeouts.resolve(routing(layout), None, role_profile(layout, spec.get("role") or ""), {})
-    except Exception:                                    # unreadable config must never kill a running job
-        lim = timeouts.resolve({})
-    if int(spec.get("timeout_s") or 3600) == 3600:
-        started = timeouts._epoch(handle.get("started")) or float(handle.get("create_time") or time.time())
-        deadline = max(deadline, started + lim["hard_cap_s"] + sum(int(e.get("seconds") or 0) for e in handle.get("extensions") or []))
-    return deadline, lim["idle_s"], lim["idle_cpu_s"]
+    """ProcessAdapter.limits for a model lane: every spec a model lane prepares carries `idle_s` (since 1.7.0,
+    activity-based time limits), so this is a plain wrap — kept as the adapter's own named `.limits` rather than
+    the base class directly, since `effective_limits` (supervisor.timeouts) resolves it by name."""
+    return ProcessAdapter.limits(adapter, spec, handle)
 
 
 def role_profile(layout: Layout, role: str) -> dict:
@@ -339,12 +340,16 @@ class ClaudeCliAdapter(ProcessAdapter):
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(prompt_text, encoding="utf-8")
         tools = prof["tools"] if isinstance(prof["tools"], list) else DEFAULT_TOOLS.get(prof["tools"], DEFAULT_TOOLS["reader"])
+        # This lane resolves its budget through the one shared path, so a
+        # declared duration derives a cap here exactly as it does on the process lane -- the recorded loss was an
+        # agent session killed at the policy cap -- and a declared timeout_s the ceiling lowers leaves a receipt.
+        limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),
                 "role": role, "model": prof["model"], "effort": prof["effort"], "tools": tools,
                 "write_scope": write_scope(layout, run_dir, job.get("write_scope")),
                 "write_confined": bool(job.get("write_scope")),
                 "session_id": str(uuid.uuid4()), "stdin_file": str(prompt_file),
-                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
+                **timeouts.spec_fields(limits),
                 "executable": job.get("executable") or executable(layout), "result_kind": job.get("result_kind", "delivery"),
                 "add_dirs": job.get("add_dirs") or extra_dirs(layout, task, prof),
                 "bash_allow": list((routing(layout).get("claude") or {}).get("bash_allow") or []),
@@ -468,21 +473,19 @@ class ClaudeCliAdapter(ProcessAdapter):
         if final.get("is_error"):
             diag += "\n" + text
             if final.get("subtype") == "error_max_turns":
-                return Result(status="FAILED", error="max turns reached", session_id=meta["session_id"], raw=meta)
+                return Result(status="FAILED", error="max turns reached", raw=meta)
             if LIMIT_RE.search(diag):                     # limits arrive as an is_error result; a limit is not a failure
-                return limit_result(layout, self.engine, text[-300:], session_id=meta["session_id"], raw=meta)
+                return limit_result(layout, self.engine, text[-300:], raw=meta)
             if AUTH_FAILURE_RE.search(diag):
                 return Result(status="FAILED", error="login_required: run `claude /login` on the workstation",
-                              session_id=meta["session_id"], raw=meta)
-            return Result(status="FAILED", error=f"CLI error: {text[:300]}", session_id=meta["session_id"],
-                          usage=meta["model_usage"] or {}, raw=meta)
+                              raw=meta)
+            return Result(status="FAILED", error=f"CLI error: {text[:300]}", raw=meta)
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
         except ValueError as exc:
             obj = self.follow_up(spec, meta["session_id"], str(exc))
             if obj is None:
-                return Result(status="FAILED", error="no structured result after follow-up", session_id=meta["session_id"],
-                              usage=meta["model_usage"] or {}, raw=meta)
+                return Result(status="FAILED", error="no structured result after follow-up", raw=meta)
         status = classify_status(obj)
         notes = str(obj.get("notes") or obj.get("summary") or "")
         error = None
@@ -493,8 +496,7 @@ class ClaudeCliAdapter(ProcessAdapter):
             obj["permission_denials"] = [str((d.get("tool_input") or {}).get("command", d.get("tool_name")))[:160]
                                          for d in denials if isinstance(d, dict)][:20]
         atomic_json(run_dir / "result.json", obj)
-        return Result(status=status, artifacts=list(obj.get("artifacts") or []), notes=notes, error=error,
-                      model=spec.get("model"), session_id=meta["session_id"], usage=meta["model_usage"] or {}, raw=obj)
+        return Result(status=status, artifacts=list(obj.get("artifacts") or []), notes=notes, error=error, raw=obj)
 
     def follow_up(self, spec, session_id, error: str = ""):
         """One tool-less resume asking only for the JSON block. `error` is the contract's own description of what

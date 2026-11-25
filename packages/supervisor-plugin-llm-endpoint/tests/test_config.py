@@ -1,4 +1,4 @@
-"""Settings (plugins.llm_endpoint): every key a neutral default or none at all (D-013 section 6) - no model, no
+"""Settings (plugins.llm_endpoint): every key a neutral default or none at all - no model, no
 argv, no project path; `base_url` defaults to llama.cpp's own documented loopback port, not a project's choice."""
 from __future__ import annotations
 

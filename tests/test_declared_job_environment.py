@@ -1,4 +1,4 @@
-"""R-24, ATTEMPT_MODEL.md section 4.4: a process job's subprocess starts from a declared, allow-listed
+"""A process job's subprocess starts from a declared, allow-listed
 environment — never the loop's whole `os.environ` — and the loop refuses to start under another supervisor's
 own job-identity markers."""
 from __future__ import annotations

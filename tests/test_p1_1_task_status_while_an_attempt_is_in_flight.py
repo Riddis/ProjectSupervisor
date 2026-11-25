@@ -1,5 +1,5 @@
-"""P1-1 (docs/reviews/RELEASE_REVIEW_2.7.0.md): R-08's per-turn safety net must not flip a task to FAILED while
-the revision or retry that will replace its failing digest is still open. `reconcile_advance` (5bb9199) walks
+"""The per-turn safety net must not flip a task to FAILED while
+the revision or retry that will replace its failing digest is still open. `reconcile_advance` walks
 every ADVANCEABLE task, including IN_PROGRESS, and `_evaluate()` reads FAILED back from the current digest's own
 verification record whenever it is not ok -- true by construction while an open attempt is still replacing that
 digest. Before `reconcile_advance` existed nothing re-evaluated an IN_PROGRESS task between events."""

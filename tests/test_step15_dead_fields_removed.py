@@ -1,4 +1,4 @@
-"""2.8.0 step 15 (R-25, ATTEMPT_MODEL.md §4.6): the attempt record carried fields nothing wrote, and the task
+"""The attempt record carried fields nothing wrote, and the task
 document carried per-job detail that drifted from the job record it duplicated. Covers: the five removed fields
 (`Attempt.id`, `.extra`, `.model`, `.session_id`, `Task.decisions`) have no reader left in the framework package;
 a document written before this release still loads (`extra: allow`); `Attempt.outcome` is finally written, by the
@@ -167,7 +167,7 @@ def test_the_task_page_model_column_reads_only_the_job_record(layout):
     row = groups[0]["rows"][0]
     assert row["model"] == "opus"                       # read straight off the live job record
 
-    # the stored `jobs[]` entry itself never carries a model at all (ATTEMPT_MODEL.md §4.6) — only the live job
+    # the stored `jobs[]` entry itself never carries a model at all — only the live job
     # record does, which is exactly what the assertion above already depends on
     assert "model" not in t.attempts[0].jobs[0]
 
@@ -176,7 +176,7 @@ def test_the_task_page_model_column_reads_only_the_job_record(layout):
 
 
 def test_the_attempt_mapping_dry_run_reads_an_attempt_that_has_no_id(layout, tmp_path):
-    """The attempt-mapping dry run (ATTEMPT_MODEL.md §8) walks every task in the store, with no filter for the
+    """The attempt-mapping dry run walks every task in the store, with no filter for the
     shape its attempts are in, and its per-job note map is the last reader that joined on `Attempt.id`. An
     allocator-written entry (§2.7) carries no `id` key at all, so that map has to read the stored dump: through a
     declared field the read raises instead of finding nothing, and the whole dry run dies on it."""

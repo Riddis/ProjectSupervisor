@@ -169,8 +169,9 @@ def _approve(layout, payload, actor):
 @handler("inbox.answer")
 def _inbox_answer(layout, payload, actor):
     cid = payload.get("_id")
-    item = inbox_mod.answer(layout, payload["item_id"], payload["response"], payload.get("note", ""), actor,
-                            command_id=cid, digest=payload.get("digest"))
+    item = inbox_mod.answer(layout, payload["item_id"], payload.get("response", ""), payload.get("note", ""), actor,
+                            command_id=cid, digest=payload.get("digest"), choice=payload.get("choice"),
+                            choices_digest=payload.get("choices_digest"))
     out = {"status": item.get("status")}
     try:
         t = tasks_mod.load(layout, item["task_id"]) if item.get("task_id") else None
@@ -178,6 +179,10 @@ def _inbox_answer(layout, payload, actor):
         t = None
     if t is not None:
         out["task_status"] = t.status.value
+    if item.get("choice_applied") is not None:
+        # Surfaced so a choice that failed to apply is visible in the command result, not only on the item's own
+        # record — the Control Center flash (ui/deps.act) and the CLI both read this field.
+        out["choice_applied"] = item["choice_applied"]
     return out
 
 
@@ -224,27 +229,42 @@ def _task_import(layout, payload, actor):
     seed = seed_path(layout, payload.get("seed"))
     ids = [str(i) for i in (payload.get("update_contracts") or [])]
     r = tasks_mod.import_seed(layout, seed, ids, create=bool(payload.get("create", True)), actor=actor)
-    return {k: r[k] for k in ("created", "updated", "ignored", "job_not_applied", "warnings") if k in r}
+    return {k: r[k] for k in ("created", "updated", "ignored", "warnings") if k in r}
 
 
-def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None):
-    """The only writer of a task's `job` block: `task.set_job` (the Control Center's re-route), never state/
-    directly. A diagnosis cannot change a task's job (D-018); a wrong process command reaches the owner as a
-    question naming this command instead."""
+def apply_job(layout: Layout, task_id: str, job: dict, actor: str, cost_category: str | None = None) -> tuple:
+    """One of the owner's own writers of a task's `job` block: `task.set_job` (the Control Center's re-route),
+    never state/ directly. A diagnosis
+    cannot change a task's job; a wrong process command reaches the owner as a
+    question naming this command instead. `tasks._write_job` refuses `actor` here exactly as it does for a seed
+    import or a patch — this always carries a literal `argv`, so nothing but the owner may reach it. Returns (the
+    task, warnings) — an unknown key for an adapter with no declared schema is kept and warned, never refused
+    (`tasks.job_schema_problems`). `cost_category` is a CONTRACT_FIELDS member (routing, read by `gate`/`scheduler`
+    the same as any other contract field), so a real change here bumps `contract_rev`
+    exactly as a patch would — `job` itself never does (it is outside CONTRACT_FIELDS by
+    design, `tasks.py`'s own comment above `JUDGED_FIELDS`)."""
     def fn(doc):
-        doc["job"] = dict(job)
+        before = dict(doc)
+        tasks_mod._write_job(layout, doc, job, actor)
         if cost_category:
             doc["cost_category"] = cost_category
+        tasks_mod._bump_contract_rev(doc, before)
     t = tasks_mod._update(layout, task_id, fn)
+    errors, warnings = tasks_mod.job_schema_problems(layout, t.job)
+    if errors:
+        raise tasks_mod.TaskError("; ".join(errors))
     tasks_mod.log(layout, "task_job_set", actor, task=task_id, job=job)
-    return t
+    return t, warnings
 
 
 @handler("task.set_job")
 def _set_job(layout, payload, actor):
     """Replace a task's `job` block (adapter/fn/params/model/...): how the Control Center re-routes a task."""
-    t = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
-    return {"status": t.status.value}
+    t, warnings = apply_job(layout, payload["task_id"], payload["job"], actor, payload.get("cost_category"))
+    out = {"status": t.status.value}
+    if warnings:
+        out["warnings"] = warnings
+    return out
 
 
 @handler("checkpoint.retry")
@@ -377,7 +397,8 @@ def _agent_terminate(layout, payload, actor):
     ad = REGISTRY.get(rec["adapter"])
     if ad is not None and rec.get("handle"):
         ad.terminate(rec["handle"])
-    jobs_mod.set_phase(layout, attempt_id, "FAILED", error=f"terminated by {actor}", finished=now_iso())
+    jobs_mod.set_phase(layout, attempt_id, "FAILED", error=f"terminated by {actor}", finished=now_iso(),
+                       release_reason="cancelled")
     try:
         tasks_mod.set_status(layout, rec["task_id"], "FAILED", actor=actor, note=f"{attempt_id}: terminated by {actor}")
     except tasks_mod.TaskError:
@@ -410,6 +431,43 @@ def _agent_extend(layout, payload, actor):
         raise ValueError("extend by 1 s to 24 h")
     spec = rec.get("spec") or {}
     base = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
+    # The dedupe window (RF-32): a second extension of the SAME duration on
+    # the SAME job inside `timeouts.extend_dedupe_s` is a no-op that reports the existing deadline -- the recorded
+    # burst was ten clicks inside two seconds, each its own command id, so the existing per-command-id idempotence
+    # (`timeouts.extend`'s own check) cannot see it on its own.
+    from . import gate as gate_mod
+    routing_cfg = gate_mod.routing_doc(layout)
+    exts = list((rec["handle"] or {}).get("extensions") or [])
+    last = exts[-1] if exts else None
+    command_id = payload.get("_id")
+    replay = last is not None and command_id is not None and last.get("command_id") == command_id
+    if last is not None and not replay and int(last.get("seconds") or 0) == seconds:
+        last_at = timeouts._epoch(last.get("at"))
+        if last_at is not None and time.time() - last_at < timeouts.extend_dedupe_s(routing_cfg):
+            deadline = timeouts.effective_limits(rec.get("adapter"), spec, rec["handle"])[0]
+            tasks_mod.log(layout, "job_extend_deduped", actor, task=rec.get("task_id"), attempt=attempt_id,
+                          seconds=seconds)
+            return {"skipped": "already extended", "deadline": deadline}
+    # RF-32: an Extend whose result would push the job's total duration (its own resolved cap, section 4.2,
+    # plus every extension granted including this one) past the lane's resolved ceiling is refused, naming the
+    # ceiling -- a clamp would report success for a request it did not grant. Measured from the job's own
+    # `spec["timeout_s"]` (the cap `timeout_s` is relative to at launch, `adapters.process.submit`) and the
+    # extensions the handle already records, never from a wall-clock "launched at" lookup: a record's `created`/
+    # `handle["started"]` need not be real launch time (an adopted legacy record, a test fixture) and a wrong
+    # reading there must never manufacture a refusal for a job that never came near the ceiling.
+    task = None
+    try:
+        task = tasks_mod.load(layout, rec.get("task_id"))
+    except tasks_mod.TaskError:
+        pass
+    # The same composed ceiling the budget was resolved against (`timeouts.ceiling_inputs`):
+    # the running job's own spec carries the role it was prepared under, so an extension is bounded by exactly
+    # the number that bounded the cap it is extending -- never by a project-wide one the lane never read.
+    ceiling = timeouts.ceiling_for(layout, task, rec.get("adapter"), spec)
+    total_duration = int(spec.get("timeout_s") or 0) + sum(int(e.get("seconds") or 0) for e in exts) + seconds
+    if total_duration > ceiling:
+        raise ValueError(f"extend refused (RF-32): the result would reach {total_duration} s since launch, past "
+                         f"{rec.get('adapter')}'s ceiling of {ceiling} s; current effective deadline {base}")
     handle, changed = timeouts.extend(rec["handle"], seconds, payload.get("_id"), actor, now_iso(), base=base)
     if changed:
         jobs_mod.set_phase(layout, attempt_id, rec["phase"], handle=handle)

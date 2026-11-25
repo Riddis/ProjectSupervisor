@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 UTC = timezone.utc
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -32,8 +33,20 @@ from .. import policy
 from .._vendor.contract import LaneUnavailable, atomic_json, read_json, structured_result
 from ..paths import Layout
 from ..store import now_iso
-from .base import Adapter, Result, register
+from .base import Adapter, Result, ReviewLaneKeys, register, register_job_schema
 from .claude_cli import classify_status, job_spec, role_profile, routing
+
+
+class ClaudeApiJobExtra(ReviewLaneKeys):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md), plus the
+    review lane's own (`ReviewLaneKeys`): this lane reads none of those three — it has no tools and no file
+    system of its own — and the framework still composes them into a review job for it."""
+    role: Optional[str] = None
+    api_credits: Optional[bool] = None
+    max_tokens: Optional[int] = None
+
+
+register_job_schema("claude_api", ClaudeApiJobExtra)
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
@@ -244,10 +257,19 @@ def unattended_eligible(layout: Layout, task, job: dict) -> bool:
     if list(getattr(task, "artifacts", []) or []) or list(getattr(task, "tests", []) or []) or \
        list(getattr(task, "checks", []) or []):
         return False
-    if job.get("api_credits") is True:
-        return True
     role = job.get("role") or getattr(task, "owner_role", "")
-    return role in (api_config(layout).get("eligible_roles") or [])
+    opted_in = job.get("api_credits") is True or role in (api_config(layout).get("eligible_roles") or [])
+    if not opted_in:
+        return False
+    # The preference is skipped, never refused, when
+    # this task's own declared need is something this lane cannot meet (a duration past its composed ceiling, or
+    # `network: true`) -- the task stays on the lane it was matched against at the write. `resumable: true` never
+    # reaches this: every model lane declares `durable: false`, so RF-29 already refused it at the write.
+    from .. import needs as needs_mod
+    eff = needs_mod.needs_for(layout, task, "delivery")
+    if eff and any(r["tier"] == "refusal" for r in needs_mod.match(layout, task, "claude_api", eff)):
+        return False
+    return True
 
 
 # ------------------------------------------------------------------ adapter
@@ -374,8 +396,8 @@ class ClaudeApiAdapter(Adapter):
         # that produced no structured object falls back to the envelope, which carries the error.
         obj = payload.get("result")
         return Result(status=payload.get("status", "FAILED"), artifacts=payload.get("artifacts", []),
-                      notes=payload.get("notes", ""), error=payload.get("error"), model=payload.get("model"),
-                      usage=payload.get("usage", {}), raw=obj if isinstance(obj, dict) else payload)
+                      notes=payload.get("notes", ""), error=payload.get("error"),
+                      raw=obj if isinstance(obj, dict) else payload)
 
 
 register(ClaudeApiAdapter())

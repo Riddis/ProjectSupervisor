@@ -5,6 +5,7 @@
   <h2>{{ t.id }} — {{ t.title }}</h2>
   <p>Status: <strong>{{ t.status.value }}</strong>{{ ' (forced)' if t.forced else '' }}
      &middot; phase {{ t.phase }} &middot; owner {{ t.owner_role }} &middot; priority {{ t.priority }}</p>
+  {% if why_not_runnable %}<p class="subtle-tag">Not runnable: {{ why_not_runnable }}</p>{% endif %}
   <p><strong>Objective.</strong> {{ t.objective }}</p>
   <p><strong>Actions.</strong> {{ t.actions | join('; ') }}</p>
   <p><strong>Artifacts.</strong> {{ t.artifacts | join(', ') }}</p>

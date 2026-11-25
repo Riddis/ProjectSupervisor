@@ -3,7 +3,7 @@
 Rules:
 - every status change happens here, inside the store lock, deciding from the freshly read document (no stale reads);
 - `_evaluate()` is the one rule: verification ∧ every required review ACCEPT on the current digest ∧ (no approval
-  needed ∨ owner ACCEPT for this digest) → COMPLETE. `advance()` applies it; `completion_check()` reports it;
+  needed ∨ owner ACCEPT for this digest) → COMPLETE. `advance()` applies it;
 - a new delivery digest supersedes older verification/review/approval records;
 - `set_status()` never reaches COMPLETE except when the owner forces it with a note (persisted, rendered, logged).
 """
@@ -25,22 +25,157 @@ from pydantic import ValidationError
 from . import gates as gates_mod
 from . import policy as policy_mod
 from . import store
-from .models.task import (ALLOWED, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval,
-                          ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
+from .models.task import (ALLOWED, EXCLUSIVE, TERMINAL, ApprovalRecord, ApprovalResponse, Attempt, HumanApproval,
+                          JobPreflight, ReviewRecord, ReviewVerdict, Task, TaskStatus, VerificationRecord)
 from .paths import Layout
 
 ADVANCEABLE = {TaskStatus.IN_PROGRESS, TaskStatus.WAITING_FOR_REVIEW, TaskStatus.WAITING_FOR_HUMAN, TaskStatus.FAILED}
 CONTRACT_FIELDS = ["phase", "title", "objective", "owner_role", "depends_on", "actions", "artifacts", "tests",
                    "checks", "owned_paths", "reviewer", "review_note", "acceptance", "escalation", "human_approval",
-                   "approval_note", "cost_category", "evidence", "test_roots"]
+                   "approval_note", "cost_category", "evidence", "test_roots", "needs"]
 # A refresh is a whole-contract replace: a seed row that omits a CONTRACT_FIELDS key clears it (R-07d, by design —
 # use patch_task for a change to one field without resending the rest). These four are the exception: once set,
-# they outlive a seed row that does not mention them, the same way the store itself (migrate_ownership) may set
-# owned_paths outside any seed. evidence/test_roots joined CONTRACT_FIELDS in this change; without the exemption a
-# refresh touching only an unrelated field would have silently reset them to their defaults.
-REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots"})
-# `job` is a contract field too (what a task runs), but it keeps its own writer (apply_job/task.set_job, D-018):
-# never copied by a refresh or a patch. A seed or patch row that carries one is reported, not silently dropped.
+# they outlive a seed row that does not mention them. evidence/test_roots joined CONTRACT_FIELDS in this change;
+# without the exemption a refresh touching only an unrelated field would have silently reset them to their defaults.
+REFRESH_STICKY_FIELDS = frozenset({"owned_paths", "checks", "evidence", "test_roots", "needs"})
+# `needs` joins the sticky set because it coordinates a launch (a budget, a lane
+# match) rather than describing the work's shape, exactly as `owned_paths` does, and a refresh that touches an
+# unrelated field must never silently drop a declared duration back to the default cap. The only way to clear one
+# is an explicit empty block, reported as `needs_cleared` (`needs.cleared_warning`) rather than refused.
+# `job` names what a task runs, carried by create, import, refresh and patch,
+# under a rule on who is writing, never on the field: kept out of
+# CONTRACT_FIELDS/REFRESH_STICKY_FIELDS so the generic copy-or-clear loop never touches it — an omitted `job` is
+# always left as it was, like a sticky field, whether or not the row that omits it is itself an owner's. Owner
+# identity is `gates.is_owner_actor` — the framework's one such rule, not a second copy of it — so a bare queued
+# command or a default parameter value (neither of which asserts an identity) never inherits it. For the same
+# reason it is outside CONTRACT_FIELDS, `job` never moves `contract_rev` either: the counter
+# answers whether the bar a delivery is judged against moved, and routing a task to a different adapter/template
+# changes neither what must be delivered nor what a review reads. `plans._effect_set_job` and `commands.apply_job`
+# (`task.set_job`) write it through `_write_job`/`_update` exactly like any other job write, deliberately never
+# through `_bump_contract_rev` — this is the one declared exclusion, not an oversight.
+
+# What a review is judged against: the subset of CONTRACT_FIELDS
+# whose change makes a recorded ACCEPT/owner-approval stale. `actions` and `objective` move `contract_rev` like
+# any other contract field but never supersede a review or approval — the work changed, not the bar it is judged
+# against.
+JUDGED_FIELDS = frozenset({"tests", "checks", "acceptance", "artifacts", "reviewer", "review_note", "evidence"})
+
+
+def _contract_value(doc: dict, key: str):
+    """`doc[key]`, or the `Task` model's own default for an absent one — so a patch that resends a field's
+    schema default (`checks: []` on a document that never had a `checks` key at all) reads as "no change", the
+    same as resending a value that IS on disk. Comparing raw `.get(k)` pairs made "the key is present" part of
+    the diff by accident: a document with no `checks` key reads `None`, never equal to an explicitly-sent `[]`,
+    even though both mean exactly the same contract."""
+    if key in doc:
+        return doc[key]
+    field = Task.model_fields[key]
+    return field.default_factory() if field.default_factory is not None else field.default
+
+
+def _contract_fields_changed(doc: dict, before: dict) -> list[str]:
+    """Sorted CONTRACT_FIELDS keys whose normalised value actually differs between the two documents — the one
+    answer both `_bump_contract_rev` (does the counter move) and `patch_task` (is this write a no-op at all)
+    read, so the two can never disagree about what "changed" means."""
+    return sorted(k for k in CONTRACT_FIELDS if _contract_value(doc, k) != _contract_value(before, k))
+
+
+def _bump_contract_rev(doc: dict, before: dict) -> None:
+    """The one function that moves `contract_rev`: every writer of a CONTRACT_FIELDS value calls this last, after
+    its own mutation — `_apply_patch`/`_refresh_contract` (the patch/seed-refresh path), and the one writer that
+    sets a contract field without going through either, named at its own call site rather than through a
+    generic chokepoint (`commands.apply_job`'s `cost_category`) — nowhere else bumps it by hand. Distinct from
+    `rev`, which `store.update` bumps on every write including a status
+    change, an attempt entry or a note (`rev` answers "did this document move"); `contract_rev` answers "did the
+    brief move", and only a real value change in CONTRACT_FIELDS counts, each side read through
+    `_contract_fields_changed`/`_contract_value` so an absent key and its own default compare equal.
+
+    When the change touches JUDGED_FIELDS, every live review AND approval of the current delivery digest is
+    superseded — exactly as a new delivery digest already supersedes both (`record_delivery`), never only the
+    review: the ACCEPT either one recorded was read against a contract that no longer exists, so `_evaluate()`'s
+    `not r.superseded`/`not a.superseded` filters (and `review.py`'s own copies of the review one) must stop
+    counting it. Each record superseded this way carries `superseded_contract_rev` (the generation that did it)
+    and `superseded_fields` (which judged fields moved), so a reader — `packets.prior_round_block`, in
+    particular — can say what changed instead of the record going silently blank. Verification is deliberately
+    left alone — it re-runs the CURRENT checks against the delivered bytes every time a digest is verified, so a
+    contract edit cannot make a stale verification wrong, only a stale review's or approval's reading of it."""
+    changed = _contract_fields_changed(doc, before)
+    if not changed:
+        return
+    doc["contract_rev"] = int(doc.get("contract_rev") or 1) + 1
+    judged_changed = sorted(set(changed) & JUDGED_FIELDS)
+    if judged_changed:
+        d = doc.get("delivery") or {}
+        digest = d.get("digest")
+        for r in d.get("reviews") or []:
+            if r.get("digest") == digest and not r.get("superseded"):
+                r["superseded"] = True
+                r["superseded_contract_rev"] = doc["contract_rev"]
+                r["superseded_fields"] = judged_changed
+        for a in d.get("approvals") or []:
+            if a.get("digest") == digest and not a.get("superseded"):
+                a["superseded"] = True
+                a["superseded_contract_rev"] = doc["contract_rev"]
+                a["superseded_fields"] = judged_changed
+
+
+def _job_writer_errors(actor: str, job_value: dict) -> list[str]:
+    """The owner (`gates.is_owner_actor`: the CLI's `owner`, the Control Center's
+    `owner-ui`, or any `owner-<channel>`) may write any job block, including a literal `argv`; a plan may write
+    only a template id and typed params (RF-04); nothing else may write one at all."""
+    if gates_mod.is_owner_actor(actor):
+        return []
+    if actor == "plan":
+        extra = set(job_value) - {"template", "params"}
+        if extra:
+            return [f"a plan may set job.template and job.params only, not {', '.join(sorted(extra))}"]
+        return []
+    return [f"actor {actor!r} may not write a job block; only the owner or a plan may"]
+
+
+def _write_job(layout: Layout, doc: dict, job_value: dict | None, actor: str) -> None:
+    """The one chokepoint that sets `doc['job']` from a writer-controlled value, under the rule above: every write
+    path whose job is the writer's own literal choice goes through here — a created row (`check_new`, which every
+    `create()` and the queued `task.create` reach), a seed's create and refresh branches, a patch and
+    `task.set_job`. A plan's own `set_job` effect (`plans._effect_set_job`) is not routed through this: its shape
+    (an adapter inherited from the existing job or the template, never the writer's own choice) is pre-vetted by
+    RF-04 at promotion time and is not the literal value this rule judges.
+
+    The block this write ends up carrying is preflighted here, once, against
+    exactly what is about to be stored -- never left for the gate to discover wrong at the first launch."""
+    errors = _job_writer_errors(actor, job_value or {})
+    if errors:
+        raise TaskError("; ".join(errors))
+    doc["job"] = dict(job_value) if job_value else None
+    if doc["job"] is not None:
+        from . import preflight as preflight_mod
+        preflight_mod.attach(layout, doc)
+
+
+def job_schema_problems(layout: Layout, job) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for one already-typed `Job`'s adapter-specific keys: an
+    unknown key is refused when `job.adapter` declared a schema through `registry.job_schema()`, and is only ever
+    a warning when it did not — so a plugin written before this release still works unchanged."""
+    if job is None or not job.adapter:
+        return [], []
+    extra = job.model_extra or {}
+    if not extra:
+        return [], []
+    from . import plugins as plugins_mod
+    reg = plugins_mod.load(layout)
+    schema = reg.job_schemas.get(job.adapter)
+    if schema is None:
+        return [], [f"job for adapter {job.adapter!r} carries {', '.join(sorted(extra))}, which no schema "
+                    f"declares (registry.job_schema); kept, but check for a misspelled key"]
+    unknown = set(extra) - set(schema.model_fields)       # refused whatever the schema's own `extra` setting is
+    if unknown:
+        return [f"job for adapter {job.adapter!r} carries {', '.join(sorted(unknown))}, not declared by its "
+                f"job_schema ({', '.join(sorted(schema.model_fields)) or 'no keys'})"], []
+    try:
+        schema.model_validate(extra)
+    except ValidationError as exc:
+        return [f"job for adapter {job.adapter!r}: {exc}"], []
+    return [], []
 
 
 class TaskError(ValueError):
@@ -49,8 +184,9 @@ class TaskError(ValueError):
 
 def ownership_errors(tasks: Iterable[Task], layout: Layout | None = None) -> list[str]:
     """A task whose delivery runs on a model lane must say what it owns — explicit roots, or `["."]` for
-    exclusive mode. Applied to tasks being created or imported; the runtime (supervisor.gate) treats an old record
-    without it as exclusive, and `migrate_ownership()` makes that explicit."""
+    exclusive mode. Applied to tasks being created or imported — this has refused one lacking it since 1.0.0, so
+    below the supported upgrade floor (2.0.0, docs/UPDATING.md) there is nothing left that could still lack it —
+    and the runtime (supervisor.gate) treats a record without it as exclusive regardless."""
     from . import scheduler                      # local: scheduler imports this module
     return [f"{t.id}: a {scheduler.adapter_name(t, layout)} task must declare owned_paths (explicit roots, or ['.'] for exclusive mode)"
             for t in tasks if scheduler.writing_lane(t, layout) and not t.owned_paths]
@@ -248,14 +384,19 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
     Warnings — the spelling looks like prose or a placeholder ("runs contact sheets", "S1..S6", "EXP-1xx",
     "round_N") but is a legal file name, and real projects do name files "Final Report.md" or "out/xx.json". The
     contract is accepted and the warning returned to the caller; an entry that already matches a file under `root`
-    raises none."""
+    raises none.
+
+    The traversal segment is split on either separator (`re.split`, not `Path(a).parts`), the same reading
+    `owned_path_problems` gives a patched write scope (P3-R2-6): a `\\`-joined entry (`..\\x`) is one literal path
+    component to `pathlib.Path` on a POSIX worker, so the `..` segment it hides would otherwise pass there and
+    only there."""
     errors, warnings = [], []
     for t in tasks:
         for a in t.artifacts:
             why = None
             if not a or a != a.strip():
                 why = "is empty or has leading/trailing whitespace"
-            elif a.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", a) or ".." in Path(a).parts:
+            elif a.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", a) or ".." in re.split(r"[\\/]", a):
                 why = "must be a path relative to the project root"
             elif a.endswith(("/", "\\")) or (root is not None and not any(c in a for c in "*?[")
                                                 and (root / a).is_dir()):
@@ -278,15 +419,37 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
     return errors, warnings
 
 
-def artifact_errors(tasks: Iterable[Task], root: Path | None = None) -> list[str]:
-    """Artifact entries no file can ever satisfy (artifact_problems errors)."""
-    return artifact_problems(tasks, root)[0]
+def owned_path_problems(tasks: Iterable[Task]) -> list[str]:
+    """Errors for an `owned_paths` entry outside the project root (P2-2) — the write
+    scope a model-lane job is dispatched with, so an entry a created task declares above the root would hand that
+    job a write scope `verify.contained` never bounds to the tree. `EXCLUSIVE` ("."), meaning the whole tree, is
+    not a path to resolve and is never flagged. Checked wherever a writer sets `owned_paths`: `check_new` (create
+    time, both writers it serves) and `plans._monotonicity_refusals` for a patched value no existing scope of the
+    task's own could already bound. A row already on disk keeps loading regardless of what its `owned_paths`
+    says, same as `artifacts` — this is a write-time rule, never a load-time one.
+    The traversal segment is split on either separator (`re.split`, not `Path(p).parts`): a `\\`-joined entry
+    (`..\\x`) is one literal path component to `pathlib.Path` on a POSIX worker, so the `..` segment it hides
+    would otherwise pass there and only there."""
+    errors = []
+    for t in tasks:
+        for p in t.owned_paths:
+            if p == EXCLUSIVE:
+                continue
+            if p.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", p) or ".." in re.split(r"[\\/]", p):
+                errors.append(f"{t.id}: owned_paths {p!r} must be a path relative to the project root")
+    return errors
 
 
 def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     """What a contract asks that the project cannot give, though the contract itself is valid (1.13.0):
     - an `owner_role` or a `reviewer` that config/routing.yaml does not configure (only when it configures roles);
     - one that is inactive (`active: false`), which parks the task until the role is activated;
+    - a role whose routing entry declares a non-empty `result_kinds` (R-26: the one documented permission this
+      project enforces) and would be asked to produce a kind outside it — the owner_role's own `job.result_kind`
+      (default `delivery`), or `review` for a reviewer, which every reviewer dispatch produces regardless of the
+      task (`review.py`'s own job spec) — a role with no `result_kinds` key at all, or `result_kinds: []`, is not
+      checked (the shipped `owner` and `conversation` entries use `[]` for a lane whose adapter is `human`, or
+      whose own job always sets a non-document `result_kind`, so there is no result document to hold to a list);
     - a check command outside `verification.allowed_test_commands`, which would fail only at verification;
     - a `job` whose adapter, or whose python `fn`, neither the framework nor a plugin's manifest provides, which
       would fail only when it ran. No plugin is set up for this (`_registered_lanes`).
@@ -298,16 +461,16 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
     out = []
     loaded = None
     for t in tasks:
-        job = (getattr(t, "model_extra", None) or {}).get("job")
-        if isinstance(job, dict) and job.get("adapter"):
+        job = t.job
+        if job is not None and job.adapter:
             if loaded is None:
                 loaded = _registered_lanes(layout)
             lanes, python_jobs, unloaded = loaded
-            if job["adapter"] not in lanes:
-                out.append(f"{t.id}: job adapter {job['adapter']!r} is not a registered lane{unloaded}; the job "
+            if job.adapter not in lanes:
+                out.append(f"{t.id}: job adapter {job.adapter!r} is not a registered lane{unloaded}; the job "
                            f"would fail when it ran")
-            elif job["adapter"] == "python" and job.get("fn", "noop") not in python_jobs:
-                out.append(f"{t.id}: job fn {job.get('fn')!r} is not a registered python job{unloaded}; the job "
+            elif job.adapter == "python" and (job.fn or "noop") not in python_jobs:
+                out.append(f"{t.id}: job fn {job.fn!r} is not a registered python job{unloaded}; the job "
                            f"would fail when it ran")
         named = [("owner_role", t.owner_role)] + [("reviewer", r) for r in t.reviewer]
         for field_name, role in named:
@@ -319,6 +482,14 @@ def contract_warnings(tasks: Iterable[Task], layout: Layout) -> list[str]:
             elif gate.role_inactive(layout, role):
                 out.append(f"{t.id}: {field_name} {role!r} is inactive (routing.yaml roles.{role}.active: false); "
                            f"the task waits until it is activated")
+            else:
+                entry = roles.get(role) if isinstance(roles, dict) else None
+                permitted = entry.get("result_kinds") if isinstance(entry, dict) else None
+                if isinstance(permitted, list) and permitted:
+                    expected = "review" if field_name == "reviewer" else ((job.result_kind if job else None) or "delivery")
+                    if expected not in permitted:
+                        out.append(f"{t.id}: {field_name} {role!r} would produce a {expected!r} result, outside "
+                                   f"routing.yaml roles.{role}.result_kinds {permitted!r}")
         for check in t.checks:
             if not verify.permitted(check.command, allowed):
                 out.append(f"{t.id}: check {check.command!r} is not in verification.allowed_test_commands; "
@@ -391,8 +562,8 @@ _DOCUMENT_ONLY_SUFFIXES = frozenset({".md", ".txt", ".rst"})
 
 
 def _document_only(doc: dict) -> bool:
-    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13,
-    ATTEMPT_MODEL.md section 4.4, step 13): the common planning/record task dispatched on a model lane, where
+    """A task whose declared `artifacts` are all documents and which adds no executable `checks` (R-13):
+    the common planning/record task dispatched on a model lane, where
     the pydantic default (`evidence: auto`) demands a command the moment its own prose `tests` say anything —
     most of R-13's "no test evidence" failures were exactly this shape."""
     artifacts = doc.get("artifacts") or []
@@ -409,31 +580,54 @@ def _default_evidence(doc: dict) -> dict:
     return doc
 
 
-def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None) -> tuple[dict, list[str], list[str]]:
+def check_new(layout: Layout, doc: dict, combined: dict[str, Task] | None = None,
+              actor: str = "system") -> tuple[dict, list[str], list[str]]:
     """(the stored document, errors, warnings) for a task `create()` would add: the contract (pydantic), the graph
     with it in place, its ownership and its artifacts; `contract_warnings` stay warnings. `combined` (default: the
     store) is the graph to check it against, so a caller that changes another task in the same step
-    (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract."""
+    (diagnosis.ingest's dependency) checks the graph as it will be. Raises ValidationError on a bad contract.
+
+    A created row's `job` is the writer's own literal choice exactly like a refreshed or patched one, so it takes
+    the same two checks here and nowhere else: `_write_job` for who may write it (section 3.4 — `actor` is
+    whoever asked for the create, and a caller that names none asserts no authority) and `job_schema_problems`
+    for the adapter's own keys. A caller whose document may not name a job at all (a plan's `create_task`,
+    restricted by its own field list — the only path a diagnosis reaches this through, since 2.9.0) never
+    reaches either, and an empty one is
+    not a write: a document built from a whole task (`Task.model_dump()` names every declared field, `job`
+    included) says nothing about what the row runs, and there is nothing on a new row to clear."""
     doc = dict(doc)
     doc.setdefault("status", "NOT_STARTED")
     doc.update({"attempts": [], "result": None, "paths": []})
     doc = _default_evidence(doc)
+    if doc.get("job"):
+        _write_job(layout, doc, doc["job"], actor)        # before pydantic: authority first, then the shape
+    elif "job" in doc:
+        doc["job"] = None
     task = Task.model_validate(doc)                       # fail before touching the graph or the disk
     combined = dict(load_all(layout) if combined is None else combined)
     combined[task.id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
+    art_errors += owned_path_problems([task])
     warnings += contract_warnings([task], layout)
+    job_errors, job_warnings = job_schema_problems(layout, task.job)
+    art_errors += job_errors
+    warnings += job_warnings
+    from . import needs as needs_mod
+    needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+    art_errors += needs_errors
+    warnings += needs_warnings
     return doc, validate_graph(combined) + ownership_errors([task], layout) + art_errors, warnings
 
 
 def create(layout: Layout, doc: dict, actor: str = "system") -> dict:
     """Add a task that is not in the seed (probes, owner-added work, Control Center conversions). Validated like
-    the seed; an existing id is a no-op, so a retried command (or a second click) is never a duplicate."""
+    the seed, `job` included (`check_new`, under the writer-authority rule of section 3.4); an existing id is a
+    no-op, so a retried command (or a second click) is never a duplicate."""
     doc = dict(doc)
     path = path_for(layout, doc["id"])
     if path.exists():
         return {"skipped": "exists", "id": doc["id"]}
-    doc, errors, warnings = check_new(layout, doc)
+    doc, errors, warnings = check_new(layout, doc, actor=actor)
     if errors:
         raise TaskError("; ".join(errors))
     written = store.write_new(path, doc)
@@ -455,8 +649,9 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     because of a row it will not actually write. Current contract rules (artifacts, ownership, routing warnings)
     apply only to rows this call creates or changes, so an old row that predates a rule added since it was written
     is neither refused nor warned about just for being named in the seed. All or nothing: every row is validated
-    before any row is written. `job` has its own writer (`task.set_job`, D-018) and is never copied by a refresh;
-    a seed row that carries one for a row being updated is named in `job_not_applied`, not silently dropped.
+    before any row is written. `job` is a contract field too: a created row carries
+    it like any other field; a seed row updating an existing task carries a job change only when `actor` is the
+    owner's — anything else (a plan never imports a seed) is refused, named in `TaskError`, not silently dropped.
 
     `dry_run` runs the same validation and reports what would be created and updated, writing and logging
     nothing — safe while a supervisor runs."""
@@ -466,7 +661,8 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     resulting = dict(existing)            # the real graph this call will leave on disk, built up below
     changed: list[Task] = []              # rows being created or refreshed: only these take current contract rules
     new_docs: dict[str, dict] = {}        # id -> the document a create() would write
-    created, updated, untouched, ignored, job_not_applied = [], [], [], [], []
+    cleared_checks: list[tuple[dict, dict]] = []   # (before_raw, seed row) for each updated row's needs_cleared check
+    created, updated, untouched, ignored = [], [], [], []
 
     for t in seed:
         tid = t["id"]
@@ -475,6 +671,8 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
                 ignored.append(tid)
                 continue
             doc = dict(t)
+            if "job" in doc:
+                _write_job(layout, doc, doc["job"], actor)               # the same chokepoint a refresh goes through
             doc.setdefault("status", TaskStatus.NOT_STARTED.value)      # the store keeps the runtime fields explicit
             doc.update({"attempts": [], "result": None, "paths": []})
             doc = _default_evidence(doc)
@@ -483,17 +681,27 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             changed.append(task)
             created.append(tid)
         elif tid in update_ids:
-            merged = _refresh_contract(dict(store.read(path_for(layout, tid))), t)   # validates in memory
+            before_raw = dict(store.read(path_for(layout, tid)))
+            merged = _refresh_contract(layout, dict(before_raw), t, actor)   # validates in memory
             resulting[tid] = Task.model_validate(merged)
             changed.append(resulting[tid])
+            cleared_checks.append((before_raw, t))
             updated.append(tid)
-            if "job" in t:
-                job_not_applied.append(tid)
         else:
             untouched.append(tid)
 
     art_errors, warnings = artifact_problems(changed, root=layout.root)
     warnings += contract_warnings(changed, layout)
+    from . import needs as needs_mod
+    for task in changed:
+        job_errors, job_warnings = job_schema_problems(layout, task.job)
+        art_errors += job_errors
+        warnings += job_warnings
+        needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+        art_errors += needs_errors
+        warnings += needs_warnings
+    for before_raw, t in cleared_checks:
+        warnings += needs_mod.cleared_warning(before_raw, t)
     errors = validate_graph(resulting) + ownership_errors(changed, layout) + art_errors
     if errors:
         raise TaskError("seed invalid: " + "; ".join(errors))   # nothing written
@@ -504,14 +712,12 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
             _sync_turn_snapshot(Task.model_validate(written))
         for t in seed:
             if t["id"] in updated:
-                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(doc, t),
+                written = store.update(path_for(layout, t["id"]), lambda doc, t=t: _refresh_contract(layout, doc, t, actor),
                                        lock_path=layout.state / ".tasks.lock")
                 _sync_turn_snapshot(Task.model_validate(written))
         log(layout, "task_import", actor, created=created, updated=updated, **({"warnings": warnings} if warnings else {}))
 
     out = {"created": created, "updated": updated, "untouched": untouched, "ignored": ignored}
-    if job_not_applied:
-        out["job_not_applied"] = job_not_applied
     if dry_run:
         out["dry_run"] = True
     if warnings:
@@ -519,27 +725,34 @@ def import_seed(layout: Layout, seed_path: Path, update_ids: Iterable[str] = (),
     return out
 
 
-def _refresh_contract(doc: dict, t: dict) -> dict:
+def _refresh_contract(layout: Layout, doc: dict, t: dict, actor: str = "cli") -> dict:
     """Copy the seed's contract fields onto a stored task document and validate the result. Whole-contract
     replace except REFRESH_STICKY_FIELDS (R-07d): an omitted key elsewhere is cleared, an omitted sticky one is
-    left at whatever the document already had."""
+    left at whatever the document already had. `job` is never cleared by omission either (it is not a
+    CONTRACT_FIELDS key at all); when the seed row names one, the writer-authority rule of section 3.4 decides
+    whether it may be applied."""
+    before = dict(doc)
+    if "job" in t:
+        _write_job(layout, doc, t["job"], actor)
     for k in CONTRACT_FIELDS:
         if k in t:
             doc[k] = t[k]
         elif k not in REFRESH_STICKY_FIELDS:
             doc.pop(k, None)
+    _bump_contract_rev(doc, before)
     Task.model_validate(doc)
     return doc
 
 
-PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency"}
+PATCH_FIELDS = frozenset(CONTRACT_FIELDS) | {"add_dependency", "remove_dependency", "job"}
 
 
-def _apply_patch(doc: dict, fields: dict) -> dict:
+def _apply_patch(layout: Layout, doc: dict, fields: dict, actor: str = "cli") -> dict:
     """Apply one patch's fields onto a stored task document (mutates and returns it, validated): a direct
-    CONTRACT_FIELDS assignment, or `add_dependency`/`remove_dependency` (an id, or a list) against the document's
+    CONTRACT_FIELDS assignment, `add_dependency`/`remove_dependency` (an id, or a list) against the document's
     OWN current `depends_on` — never a caller's possibly-stale copy of it, so two concurrent dependency edits
-    cannot race each other."""
+    cannot race each other — or `job`, under the writer-authority rule of section 3.4."""
+    before = dict(doc)
     deps = list(doc.get("depends_on") or [])
     for dep in ([fields["add_dependency"]] if isinstance(fields.get("add_dependency"), str)
                 else list(fields.get("add_dependency") or [])):
@@ -551,9 +764,12 @@ def _apply_patch(doc: dict, fields: dict) -> dict:
             deps.remove(dep)
     if "add_dependency" in fields or "remove_dependency" in fields:
         doc["depends_on"] = deps
+    if "job" in fields:
+        _write_job(layout, doc, fields["job"], actor)
     for k, v in fields.items():
         if k in CONTRACT_FIELDS:
             doc[k] = v
+    _bump_contract_rev(doc, before)
     Task.model_validate(doc)
     return doc
 
@@ -564,21 +780,53 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     contract rules applied only to this one task."""
     bad = set(fields) - PATCH_FIELDS
     if bad:
-        raise TaskError(f"{task_id}: patch may set only a contract field, add_dependency or remove_dependency, "
-                        f"not {', '.join(sorted(bad))}")
+        raise TaskError(f"{task_id}: patch may set only a contract field, add_dependency, remove_dependency or "
+                        f"job, not {', '.join(sorted(bad))}")
     existing = load_all(layout)
     if task_id not in existing:
         raise TaskError(f"no such task {task_id}")
-    merged = _apply_patch(dict(store.read(path_for(layout, task_id))), fields)
+    before_raw = dict(store.read(path_for(layout, task_id)))
+    merged = _apply_patch(layout, dict(before_raw), fields, actor)
     task = Task.model_validate(merged)
     combined = dict(existing)
     combined[task_id] = task
     art_errors, warnings = artifact_problems([task], root=layout.root)
     warnings += contract_warnings([task], layout)
+    job_errors, job_warnings = job_schema_problems(layout, task.job)
+    art_errors += job_errors
+    warnings += job_warnings
+    from . import needs as needs_mod
+    needs_errors, needs_warnings = needs_mod.write_check(layout, task)
+    art_errors += needs_errors
+    warnings += needs_warnings
+    warnings += needs_mod.cleared_warning(before_raw, fields)
     errors = validate_graph(combined) + ownership_errors([task], layout) + art_errors
     if errors:
         raise TaskError("patch invalid: " + "; ".join(errors))
-    store.update(path_for(layout, task_id), lambda doc: _apply_patch(doc, fields), lock_path=layout.state / ".tasks.lock")
+
+    def fn(doc):
+        before = dict(doc)
+        result = _apply_patch(layout, doc, fields, actor)
+        # "job" is outside CONTRACT_FIELDS and always reattaches a fresh preflight (`_write_job`), so a job patch
+        # is always a real write; everything else `_apply_patch` can touch (a CONTRACT_FIELDS key, or
+        # add_dependency/remove_dependency's effect on `depends_on`, itself a CONTRACT_FIELDS member) is a no-op
+        # exactly when `_contract_fields_changed` says so — the same normalised comparison `_bump_contract_rev`
+        # already used above, not a second, stricter one: comparing raw dicts here made resending a field's own
+        # default (an absent key explicitly set to it) look like a change and write anyway, bumping `rev` even
+        # though `contract_rev` correctly did not move.
+        if "job" not in fields and not _contract_fields_changed(result, before):
+            raise _NoChange()
+        return result
+    try:
+        store.update(path_for(layout, task_id), fn, lock_path=layout.state / ".tasks.lock")
+    except _NoChange:
+        # Resent fields that match the stored document exactly (a plan or operator replaying the same patch):
+        # nothing to write, so neither `rev` nor `contract_rev` moves — the same "nothing to do" idiom
+        # `set_status`/`hold` already use.
+        out = {"id": task_id}
+        if warnings:
+            out["warnings"] = warnings
+        return out
     log(layout, "task_patch", actor, task=task_id, fields=sorted(fields))
     out = {"id": task_id}
     if warnings:
@@ -586,24 +834,6 @@ def patch_task(layout: Layout, task_id: str, fields: dict, actor: str = "cli") -
     return out
 
 
-def migrate_ownership(layout: Layout, actor: str = "cli") -> dict:
-    """One-off migration: every live task on a writing lane that declares no ownership becomes explicitly exclusive
-    (`owned_paths: ["."]`), with a note in its record. Terminal tasks are left alone. Idempotent."""
-    from . import scheduler
-    from .models.task import EXCLUSIVE, TERMINAL
-    migrated = []
-    for t in load_all(layout).values():
-        if t.status in TERMINAL or t.owned_paths or not scheduler.writing_lane(t, layout):
-            continue
-
-        def fn(doc):
-            doc["owned_paths"] = [EXCLUSIVE]
-            doc.setdefault("notes", []).append({"at": store.now_iso(), "by": actor,
-                                                "note": "owned_paths set to ['.'] (exclusive mode) by migrate-ownership"})
-        _update(layout, t.id, fn)
-        migrated.append(t.id)
-    log(layout, "ownership_migrated", actor, tasks=migrated)
-    return {"migrated": migrated}
 
 
 # ------------------------------------------------------------------ logging
@@ -685,17 +915,31 @@ def _evaluate(task: Task) -> tuple[TaskStatus, str]:
     return TaskStatus.COMPLETE, "verified, reviewed and approved as required"
 
 
-def completion_check(task: Task) -> str | None:
-    """None when the task may COMPLETE; otherwise why not."""
-    target, note = _evaluate(task)
-    return None if target == TaskStatus.COMPLETE else note
-
 
 # ------------------------------------------------------------------ mutation helpers (all decide on the locked doc)
 
 def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
+    """`fn` mutates the locked document; a `job` block it leaves changed (content other than `preflight` itself
+    differs from what was there before `fn` ran) is preflighted here before the write lands
+    -- the one chokepoint every lower-level job mutation shares with `_write_job`'s own callers, so
+    a diagnosis's or a plan's direct `doc['job'] = ...` is covered the same as a patch. An `fn` that leaves the
+    job untouched never re-runs the probe: `tasks.hold`, a status transition and anything else that reaches
+    `_update` without a job of its own interest pays nothing for it.
+
+    Deliberately NOT a generic `_bump_contract_rev` chokepoint, even though it would be the cheapest way to close
+    every stored writer at once: this is also the one function several test fixtures use to set up a document's
+    `artifacts`/`owned_paths`/... directly as a shortcut, with no contract-change intent at all — bumping on
+    every one of those would move `contract_rev` and, worse, supersede a live review for a reason no production
+    writer ever gave. A caller whose write IS a real contract change (`commands.apply_job`'s `cost_category`)
+    calls `_bump_contract_rev` itself, the same way `_apply_patch`/`_refresh_contract` do around their own
+    mutation — named at its own call site, not folded in here."""
     def wrapped(doc):
+        from . import preflight as preflight_mod
+        before_job = preflight_mod.block_digest(doc.get("job") or {})
         fn(doc)
+        job = doc.get("job") or {}
+        if job and preflight_mod.block_digest(job) != before_job:
+            preflight_mod.attach(layout, doc)
         Task.model_validate(doc)      # never persist an invalid task
         return doc
     doc = store.update(path_for(layout, task_id), wrapped, lock_path=layout.state / ".tasks.lock")
@@ -704,11 +948,36 @@ def _update(layout: Layout, task_id: str, fn: Callable[[dict], None]) -> Task:
     return t
 
 
+def backfill_job_preflight(layout: Layout, task_id: str) -> Optional[JobPreflight]:
+    """The preflight's own backfill: writes a fresh preflight for a stored
+    job block that predates the check -- called once per task, by the loop's bounded sweep (oldest task first,
+    `preflight.pending_backfill`) or by the gate's own run-on-absent check (`gate.preflight_reason`, while
+    `preflight.backfill_complete` is still false), whichever reaches it first. Goes through `_update`, the same
+    chokepoint every other job mutation shares, so this is preflighted under the same lock and the same
+    canonicalisation a real write gets. None when there is nothing to backfill: no job, a model lane's job, or
+    one that already carries a preflight -- even a failed one, since this only ever fills an absence, it never
+    retries a failure."""
+    from . import preflight as preflight_mod
+    result: dict | None = None
+
+    def fn(doc):
+        nonlocal result
+        job = doc.get("job")
+        if not job or job.get("adapter") not in preflight_mod.PREFLIGHT_ADAPTERS or job.get("preflight") is not None:
+            return
+        preflight_mod.attach(layout, doc)
+        result = (doc.get("job") or {}).get("preflight")
+
+    _update(layout, task_id, fn)
+    return JobPreflight.model_validate(result) if result else None
+
+
 def _sync_turn_snapshot(task: Task) -> None:
     """This turn's snapshot, if one is open, kept in step with a write `_update()` did not make — `create()` and
     `import_seed()`'s own new-row branch write with `store.write_new()` directly, not through `_update()`, so
     without this a task created mid-turn stayed invisible to `load_all()` for the rest of that turn even though
-    `_update()`'s own writes were already promised to be seen by it (astra: load_all/turn-snapshot visibility)."""
+    `_update()`'s own writes were already promised to be seen by it: within one turn `load_all()` sees every row
+    that turn wrote, whichever writer made it."""
     snap = _TURN_SNAPSHOT.get()
     if snap is not None:
         snap[task.id] = task
@@ -795,6 +1064,23 @@ def hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
     return t
 
 
+def release_hold(layout: Layout, task_id: str, actor: str, note: str = "") -> Task:
+    """The owner's `release_hold` effect: clear a Hold without otherwise moving
+    the task. Distinct from `set_status()`'s own implicit clearing on a move off BLOCKED — a same-status call
+    there raises `_NoChange` before it ever reaches that line, so a held task with nowhere else to go has, until
+    now, had no way to be unheld without being moved. Idempotent: releasing a Hold that is not there is a no-op."""
+    def fn(doc):
+        if not doc.get("held"):
+            raise _NoChange()
+        doc["held"] = None
+    try:
+        t = _update(layout, task_id, fn)
+    except _NoChange:
+        return load(layout, task_id)
+    log(layout, "task_hold_released", actor, task=task_id, note=note)
+    return t
+
+
 PAGE_ACTIONS = ("hold", "cancel", "requeue")
 
 
@@ -822,7 +1108,7 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
     disk so the number allocated here is never one already used. Returns the updated task and the id it chose;
     `note` gets that id appended.
 
-    Superseded, for a fresh dispatch, by `allocate_job` (ATTEMPT_MODEL.md §2.3/§9, the writer switch) — this
+    Superseded, for a fresh dispatch, by `allocate_job` (the writer switch) — this
     function and the id shape it writes (`<task>.a<n>`, one flat counter) are kept only because an un-migrated
     document and a handful of narrow, unrelated tests still read and write it; `loop.dispatch` no longer calls
     it."""
@@ -842,9 +1128,10 @@ def add_attempt(layout: Layout, task_id: str, resource: str, note: str = "", see
 
 # ---- the attempt-identity allocator (§2.2, §2.3 of the attempt-identity design) — not yet called from the loop.
 # A job's id is derived from four fields, never parsed back out of the string: task id, kind, seq (the ordinal of
-# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job (today
-# only a diagnosis raised before any delivery ever exists, §2.5).
-_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d"}
+# that kind inside its attempt) and the attempt number itself, or no attempt at all for a task-scoped job: a
+# diagnosis raised before any delivery ever exists (§2.5), or a plan_review whose plan's own subject names no
+# attempt either — attempt-scoped like any other job when it does.
+_JOB_KIND_LETTERS = {"delivery": "s", "verify": "v", "review": "r", "diagnosis": "d", "plan_review": "p"}
 
 
 @dataclass(frozen=True)
@@ -977,9 +1264,6 @@ def set_priority(layout: Layout, task_id: str, priority: int, actor: str = "owne
 
 # ------------------------------------------------------------------ delivery records and advance()
 
-VOLATILE_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
-
-
 # Authored records under state/: written by an agent or the owner as a deliverable and never rewritten by the loop,
 # so they can be frozen in a delivery digest. Everything else under state/ is the store and changes every tick.
 AUTHORED_STATE = ("state/decisions/",)
@@ -995,7 +1279,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
     """A new artifact digest: earlier verification/reviews/approvals are superseded (kept in history). A task that was
     waiting on review/approval of the old digest returns to IN_PROGRESS.
 
-    `findings_response` (R-15, ATTEMPT_MODEL.md 4.3 point 3): the producer's own optional, per-finding reply
+    `findings_response` (R-15): the producer's own optional, per-finding reply
     to the previous round's own findings, kept the same way `result` already is — set when given, left as the
     last delivery's own value otherwise, so a producer that forgot to repeat it does not lose the one it gave."""
     def fn(doc):
@@ -1026,7 +1310,7 @@ def record_delivery(layout: Layout, task_id: str, digest: str, actor: str = "sys
             doc["paths"] = sorted({str(x) for x in paths if not volatile_state(str(x))
                                    and str(x) not in volatile})
     from . import verify as verify_mod                   # local: verify imports this module
-    volatile = VOLATILE_PROJECTIONS | verify_mod.excluded_files(layout)
+    volatile = verify_mod.excluded_files(layout)          # R-28: one set (built-in + plugin views), not two unioned
     t = _update(layout, task_id, fn)
     log(layout, "delivery", actor, task=task_id, digest=digest)
     return t
@@ -1158,7 +1442,7 @@ def record_approval(layout: Layout, task_id: str, digest: str, response: str, by
 
 
 def _close_current_attempt(doc: dict, outcome: str) -> None:
-    """Write `Attempt.outcome` (ATTEMPT_MODEL.md §4.6 — 0 of ~1,400 records carried a real value before this):
+    """Write `Attempt.outcome` (0 of ~1,400 records carried a real value before this):
     the migrated shape's most recently opened `attempts[]` entry (`n` set, still `outcome: "open"`) gets its
     `outcome` and `closed` here, by the one place that knows the current try is over. An un-migrated entry (no
     `n`) has nothing here to close; it stays exactly as the old writer left it."""
@@ -1174,11 +1458,11 @@ def advance(layout: Layout, task_id: str, actor: str = "advance", attempt_id: st
     knows which delivery attempt produced the digest now completing (loop.record_outcome does), is recorded on
     any issue this task's completion recovers (R-21, escalation.recover_issues_for_task).
 
-    Three of the transitions here close the attempt that produced the current digest (§2.4, §4.6): verified and
+    Three of the transitions here close the attempt that produced the current digest: verified and
     accepted, verification failed, or a review that was not ACCEPT sends the task back to IN_PROGRESS for a
     revision. A review-BLOCKED stop and a worker's own FAILED/BLOCKED result (classified before this ever runs,
     `loop.record_outcome`/escalation) are not covered here — the next release's supersede mechanism is where
-    those close (left to 2.9.0, ATTEMPT_MODEL.md "Deliberately left to 2.9.0")."""
+    those close (deliberately left for a later release)."""
     outcome = {}
 
     def fn(doc):

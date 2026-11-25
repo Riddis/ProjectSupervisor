@@ -158,8 +158,8 @@ def test_a_human_job_offering_approve_completes_on_it_after_migrate(layout, answ
 
 
 # --------------------------------------------------------------------------- F2 regressions: resumable retirement
-# (supervisor/inbox.py's owner delivery-REQUEUE, the same ordering diagnosis.ingest has — docs/releases/2.1.0/
-# F2-resumable-grant-retirement.md)
+# (supervisor/inbox.py's owner delivery-REQUEUE retires the old grant in the same order diagnosis.ingest does, so
+# an interrupted retirement resumes instead of granting twice)
 
 
 def blocked_delivery_item(layout, tid="T"):

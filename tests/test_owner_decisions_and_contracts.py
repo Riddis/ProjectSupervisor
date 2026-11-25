@@ -77,14 +77,6 @@ def test_requeue_with_text_puts_a_failed_task_back_with_the_guidance(layout):
     assert inbox.load(layout, out["inbox"])["applied"]["resumed"] == "task"
 
 
-def test_an_escalation_question_from_an_older_version_is_acted_on_too(layout):
-    failed_task(layout)
-    item = inbox.create(layout, for_role="owner", subject="Decision needed", summary="s", kind="question",
-                        allowed_responses=["REQUEUE", "CANCEL", "DEFER"], from_="escalation", task_id="T")
-    inbox.answer(layout, item["id"], "CANCEL")
-    assert tasks.load(layout, "T").status == TaskStatus.CANCELLED
-
-
 def test_an_ordinary_agent_question_is_not_a_decision(layout):
     failed_task(layout)
     item = inbox.create(layout, for_role="owner", subject="q", summary="s", kind="question", from_="engineer",
@@ -144,7 +136,7 @@ def contract(*artifacts):
 @pytest.mark.parametrize("bad", ["bench/runs/<id>/summary.json", "sims/cycle_N/", "/abs/file.txt", "../outside.txt",
                                  "C:/x.txt", "dir/", " padded.txt", ""])
 def test_unsatisfiable_artifact_entries_are_named(bad):
-    errors = tasks.artifact_errors([contract(bad)])
+    errors, _warnings = tasks.artifact_problems([contract(bad)])
     assert len(errors) == 1 and repr(bad) in errors[0]
 
 
@@ -169,19 +161,19 @@ def test_an_odd_name_that_exists_on_disk_raises_no_warning(layout):
                                   "bench/runs/*/summary.json", "strategies/S[1-6].yaml", "workflows/flow_v1.json",
                                   "state/decisions/D-900-widget.md"])
 def test_real_paths_and_globs_pass(good):
-    assert tasks.artifact_errors([contract(good)]) == []
+    assert tasks.artifact_problems([contract(good)])[0] == []
 
 
 def test_a_path_under_state_outside_decisions_is_refused_even_though_it_looks_like_a_real_path():
     """2.4.0, G4: no file under `state/` outside `state/decisions/` can ever be a deliverable — this used to be
     accepted as a merely odd-looking but legal artifact entry (`state/tasks/T10-0[2-9].yaml`)."""
-    assert tasks.artifact_errors([contract("state/tasks/T10-0[2-9].yaml")]) != []
+    assert tasks.artifact_problems([contract("state/tasks/T10-0[2-9].yaml")])[0] != []
 
 
 def test_an_existing_directory_is_refused_when_the_root_is_known(layout):
     (layout.root / "experiments").mkdir(exist_ok=True)
-    assert tasks.artifact_errors([contract("experiments")], root=layout.root)
-    assert tasks.artifact_errors([contract("experiments")]) == []
+    assert tasks.artifact_problems([contract("experiments")], root=layout.root)[0]
+    assert tasks.artifact_problems([contract("experiments")])[0] == []
 
 
 def test_import_and_create_accept_an_odd_name_with_a_warning(layout):
@@ -196,6 +188,68 @@ def test_import_and_create_accept_an_odd_name_with_a_warning(layout):
     assert r["id"] == "NEW2" and "round_N_results.txt" in r["warnings"][0]
 
 
+# ------------------------------------------------------------------ P2-2: owned_paths containment (beside
+# artifact_problems's own rule above — P2-2, `tasks.check_new`)
+
+def owned(*owned_paths):
+    return Task.model_validate({"id": "C", "phase": 0, "title": "c", "objective": "o", "owner_role": "engineer",
+                                "actions": ["a"], "artifacts": ["x"], "tests": ["t"], "acceptance": "ok",
+                                "escalation": "none", "human_approval": "none", "cost_category": "claude",
+                                "owned_paths": list(owned_paths)})
+
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_owned_path_problems_names_the_path_and_the_rule(bad):
+    errors = tasks.owned_path_problems([owned(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", "."])
+def test_owned_path_problems_accepts_legitimate_shapes(good):
+    assert tasks.owned_path_problems([owned(good)]) == []
+
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_the_owners_task_create_refuses_owned_paths_outside_the_root(layout, bad):
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": ["x"], "owned_paths": [bad]}
+    with pytest.raises(tasks.TaskError, match="project root"):
+        tasks.create(layout, doc, actor="owner")
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created"])
+def test_the_owners_task_create_accepts_legitimate_owned_paths(layout, good):
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": ["x"], "owned_paths": [good]}
+    r = tasks.create(layout, doc, actor="owner")
+    assert r["id"] == "NEW"
+
+
+def test_a_task_already_in_the_store_with_an_unusual_owned_paths_entry_still_loads(layout):
+    """check_new's new containment rule governs what may be created, not a migration: a row already on disk
+    (written before this rule existed, or by hand) must keep loading unchanged."""
+    make_task(layout, "OLD", owned_paths=["../legacy"])
+    assert tasks.load(layout, "OLD").owned_paths == ["../legacy"]
+
+
+# ------------------------------------------------------------------ P2-R2-1: round 2's full shape table (the
+# four round-1 shapes plus the seven cross-platform ones `020d6a1` added) against `owned_path_problems` itself,
+# beside the four-shape tests above.
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x", "..", "x/..", "a/../../b", "./..",
+                                 "x\\..\\y", "\\\\server\\share", "D:relative"])
+def test_owned_path_problems_names_the_path_and_the_rule_full_shape_table(bad):
+    errors = tasks.owned_path_problems([owned(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", ".", "..x", "x..", "x/..y", "x/./y",
+                                  ".hidden", "dir.with.dots/file", "a b/c d.txt"])
+def test_owned_path_problems_accepts_legitimate_shapes_full_shape_table(good):
+    assert tasks.owned_path_problems([owned(good)]) == []
+
+
 def test_import_and_create_still_refuse_an_unsatisfiable_artifact(layout):
     failed_task(layout)
     write_seed(layout, ["runs/<id>/summary.json"])
@@ -205,6 +259,41 @@ def test_import_and_create_still_refuse_an_unsatisfiable_artifact(layout):
     doc.update(id="NEW2", owned_paths=["."])
     with pytest.raises(tasks.TaskError, match="directory"):
         tasks.create(layout, doc)
+
+
+# ------------------------------------------------------------------ P3-R2-6: artifact_problems's own traversal
+# check read `".." in Path(a).parts` (supervisor/tasks.py:394) — the same form `020d6a1` replaced for
+# owned_path_problems, invisible to a `\`-joined traversal on a POSIX worker, where
+# `PurePosixPath("..\\x").parts == ("..\\x",)` is one literal component; `pathlib.Path` already splits on `\` on
+# this (Windows) workstation, so these tests force the POSIX reading with `monkeypatch` — the one that actually
+# exercised the bug on `G3 suite (ubuntu-latest)` — rather than depending on which platform happens to run them.
+
+def _as_posix_worker(monkeypatch, module=tasks):
+    import pathlib
+    monkeypatch.setattr(module, "Path", pathlib.PurePosixPath)
+
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_artifact_problems_names_a_backslash_joined_traversal(bad, monkeypatch):
+    _as_posix_worker(monkeypatch)
+    errors, _warnings = tasks.artifact_problems([contract(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", "..x", "x..", "x/..y", "x/./y",
+                                  ".hidden", "dir.with.dots/file", "a b/c d.txt"])
+def test_artifact_problems_still_accepts_every_legitimate_shape_beside_the_traversal_fix(good):
+    assert tasks.artifact_problems([contract(good)])[0] == []
+
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_the_owners_task_create_refuses_a_backslash_joined_traversal_artifact(layout, bad, monkeypatch):
+    _as_posix_worker(monkeypatch)
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": [bad], "owned_paths": ["."]}
+    with pytest.raises(tasks.TaskError, match="project root"):
+        tasks.create(layout, doc, actor="owner")
+    assert not (layout.tasks / "NEW.yaml").exists()
 
 
 def test_odd_names_verify_against_real_files(layout):

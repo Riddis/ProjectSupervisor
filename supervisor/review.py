@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import gate, jobs as jobs_mod
+from . import gate, policy
+from . import jobs as jobs_mod
 from . import tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, digest as digest_of
 from .adapters import REGISTRY
@@ -58,7 +59,7 @@ def lane_for(layout, role: str, primary: str | None = None) -> tuple[str, dict, 
     """(adapter_name, {model/effort overrides}, same_vendor_flag) for this role's lane. `primary`, when given,
     is the lane already resolved for this job (scheduler.adapter_name: job.adapter, a cost_lanes override, or the
     role's own roles.<role>.adapter) and is asked about instead of re-deriving the role's configured adapter - the
-    same rule covers a role's OWN tasks, not only a review of another role's delivery (D-012 F-B). Falls back to
+    same rule covers a role's OWN tasks, not only a review of another role's delivery. Falls back to
     the role's configured same-vendor lane on a capacity deferral (which a failed login now also raises,
     capacity.mark_login_failed); propagates CapacityDeferred if there is none."""
     from . import capacity
@@ -79,7 +80,7 @@ def lane_for(layout, role: str, primary: str | None = None) -> tuple[str, dict, 
 def fallback_overrides(rec: dict) -> dict:
     """What a continuation of `rec` (the attempt being requeued, repaired or rebuilt) must carry forward: the
     fallback's own `model`/`effort`, already resolved into the record's own `spec` by the adapter's `prepare()`
-    (D-012 F-B) - not re-derived, since the role's fallback block could change under routing.yaml before the
+    - not re-derived, since the role's fallback block could change under routing.yaml before the
     continuation dispatches and a continuation must replay what THIS attempt actually ran on, not whatever the
     config says now. The predicate is 'this attempt ran on a fallback lane', not the `same_vendor` flag's own
     truth value: `dispatch_delivery()`/`review.dispatch()`/`_lane_login_failed()`'s reroute write `same_vendor`
@@ -176,13 +177,21 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     # the dispatch extra (prior_round/digest_diff, below) — a frozen manifest, a text snapshot and a unified diff
     # built twice per dispatch would be wasted work on every review, not only one with a prior round to show.
     prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
-    brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
+    try:
+        brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
+    except policy.PolicyViolation as exc:
+        # This task's own refusal, not the loop's: caught at the dispatch boundary so it never raises out of
+        # dispatch_reviews()'s own loop over every (task, role) pair, which must keep dispatching every other
+        # task's review this turn regardless of this one.
+        from . import escalation as escalation_mod
+        escalation_mod.refuse_packet(supervisor, task, "review packet", exc)
+        return None
     review_task = _review_task_view(layout, task, role, adapter_name, brief, overrides)
     note = f"review:{role}" + (" (same-vendor fallback)" if fell_back and same_vendor else "")
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the
     # content hashes an artifact edited under the reviewer would still collect an ACCEPT for bytes that are gone
     #. loop.dispatch writes it next to the run as frozen_inputs.json for the audit.
-    # review_text_snapshot (R-15, ATTEMPT_MODEL.md 4.3) rides the same durable record: a capped text copy of these
+    # review_text_snapshot (R-15) rides the same durable record: a capped text copy of these
     # artifacts, so the NEXT round's review_brief() can diff against this one without ever reading a run directory.
     extra = {"review_role": role, "review_digest": digest, "review_frozen": frozen(layout, artifacts),
             "review_text_snapshot": packets_mod.text_snapshot(layout, artifacts)}
@@ -362,7 +371,7 @@ def _findings_text(layout, review) -> str:
 def _salvage_sort_key(r: dict) -> tuple:
     """Newest first: `jobs.sort_key`'s own `(attempt, kind order, seq)` fields, no id-suffix fallback (§6) —
     the same rule every reader of this step shares, not a second one of its own. `seq` alone cannot order
-    these records: it is only the ordinal of a kind inside one attempt (ATTEMPT_MODEL.md §6), so two attempts'
+    these records: it is only the ordinal of a kind inside one attempt, so two attempts'
     review jobs for the same role and digest (a revision that re-delivers a byte-identical answer keeps the
     digest) can both carry `seq == 1`, and only the `attempt` field tells them apart."""
     return jobs_mod.sort_key(r)

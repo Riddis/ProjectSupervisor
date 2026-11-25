@@ -1,4 +1,4 @@
-"""Round-5 review F13 (docs/reviews/RELEASE_REVIEW_2.1.0_round5.md lines 153-159): `cli.py:204`'s `task
+"""`cli.py:204`'s `task
 set-status` defaults `actor="cli"`, and `tasks.py:476` keyed the release of `held` on `actor.startswith("owner")`
 - so a held task moved to READY from the CLI (or any other manual, non-owner-prefixed actor) read READY with
 `held` still set, and the next automatic requeue for it would be declined at `diagnosis.py:384` for a Hold

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sys
 
+from pydantic import BaseModel
+
 from supervisor import plugin
 
 # The child: write the output file, then result.json in the run folder (what ProcessAdapter collects).
@@ -11,6 +13,12 @@ WORKER = (
     "out.parent.mkdir(parents=True, exist_ok=True); out.write_text('made by the reference lane\\n'); "
     "(run / 'result.json').write_text(json.dumps({'status': 'COMPLETE', 'artifacts': [rel]}))"
 )
+
+
+class JobKeys(BaseModel):
+    """job_schema: what this lane's own `job:` block may carry beyond the framework's typed fields. setup()
+    declares it, so a project that misspells `output` is told at the write instead of running the default."""
+    output: str | None = None
 
 
 class ReferenceLane(plugin.ProcessAdapter):

@@ -33,8 +33,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
-
+from . import routing_config
 from ._vendor.contract import changed_paths, contained, manifest
 from .models.task import Task
 from .paths import Layout
@@ -60,9 +59,9 @@ OWN_WRITES = "own_writes.jsonl"
 # A dispatched job (or the loop process itself, via supervisor.launcher) carries these on its own os.environ:
 # SUPERVISOR_ATTEMPT/SUPERVISOR_JOB/SUPERVISOR_ATTEMPT_NO/SUPERVISOR_RUN_DIR name *this* verification's own job
 # (adapters/process.py), SUPERVISOR_ROOT is the loop's launch marker (launcher.py), SUPERVISOR_PROGRESS_FILE
-# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business (R-13,
-# T3-06.a9: a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
-# leaked into it). Kept for the names it already documents and for the plugin API (supervisor.testing checks the
+# points at this job's own PROGRESS.json (progress.py). None of them are a declared command's business: seen
+# once, a tool's self-tests wrote into the dispatched job's own run directory because SUPERVISOR_RUN_DIR had
+# leaked into it. Kept for the names it already documents and for the plugin API (supervisor.testing checks the
 # two it still carries); the actual filter below drops every `SUPERVISOR_*` name, not only these six, so a
 # marker this release never named still cannot reach a declared command (step 13).
 JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTEMPT_NO", "SUPERVISOR_RUN_DIR",
@@ -70,8 +69,8 @@ JOB_CONTROL_ENV_VARS = ("SUPERVISOR_ATTEMPT", "SUPERVISOR_JOB", "SUPERVISOR_ATTE
 
 
 def declared_test_env(layout: Layout | None = None) -> dict[str, str]:
-    """The environment a declared command runs under (ATTEMPT_MODEL.md section 4.4, step 13): the same declared
-    *base* allow-list a process job's own subprocess starts from (`envconfig.base_names`, step 12) — never this
+    """The environment a declared command runs under: the same declared
+    *base* allow-list a process job's own subprocess starts from (`envconfig.base_names`) — never this
     process's whole `os.environ`, which is how a vendor variable the project never named in `config/routing.yaml`
     used to reach a declared command just because the loop's own launching session happened to carry it — with
     every `SUPERVISOR_*` name dropped regardless of whether it is on the base (the loop's own identity markers
@@ -87,7 +86,7 @@ def declared_environment(layout: Layout | None = None) -> dict[str, str]:
     """The pinned (interpreter, cwd, PATH) a declared command with no `cwd` override runs under by default —
     the one triple `run_declared_tests` actually uses for that case, recorded on `verification.json` and stated
     verbatim in the worker's own brief (`packets.result_contract_delivery`), so a disagreement between what ran
-    and what was promised is visible instead of inferred (R-13, ATTEMPT_MODEL.md section 4.4)."""
+    and what was promised is visible instead of inferred (R-13)."""
     root = str(layout.root) if layout is not None else os.getcwd()
     env = declared_test_env(layout)
     return {"interpreter": sys.executable, "cwd": root, "path": env.get("PATH", "")}
@@ -232,32 +231,20 @@ def limits(layout: Layout) -> dict:
     """The three test-evidence limits (G3, 2.4.0): `verification.per_command_timeout_s`, `budget_s` and
     `max_commands`, each falling back to this module's own constant when unconfigured or malformed."""
     out = {"per_command_timeout_s": TEST_TIMEOUT_S, "budget_s": TEST_BUDGET_S, "max_commands": MAX_TEST_COMMANDS}
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        v = (doc.get("verification") or {}) if isinstance(doc, dict) else {}
-        for key in ("per_command_timeout_s", "budget_s", "max_commands"):
-            if key in v:
-                try:
-                    out[key] = int(v[key])
-                except (TypeError, ValueError):
-                    pass
+    v = routing_config.load(layout).get("verification") or {}
+    for key in ("per_command_timeout_s", "budget_s", "max_commands"):
+        if key in v:
+            try:
+                out[key] = int(v[key])
+            except (TypeError, ValueError):
+                pass
     return out
 
 
 def allowed_test_commands(layout: Layout) -> list[str]:
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        configured = (doc.get("verification") or {}).get("allowed_test_commands")
-        if configured:
-            return [str(c) for c in configured]
+    configured = (routing_config.load(layout).get("verification") or {}).get("allowed_test_commands")
+    if configured:
+        return [str(c) for c in configured]
     return list(ALLOWED_TEST_COMMANDS)
 
 
@@ -507,15 +494,9 @@ def undeclared_residue(before: dict, after: dict, outside: list[str]) -> dict[st
 
 def as_job(layout: Layout) -> bool:
     """run the command part of verification as a tracked process job (default) instead of inside the loop."""
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            doc = {}
-        v = doc.get("verification_job") or {}
-        if "as_job" in v:
-            return bool(v["as_job"])
+    v = routing_config.load(layout).get("verification_job") or {}
+    if "as_job" in v:
+        return bool(v["as_job"])
     return True
 
 

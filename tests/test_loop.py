@@ -282,7 +282,7 @@ def test_cli_mutation_queues_while_loop_holds_lock(layout):
         r = CliRunner().invoke(app, ["task", "note", "A", "hi"])
         assert r.exit_code == 0 and "queued" in r.output
         assert not (tasks.load(layout, "A").model_extra or {}).get("notes")
-        r2 = CliRunner().invoke(app, ["task", "migrate-ownership"])         # direct-mutation commands still refuse
+        r2 = CliRunner().invoke(app, ["gate", "set", "G1", "PASSED"])       # direct-mutation commands still refuse
         assert r2.exit_code != 0 and "supervisor holds" in (r2.output + str(r2.exception))
         r3 = CliRunner().invoke(app, ["task", "import"])                    # import goes through the queue instead
         assert r3.exit_code == 0 and "queued" in r3.output
@@ -575,7 +575,7 @@ def test_command_file_with_non_utf8_bytes_is_quarantined_with_its_bytes_intact(l
 
 
 def test_lost_job_record_does_not_reuse_its_id_or_run_dir(layout):
-    """R-03, carried by the allocator's monotonic `counters` block (ATTEMPT_MODEL.md §2.3) now that `dispatch`
+    """Carried by the allocator's monotonic `counters` block now that `dispatch`
     no longer counts files at all: `jobs.open_records` — called by every Overview and Agents GET — never
     rewrites or quarantines a record it cannot read, and the next dispatch still never reuses an id or run
     directory, because nothing about it was ever derived from a file count to begin with."""
@@ -616,7 +616,7 @@ def test_overview_and_agents_pages_never_touch_an_unreadable_job_record(layout):
 
 
 def test_a_task_written_before_the_counter_existed_still_gets_the_right_next_number(layout):
-    """A task document from before `counters` existed (ATTEMPT_MODEL.md §2.3) has no such field. The next
+    """A task document from before `counters` existed has no such field. The next
     dispatch must still open attempt 1 — the allocator treats a missing block exactly as an empty one, no
     migration step, and (unlike the old `job_seq`/file-count scheme this superseded) never reads a job file to
     find out."""

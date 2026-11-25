@@ -15,10 +15,15 @@ from pathlib import Path
 from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, conversations as conversations_mod
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
+from . import plans as plans_mod
+from . import policy as policy_mod
 from . import progress as progress_mod
-from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, render, review as review_mod
+from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, needs as needs_mod, preflight as preflight_mod
+from . import render, review as review_mod
+from . import routing_config
 from . import runtime, scheduler, shutdown as shutdown_mod, state_commit as state_commit_mod, tasks as tasks_mod
 from . import verify as verify_mod
+from . import why_not_runnable as why_not_runnable_mod
 from ._vendor.contract import CapacityDeferred, LaneUnavailable, atomic_json, digest as digest_of, manifest, read_json
 from ._vendor import handoff
 from .adapters import REGISTRY, Result
@@ -31,8 +36,8 @@ EXIT_RELOAD = 3
 
 
 class UnmigratedJobsError(RuntimeError):
-    """ATTEMPT_MODEL.md §8.6's start-up guard: a job record under `state/runtime/jobs/` or its archive
-    (`jobs.archive_dir`, step 14's retention work, §4.5) is neither migration-stamped nor allocator-written, so
+    """The writer switch's start-up guard: a job record under `state/runtime/jobs/` or its archive
+    (`jobs.archive_dir`, the retention work) is neither migration-stamped nor allocator-written, so
     it has no `attempt`/`kind`/`seq` for the writer switch's readers to sort or group it by. Checks both: a
     record that moved into the archive before `migrate attempts` ever ran is exactly the shape this guard exists
     to catch, not a reason to stop looking. Raised by `cli.run()` before it ever constructs a `Supervisor` or
@@ -42,13 +47,17 @@ class UnmigratedJobsError(RuntimeError):
     similar one-shot tools construct no `Supervisor` either and are likewise untouched by it."""
 
 
-def _unmigrated_job_files(layout: Layout) -> list[str]:
+def _bad_job_files(paths: list[Path]) -> tuple[list[str], bool]:
+    """Returns the unmigrated names in `paths`, and whether every one of `paths` was actually read: a file this
+    could not parse is skipped either way (R-03, not this guard's concern), but the caller must know it happened
+    -- a clean-looking scan that quietly skipped a file is not a scan anything should be trusted on (P3-R2-B)."""
     bad = []
-    candidates = sorted(list(layout.jobs.glob("*.json")) + list(layout.jobs.glob("archive/*/*.json")))
-    for p in candidates:
+    all_read = True
+    for p in paths:
         try:
             rec = read_json(p)
         except (OSError, ValueError):
+            all_read = False
             continue           # an unreadable record is jobs.py's own concern (R-03), not this guard's
         if jobs_mod.kind_of(rec) == "conversation":
             continue           # backs no Task document; stays outside this model entirely (§2.2), always has
@@ -57,7 +66,26 @@ def _unmigrated_job_files(layout: Layout) -> list[str]:
         if rec.get("kind") is not None and isinstance(rec.get("seq"), int):
             continue
         bad.append(p.name)
-    return bad
+    return bad, all_read
+
+
+def _unmigrated_job_files(layout: Layout) -> list[str]:
+    """P3-R2-B: the live top level is bounded by work in flight, not by the
+    project's whole history, so it is scanned every start-up regardless. The archive only grows, one finished
+    task at a time, and a record in it never changes once written — once a full scan has found it entirely
+    migration-stamped/allocator-written, `jobs.mark_archive_migrated` fingerprints that listing so every later
+    start-up can trust it, stat-only, instead of re-reading every file again; `jobs.archive_known_migrated`
+    re-verifies the fingerprint against the archive's current listing every time, so any change since -- a new
+    file `archive_terminal` moved in, an out-of-band write, a restored backup -- is caught without this needing to
+    invalidate anything itself. A scan that had to skip a file it could not read never marks the archive clean."""
+    bad, _ = _bad_job_files(sorted(layout.jobs.glob("*.json")))
+    archive_paths = sorted(layout.jobs.glob("archive/*/*.json"))
+    if jobs_mod.archive_known_migrated(layout, archive_paths):
+        return bad
+    archive_bad, all_read = _bad_job_files(archive_paths)
+    if not archive_bad and all_read:
+        jobs_mod.mark_archive_migrated(layout, archive_paths)
+    return bad + archive_bad
 
 
 def _check_writer_guard(layout: Layout) -> None:
@@ -66,17 +94,17 @@ def _check_writer_guard(layout: Layout) -> None:
         return
     shown = ", ".join(bad[:10]) + (f" and {len(bad) - 10} more" if len(bad) > 10 else "")
     raise UnmigratedJobsError(
-        f"{len(bad)} job record(s) under state/runtime/jobs/ carry neither a migration stamp "
-        f"(migrated.attempts) nor an allocator-written kind/seq: {shown}. Run "
+        f"{len(bad)} job record(s) under state/runtime/jobs/ or its archive (state/runtime/jobs/archive/) carry "
+        f"neither a migration stamp (migrated.attempts) nor an allocator-written kind/seq: {shown}. Run "
         f"`supervisor migrate attempts --dry-run --out <dir>`, review the mapping, then "
         f"`supervisor migrate attempts --apply --mapping <dir>/mapping.json --out <dir>` and "
         f"`supervisor migrate attempts --check --mapping <dir>/mapping.json --out <dir>` before dispatch resumes.")
 
 
 class ForeignEnvironmentError(RuntimeError):
-    """ATTEMPT_MODEL.md section 4.4's start-up guard: the launching environment this `supervisor run` process was
-    started with already carries a job's own identity markers (`envconfig.FOREIGN_MARKERS`) — the shape H-001
-    found by hand ("the loop had been launched from the desktop session with that session's environment"), a
+    """A start-up guard: the launching environment this `supervisor run` process was
+    started with already carries a job's own identity markers (`envconfig.FOREIGN_MARKERS`) — the shape
+    found by hand once ("the loop had been launched from the desktop session with that session's environment"), a
     shell or a session that still holds another job's `SUPERVISOR_ATTEMPT`/`SUPERVISOR_JOB`/`SUPERVISOR_RUN_DIR`/
     `SUPERVISOR_PROGRESS_FILE` from earlier. Raised by `cli.run()` before it ever constructs a `Supervisor`, the
     same point `UnmigratedJobsError` is raised from — a test (or a library caller) that builds one directly is
@@ -186,15 +214,9 @@ def _restore_current_bytes(path: Path, current: bytes | None) -> bool:
 
 
 def scheduler_routing(layout: Layout) -> dict:
-    import yaml
-    cfg = layout.config / "routing.yaml"
-    try:
-        return (yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}) if cfg.exists() else {}
-    except (OSError, yaml.YAMLError):
-        return {}
+    """config/routing.yaml as a mapping; delegates to `routing_config.load` (R-28: one routing loader)."""
+    return routing_config.load(layout)
 
-
-RENDERED_PROJECTIONS = {"STATE.md", "TASKS.md", "ISSUES.md", "DECISIONS.md", "HUMAN_INBOX.md", "OWNER_TASKS.md"}
 
 class Supervisor:
     def __init__(self, layout: Layout, sleep_s: float = 5.0, render_every: int = 1, unattended: bool = False):
@@ -248,7 +270,7 @@ class Supervisor:
         # review, a verify, a diagnosis, a conversation) has none to give — those records stay exactly as narrow
         # as before this.
         job_extra = {**(extra or {}), "reason": reason} if reason else dict(extra or {})
-        # prior_round/digest_diff (R-15, ATTEMPT_MODEL.md 4.3) are this dispatch's own audit output, written beside
+        # prior_round/digest_diff (R-15) are this dispatch's own audit output, written beside
         # the run below; review_text_snapshot is the one of the three a LATER round still needs, so it alone stays
         # on the durable job record.
         run_dir_payload = {k: job_extra.pop(k) for k in ("prior_round", "digest_diff") if k in job_extra}
@@ -266,11 +288,15 @@ class Supervisor:
                                             new_attempt=new_attempt, resource=adapter_name, parent=parent, note=note)
             attempt_id = job_id.id
             job_attempt, job_seq, job_scope = job_id.attempt, job_id.seq, job_id.scope
+            # R-12: the STORED contract, re-read after allocate_job's own write — a
+            # revision's prompt or a fallback's model override decorates the SAME attempt, never changes what a
+            # `task.patch`/`task.set_job` could. `contract_rev` names the generation this job's brief was built
+            # from, on every kind that has a task; `job_fingerprint` stays delivery-only (R-12's own narrower use).
+            stored = tasks_mod.load(self.layout, task.id)
+            job_extra["contract_rev"] = stored.contract_rev
             if kind == "delivery":
-                # R-12: the STORED contract, re-read after allocate_job's own write — a revision's prompt or a
-                # fallback's model override decorates the SAME attempt, never changes what a `task.patch`/
-                # `task.set_job` could.
-                job_extra["job_fingerprint"] = _job_fingerprint(tasks_mod.load(self.layout, task.id))
+                job_extra["job_fingerprint"] = _job_fingerprint(stored)
+        claim = needs_mod.claim_for(self.layout, task, kind)
         run_dir = self.layout.runs / task.id / attempt_id
         try:
             if run_dir.exists():            # never launch a second job into a directory one left behind (R-03)
@@ -279,7 +305,7 @@ class Supervisor:
         except Exception as exc:                              # noqa: BLE001 - the attempt fails, the loop goes on
             spec = {"adapter": adapter_name, "task_id": task.id, "attempt_id": attempt_id, "kind": kind}
             rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
+                                   gpu=gate.holds_resource(self.layout, task, adapter_name, kind), claim=claim,
                                    kind=kind, attempt=job_attempt, seq=job_seq, parent=parent, cause=cause,
                                    scope=job_scope, **job_extra)
             self._adapter_failed(rec, "prepare", exc)
@@ -298,10 +324,12 @@ class Supervisor:
         # One durable write carries everything a continuation or ingestion needs: a crash between prepare() and a
         # second record write used to leave a review job without its role and discard the finished verdict.
         rec = jobs_mod.prepare(self.layout, task.id, attempt_id, adapter_name, spec,
-                               gpu=gate.holds_resource(self.layout, task, adapter_name, kind),
+                               gpu=gate.holds_resource(self.layout, task, adapter_name, kind), claim=claim,
                                kind=kind, attempt=job_attempt, seq=job_seq, parent=parent, cause=cause,
                                scope=job_scope, env_digest=spec.get("env_digest"),
                                **job_extra)                   # durable BEFORE launch
+        if claim:
+            tasks_mod.log(self.layout, "claim_taken", "loop", claim=claim, task=task.id, attempt=attempt_id)
         if kind != "conversation":            # the attempt itself was already recorded when the id was allocated
             tasks_mod.annotate_attempt(self.layout, task.id, attempt_id, run_dir=spec.get("run_dir"))
         if deferred_until:
@@ -310,7 +338,7 @@ class Supervisor:
 
     def dispatch_delivery(self, task: Task, name: str) -> dict:
         """A scheduled delivery job on `name` - scheduler.plan() already resolved the owner role's own fallback
-        when its primary lane was unavailable (D-012 F-B Change 1), the same rule a fallback review already
+        when its primary lane was unavailable, the same rule a fallback review already
         applies. Re-derive the fallback's model/effort overrides the same way plan() picked `name`, so a role's
         own task runs with the fallback's own keys whatever `flag: same_vendor` says on the block - the flag
         decides only the attempt note and the `same_vendor` extra on the record (review.dispatch() and
@@ -370,7 +398,7 @@ class Supervisor:
         tasks_mod.log(self.layout, "job_requeued", "loop", task=task_id, attempt=rec["attempt_id"], reason=reason,
                       result=result.status, error=result.error, until=until, continuation=n + 1)
         if n >= self.MAX_CONTINUATIONS:
-            # D-010 Consequences: this used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
+            # This used to go BLOCKED-for-owner directly, bypassing the manager's diagnosis.
             # retry=False because a blind re-dispatch of the same brief needs a continuation chain too — the
             # diagnosis route (bounded by its own DIAGNOSIS_BUDGET) decides requeue/defer/architect/owner instead.
             # `continued`+`capped` (R4): an intentionally capped attempt, never a torn write repair_continuations()
@@ -388,7 +416,7 @@ class Supervisor:
         grant = escalation_mod.current_grant(self.layout, task_id)
         kind = (rec.get("spec") or {}).get("kind", "delivery")
         if kind == "review":
-            task = review_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(review_mod.rebuild, rec, "review packet")
             if task is None:                                  # inputs moved on; pending() queues a fresh review instead
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
@@ -398,7 +426,7 @@ class Supervisor:
             self.dispatch(task, rec["adapter"], deferred_until=until, note=note, kind="review", extra=extra,
                          cause="continuation", attempt=rec.get("attempt"), parent=rec["attempt_id"])
         elif kind == diagnosis_mod.KIND:
-            task = diagnosis_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(diagnosis_mod.rebuild, rec, "diagnosis packet")
             if task is None:
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
@@ -435,6 +463,25 @@ class Supervisor:
             held_note = f" — held by the owner{held_detail}; it will launch once they release the Hold"
         tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued{held_note}", actor="loop")
 
+    def _rebuild_or_refuse(self, rebuild, rec: dict, where: str) -> Task | None:
+        """`rebuild(layout, rec)` for a continuation or a reroute, or None when its own brief refused.
+
+        A rebuilt brief goes through `policy.assert_packet_clean` exactly like the first one did, so a review or
+        diagnosis whose brief quotes a key-shaped artifact refuses here too - and this one is reached from
+        `settle()` with nothing between it and `once()`'s error budget: unguarded, the same turn raised again on
+        every tick until the "5 loop errors in 10 minutes" breaker stopped the loop, which is the incident this
+        release closes, on the path any ordinary capacity deferral of such a job takes.
+
+        None is what both callers already handle - the record closes with no successor, the same as inputs that
+        moved on - and `escalation.refuse_packet` takes the task off the path for the owner, so `pending()` does
+        not simply queue a fresh job that refuses the same way next turn. A machine-wide violation still raises
+        (refuse_packet's own rule): one misconfigured machine is not this task's failure."""
+        try:
+            return rebuild(self.layout, rec)
+        except policy_mod.PolicyViolation as exc:
+            escalation_mod.refuse_packet(self, tasks_mod.load(self.layout, rec["task_id"]), where, exc)
+            return None
+
     def home_lane(self, rec: dict) -> str | None:
         """The lane a delivery runs on when nothing moved it (scheduler.adapter_name: the task's job.adapter, role or
         cost lane), if that is not the lane of `rec` — i.e. the unattended switch put it on `rec`'s lane — and is
@@ -454,7 +501,7 @@ class Supervisor:
         so nothing escalates. The new attempt names the refused one (`rerouted_from`), so repair_continuations()
         can tell a reroute whose successor exists from one a crash interrupted before it, and queues only the
         latter; the refused record is never launched on its old lane again. `job_overrides` (a role's fallback's
-        own model/effort, D-012 F-B Change 2) are merged into the dispatched job; `extra` (`same_vendor`) reaches
+        own model/effort) are merged into the dispatched job; `extra` (`same_vendor`) reaches
         the new job record the same way a fallback review's does. Both are written into the SAME set_phase that
         names the lane (`rerouted_job`, `rerouted_extra`), so a crash before the successor lands leaves them as
         durable as `rerouted_to` itself: `_repair_reroutes()` replays them instead of launching the fallback lane
@@ -493,10 +540,11 @@ class Supervisor:
     def _reroute_rebuild(self, rec: dict, kind: str) -> tuple[Task | None, dict]:
         """The task and extras a reroute's successor dispatches with, by `kind` - diagnosis rebuilds via
         `diagnosis_mod.rebuild` (it tolerates a BLOCKED task on purpose, the common status for one, and returns
-        None only once the task has moved past it: COMPLETE or CANCELLED) and carries its `diag_*` extras;
+        None only once the task has moved past it: COMPLETE or CANCELLED, or when its own brief refused —
+        `_rebuild_or_refuse`) and carries its `diag_*` extras;
         every other kind just reloads the task, with the fallback's own model/effort (`rerouted_job`) merged
         into its job block. Both shapes carry the dispatch extras the reroute resolved (`rerouted_extra`:
-        D-012 F-B's same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
+        the same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
         it in the one set_phase that named the lane, so `reroute()` (the live path) and `_repair_reroutes()`
         (torn-write recovery) can never drift about what a reroute's successor carries - not its kind, not its
         extras and not its job. A review never reaches either (reroute() is never called for one).
@@ -505,7 +553,7 @@ class Supervisor:
         and lane keys come from the diagnosis itself, not the task's job block)."""
         extra = dict(rec.get("rerouted_extra") or {})
         if kind == diagnosis_mod.KIND:
-            task = diagnosis_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(diagnosis_mod.rebuild, rec, "diagnosis packet")
             if task is None:
                 return None, {}
             return task, {**{k: rec[k] for k in rec if k.startswith("diag_")}, **extra}
@@ -583,10 +631,11 @@ class Supervisor:
         prior_held = rec.get("held")
         if prior_held:
             rec = jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=None)
-        if rec.get("gpu") and not leases.resource_lease(self.layout, "gpu").acquire(wait_s=0):
+        lease_name = leases.lease_name_for(self.layout, bool(rec.get("gpu")), rec.get("claim"))
+        if lease_name and not leases.resource_lease(self.layout, lease_name).acquire(wait_s=0):
             # gate.lease_blocked() already peeked this a moment ago; taking it for real happens only here, right
-            # before submit(), so a job that never reaches this line never claims VRAM gate.check() did not mean.
-            reason = "gpu lease unavailable: another project holds it"
+            # before submit(), so a job that never reaches this line never claims a lease gate.check() did not mean.
+            reason = f"{lease_name} lease unavailable: another project holds it"
             if prior_held != reason:
                 tasks_mod.log(self.layout, "launch_held", "loop", task=rec["task_id"], attempt=rec["attempt_id"], reason=reason)
             return jobs_mod.set_phase(self.layout, rec["attempt_id"], "PREPARED", held=reason)
@@ -683,7 +732,7 @@ class Supervisor:
         meant to hold; a mismatch is folded into the same "a quarantine or restore error" case as an `OSError`,
         since a silently truncated copy or restore is exactly that kind of failure with no exception raised.
 
-        Which case gets which record (`CONTRIBUTOR_RULING.md` §5.2's Log row). A path that *was* reverted: one
+        Which case gets which record. A path that *was* reverted: one
         `residue_reverted` event carrying both of the snapshot's digests and the quarantine location, and its name
         in one note on the task — and no owner item, because an automatic repair that files an inbox item against
         itself is not a repair. A path left exactly as found: its own reason in that task's "not reverted" note and
@@ -766,7 +815,7 @@ class Supervisor:
             self._notify_residue_left(task_id, by_reason)
 
     def _notify_residue_left(self, task_id: str, by_reason: dict[str, list[str]]) -> None:
-        """`CONTRIBUTOR_RULING.md` §5.2's Limits row: a path left exactly as found needs an owner decision, because
+        """A path left exactly as found needs an owner decision, because
         the next attempt will otherwise fail on something it cannot fix. One deduped item per (task, this exact set
         of left paths) — not one per rejection, so a retry rejected again for the same untouched residue does not
         stack a second identical question (the login-required notice, `_notify_login_required`, is the same shape).
@@ -824,7 +873,7 @@ class Supervisor:
         return tuple(sorted(set(out)))
 
     def _notify_login_required(self, layout: Layout, engine: str | None, until: float, error: str) -> None:
-        """D-010's first category: a credential only the owner can renew. One deduped item per engine per login
+        """A credential only the owner can renew. One deduped item per engine per login
         window - not one per failed attempt, since mark_login_failed() moves `until` forward on every call and
         fingerprinting on it would stack one item per failure. Every branch of _lane_login_failed calls this
         alike (review / fallback reroute / no-fallback wait), so a role with a fallback configured no longer
@@ -849,12 +898,12 @@ class Supervisor:
             tasks_mod.log(layout, "inbox_full", "loop", reason="login_required", engine=engine)
 
     def _lane_login_failed(self, rec: dict, result: Result, kind: str) -> None:
-        """D-012 F-B Change 2: the lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
+        """The lane's own login failed (adapters' AUTH_FAILURE_RE, matched only against
         diagnostics - stderr, system/error events - never a model's ordinary answer, so a real failure or an
         answer that merely mentions a login never reaches here). Unavailable, not failed: mark the engine so
         every capacity.require() caller (review.lane_for, gate.check, scheduler.plan) treats it exactly like a
         measured usage window, then hand off with no attempt spent, and tell the owner a credential needs
-        renewing (D-010's first category) - once per engine per login window, whichever branch below is taken.
+        renewing - once per engine per login window, whichever branch below is taken.
         A review just closes: pending()/dispatch_reviews() redispatch it next tick and lane_for() resolves the
         fallback itself (or returns None, token-free, exactly as a capacity-deferred review already does with
         none). A delivery with a configured fallback reroutes to it with the fallback's own model/effort and the
@@ -902,6 +951,10 @@ class Supervisor:
         Either kind of substantive failure hands off to supervisor.escalation for the retry/issue decision."""
         task_id = rec["task_id"]
         kind = (rec.get("spec") or {}).get("kind", "delivery")
+        # `settle()` already wrote the "dying" prefix onto `result.error`
+        # once `collect()` found the process gone, so this is the one place `ingest()` can tell a claim's holder
+        # died from an ordinary finish, without a second liveness check of its own.
+        release_reason = "dead" if isinstance(result.error, str) and result.error.startswith("lost:") else None
         if kind == "conversation":
             # No Task backs a thread and no retry chain applies (supervisor.conversations.ingest handles COMPLETE/
             # DEFERRED/FAILED itself, straight into the thread file) — bypass the delivery/review machinery below.
@@ -918,7 +971,8 @@ class Supervisor:
             # already tried to retire it; reaching a result here means the race window between that write and this
             # one. Record the result on the job alone: no delivery, verification, review or diagnosis for a task
             # that is already done.
-            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+            jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                               error=result.error, release_reason=release_reason)
             tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                           error=result.error, terminal_task=True)
             return
@@ -942,7 +996,8 @@ class Supervisor:
                 # F1: the task file turned unreadable while this job ran (e.g. the job itself wrote a broken
                 # document before returning). Close the record with the result that did arrive, the same shape
                 # the terminal-task branch above already uses, rather than raising past once().
-                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
+                jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                                   error=result.error, release_reason=release_reason)
                 tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status,
                               error=result.error, task_unreadable=True)
                 return
@@ -952,7 +1007,12 @@ class Supervisor:
         if result.status == "DEFERRED":
             return self.requeue(rec, result, "capacity limit")
         timed_out = (result.raw or {}).get("timeout") if result.status == "FAILED" else None
-        if timed_out and rec.get("adapter") in gate.MODEL_LANES and kind != self.VERIFY_KIND:
+        # A `process`-lane hard-cap stop on a declared-resumable job
+        # (`adapters.process._time_out`'s own `raw["resumable"]`) is a continuation too, never a spent attempt --
+        # an idle stop on that lane stays a failure, so only `timed_out == "cap"` ever carries the flag at all.
+        resumable_cap = (timed_out == "cap" and bool((result.raw or {}).get("resumable"))
+                        and rec.get("adapter") not in gate.MODEL_LANES)
+        if timed_out and (rec.get("adapter") in gate.MODEL_LANES or resumable_cap) and kind != self.VERIFY_KIND:
             # 1.7.0: a session stopped by its time limit (supervisor.timeouts) was busy or stalled, not wrong — a
             # fresh session continues from its HANDOFF.md instead of spending a revision.
             return self.requeue(rec, result, "time limit (hard cap)" if timed_out == "cap" else "time limit (idle)")
@@ -971,7 +1031,7 @@ class Supervisor:
             # a worker may add deliverables, never narrow the list.
             patterns = list(dict.fromkeys(list(task.artifacts) + list(result.artifacts or [])))
             files, missing = self._expand_artifacts(patterns)
-            rendered = RENDERED_PROJECTIONS | verify_mod.excluded_files(self.layout)      # built-in and plugin views
+            rendered = verify_mod.excluded_files(self.layout)      # built-in and plugin views (R-28: one set, not two unioned)
             volatile = [f for f in files if tasks_mod.volatile_state(f) or f in rendered]
             if volatile:                                           # the store/projections change on every tick: never an
                 files = [f for f in files if f not in volatile]    # artifact, never a frozen review input
@@ -1015,7 +1075,8 @@ class Supervisor:
                 outcome = verify_mod.Outcome(False, head + (f"\n\nWorker report:\n{report}" if report else ""))
             self.record_outcome(task_id, dg, outcome, rec, substantive=result.status == "COMPLETE",
                                 worker_status=result.status, worker_raw=result.raw)
-        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso())
+        jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(),
+                           release_reason=release_reason)
         tasks_mod.log(self.layout, "job_done", "loop", task=task_id, attempt=rec["attempt_id"], result=result.status, error=result.error)
 
     def record_outcome(self, task_id: str, dg: str, outcome, rec: dict, substantive: bool, event: str | None = None,
@@ -1106,7 +1167,7 @@ class Supervisor:
                 f"sys.exit(main(['verify_job', {str(input_path)!r}]))")
         doc = task.model_dump(mode="json")
         doc["job"] = {"adapter": "process", "argv": [sys.executable, "-c", code],
-                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120}
+                      "timeout_s": verify_mod.limits(self.layout)["budget_s"] + 120, "result_kind": "verify"}
         view = Task.model_validate(doc)
         prior_verify = any(jobs_mod.kind_of(r) == "verify" and r.get("verify_delivery") == delivery_rec["attempt_id"]
                           for r in jobs_mod.for_task(self.layout, task.id))
@@ -1189,14 +1250,23 @@ class Supervisor:
         self._renew_gpu_lease_if_active()
         self._release_gpu_lease_if_idle()
 
+    def _active_lease_names(self) -> set[str]:
+        """Every machine-wide lease name one of this project's own open records currently takes
+        (`leases.lease_name_for`), from exactly the two fields dispatch wrote
+        onto each record (`gpu`, `claim`) — never a second derivation of the same two facts `gate.lease_blocked`'s
+        own peek already makes from `holds_resource`/`needs.claim_for`, so the peek and this sweep can never
+        disagree about which lease a job takes."""
+        return {name for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES
+               for name in [leases.lease_name_for(self.layout, bool(r.get("gpu")), r.get("claim"))] if name}
+
     def _renew_gpu_lease_if_active(self) -> None:
-        """Refresh this project's own entry in the machine-wide GPU lease (R4) each reconcile() for as long as
-        one of its own jobs still holds the resource slot, so a job that outlives `stale_after_s` (a render, a
-        local-model benchmark) is not pruned as abandoned while it is still running — the same walk over open
-        records that `_release_gpu_lease_if_idle()` makes right after decides whether to renew or to let go, so
-        the two can never disagree about whether this project is still active. A record that has left RUNNING
-        (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out of `open_records()` and is
-        never renewed, and — for the same reason — never re-taken below.
+        """Refresh this project's own entry in every machine-wide lease (R4) one of its own open records currently
+        takes, each `reconcile()`, for as long as that record still holds it — so a job that outlives
+        `stale_after_s` (a render, a local-model benchmark, a long claim) is not pruned as abandoned while it is
+        still running. The same set `_release_gpu_lease_if_idle()` computes right after decides whether to renew
+        or to let go for each name, so the two can never disagree about whether this project is still active. A
+        record that has left RUNNING (settled into SUBMITTED only transiently, or gone to DONE/FAILED) drops out
+        of `open_records()` and is never renewed, and — for the same reason — never re-taken below.
 
         F19: the entry `launch()` wrote names the pid of the process that called `submit()`; a loop that
         restarts while that job is still RUNNING (`supervisor stop`/start, a crash, a runtime move) is a new
@@ -1212,21 +1282,26 @@ class Supervisor:
         documents. A refusal means another project's own entry is already live there — the job already lost
         the cards to someone else — and is logged with whatever holder the peek finds rather than passed over
         in silence; the job record itself is not touched either way, so a refusal never wedges it."""
-        if not any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
-            return
-        lease = leases.resource_lease(self.layout, "gpu")
-        if lease.renew():
-            return
-        if not leases._reclaim(self.layout, "gpu"):
-            tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop",
-                          holder=leases.holder_label(self.layout, "gpu"))
+        for name in self._active_lease_names():
+            lease = leases.resource_lease(self.layout, name)
+            if lease.renew():
+                continue
+            if not leases._reclaim(self.layout, name):
+                tasks_mod.log(self.layout, "gpu_lease_retake_refused", "loop", lease=name,
+                              holder=leases.holder_label(self.layout, name))
 
     def _release_gpu_lease_if_idle(self) -> None:
-        """Let go of the machine-wide GPU lease (R4) the moment none of this project's own jobs still holds the
-        resource slot, so a quiet project never keeps another one waiting longer than its own last job's work."""
-        if any(r.get("gpu") for r in jobs_mod.open_records(self.layout) if r["phase"] in gate.ACTIVE_PHASES):
-            return
-        leases.resource_lease(self.layout, "gpu").release()
+        """Let go of every machine-wide lease name none of this project's own open records takes any more (the
+        `gpu` slot's own literal lease, and any claim's own configured one): a quiet project never keeps another
+        one waiting longer than its own last job's work. Every declared resource name is tried (`release()` is a
+        no-op when unconfigured or not held, the same bargain the single `"gpu"` release already made), not only
+        the ones a record of this turn happens to carry, so a name a crash dropped from `open_records()` without
+        ever reaching `collect()` is still released."""
+        from . import needs as needs_mod
+        active = self._active_lease_names()
+        for name in {"gpu"} | set(needs_mod.resources_declared(self.layout)):
+            if name not in active:
+                leases.resource_lease(self.layout, name).release()
 
     def dispatch_reviews(self) -> None:
         """Review dispatch: one review job per (WAITING_FOR_REVIEW task, missing reviewer role) under
@@ -1440,6 +1515,46 @@ class Supervisor:
 
     # ------------------------------------------------------------ nothing stops silently
 
+    def resume_plans(self) -> list[str]:
+        """Every plan still `applying` (a crash, or an operation that stalled and
+        has not yet exhausted `plan.max_resumes`) is continued from its own journal. A `stuck` plan is left alone
+        here — only the owner's apply_plan/cancel_plan choice decides what happens to it next."""
+        return plans_mod.resume_plans(self.layout)
+
+    def preflight_backfill(self) -> list[str]:
+        """The preflight's own one-time sweep: the first turns after an
+        upgrade preflight every existing `process`/`python` job block that predates the check -- oldest task
+        first, a bounded number per turn (`preflight.BACKFILL_BATCH`) -- and record the sweep's own completion
+        once nothing is left pending (`preflight.mark_backfill_complete`), so the gate's run-on-absent rule
+        (`gate.preflight_reason`) is a bounded migration window rather than a permanent one, and no store stops
+        on upgrade day with no `supervisor migrate` step to run. A block that fails gets no retry loop here,
+        only one deduped owner item (`preflight.report_backfill_failure`); the block itself is never touched
+        again -- this fills an absence, it does not retry a failure. A task already in `TERMINAL` (`COMPLETE`
+        has no route back to launching at all; `CANCELLED` is swept the same as any other so it is never
+        locked out if it later returns to `NOT_STARTED`) still gets its result stored, just no owner item: one
+        nobody can act on now is noise, not a finding. The count this records at completion is the sweep's own
+        running total across every turn, not just this one's batch. Returns the task ids this turn wrote a
+        preflight for."""
+        if preflight_mod.backfill_complete(self.layout):
+            return []
+        pending = preflight_mod.pending_backfill(tasks_mod.load_all(self.layout))
+        if not pending:
+            preflight_mod.mark_backfill_complete(self.layout, swept=preflight_mod.backfill_progress(self.layout))
+            return []
+        batch = pending[:preflight_mod.BACKFILL_BATCH]
+        acted = []
+        for task in batch:
+            pf = tasks_mod.backfill_job_preflight(self.layout, task.id)
+            if pf is None:
+                continue
+            acted.append(task.id)
+            if not pf.ok and task.status not in TERMINAL:
+                preflight_mod.report_backfill_failure(self.layout, task, pf)
+        total = preflight_mod.record_backfill_progress(self.layout, swept_this_turn=len(acted))
+        if len(batch) == len(pending):
+            preflight_mod.mark_backfill_complete(self.layout, swept=total)
+        return acted
+
     STALL_GRACE_S = 600
 
     def _stall_grace(self) -> float:
@@ -1544,32 +1659,34 @@ class Supervisor:
             tasks_mod.log(self.layout, "state_commit_error", "state_commit", error=str(exc)[:300])
             return None
 
-    IDLE_WAIT_REASON = {
-        TaskStatus.NOT_STARTED: "waiting on a phase gate or an unfinished dependency",
-        TaskStatus.READY: "eligible, but nothing has dispatched it",
-        TaskStatus.IN_PROGRESS: "in progress, with nothing currently running for it",
-        TaskStatus.WAITING_FOR_REVIEW: "waiting for a review to be dispatched",
-        TaskStatus.WAITING_FOR_HUMAN: "waiting on your approval",
-        TaskStatus.BLOCKED: "blocked, waiting on a decision",
-        TaskStatus.FAILED: "failed, waiting on a decision",
-    }
-
     def alert_if_idle(self, now: float | None = None) -> dict | None:
         """The whole pipeline stopped: nothing running or queued, nothing eligible, nothing waiting on the owner, yet
         work remains. One owner item per distinct stuck set (fingerprint), raised after twice the stall grace so the
         per-task sweep gets its chance first. It lists every non-terminal task that is not an owner hold (R-17: the
         pre-1.7.0 version counted only FAILED/BLOCKED/WAITING_FOR_HUMAN, so an IN_PROGRESS or WAITING_FOR_REVIEW task
         with nothing actually running for it never appeared; and a task the owner is deliberately holding is the
-        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list).
-        The item carries no ACCEPT/REJECT/MODIFY/REDO buttons: none of them does anything for "nothing can run"."""
+        owner's own call, not the pipeline's problem, so it is excluded from both the idle test and the list). A
+        paused, draining or stopped loop is excluded the same way (`why_not_runnable.decision_blocked`): the owner
+        put it there, so this never fires while it holds, rather than raising with every task's reason wrongly
+        computed as if the loop's decision were still RUN.
+
+        The reason named for each task is `why_not_runnable`'s own
+        — a computed sentence from the closed nine-code set, the same one the Overview and the task page read,
+        never a quoted note an agent wrote about something else. The item's own buttons are the choices that
+        reason admits (`why_not_runnable.choices_for`), never the four legacy keywords: none of ACCEPT/REJECT/
+        MODIFY/REDO does anything for "nothing can run"."""
         now = time.time() if now is None else now
         path = self.layout.runtime / "idle_alert.json"
         state = read_json(path) if path.exists() else {}
         tasks = tasks_mod.load_all(self.layout)
         remaining = [t for t in tasks.values() if t.status not in TERMINAL]
         waiting = [t for t in remaining if not t.held]
+        # A paused, draining or stopped loop is the owner's own call, exactly as a held task is (R-17's own
+        # precedent): never raised as "idle" while it holds, so no task is ever classified by why_not_runnable
+        # while gate.check's own decision != RUN refusal would apply identically to every one of them.
         idle = (not jobs_mod.open_records(self.layout) and not tasks_mod.eligible(self.layout, tasks)
-                and not inbox_mod.open_items(self.layout, "owner") and waiting)
+                and not inbox_mod.open_items(self.layout, "owner") and waiting
+                and why_not_runnable_mod.decision_blocked(self.layout) is None)
         if not idle:
             if state.get("idle_since"):
                 atomic_json(path, {k: v for k, v in state.items() if k != "idle_since"})
@@ -1584,13 +1701,13 @@ class Supervisor:
         fingerprint = "|".join(f"{t.id}:{t.status.value}:{t.updated}" for t in stuck) or "deps-or-gates"
         if state.get("fingerprint") == fingerprint:
             return None
-        lines = []
+        lines, choices = [], []
         for t in stuck[:8]:
-            notes = (t.model_extra or {}).get("notes") or []
-            last = (notes[-1].get("note") if notes else "") or next(
-                (h.get("note") for h in reversed(t.history or []) if h.get("to") == t.status.value), "")
-            reason = str(last) or self.IDLE_WAIT_REASON.get(t.status, "waiting")
-            lines.append(f"{t.id} {t.status.value}: {reason[:220]}")
+            why = why_not_runnable_mod.why_not_runnable(t, tasks, self.layout)
+            # Never cut short here: `inbox.fit` bounds the whole item below, so a long reason still reaches the
+            # alert byte-identical to the Overview and the task page (a per-line cut here would not).
+            lines.append(f"{t.id} {t.status.value}: {why_not_runnable_mod.render_reason(why)}")
+            choices += [{**c, "id": f"{t.id}.{c['id']}"} for c in why_not_runnable_mod.choices_for(t, why)]
         held_ct = len(remaining) - len(waiting)
         held_note = f" ({held_ct} held by you, not listed)" if held_ct else ""
         summary, detail = inbox_mod.fit(
@@ -1599,7 +1716,8 @@ class Supervisor:
         try:
             item = inbox_mod.create(self.layout, for_role="owner", subject="Pipeline idle — nothing can run",
                                     summary=summary, detail=detail, kind="question", from_="loop",
-                                    allowed_responses=[], extra={"idle_fingerprint": fingerprint})
+                                    allowed_responses=[], choices=choices or None,
+                                    extra={"idle_fingerprint": fingerprint})
         except inbox_mod.InboxFull:
             return None
         state.update(fingerprint=fingerprint, item=item["id"], raised=now_iso())
@@ -1722,6 +1840,8 @@ class Supervisor:
                 self.settle()                                             # synchronous adapters finish at once
                 self.request_approvals()
                 self.request_owner_decisions()
+                self.resume_plans()                                       # a crashed or stalled plan finishes here
+                self.preflight_backfill()                                 # the preflight's own one-time sweep
                 self.sweep_stalled()                                      # nothing stops silently
                 self.alert_if_idle()
                 done = checkpoint_mod.run(self.layout)                    # accepted work → git, exactly as accepted

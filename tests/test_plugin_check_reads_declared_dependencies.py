@@ -58,7 +58,7 @@ def project(tmp_path):
 
 @pytest.mark.parametrize("loaded_first", [False, True], ids=["unloaded-project", "loaded-project"])
 def test_g5_runs_setup_with_its_dependencies_configuration(tmp_path, loaded_first):
-    """Astra's probe, with the dependency's resources too."""
+    """The reviewer's probe, with the dependency's resources too."""
     layout = project(tmp_path)
     if loaded_first:
         assert plugins.load(layout).loaded == ["dep", "client"]

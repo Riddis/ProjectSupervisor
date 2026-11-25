@@ -126,7 +126,7 @@ def test_missing_json_triggers_one_followup(layout):
 
 
 def test_auth_failure_is_unavailable_not_failed(layout):
-    """A lapsed login is unavailable, not a failed attempt (D-012 F-B Change 2): no fallback is configured for
+    """A lapsed login is unavailable, not a failed attempt: no fallback is configured for
     engineer here, so it waits token-free on the same lane exactly like a reported usage limit - never FAILED,
     never spending a revision."""
     ctask(layout, mode="auth")

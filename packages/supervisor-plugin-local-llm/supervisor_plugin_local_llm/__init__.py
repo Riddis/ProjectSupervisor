@@ -3,7 +3,8 @@
 A vision/text model served by Ollama, asked for schema-valid JSON (`format: <json schema>` on `/api/generate`).
 The HTTP call runs in a short-lived child process (`_worker.py`) so slow inference never blocks the supervisor
 loop - same pid/create_time handle and result.json contract as every other `process`-family adapter. GPU-locked
-(`gpu = True`): only one GPU-bound lane runs at a time (`resources.gpu.single_job`).
+(`gpu = True`): only one GPU-bound lane runs at a time, serialised by `limits.max_resource_jobs` against the job
+record's own `gpu` flag (routing.yaml's `resources.<name>.single_job` is not read).
 
 Ported from a project-local extension of the same shape (boundary plan phase 5, step 4: the model store's drive
 is an optional `models_store_drive` key, never assumed to be a particular drive, and there is no default model -

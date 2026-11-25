@@ -33,8 +33,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import yaml
-
+from . import routing_config
 from ._vendor.contract import atomic_json, read_json
 from .locks import FileLock
 from .paths import Layout
@@ -74,10 +73,7 @@ class LeaseConfig:
 def _lease_config(layout: Layout, name: str) -> LeaseConfig | None:
     """`resources.<name>.lease` read straight from `config/routing.yaml` (never through the plugin config facade:
     core callers — `supervisor.gate`, `supervisor.doctor` — are not a plugin's own code)."""
-    cfg_path = layout.config / "routing.yaml"
-    if not cfg_path.exists():
-        return None
-    doc = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    doc = routing_config.load(layout)
     resources = doc.get("resources") if isinstance(doc, dict) else None
     section = (resources or {}).get(name) if isinstance(resources, dict) else None
     lease = (section or {}).get("lease") if isinstance(section, dict) else None
@@ -330,6 +326,26 @@ def _record_waiting_from_peek(layout: Layout, name: str) -> None:
             doc["release_requested_at"] = now
         doc["release_requested_renewed"] = now
         atomic_json(cfg.path, doc)
+
+
+def lease_name_for(layout: Layout, holds_slot: bool, claim: str | None) -> str | None:
+    """Which machine-wide lease, if any, a job carrying these two facts takes:
+    a claim whose own `resources.<name>.lease` is configured names it; otherwise a slot holder (the `gpu` flag)
+    keeps the literal `"gpu"`, exactly as before this release -- including one that also carries a claim with no
+    `lease:` block, so adding a within-project claim to a GPU-flagged job never silently drops its cross-project
+    GPU hold; otherwise there is no machine-wide lease at all. The three cases are disjoint and total, and a
+    record holds at most one lease by construction (an `elif`, never an `and`).
+
+    A pure function of these two facts, never of a job record: `gate.lease_blocked`'s own peek runs at plan time,
+    before a record exists (`scheduler.plan` -> `gate.check` -> `gate.lease_blocked`), composing them the same way
+    the loop's own acquire/renew/reclaim/release sweeps do from a record's `gpu`/`claim` fields -- dispatch writes
+    both from exactly the same two calls (`gate.holds_resource`, `needs.claim_for`) this function's two callers
+    use, so the peek and the sweeps can never disagree about which lease a job takes."""
+    if claim and _lease_config(layout, claim) is not None:
+        return claim
+    if holds_slot:
+        return "gpu"
+    return None
 
 
 def resource_lease(layout: Layout, name: str) -> ResourceLease:

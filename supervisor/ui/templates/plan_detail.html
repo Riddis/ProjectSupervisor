@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Plan {{ plan.id }} — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Plan {{ plan.id }} <span class="badge">{{ plan.status }}</span></h2>
+  <p>Subject: {% if plan.subject %}<a href="/tasks/{{ plan.subject.task }}">{{ plan.subject.task }}</a>{% endif %}</p>
+  <p>{{ plan.reason }}</p>
+  {% if plan.status == 'stuck' and plan.owner_item %}
+  <p class="muted">Stuck — see <a href="/inbox">owner item {{ plan.owner_item }}</a>. Resume with
+    <code>supervisor plan apply {{ plan.id }}</code>, or abandon what has not applied with
+    <code>supervisor plan cancel {{ plan.id }}</code>.</p>
+  {% endif %}
+</section>
+<section class="panel">
+  <h3>Operations (the applier's own fixed order — never the plan's)</h3>
+  <table class="tasks-table">
+    <thead><tr><th>#</th><th>Operation</th><th>Applied</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.index }}</td>
+      <td>{{ r.op }}</td>
+      <td>{{ 'yes' if r.done else '—' }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% if plan.last_error %}
+<section class="panel">
+  <h3>Last failure</h3>
+  <p>operation {{ plan.last_error.op_index }} ({{ plan.last_error.op }}): {{ plan.last_error.message }}</p>
+</section>
+{% endif %}
+<section class="panel">
+  <h3>History</h3>
+  <table class="tasks-table">
+    <thead><tr><th>At</th><th>By</th><th>From</th><th>To</th></tr></thead>
+    <tbody>
+    {% for h in (plan.history or []) %}
+    <tr><td>{{ h.at }}</td><td>{{ h.by }}</td><td>{{ h.from or '—' }}</td><td>{{ h.to }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

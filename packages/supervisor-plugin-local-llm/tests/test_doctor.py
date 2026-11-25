@@ -52,7 +52,7 @@ def test_settings_default_to_no_model_and_no_drive():
 
 
 def test_models_dir_is_declared_in_settings_with_the_root_relative_default(layout):
-    """F6 (RELEASE_REVIEW_packages_1.0.0.md): __init__.py filled models_dir in with cfg.setdefault() alone, so
+    """__init__.py filled models_dir in with cfg.setdefault() alone, so
     Settings - the one place a reader checks for every key this package fills in - did not list it. Declaring the
     field changes nothing a project sees: unset, local_llm_config() still resolves it to the same root-relative
     path under the project root."""

@@ -5,6 +5,7 @@ import time
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from ... import gate as gate_mod
 from ... import jobs as jobs_mod
 from ... import progress as progress_mod
 from ... import tasks as tasks_mod
@@ -83,7 +84,9 @@ def agent_detail(attempt_id: str, request: Request, layout: Layout = Depends(req
         task = tasks_mod.load(layout, rec["task_id"])
     except tasks_mod.TaskError:
         pass
-    return render(request, "agent_detail.html", {"rec": rec, "task": task, "flash": decode_flash(request)})
+    extend_offers = timeouts_mod.extend_offers(gate_mod.routing_doc(layout))
+    return render(request, "agent_detail.html",
+                 {"rec": rec, "task": task, "extend_offers": extend_offers, "flash": decode_flash(request)})
 
 
 @router.get("/agents/{attempt_id}/stream")
@@ -106,10 +109,13 @@ def terminate(attempt_id: str, request: Request, csrf_token: str = Form(...), la
 
 
 @router.post("/agents/{attempt_id}/extend")
-def extend(attempt_id: str, request: Request, csrf_token: str = Form(...), layout: Layout = Depends(require_auth)):
-    """Raise a running job's hard cap by one hour (supervisor.timeouts.EXTEND_STEP_S); the idle limit still applies."""
+def extend(attempt_id: str, request: Request, csrf_token: str = Form(...),
+          seconds: int = Form(timeouts_mod.EXTEND_STEP_S), layout: Layout = Depends(require_auth)):
+    """Raise a running job's hard cap by one of the project's declared `timeouts.extend_offers` durations
+    (default today's single +1h, supervisor.timeouts.EXTEND_STEP_S); the idle limit still applies, and the answer
+    states the resulting deadline."""
     require_csrf(request, csrf_token)
-    return act(request, layout, "agent.extend", {"attempt_id": attempt_id}, f"/agents/{attempt_id}")
+    return act(request, layout, "agent.extend", {"attempt_id": attempt_id, "seconds": seconds}, f"/agents/{attempt_id}")
 
 
 @router.post("/agents/{attempt_id}/note")

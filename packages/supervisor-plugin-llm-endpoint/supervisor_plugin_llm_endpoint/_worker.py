@@ -27,8 +27,8 @@ def _touch(path_str: str | None) -> None:
 
 
 def _contained(path: Path, root: Path) -> bool:
-    """Whether `path` resolves inside `root` (D-013 section 2.1: "the worker writes only inside the run
-    directory and output_file"). Deliberately conservative: a symlink that resolves outside is not contained."""
+    """Whether `path` resolves inside `root`: the worker writes only inside the run
+    directory and output_file. Deliberately conservative: a symlink that resolves outside is not contained."""
     try:
         resolved, root = path.resolve(), root.resolve()
     except OSError:
@@ -78,7 +78,7 @@ def main(request_path: str, result_path: str) -> int:
         payload = {"model": req.get("model"), "messages": [{"role": "user", "content": req.get("prompt", "")}],
                    "max_tokens": req.get("max_tokens"), "stream": True}
         if req.get("schema"):
-            # F11 (RELEASE_REVIEW_local-lane.md): llama-server and Ollama tolerate a nameless json_schema;
+            # llama-server and Ollama tolerate a nameless json_schema;
             # the OpenAI shape vLLM and OpenAI-shaped servers require it to validate the request at all.
             payload["response_format"] = {"type": "json_schema",
                                           "json_schema": {"name": "answer", "schema": req["schema"]}}

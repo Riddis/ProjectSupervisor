@@ -4,6 +4,19 @@ Projects install the framework **editable** from a local clone (`pip install -e 
 commit is live in every project on that machine the next time a process starts. That is the point — one fix, every
 project — and it is also why the framework carries a version and migrations.
 
+## Supported upgrade floor
+
+`supervisor migrate` is never floor-gated: the migration transforms (`supervisor/migrations.py`'s `MIGRATIONS`
+list) are kept forever, and a project recording any older `framework_version` still reaches this release in the
+same one `supervisor migrate` call as any other version mismatch. The floor is about what runs *before* that call:
+below framework **2.0.0** the runtime no longer carries a compatibility fallback for a shape a migration already
+rewrites (the 2.9.0 dead-code closure), so `supervisor doctor` and the Control Center's Start action name the
+floor and tell the owner to run `supervisor migrate` now, rather than giving the ordinary one-line mismatch note.
+2.0.0 is where this floor sits because it was this framework's own "a later major release reads only the new
+names" release (the plugin rename, `CHANGELOG.md`'s `## 2.0.0` entry): every runtime fallback the review found
+still carrying an older shape promised exactly that cutover, so once a project has migrated past 2.0.0 none of
+them has anything left to do.
+
 ## As a project owner
 
 You normally do nothing by hand. When the Control Center launches (`start_control_center.bat`) it fetches the

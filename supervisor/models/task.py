@@ -67,9 +67,9 @@ class CostCategory(str, Enum):
 
 
 class Attempt(BaseModel):
-    """ATTEMPT_MODEL.md §4.6 (step 15): `id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
-    first three, and the fourth was never written either; a reader now takes the model from the job record
-    (§2.7), never from this document. `at` is gone too, renamed to `opened` (closed sits beside it, §2.3's
+    """`id`, `model`, `session_id` and `extra` are gone — nothing ever wrote the
+    first three, and the fourth was never written either; a reader now takes the model from the job record,
+    never from this document. `at` is gone too, renamed to `opened` (closed sits beside it,
     delivery-attempt shape). `model_config` stays `extra: allow` so a document written before this release —
     whose `attempts[]` entries still carry `id`/`at`/`model`/`session_id`/`extra` on disk — still loads; those
     bytes are tolerated, never read back through a declared field."""
@@ -125,6 +125,11 @@ class ReviewRecord(BaseModel):
                                                                      # itself so a later review pass can read them
                                                                      # without ever reaching into a run directory
     superseded: bool = False
+    superseded_contract_rev: Optional[int] = None   # set only when a judged-field change (tasks._bump_contract_rev)
+                                                      # superseded this record, not a later delivery digest: the
+                                                      # `contract_rev` the task moved to when it did
+    superseded_fields: list[str] = Field(default_factory=list)   # the judged fields that changed, naming what a
+                                                                    # reader (packets.prior_round_block) should say
 
 
 class ApprovalRecord(BaseModel):
@@ -135,6 +140,8 @@ class ApprovalRecord(BaseModel):
     note: str = ""
     command_id: Optional[str] = None
     superseded: bool = False
+    superseded_contract_rev: Optional[int] = None   # see ReviewRecord.superseded_contract_rev
+    superseded_fields: list[str] = Field(default_factory=list)
 
 
 class Delivery(BaseModel):
@@ -148,6 +155,41 @@ class Delivery(BaseModel):
 EXCLUSIVE = "."          # owned_paths: ["."] — "may touch anything, so nothing else may write meanwhile"
 
 
+class Needs(BaseModel):
+    """What a task's delivery requires: a closed four-key
+    vocabulary, every key optional, the whole block optional. An absent block is exactly pre-2.9.0 behaviour on
+    every path -- the migration rule this model exists to hold. An unknown key, or a value of the wrong type, is
+    refused at validation (RF-27) rather than silently ignored, since the vocabulary is framework-known and
+    versioned."""
+    duration_min: Optional[int] = None    # the work's expected wall-clock minutes
+    network: Optional[bool] = None        # the work must reach a service outside this machine
+    resource: Optional[str] = None        # one declared resource this work claims while it runs
+    resumable: Optional[bool] = None      # a stop may be resumed from the work's own on-disk state
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("duration_min", mode="before")
+    @classmethod
+    def _duration_min(cls, v):
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int) or v <= 0):
+            raise ValueError("needs.duration_min must be a positive int")
+        return v
+
+    @field_validator("network", "resumable", mode="before")
+    @classmethod
+    def _bool_key(cls, v):
+        if v is not None and not isinstance(v, bool):
+            raise ValueError("must be a bool")
+        return v
+
+    @field_validator("resource", mode="before")
+    @classmethod
+    def _resource(cls, v):
+        if v is not None and (not isinstance(v, str) or not v):
+            raise ValueError("needs.resource must be a non-empty string")
+        return v
+
+
 class Check(BaseModel):
     """An executable acceptance check fixed by the task contract. Verification always re-runs every
     check; a worker's reported `tests` are additional evidence and can never replace these."""
@@ -156,6 +198,47 @@ class Check(BaseModel):
     cwd: Optional[str] = None            # G2, 2.4.0: one of the task's own `test_roots`, or the project root
 
     model_config = {"extra": "forbid"}
+
+
+class JobPreflight(BaseModel):
+    """`supervisor.preflight`'s own record of one write-time check: `ok` is the
+    one `supervisor.gate` reads; `detail['block_digest']` is the job block's own content, `preflight` excluded,
+    the moment this result was recorded -- a mismatch against the block now on disk means it changed since, and
+    the gate refuses exactly as it would an absent or failed one."""
+    ok: bool
+    at: str
+    template: Optional[str] = None
+    probe_digest: Optional[str] = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+class Job(BaseModel):
+    """What a lane's `prepare()` reads: the framework-known keys, typed — a wrong
+    type is refused the moment a document carrying it is validated. An adapter's own keys beyond these (a
+    plugin lane's `workflow`, `base_url`, ...) are not declared here, since this model does not know which
+    adapter it belongs to; they are kept (`extra: allow`) and checked separately, against whatever schema the
+    adapter declared through `registry.job_schema()` (`tasks.job_schema_problems`) — refused for a declared
+    schema's unknown key, only ever warned for one with no schema at all, so a plugin from before this release
+    keeps working unchanged."""
+    adapter: Optional[str] = None
+    template: Optional[str] = None                             # a plan's own writer: a reference, never a command
+    params: dict[str, Any] = Field(default_factory=dict)
+    argv: Optional[list[str]] = None                            # the owner's own writer only
+    fn: Optional[str] = None
+    timeout_s: Optional[int] = None
+    idle_timeout_s: Optional[int] = None
+    retry_on: list[int] = Field(default_factory=list)          # exit codes worth one retry (loop.py's own check)
+    stdin_file: Optional[str] = None
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    prompt: Optional[str] = None
+    result_kind: Optional[str] = None
+    preflight: Optional[JobPreflight] = None                   # written at the
+                                                                 # same time as the rest of the block, never by hand
+
+    model_config = {"extra": "allow"}
 
 
 class Task(BaseModel):
@@ -193,8 +276,10 @@ class Task(BaseModel):
                                                                  # owner's own later status change (round-4 F9) -
                                                                  # never inferred from status, history order or an
                                                                  # escalation event's `routed` flag
+    needs: Optional[Needs] = None                               # a closed, framework-known declaration
+    job: Optional[Job] = None                                   # typed, under a writer rule
     result: Optional[str] = None
-    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15, ATTEMPT_MODEL.md 4.3 point 3:
+    findings_response: list[dict[str, Any]] = Field(default_factory=list)   # R-15:
                                                                                # the producer's own optional, per-
                                                                                # finding reply {id, status, note?} to
                                                                                # the previous round's own findings —
@@ -208,6 +293,13 @@ class Task(BaseModel):
     created: Optional[str] = None
     updated: Optional[str] = None
     rev: int = 0
+    contract_rev: int = 1               # distinct from `rev`, which
+                                          # `store.update` bumps on every write (a status change, an attempt entry,
+                                          # a note); this moves only when `tasks._bump_contract_rev` sees a
+                                          # CONTRACT_FIELDS value actually change — "did the brief move", not
+                                          # "did this document move". The job record and the delivery brief state
+                                          # the generation they were built from; a review recorded against an
+                                          # older one is superseded once a judged-set field changes under it.
 
     model_config = {"extra": "allow", "use_enum_values": False}
 

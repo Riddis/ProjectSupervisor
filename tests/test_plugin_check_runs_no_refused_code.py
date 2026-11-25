@@ -39,7 +39,7 @@ def siblings(tmp_path, marker):
 
 
 def test_g5_of_an_accepted_plugin_does_not_run_a_refused_sibling(tmp_path):
-    """Astra's probe A, the indirect import: neither process runs `bad`."""
+    """The reviewer's probe A, the indirect import: neither process runs `bad`."""
     marker = tmp_path / "refused-ran"
     found = {f.name: f for f in plugin_check.run(siblings(tmp_path, marker), "good")}
     assert not marker.exists()
@@ -48,7 +48,7 @@ def test_g5_of_an_accepted_plugin_does_not_run_a_refused_sibling(tmp_path):
 
 
 def test_g5_of_a_refused_plugin_runs_none_of_its_code(tmp_path):
-    """Astra's probe A, the direct check: the range failure is reported without importing it anywhere."""
+    """The reviewer's probe A, the direct check: the range failure is reported without importing it anywhere."""
     marker = tmp_path / "refused-ran"
     found = {f.name: f for f in plugin_check.run(siblings(tmp_path, marker), "bad")}
     assert not marker.exists()
@@ -88,8 +88,8 @@ def installed_client(tmp_path, monkeypatch):
 
 
 def test_g5_refuses_a_module_already_imported_for_another_project(tmp_path, monkeypatch):
-    """Astra's probe B: `client` loaded in project B, which lists `dep`, is refused in project A, which does not.
-    G5 in A must not set the cached module up."""
+    """The reviewer's probe B: `client` loaded in project B, which lists `dep`, is refused in project A, which
+    does not. G5 in A must not set the cached module up."""
     installed_client(tmp_path, monkeypatch)
     b = testing.project(tmp_path / "b", plugins=["dep", "client"], modules={"dep": "def setup(r):\n    pass\n"},
                         files={"plugins/dep.toml": manifest("dep")})

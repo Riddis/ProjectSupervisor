@@ -15,10 +15,13 @@ failed attempt.
 Resolution, later wins: `DEFAULTS` -> routing.yaml `timeouts` -> `timeouts.by_cost.<cost_category>` -> the role's
 `timeouts` -> the task's `job` (`timeout_s` = hard cap, `idle_timeout_s` = idle limit). `idle_s: 0` (or null)
 switches the idle limit off. Non-model process jobs (verification, scripts) keep `job.timeout_s` (default 3600) as
-their cap and get an idle limit only when the job sets `idle_timeout_s`.
+their cap and get an idle limit only when the job sets `idle_timeout_s`. A project that wants an upper bound on what
+such a job may declare for itself sets one explicitly, per lane, in routing.yaml `timeouts.lane_caps` (`lane_cap()`,
+read by the write-time preflight); nothing bounds it by default.
 """
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 
@@ -28,7 +31,10 @@ from ._vendor.contract import atomic_json, read_json
 
 DEFAULTS = {"idle_s": 1200, "hard_cap_s": 21600, "idle_cpu_s": 5.0}
 PROCESS_CAP_S = 3600            # non-model process jobs: unchanged default cap
-EXTEND_STEP_S = 3600            # one click on Extend
+EXTEND_STEP_S = 3600            # one click on Extend, when a project configures no timeouts.extend_offers
+MAX_HARD_CAP_S = 86400          # timeouts.max_hard_cap_s default
+NEEDS_HEADROOM = 1.25           # timeouts.needs_headroom default: the derived-cap multiplier over a declared duration
+EXTEND_DEDUPE_S = 10            # timeouts.extend_dedupe_s default: a second same-duration Extend inside this window is a no-op
 HANDOFF_WARN_S = 600            # ask a model session to write its handoff this long before the hard cap
 ACTIVITY_FILE = "activity.json"
 OUTPUT_FILES = ("stdout.jsonl", "stderr.txt")
@@ -46,29 +52,159 @@ def _num(value, default):
 def _merge(out: dict, block) -> None:
     if not isinstance(block, dict):
         return
-    for key in ("idle_s", "hard_cap_s", "idle_cpu_s"):
+    for key in ("idle_s", "hard_cap_s", "idle_cpu_s", "max_hard_cap_s"):
         if key in block:
             out[key] = block[key]
 
 
-def resolve(routing_cfg: dict, cost_category: str | None = None, role_prof: dict | None = None,
-            job: dict | None = None) -> dict:
-    """The limits for one model-lane job: {"idle_s": int | None, "hard_cap_s": int, "idle_cpu_s": float}."""
-    out = dict(DEFAULTS)
+def needs_headroom(routing_cfg: dict) -> float:
+    """`timeouts.needs_headroom`: the multiplier a declared `duration_min`
+    is derived into a budget through, default 1.25 -- project-wide, not merged per cost category or role."""
+    cfg = (routing_cfg or {}).get("timeouts") or {}
+    return max(1.0, _num(cfg.get("needs_headroom"), NEEDS_HEADROOM))
+
+
+def ceiling_s(routing_cfg: dict, cost_category: str | None = None, role_prof: dict | None = None,
+             capabilities: dict | None = None) -> int:
+    """The one composed ceiling: the minimum of the
+    resolved `timeouts.max_hard_cap_s` (the same per-cost, per-role `_merge` chain as every other timeout key,
+    default `MAX_HARD_CAP_S`) and the lane's declared `max_duration_min * 60`, where the lane declares one. A
+    lane declaring a *higher* number than the project's neither refuses nor grants: the minimum always picks the
+    project's. Read by RF-28, the derived-cap clamp inside `resolve()`, RF-32 (`agent.extend`) and RF-08's
+    `process`-row cap comparison (`preflight._timeout_checks`) -- four readers, one number, each composing its
+    arguments through `ceiling_inputs` (the clamp through the `prepare` that calls `resolve`)."""
+    out: dict = {"max_hard_cap_s": MAX_HARD_CAP_S}
     cfg = (routing_cfg or {}).get("timeouts") or {}
     _merge(out, cfg)
     if cost_category:
         _merge(out, (cfg.get("by_cost") or {}).get(str(cost_category)))
     _merge(out, (role_prof or {}).get("timeouts"))
+    resolved = max(60, int(_num(out.get("max_hard_cap_s"), MAX_HARD_CAP_S)))
+    lane_max_min = (capabilities or {}).get("max_duration_min")
+    if lane_max_min is not None:
+        try:
+            resolved = min(resolved, max(60, int(lane_max_min) * 60))
+        except (TypeError, ValueError):
+            pass
+    return resolved
+
+
+def ceiling_inputs(layout, task, adapter: str | None, job: dict | None = None) -> tuple:
+    """`(cost_category, role_prof, capabilities)` -- the three arguments `ceiling_s` takes for one task on one
+    lane, composed in exactly one place. "The ceiling is one number" holds only if every reader composes it the
+    same way: a project that sets `timeouts.by_cost.<cat>.max_hard_cap_s` or a role's own
+    would otherwise have the write-time refusal (RF-28, RF-08's row) read one number and the clamp inside
+    `resolve()` another, and nothing would fail when they disagree -- a declaration admitted at the write and cut
+    at launch with declared work left, which is the recorded cap-kill arriving through configuration.
+
+    The role is the one the job would run under (`job.role`, else the task's own owner role), resolved through
+    the same `role_profile` every `prepare` uses. With no task (a plan's `set_job` on a task it is creating, a
+    block preflighted on its own) there is nothing to resolve a cost category or a role from, and the lane's
+    capability mapping is the whole of it."""
+    from . import capabilities as capabilities_mod
+    from .adapters.claude_cli import cost_category, role_profile
+    caps = capabilities_mod.for_lane(layout, adapter)
+    if task is None:
+        return None, None, caps
+    if job is None:
+        stored = getattr(task, "job", None)
+        job = stored.model_dump(exclude_none=True, exclude_unset=True) if stored is not None else {}
+    role = (job or {}).get("role") or getattr(task, "owner_role", None)
+    return cost_category(task), (role_profile(layout, str(role)) if role else None), caps
+
+
+def ceiling_for(layout, task, adapter: str | None, job: dict | None = None) -> int:
+    """`ceiling_s` for one task on one lane, from `ceiling_inputs` -- what RF-28 (`needs.match`), RF-08's
+    `process`-row cap comparison (`preflight._timeout_checks`) and RF-32 (`agent.extend`) each read. The fourth
+    reader is the clamp inside `resolve()`, which is given the same three values by the `prepare` that calls it."""
+    from . import gate as gate_mod
+    return ceiling_s(gate_mod.routing_doc(layout), *ceiling_inputs(layout, task, adapter, job))
+
+
+def extend_offers(routing_cfg: dict) -> list[int]:
+    """`timeouts.extend_offers`: the durations in seconds the Control
+    Center's Extend renders one control per -- `[EXTEND_STEP_S]` (today's single +1h) for a project that
+    configures nothing or configures nothing usable."""
+    cfg = (routing_cfg or {}).get("timeouts") or {}
+    offers = cfg.get("extend_offers")
+    out = []
+    if isinstance(offers, list):
+        for o in offers:
+            if isinstance(o, int) and not isinstance(o, bool) and 0 < o <= 24 * 3600:
+                out.append(o)
+    return out or [EXTEND_STEP_S]
+
+
+def extend_dedupe_s(routing_cfg: dict) -> float:
+    """`timeouts.extend_dedupe_s`, default `EXTEND_DEDUPE_S`: a second
+    extension of the same duration on the same job inside this window is a no-op (`commands._agent_extend`)."""
+    cfg = (routing_cfg or {}).get("timeouts") or {}
+    return max(0.0, _num(cfg.get("extend_dedupe_s"), EXTEND_DEDUPE_S))
+
+
+def resolve(routing_cfg: dict, cost_category: str | None = None, role_prof: dict | None = None,
+            job: dict | None = None, *, needs: dict | None = None, lane: str = "model",
+            capabilities: dict | None = None) -> dict:
+    """The limits for one job: {"idle_s": int | None, "hard_cap_s": int, "idle_cpu_s": float,
+    "clamped_from_s": int?}. `lane="model"` is every pre-2.9.0 call: `DEFAULTS` -> routing `timeouts` ->
+    `by_cost.<cost_category>` -> the role's `timeouts` -> a derived cap from a declared `needs.duration_min`
+    -> the job block, each clamped to `ceiling_s()`.
+    `lane="plain"` (a non-model `process`/`python` job, `ProcessAdapter.prepare`) starts from `PROCESS_CAP_S` with
+    no idle default and skips every routing/role merge above -- policy a process job has never read -- then
+    applies the same derived cap, job block and clamp. `needs`/`capabilities` default to `None`/`{}`, which
+    derives nothing and clamps to the project's own `max_hard_cap_s` alone: the pre-2.9.0 behaviour on both
+    lanes. `clamped_from_s` is present only when the final clamp lowered a *declared* `job.timeout_s` -- the
+    receipt a silent clamp would owe the owner."""
+    if lane == "plain":
+        out = {"hard_cap_s": PROCESS_CAP_S, "idle_s": None, "idle_cpu_s": DEFAULTS["idle_cpu_s"]}
+    else:
+        out = dict(DEFAULTS)
+        cfg = (routing_cfg or {}).get("timeouts") or {}
+        _merge(out, cfg)
+        if cost_category:
+            _merge(out, (cfg.get("by_cost") or {}).get(str(cost_category)))
+        _merge(out, (role_prof or {}).get("timeouts"))
     job = job or {}
-    if job.get("timeout_s") is not None:
-        out["hard_cap_s"] = job["timeout_s"]
+    declared_timeout = job.get("timeout_s")
+    duration_min = (needs or {}).get("duration_min")
+    if duration_min is not None and declared_timeout is None:
+        derived = math.ceil(duration_min * 60 * needs_headroom(routing_cfg))
+        out["hard_cap_s"] = derived
+    ceiling = ceiling_s(routing_cfg, cost_category, role_prof, capabilities)
+    out["hard_cap_s"] = min(out["hard_cap_s"], ceiling)      # derive and clamp
+    if declared_timeout is not None:
+        out["hard_cap_s"] = declared_timeout                 # an explicit timeout_s still wins
     if "idle_timeout_s" in job:
         out["idle_s"] = job["idle_timeout_s"]
+    clamped_from_s = None
+    if out["hard_cap_s"] > ceiling:
+        if declared_timeout is not None and declared_timeout > ceiling:
+            clamped_from_s = declared_timeout
+        out["hard_cap_s"] = ceiling                           # clamp once more: the one place a model-lane
+                                                                # timeout_s above the ceiling is actually enforced
     idle = _num(out.get("idle_s"), 0)
-    return {"idle_s": int(idle) if idle > 0 else None,
-            "hard_cap_s": max(60, int(_num(out.get("hard_cap_s"), DEFAULTS["hard_cap_s"]))),
-            "idle_cpu_s": max(0.5, _num(out.get("idle_cpu_s"), DEFAULTS["idle_cpu_s"]))}
+    result = {"idle_s": int(idle) if idle > 0 else None,
+              "hard_cap_s": max(60, int(_num(out.get("hard_cap_s"), DEFAULTS["hard_cap_s"]))),
+              "idle_cpu_s": max(0.5, _num(out.get("idle_cpu_s"), DEFAULTS["idle_cpu_s"]))}
+    if clamped_from_s is not None:
+        result["clamped_from_s"] = clamped_from_s
+    return result
+
+
+def lane_cap(routing_cfg: dict, adapter: str | None) -> int | None:
+    """The declared ceiling on a non-model job's own `timeout_s` for one adapter lane: routing.yaml
+    `timeouts.lane_caps.<adapter>`, and None unless a project declares one.
+
+    `PROCESS_CAP_S` is deliberately not that ceiling: it is the duration a process job that declares no
+    `timeout_s` *gets* (`adapters.process`), and a block asking for longer was never illegal -- `extend()`
+    exists to push a deadline out further still. A write-time refusal here can therefore only come from a cap
+    the project itself set, never from the lane's own default ("timeout_s <= the
+    lane's cap")."""
+    caps = ((routing_cfg or {}).get("timeouts") or {}).get("lane_caps")
+    value = caps.get(str(adapter)) if isinstance(caps, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def spec_fields(limits: dict) -> dict:

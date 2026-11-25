@@ -1,5 +1,5 @@
-"""F13 (T5-21) and F21 (T5-40): the README's configuration bullet and `Settings` agree in both
-directions - every key the README documents exists on `Settings` (direction A, T5-21's own), and
+"""The README's configuration bullet and `Settings` agree in both
+directions - every key the README documents exists on `Settings` (direction A), and
 every field of `Settings` is documented in the README (direction B, new here) - so a build that
 drops a key, or adds one and forgets the README, fails a test rather than waiting for a reviewer
 to notice.
@@ -81,7 +81,7 @@ def test_a_readme_key_not_on_settings_fails_the_check():
 
 def test_a_settings_field_missing_from_the_readme_fails_the_check():
     # The companion case for direction B, over its own fixture: "secret_key" stands in for a field someone adds
-    # to Settings and forgets to document (T5-27's defer_budget_s, T5-37's hand_over_grace_s); "base_url" stands
+    # to Settings and forgets to document; "base_url" stands
     # in for a field that is documented and must not be flagged.
     documented = ["base_url"]
     fields = {"base_url", "secret_key"}

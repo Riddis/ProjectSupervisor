@@ -635,7 +635,7 @@ def run(layout: Layout, dry_run: bool = False) -> list[str]:
     return notes
 
 
-# ---- the attempt-identity migration's dry run (ATTEMPT_MODEL.md section 8; step 6 of "Order of work") ----
+# ---- the attempt-identity migration's dry run ----
 #
 # `migrate attempts --dry-run` derives a mapping of every job record's attempt identity (section 8.2) from the
 # fields and evidence a store already carries -- never from content equality, never by parsing an id -- and writes
@@ -661,7 +661,7 @@ def _has_identity_fields(rec: dict) -> bool:
 
 def _dispatch_order(records: list[dict]) -> list[dict]:
     """The dispatch order `jobs.for_task` no longer gives an un-migrated record (section 8.2's own walk):
-    `jobs.sort_key` dropped its id-suffix fallback at the writers switch (C-3/T7-08, `a1fa01d`), on the grounds
+    `jobs.sort_key` dropped its id-suffix fallback at the writers switch, on the grounds
     that every record it ever sorts by then is migration-stamped or allocator-written -- which is exactly not
     true of the records this migration exists to place. A record with no identity fields yet is ordered by the
     one thing it does carry that still reflects when it was dispatched: the numeric suffix of its old-shape id,
@@ -1004,7 +1004,7 @@ def dry_run_attempts(layout: Layout, out: Path | str, *, overrides_path: Path | 
     return report
 
 
-# ---- the attempt-identity migration's apply and check (ATTEMPT_MODEL.md section 8, step 7 of "Order of work") ----
+# ---- the attempt-identity migration's apply and check ----
 #
 # `apply` takes a reviewed `mapping.json` (never derives its own) and writes its identity fields onto the job
 # records it names, under the existing atomic write and the task lock; `check` re-reads the store and asserts the
@@ -1133,6 +1133,10 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     the counters its tasks imply. Refuses without a mapping file and refuses while the loop runs (§8.1). A
     record already carrying `migrated.attempts` is verified against the mapping, never rewritten; a mismatch is
     an error, not an overwrite, so a hand-edited mapping can never silently relabel an already-migrated record.
+    An allocator-written record with no stamp gets the same treatment, narrowed to the fields the allocator
+    itself derives (`attempt`/`kind`/`seq`/`parent`): verified, never rewritten, and never compared on
+    `cause`/`scope`, which this migration's own re-derivation can get wrong for such a record without that ever
+    being a placement error (P3-R2-A).
     The backup of `state/runtime/jobs/` and `state/tasks/` is taken once, before this call's own first write --
     never when there is nothing left to write, which is what makes a second apply with the same mapping a true
     no-op, and what lets an apply interrupted mid-way simply resume: every record this call has already written
@@ -1155,6 +1159,15 @@ def apply_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
         wanted = _identity_fields(entry)
         if (rec.get("migrated") or {}).get("attempts"):
             (already if _record_matches(rec, wanted) else conflicts).append(job_id)
+        elif _has_identity_fields(rec):
+            # Allocator-written but never stamped (P3-R2-A, carried from the 2.8.0 round-2 review): verify it
+            # against the mapping the same way a stamped record is, but only on the fields the allocator itself
+            # derives -- attempt, kind, seq, parent. Never compare, and so never rewrite, cause/scope: this
+            # migration's own re-derivation reads the task-side attempt note, which an allocator-written record
+            # never had one written for, so a revision's `cause` would otherwise re-derive as `scheduled` and
+            # overwrite the allocator's own value on every apply.
+            core = {k: wanted[k] for k in ("attempt", "kind", "seq", "parent") if k in wanted}
+            (already if _record_matches(rec, core) else conflicts).append(job_id)
         else:
             to_write.append(job_id)
 
@@ -1209,9 +1222,9 @@ def check_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     so one run names everything wrong instead of one thing per re-run. Reads the store and the mapping's own
     `report.json` (written beside `mapping.json` by the dry run that produced it); writes only `check_report.json`
     under `--out`. Assertion 6 reads `expect.json` beside the mapping -- the committed, by-hand mapping of a
-    handful of named tasks (ATTEMPT_MODEL.md §9.1 for this project; a neutral fixture's equivalent in this
+    handful of named tasks that a deployed project keeps for its own migration (a neutral fixture's equivalent in this
     framework's own tests) -- and fails loudly when it is missing, since an anonymous or absent expectation file
-    cannot fail when a mapping rule changes (§8.5 note 6)."""
+    cannot fail when a mapping rule changes."""
     mapping_path = Path(mapping_path)
     mapping = _load_mapping(mapping_path)
     report_path = mapping_path.parent / "report.json"
@@ -1236,7 +1249,9 @@ def check_attempts(layout: Layout, mapping_path: Path | str, out: Path | str) ->
     # recorded run_dir value may differ -- a path absent already at dry-run time is not a failure either way.
     for job_id, info in (dry_report.get("run_dir_baseline") or {}).items():
         rec = jobs_mod.resolve(layout, job_id)
-        current = (rec.get("spec") or {}).get("run_dir") if rec else None
+        if rec is None:
+            continue   # already named by assertion 1; a missing record is not a second, run_dir failure too
+        current = (rec.get("spec") or {}).get("run_dir")
         if current != info.get("run_dir"):
             fail("2_run_dir_baseline", f"{job_id}: run_dir changed ({info.get('run_dir')!r} -> {current!r})")
         elif info.get("existed") and not Path(info["run_dir"]).exists():

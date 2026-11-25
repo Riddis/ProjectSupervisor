@@ -43,8 +43,8 @@ satisfied by the same artifact.
 Exactly the artifact the maintainers reviewed: its version, its wheel or sdist name and sha256, the tag that
 release lives under, the framework range its own manifest declares, its author's own licence, and the date and
 framework version of the maintainers' own G5 run. Nothing else - no download link, no maintainer contact, no
-`deprecated` flag (`CONTRIBUTOR_RULING.md` 2.2: the schema version is how fields like that arrive later, not a
-free-text column today).
+`deprecated` flag: the schema version is how fields like that arrive later, not a
+free-text column today.
 
 ## Updating a version
 

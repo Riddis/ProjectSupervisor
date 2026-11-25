@@ -475,8 +475,8 @@ def _allowed_here(scope: tuple[str, str] | None, rel: str, allowed: dict[str, li
     lookalike path deeper in the tree, a folder named like the package elsewhere, a folder outside git, or an
     archive whose file name or metadata names another distribution (review 2.0.0 R1). The catalog index
     (`plugins-catalog/index.yaml`) is not decided here: `_catalog_path` and `_catalog_line_distributions` scope its
-    allowance per entry, per line, because CONTRIBUTOR_RULING.md 2.3 opens the allowance "for the words allowed to
-    that entry's own distribution" - one set for the whole file would let one listed package's word sit unflagged
+    allowance per entry, per line, because the allowance is for the words allowed to
+    that entry's own distribution - one set for the whole file would let one listed package's word sit unflagged
     in another's."""
     if not allowed or scope is None:
         return set()
@@ -501,10 +501,10 @@ _CATALOG_DISTRIBUTION = re.compile(r"""^\s*distribution:\s*["']?([A-Za-z0-9][A-Z
 
 def _catalog_line_distributions(lines: list[str]) -> list[str | None]:
     """For `plugins-catalog/index.yaml` only: each line's own `plugins:` entry's `distribution` (normalised,
-    CONTRIBUTOR_RULING.md 2.3's "that entry's own distribution"), for every line of that entry - including
+    "that entry's own distribution"), for every line of that entry - including
     `identity`, read before `distribution` in the schema's own key order - or None for a line outside any entry, or
     inside one that names none. A line-based approximation, not a YAML parse (G1d stays standard library only), and
-    never wider than the ruling: a word belongs to one entry only, by that entry's own `distribution:` line,
+    never wider than that rule: a word belongs to one entry only, by that entry's own `distribution:` line,
     wherever in the entry it is read from."""
     starts = [i for i, line in enumerate(lines) if _CATALOG_ENTRY_START.match(line)]
     spans = list(zip(starts, starts[1:] + [len(lines)]))

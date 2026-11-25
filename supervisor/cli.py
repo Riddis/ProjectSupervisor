@@ -41,16 +41,21 @@ task_app = typer.Typer(help="task store")
 gate_app = typer.Typer(help="gates")
 inbox_app = typer.Typer(help="owner inbox (machine/fallback path; normally answered in the Control Center)")
 issue_app = typer.Typer(help="issues (state/issues/*.yaml; normally resolved in the Control Center)")
+lane_app = typer.Typer(help="model/API lanes (routing.yaml adapters): forget a lane-level unavailability")
 plugin_app = typer.Typer(help="project plugins (plugins/*.py, listed in project.yaml)")
 boundary_app = typer.Typer(help="framework boundary check (gate G1) - for framework contributors")
 skills_app = typer.Typer(help="the framework's skills in this project: status and update")
+plan_app = typer.Typer(help="recovery plans: validate, apply (the journalled, resumable "
+                            "applier of step 2) and inspect state/plans/*.yaml")
 app.add_typer(task_app, name="task")
 app.add_typer(gate_app, name="gate")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(issue_app, name="issue")
+app.add_typer(lane_app, name="lane")
 app.add_typer(plugin_app, name="plugin")
 app.add_typer(boundary_app, name="boundary")
 app.add_typer(skills_app, name="skills")
+app.add_typer(plan_app, name="plan")
 
 
 def _layout(load: bool = True) -> Layout:
@@ -142,7 +147,7 @@ def init(directory: str = typer.Argument(".", help="project folder to create or 
 
 migrate_app = typer.Typer(help="bring a project's state and config up to the installed framework version "
                               "(idempotent); `attempts` derives the attempt-identity migration's mapping "
-                              "(ATTEMPT_MODEL.md section 8, --dry-run), writes a reviewed one onto the store "
+                              "(--dry-run), writes a reviewed one onto the store "
                               "(--apply) or checks an applied store against it (--check)")
 app.add_typer(migrate_app, name="migrate")
 
@@ -170,8 +175,8 @@ def migrate_attempts(
        dry_run: bool = typer.Option(False, "--dry-run", help="derive the mapping and report it; writes nothing "
                                      "else"),
        apply: bool = typer.Option(False, "--apply", help="write a reviewed mapping's identity fields onto the "
-                                  "store (ATTEMPT_MODEL.md section 8.4); refuses without --mapping"),
-       check: bool = typer.Option(False, "--check", help="section 8.5's seven assertions against the store and "
+                                  "store; refuses without --mapping"),
+       check: bool = typer.Option(False, "--check", help="the migration's seven assertions against the store and "
                                   "the mapping's own report.json, read-only; refuses without --mapping"),
        out: Path = typer.Option(..., "--out", help="directory for this run's own files: mapping.json/report.json/"
                                 "summary.md for --dry-run, apply_report.json for --apply, check_report.json for "
@@ -182,7 +187,7 @@ def migrate_attempts(
                                       "mapping's detected cause for the named jobs (--dry-run only)"),
        compare: Path = typer.Option(None, "--compare", help="an earlier run's mapping.json; fails if a row "
                                     "changed, after writing this run's own files (--dry-run only)")):
-    """ATTEMPT_MODEL.md section 8: derive the attempt-identity mapping from the store as it stands, for a human
+    """Derive the attempt-identity mapping from the store as it stands, for a human
     to read before anything is migrated (--dry-run); write a reviewed one onto the store (--apply); or check an
     applied store against it (--check). Exactly one of the three is required; apply and check both refuse
     without --mapping, and apply never derives a mapping of its own."""
@@ -298,7 +303,7 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     if dry_run:
         layout = _reader()                         # reads only: no plugin set up, nothing created (review 1.13.0)
         try:
-            res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True)
+            res = tasks_mod.import_seed(layout, commands_mod.seed_path(layout, seed), ids, dry_run=True, actor="owner")
         except (ValueError, tasks_mod.TaskError) as exc:
             raise typer.BadParameter(str(exc))
         typer.echo(f"dry run: would create {len(res['created'])} ({', '.join(res['created']) or '-'}), "
@@ -317,14 +322,6 @@ def task_import(seed: str = "state/tasks_seed.yaml", update_contracts: str = "",
     typer.echo(f"created {len(res.get('created', []))}, updated {len(res.get('updated', []))}")
     for w in res.get("warnings") or []:
         typer.echo(f"warning: {w}")
-
-
-@task_app.command("migrate-ownership")
-def task_migrate_ownership():
-    """Give every live writing-lane task without owned_paths explicit exclusive ownership (['.'])."""
-    r = tasks_mod.migrate_ownership(_writer(), actor="cli")
-    render.render_all(_layout())
-    typer.echo(f"migrated {len(r['migrated'])}: {', '.join(r['migrated']) or 'nothing to do'}")
 
 
 @task_app.command("create")
@@ -428,6 +425,21 @@ def issue_resolve(issue_id: str, resolution: str = "", resolving_task: str = "",
                                             "resolving_task": resolving_task or None}, by, job_id=_job_id()), issue_id)
 
 
+@lane_app.command("reset")
+def lane_reset(lane: str, by: str = "owner"):
+    """Forget a lane-level unavailability (a spent credit balance, say): `lane.reset`'s own CLI verb, queued like
+    every other command, alongside `issue resolve` as the dead-code review's "handlers with no producer"."""
+    outcome = commands_mod.submit_or_apply(_layout(), "lane.reset", {"lane": lane}, by, job_id=_job_id())
+    if outcome.get("queued"):
+        typer.echo(f"{lane}: queued ({outcome['id']}) — the running supervisor applies it within one iteration")
+        return
+    if not outcome.get("ok", True):
+        raise typer.BadParameter(f"{lane}: {outcome.get('error')}")
+    render.render_all(_layout())
+    cleared = (outcome.get("result") or {}).get("cleared")
+    typer.echo(f"{lane}: reset" + ("" if cleared else " (nothing to clear)"))
+
+
 @gate_app.command("show")
 def gate_show():
     typer.echo(json.dumps(gates_mod.load(_layout()), indent=2))
@@ -469,6 +481,66 @@ def boundary_words(targets: list[str] = typer.Argument(..., help="folders or bui
     (~/.config/supervisor/project-terms.toml). Exit 0 clean, 1 hits, 2 when it cannot run (no word list)."""
     from . import boundary
     raise typer.Exit(boundary.words([Path(t) for t in targets], echo=typer.echo))
+
+
+@plan_app.command("validate")
+def plan_validate(file: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
+    """Validate a plan document against the store: refuses whole on any of the 26 named codes;
+    writes nothing (`plans.propose` writes it; `plan apply` applies it). Exit 0 with an empty
+    refusal list, 1 refused."""
+    from . import plans as plans_mod
+    doc = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
+    report, refusals = plans_mod.validate(doc, _reader())
+    if as_json:
+        typer.echo(json.dumps({"refusals": refusals, **report.as_dict()}, indent=2, ensure_ascii=False))
+    else:
+        if not refusals:
+            typer.echo(f"valid: scope {report.scope}, {len(report.normalised)} normalisation(s)")
+        for n in report.normalised:
+            typer.echo(f"normalised: op {n['op_index']} {n['code']} -- {n['detail']}")
+        for r in refusals:
+            loc = f"op {r['op_index']}" if r["op_index"] is not None else "plan"
+            typer.echo(f"{r['code']}: {loc} {r['field'] or ''} -- {r['message']}")
+    raise typer.Exit(1 if refusals else 0)
+
+
+@plan_app.command("apply")
+def plan_apply(plan_id: str, as_json: bool = typer.Option(False, "--json", help="machine-readable report")):
+    """Progress the named plan as far as it can go: proposes nothing (use `plan validate` plus
+    `supervisor.plans.propose` to write one first) — this is the plan's own applier, called
+    directly here rather than through the approval lane: a human running this command is the
+    approval, exactly as the owner's own `apply_plan` choice is. Exit 0 unless the plan ends `stuck`."""
+    from . import plans as plans_mod
+    try:
+        doc = plans_mod.apply(_layout(), plan_id)
+    except plans_mod.PlanError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if as_json:
+        typer.echo(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+    else:
+        typer.echo(f"{plan_id}: {doc['status']} (done {sorted(doc.get('done') or [])})")
+    raise typer.Exit(1 if doc["status"] == "stuck" else 0)
+
+
+@plan_app.command("show")
+def plan_show(plan_id: str):
+    """The stored plan document: status, journal (`done`, `order`), history and (once `stuck`) its owner item."""
+    from . import plans as plans_mod
+    doc = plans_mod.load_plan(_layout(load=False), plan_id)
+    if doc is None:
+        raise typer.BadParameter(f"no such plan {plan_id!r}")
+    typer.echo(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+
+
+@plan_app.command("cancel")
+def plan_cancel(plan_id: str):
+    """The owner's cancel_plan: abandon a `stuck` plan, keeping what already applied. Refused on any other status."""
+    from . import plans as plans_mod
+    try:
+        doc = plans_mod.cancel_plan(_layout(), plan_id, by="cli")
+    except plans_mod.PlanError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"{plan_id}: {doc['status']}")
 
 
 @skills_app.command("status")
@@ -597,8 +669,8 @@ def run(sleep: float = 5.0, once: bool = False, max_iterations: int = 0, unatten
         _check_writer_guard
     layout = _layout()
     try:
-        _check_launch_environment_guard()   # ATTEMPT_MODEL.md §4.4: refuse a foreign job's own identity first
-        _check_writer_guard(layout)       # ATTEMPT_MODEL.md §8.6: before anything below can ever dispatch
+        _check_launch_environment_guard()   # refuse a foreign job's own identity first
+        _check_writer_guard(layout)       # before anything below can ever dispatch
     except (ForeignEnvironmentError, UnmigratedJobsError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc

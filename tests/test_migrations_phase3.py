@@ -121,16 +121,19 @@ def test_a_second_run_changes_nothing(tmp_path):
     assert routing_of(layout) == after
 
 
-def test_the_values_a_plugin_reads_are_the_same_before_and_after(tmp_path):
-    """plugin.config's legacy reading (step 6) and its reading of the migrated file give the same section."""
+def test_the_values_a_plugin_reads_are_empty_until_migrate_moves_them(tmp_path, recwarn):
+    """plugin.config's legacy reading of the pre-1.12.0 top-level section is gone (2.9.0's supported floor): a
+    project still below it reads nothing there, with no warning in its place, until `supervisor migrate` moves
+    the section to where this facade actually reads it."""
     from supervisor.plugin import _config
     from supervisor.manifest import parse
     layout = project(tmp_path)
     m = parse(MANIFESTS["render"], source="render.toml")
-    with pytest.warns(DeprecationWarning):
-        legacy = _config._assembled(layout, m)
+    before = yaml.safe_load(ROUTING)
+    assert _config._assembled(layout, m) == {}
+    assert not recwarn.list
     migrations.run(layout)
-    assert _config._assembled(layout, m) == legacy
+    assert _config._assembled(layout, m) == {**before["render"], "encoder": before["encoder"]}
 
 
 def test_a_plugin_already_moved_is_left_alone(tmp_path):

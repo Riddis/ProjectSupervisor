@@ -1,5 +1,4 @@
-"""Round-5 review F12 (docs/reviews/RELEASE_REVIEW_2.1.0_round5.md lines 122-151, answers 3 and 4 at lines
-188-213): `diagnosis.ingest` wrote `diag_action="requeue"` on the job record before the `held` check (F9) ever
+"""`diagnosis.ingest` wrote `diag_action="requeue"` on the job record before the `held` check (F9) ever
 ran, so a decline was recorded, counted and deduplicated exactly like a granted requeue - `count_requeues` spent
 one of the two `DIAGNOSIS_BUDGET` slots on a decline, and `already()` matched the declined record by (signature,
 level, grant) and returned it for the next identical escalation, so the owner's own release through `/requeue`

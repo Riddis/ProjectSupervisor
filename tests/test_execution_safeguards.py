@@ -116,17 +116,6 @@ def test_import_refuses_new_writing_tasks_without_ownership_but_keeps_existing_o
     assert tasks.import_seed(layout, layout.root / "seed.yaml")["created"] == ["NEW"]
 
 
-def test_migrate_ownership_makes_live_writing_tasks_explicitly_exclusive(layout):
-    claude_task(layout, "A"); claude_task(layout, "B", owned=["docs/b"]); ptask(layout, "P")
-    make_task(layout, "DONE", status="COMPLETE")
-    out = tasks.migrate_ownership(layout)
-    assert out["migrated"] == ["A"]
-    assert tasks.load(layout, "A").owned_paths == ["."]
-    assert tasks.load(layout, "B").owned_paths == ["docs/b"]
-    assert tasks.load(layout, "P").owned_paths == [] and tasks.load(layout, "DONE").owned_paths == []
-    assert tasks.migrate_ownership(layout)["migrated"] == []        # idempotent
-
-
 def test_repo_scan_runs_for_an_exclusive_task(layout):
     """An undeclared write anywhere fails verification with no scoped roots."""
     t = claude_task(layout, "T", owned=["."])

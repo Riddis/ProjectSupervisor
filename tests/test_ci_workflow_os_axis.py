@@ -1,5 +1,5 @@
-"""M4 (docs/releases/2.5.0/CONTRIBUTOR_RULING.md §3.4, after M7): the package job proves every leg on both
-platforms, the axis `docs/releases/packages/CI_PLATFORM.md` section 5 names as the low-cost option once M7 has
+"""The package job proves every leg on both
+platforms - the low-cost axis chosen once the fixed-name job change has
 made the context count affordable. `tools/ci_package.py matrix()` is unchanged - still `{"include": [...]}`
 (tests/test_ci_package.py) - this is a workflow-only change: an `os` axis crossed with the dynamic leg list.
 

@@ -40,7 +40,7 @@ def test_role_adapter_wins_over_cost_category(layout):
 def test_job_adapter_still_overrides_the_role_lane(layout):
     write_routing(layout, {"roles": {"engineer": {"adapter": "codex_cli", "active": True}}})
     make_task(layout, "R2")
-    tasks._update(layout, "R2", lambda d: d.update(job={"adapter": "python", "fn": "x"}))
+    tasks._update(layout, "R2", lambda d: d.update(job={"adapter": "python", "fn": "noop"}))
     assert scheduler.adapter_name(tasks.load(layout, "R2"), layout) == "python"
 
 
@@ -77,16 +77,16 @@ def test_inactive_role_is_parked_not_dispatched_on_another_lane(layout):
 def test_inactive_role_with_explicit_job_adapter_is_still_parked(layout):
     write_routing(layout, {"roles": {"engineer": {"adapter": "claude_cli", "active": False}}})
     make_task(layout, "R5")
-    tasks._update(layout, "R5", lambda d: d.update(job={"adapter": "python", "fn": "x"}))
+    tasks._update(layout, "R5", lambda d: d.update(job={"adapter": "python", "fn": "noop"}))
     assert "R5" not in picks(layout)
 
 
-# ------------------------------------------------------------------ D-012 F-B Change 1: a role's own tasks fall back
+# ------------------------------------------------------------------ a role's own tasks fall back
 
 def test_a_role_owned_delivery_falls_back_when_its_primary_lane_is_out_of_capacity(layout, monkeypatch):
-    """Astra's own release-review tasks are `code_review` delivery tasks, not reviews of someone else's - D-012's
-    fallback used to cover only the latter (review.lane_for via review.dispatch); the scheduler must ask the same
-    question for the role's own work."""
+    """The review role's own release-review tasks are `code_review` delivery tasks, not reviews of someone
+    else's - the fallback used to cover only the latter (review.lane_for via review.dispatch); the scheduler
+    must ask the same question for the role's own work."""
     from supervisor._vendor.contract import CapacityDeferred
     write_routing(layout, {"roles": {"code_review": {
         "adapter": "codex_cli", "fallback": {"adapter": "claude_cli", "model": "fable", "effort": "high", "flag": "same_vendor"}}}})
@@ -222,7 +222,7 @@ def test_a_record_queued_before_the_role_was_disabled_never_launches(layout):
     from supervisor import jobs as jobs_mod
     from supervisor.loop import Supervisor
     make_task(layout, "R9")
-    tasks._update(layout, "R9", lambda d: d.update(job={"adapter": "python", "fn": "x"}))
+    tasks._update(layout, "R9", lambda d: d.update(job={"adapter": "python", "fn": "noop"}))
     sup = Supervisor(layout, sleep_s=0)
     write_routing(layout, {"roles": {"engineer": {"active": False}}})
     rec = sup.dispatch(tasks.load(layout, "R9"), "python")               # a direct dispatch bypasses the scheduler...

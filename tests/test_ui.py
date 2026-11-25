@@ -528,7 +528,7 @@ def test_settings_validated_edit(layout, auth_client, tmp_path):
     config_dir = layout.config
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "routing.yaml").write_text(
-        "capacity:\n  claude: {reserve_percent: 3}\n  codex: {reserve_percent: 3}\nlimits: {max_agent_jobs: 1, max_gpu_jobs: 1}\nroles: {}\n",
+        "capacity:\n  claude: {reserve_percent: 3}\n  codex: {reserve_percent: 3}\nlimits: {max_agent_jobs: 1, max_resource_jobs: 1}\nroles: {}\n",
         encoding="utf-8")
     r = auth_client.get("/settings")
     assert r.status_code == 200

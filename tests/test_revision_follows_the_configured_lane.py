@@ -1,6 +1,6 @@
 import yaml
 
-from supervisor import escalation, tasks
+from supervisor import escalation, scheduler, tasks
 from tests.conftest import make_task
 
 
@@ -50,7 +50,7 @@ def test_the_senior_revision_of_a_routed_role_stays_on_its_own_lane(layout):
     assert outcome["action"] == "retry" and outcome["senior"] is True
     call = sup.calls[1]
     assert call["adapter"] == "codex_cli"
-    job = (call["task"].model_extra or {}).get("job") or {}
+    job = scheduler.job_spec(call["task"])
     assert job.get("model") == "opus"
 
 

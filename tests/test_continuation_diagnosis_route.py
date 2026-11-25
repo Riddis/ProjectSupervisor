@@ -1,4 +1,4 @@
-"""2.1.0 change 1 (D-010 Consequences): continuations exhausted now routes through the manager's diagnosis
+"""Continuations exhausted now routes through the manager's diagnosis
 (one bounded requeue/defer/architect/owner decision) instead of straight to a BLOCKED "owner decision needed"
 note that only the owner's inbox ever saw. The continuation cap itself still holds, and the diagnosis route's own
 requeue budget (DIAGNOSIS_BUDGET) still bounds how many times a diagnosis may grant a fresh continuation chain."""
@@ -20,7 +20,7 @@ def continuation_chain(layout, tid, start=1):
     """MAX_CONTINUATIONS prior continuation attempts already recorded for `tid` (attempt numbers `start`..), and
     one more (the task's newest attempt) still running and about to defer again — the next requeue() call for it
     must hit the cap. `start` must be past any other attempt already recorded for `tid`: requeue()'s own crash-safety
-    check ("a newer attempt already exists") keys off the `parent` field alone (ATTEMPT_MODEL.md §6, the writer
+    check ("a newer attempt already exists") keys off the `parent` field alone (the writer
     switch); every record here keeps its old, flat id (ids are never renamed) but carries the identity fields a
     migrated record would, which is exactly what they are standing in for."""
     n = Supervisor.MAX_CONTINUATIONS
@@ -211,7 +211,7 @@ def test_repair_continuations_enforces_the_same_cap_as_requeue(layout, fake_clau
 
 
 def test_repeated_manager_requeues_spend_the_diagnosis_budget_instead_of_looping(layout, fake_claude):
-    """The probe's five-round sequence (runs/T2-05/T2-05.a1/probes.py, `continuation_cap_bypass`): a manager
+    """A five-round reviewer probe, `continuation_cap_bypass`: a manager
     requeue used to leave the old continuation markers in place and the stale issue/diagnosis deduped every
     later exhaustion away, so repair_continuations() could dispatch new deliveries without ever consulting
     DIAGNOSIS_BUDGET. Scoped grants mean each exhaustion after a fresh grant reaches its OWN diagnosis, so the
@@ -273,7 +273,7 @@ def test_a_fresh_manager_architect_handoff_reaches_its_own_architect_each_genera
     wrongly-created owner item here could not be mistaken for the ordinary budget-spent one later in this test.
 
     Lane selection and final dispatch are stubbed to record a job synchronously, the same way the round-2
-    reviewer's probe (runs/T2-32/T2-32.a1/probes.py, `architect_grant_lost`) isolated the routing bug from a real
+    reviewer's probe, `architect_grant_lost`, isolated the routing bug from a real
     model session; `diagnosis.dispatch`/`already`/`ingest`, `escalation`'s grant accounting and `inbox.create` are
     all production code."""
     created = []
@@ -678,7 +678,7 @@ def dispatch_recording_calls(layout, tid, calls):
 
 
 def test_a_torn_delivery_reroute_is_repaired_with_the_fallback_s_own_job_and_flag(layout):
-    """D-012 F-B's headline case: the owner role's lane reports a lapsed login and reroute() hands the task to
+    """The headline case: the owner role's lane reports a lapsed login and reroute() hands the task to
     the role's fallback with the fallback's own model/effort and the same-vendor flag — then the process stops
     before the successor lands. Those overrides and that flag only ever existed in a task view reroute() never
     persisted and in extras it passed straight to dispatch(), so the repaired attempt launched on the fallback

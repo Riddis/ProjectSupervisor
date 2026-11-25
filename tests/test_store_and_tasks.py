@@ -128,7 +128,7 @@ def test_blocked_or_invalid_verdicts_never_complete(layout):
     assert tasks.advance(layout, "A").status == TaskStatus.BLOCKED
     with pytest.raises(ValueError):
         tasks.record_review(layout, "A", "d1", "code_review", "accept")
-    assert tasks.completion_check(tasks.load(layout, "A")) is not None
+    assert tasks._evaluate(tasks.load(layout, "A"))[0] != TaskStatus.COMPLETE
 
 
 def test_multiple_reviewers_all_required(layout):

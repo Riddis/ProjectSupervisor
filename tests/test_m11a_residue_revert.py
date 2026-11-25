@@ -98,7 +98,7 @@ def test_a_rejected_attempts_own_residue_is_reverted_and_quarantined(layout, sco
     # nothing is deleted: a1's own content is quarantined under its own run dir
     assert (run_dir1 / "undeclared" / "other" / "shared.txt").read_text(encoding="utf-8") == "a1 edit"
 
-    # CONTRIBUTOR_RULING.md §5.2's Log row: one event per path with the TWO digests and the quarantine location -
+    # One event per path with the TWO digests and the quarantine location -
     # the digest it was restored to and the one the attempt left behind (now readable in the quarantine), so the
     # record says what was replaced with what and not merely that something was.
     reverted = events(layout, "residue_reverted")
@@ -188,7 +188,7 @@ def test_a_human_edit_of_an_unowned_path_is_also_reverted(layout, scoped, repo):
 def test_a_path_git_cannot_account_for_is_left_exactly_as_found_and_named(layout, scoped, repo):
     """A before-digest git's own HEAD does not match (here: the path was never committed at all, so `git show`
     fails) is never guessed at - left exactly as found, and named on the task rather than silently dropped.
-    CONTRIBUTOR_RULING.md §5.2's Limits row: this also opens one deduped owner decision item, because the next
+    This also opens one deduped owner decision item, because the next
     attempt will otherwise fail on something it cannot fix - a task note alone routes to nothing an owner reads."""
     task = scoped
     run_dir1 = layout.runs / "T" / "T.a1"
@@ -360,7 +360,7 @@ def test_a_concurrent_tasks_verification_is_not_charged_for_the_revert_of_a_modi
     `other/shared.txt` is still in the tree when B's own before-snapshot is taken; A is then rejected and its
     revert restores the path to HEAD's content before B's own after-snapshot is taken. Without the revert recorded
     through `verify.record_own_write()`, B is charged for A's own repair - the fix re-creating the class it
-    repairs. This is exactly the shape CONTRIBUTOR_RULING.md's ledger (`own_writes.jsonl` / `_supervisor_wrote`)
+    repairs. This is exactly the shape the ledger (`own_writes.jsonl` / `_supervisor_wrote`)
     exists to explain, so it must explain this write too, not only `settings.update`'s."""
     task_a, task_b = _two_tasks(layout)
     run_dir_a = layout.runs / "A" / "A.a1"

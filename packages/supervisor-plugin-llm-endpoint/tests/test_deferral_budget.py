@@ -1,7 +1,7 @@
-"""D-013 section 5, R5's `defer_budget_s` row: "after two continuous hours of deferral the lane raises one
-owner inbox item (idempotent, through `plugin.owned_item`) ... Silence is not a report." F9
-(RELEASE_REVIEW_local-lane.md): the package had no `owned_item`/`open_owned_item` call, no `defer_budget` key
-and no deferral accounting at all, so a lane that kept deferring (as F3 showed it could) stayed silent forever.
+"""`defer_budget_s`: "after two continuous hours of deferral the lane raises one
+owner inbox item (idempotent, through `plugin.owned_item`) ... Silence is not a report."
+Before this, the package had no `owned_item`/`open_owned_item` call, no `defer_budget` key
+and no deferral accounting at all, so a lane that kept deferring stayed silent forever.
 These regressions pin the fix with a tiny `defer_budget_s` so a window closes in a fraction of a second."""
 from __future__ import annotations
 

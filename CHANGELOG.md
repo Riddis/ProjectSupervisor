@@ -3,9 +3,348 @@
 All notable changes to the framework. Versions follow semver: patch = fix, minor = feature or new plugin hook,
 major = a change that needs `supervisor migrate` (and says so under **Migration**).
 
+## 2.9.0 — 2026-11-23
+
+- **A supported upgrade floor, and the compatibility shims it makes dead.** `supervisor migrate` still carries a
+  project of any recorded version forward — the migration transforms themselves are unaffected — but a project
+  must run it before it runs the loop: below framework 2.0.0 (the plugin rename, whose own warning promised "a
+  later major release reads only the new names"), the doctor's project check and the Control Center's Start now
+  name the floor and the path through it (`docs/UPDATING.md`, "Supported upgrade floor") rather than the ordinary
+  version-mismatch note. Seven runtime fallbacks that existed only to carry a shape a migration already rewrites
+  are gone, each checked against the floor on its own terms: `gate.limits()`'s pre-1.0 `max_gpu_jobs` reader, the
+  1.2.1 flat/by-plugin projection-cache shapes (self-heals regardless), a model lane's pre-1.7.0 spec missing
+  `idle_s` (such a job cannot still be open), a pre-1.4.0 question-shaped inbox decision item, a release tag
+  naming only the pre-2.0.0 contract file names, and the one-off `tasks.migrate_ownership` / `task
+  migrate-ownership` (import has refused a task with no `owned_paths` since 1.0.0).
+- **Plugin API: `config()` and `resources()` no longer fall back to the pre-1.12.0 config shapes (compatible).**
+  Until `supervisor migrate` had moved them, `config(layout, <legacy section>)` also read the manifest's
+  `config.legacy_sections` straight off their old top-level routing.yaml sections, and `resources(layout)` fell
+  back to an old top-level `gpu`, each with a `DeprecationWarning`. Below the supported upgrade floor (2.0.0)
+  neither fallback is reached any more; both functions read only `plugins.<identity>` / `resources.gpu`, exactly
+  as documented for a project already migrated. `config.legacy_sections` is still a manifest field (it still
+  names a section's own sub-parts); it is simply no longer a second place either function reads from.
+- **`supervisor lane reset <lane>` and the generic command's own entry point.** `lane.reset` had no CLI
+  subcommand and no button, only `supervisor cmd lane.reset` (the framework review's "Handlers with no
+  producer", alongside `issue.resolve`, which got its own entry point in an earlier release). Queued like every
+  other command; the generic path keeps working unchanged.
+
+- **Fixed: five small items from the framework review (R-28).** `runtime.heartbeat` now records the writer's
+  own `{pid, create_time}`; `runtime.is_live` believes a document with that recorded only while the exact
+  process is still running, so a turn of any length (a repo-wide snapshot, a git commit, a whole verification)
+  is never reported offline while its process is actually alive, the Control Center's Start button stays
+  disabled while the loop is actually live, and a process that has died is never read as live no matter how
+  long its last turn was. `loop.RENDERED_PROJECTIONS` and `tasks.VOLATILE_PROJECTIONS`, literal copies of
+  `verify.EXCLUDED_FILES` each redundantly unioned with a function that already contains it, are gone; both call
+  sites read `verify.excluded_files()` directly. A new `supervisor.routing_config` module is the one place
+  `config/routing.yaml` is opened and parsed; the three routing loaders and about a dozen inline readers across
+  the tree now delegate to it instead of each re-implementing the same read. `/tasks?phase=<value>` no longer
+  raises on a superscript, subscript or circled digit (`isdigit()` accepted them; `int()` did not) — the filter
+  now uses `isdecimal()`, exactly the predicate `int()` itself parses.
+
+- **Fixed: `migrate attempts --apply` rewrote an allocator-written record's own `cause` back to `scheduled`
+  instead of verifying it, and `check_attempts` named a deleted job record under two assertions instead of one
+  (both carried from the 2.8.0 round-2 review).** Apply now classifies a resolved record into three buckets —
+  stamped, allocator-written-but-unstamped (verified on `attempt`/`kind`/`seq`/`parent` only, never on
+  `cause`/`scope`), and bare — so a record the allocator already wrote keeps the `cause` it was opened with.
+  `check_attempts`'s assertion 2 is skipped for a job id that does not resolve at all: assertion 1 has already
+  named it, and a missing record is not a second, different kind of failure. A conversation thread past nine
+  turns now has its own ordered reader, `conversations.turn_jobs(layout, thread_id)` — additive; the Control
+  Center's chat view already reads a thread's turns from its own file in file order, so nothing production calls
+  it yet, but it is the reader available wherever one needs a thread's own order.
+
+- **Fixed: the start-up guard read and parsed every archived job record on every `supervisor run` process start,
+  with no way to tell an already-known-migrated archive from one that still needed checking, and its refusal
+  message named only `state/runtime/jobs/` even though the same message's `bad[]` list already named archived
+  files (both carried from the 2.8.0 round-2 review).** A stat-only fingerprint of the archive's own listing —
+  never a bare existence flag — lets a start-up skip re-reading every file an earlier start-up already found
+  clean; a restored backup, an out-of-band write into an already-archived folder, or an existing archived
+  record's own bytes changing underneath it each change that listing and are caught on the next comparison, not
+  trusted on the marker's word alone. The refusal message now names the archive alongside the live job
+  directory.
+
+- **Plugin API: `Layout`'s own doc corrected, not changed (editorial, R-27/F21).** `docs/PLUGIN_API.md` said
+  `NoProject` is raised when no `project.yaml` is found and `SUPERVISOR_ROOT` is unset; `Layout()` has never done
+  that — it falls back to the current working directory, exactly as `supervisor.paths`'s own module docstring
+  already said (so `supervisor init .` can bootstrap an empty folder). The doc now says so. `NoProject` is for a
+  caller that wants to refuse before building a `Layout` at all, the CLI's own pattern (`find_root()` is `None` ->
+  raise, before `Layout(root)`); nothing about `Layout()`'s behaviour changes.
+
+- **Plugin API: `Result.model`, `.session_id` and `.usage` are reserved now, not populated (R-25).** Every
+  built-in lane (`claude_cli`, `claude_api`, `codex_cli`) used to forward the model id, the CLI/API session id and
+  the measured token usage into the `Result` it returned; nothing in the framework ever had a reader for any of
+  the three (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so that `Result(...)`
+  assignment cost a dict lookup for no one. Each lane still parses the same session id, model id and usage it
+  always did, for its own `raw`/`result_meta.json`/usage-ledger purposes; only the unread copy onto `Result` is
+  gone. The three fields stay declared, with their documented defaults (`None`/`None`/`{}`), so a plugin lane
+  that already sets them keeps working unchanged; the built-in lanes simply stop setting them. `docs/PLUGIN_API.md`'s
+  `Result` section says so. This follows `Result.digest`'s own precedent for a public field nothing reads: the
+  signature stays and only the behaviour behind it changes, so no major version is needed.
+
+- **Plugin API: `Registry.job_schema(adapter, model)`.** Additive. A plugin
+  adapter may now declare a pydantic model for the keys its own job adds beyond `job_spec`'s framework-known
+  fields; an unknown key is refused once a schema is declared for that adapter, and only ever a warning with no
+  schema declared at all, so an installed plugin from before this release keeps working unchanged. Every
+  built-in lane but `process` (`claude_cli`, `claude_api`, `codex_cli`, `human`) now declares its own, so a
+  misspelled key on one of those is refused the same way, not only warned. A lane that can review declares the
+  confinement keys the framework composes into a review or diagnosis job itself (`tools`, `sandbox`,
+  `write_scope`, all three overridable per role in `config/routing.yaml`) whether or not it reads them, so that
+  documented shape stays writable by hand; a lane with its own schema that ignores a key ignores it, as before.
+  **Behaviour change a plugin's own
+  code can rely on, not only its registration:** `task.job` is a declared field now (next entry), not a key of
+  `task.model_extra` — a lane that read `task.model_extra["job"]` or subscripted `task.job` itself reads nothing
+  there any more; `job_spec(task)` (`supervisor.plugin.job_spec`, unchanged) is and remains the one documented way
+  to read it, and still returns a copy of exactly the keys the document carries, never a typed field's default
+  the block never named. The reference plugin declares a schema for its own lane, so `examples/` shows the hook
+  in use.
+
+- **Plugin API: `Registry.capabilities(adapter, mapping)`.**
+  Additive. A plugin lane may now declare its own capability data in the same closed, framework-known vocabulary
+  the framework states for its own five lanes (`durable`, `network`, `max_duration_min`): read by
+  `supervisor.capabilities.for_lane` and matched against a task's declared `needs` exactly as a built-in lane is,
+  instead of only ever drawing the `needs_lane_unknown` warning a lane with no declaration at all still does. An
+  unknown key, a value of the wrong type, or one of the framework's own five lane names (their capability data is
+  `supervisor.capabilities`'s own stated table, not a plugin's to declare) is refused. The reference plugin
+  declares its lane's capability data, so `examples/` shows the hook in use.
+
+- **Fixed: `job` was not a declared field, so a misspelled key was silently ignored and a seed could not carry
+  one (R-11).** `Task.job` is now a typed `Job` model (`adapter`, `template`, `params`, `argv`, `fn`, `timeout_s`,
+  `idle_timeout_s`, `retry_on`, `stdin_file`, `model`, `effort`, `prompt`, `result_kind`); a wrong type is refused
+  the moment a document carrying it is written. `job` now joins the contract fields that create, import, refresh
+  and patch carry (`tasks.CONTRACT_FIELDS`'s sibling list), under a rule on who is writing rather than on the
+  field: the owner — any actor `gates.is_owner_actor` recognizes
+  (the CLI's `owner`, the Control Center's `owner-ui`, or any `owner-<channel>`), through a create, a seed
+  import, `task.set_job` or a patch — may write any job block, including a literal `argv`; a plan may write only
+  a template id and typed params; nothing else may write one at all, `task.set_job` and `task.create` included.
+  A seed row updating an existing task now applies the job it carries like any other field instead of reporting
+  `job_not_applied`, which is gone from the tree. **Behaviour change for a caller of `task.create`:** a created
+  task's `job` is checked like every other write path's — an envelope whose `actor` is neither the owner's nor a
+  plan's is refused where it used to be applied, and the created row's adapter keys are schema-checked too. Every
+  real submitter already names an owner identity (the CLI's `task create`, the Control Center's routes), and the
+  one caller that builds a document itself (a plan's `create_task` — the only path a diagnosis reaches this
+  through) may not name `job` at all.
+
+- **Plugin API: `job_spec`'s own section names the typed `Job`'s framework-known keys (editorial).** The section
+  described `job:` as an arbitrary mapping (`{adapter: render, scene: ...}`); the entry above already made the
+  keys fixed and typed, this just names them where a plugin author actually reads `job_spec`'s own doc. No
+  behaviour changes: `job_spec()` still returns a copy of exactly the keys the stored block carries, never a typed
+  field's own default the block never named.
+
+- **`config/job_templates.yaml`, the preflight, and a launch gate that requires one.** A project's own template file declares the executable line a `process`/`python` job may
+  reference (`supervisor.templates`): an argv whose slots are one argv element each, typed parameters, a probe,
+  `may_be_set_by`, a timeout cap and a `needs` block — the framework ships none of its own, and a template
+  whose `argv[0]` is a shell (`sh`, `bash`, `cmd`, `powershell`, `pwsh`, `zsh`) is refused unless it is marked
+  `may_be_set_by: [owner]`. Whenever a `process`/`python` job block is written — by a create, a seed, a patch,
+  `task.set_job`, or a plan — `supervisor.preflight` checks it once (a wrong path, a wrong port, an
+  unregistered `python` `fn`, a parameter that does not match its declared type or its callable's signature, an
+  executable that does not resolve, a `timeout_s` above the lane's or the template's own cap, a `timeout_s`
+  below the template's `needs.duration_min`, a secret-shaped value, or a failing/escaping probe — each its own
+  code) and stores the result on the task as `job.preflight: {ok, at, template, probe_digest, detail}`; the
+  gate refuses to launch a `process`/`python` job whose stored preflight is absent, failed, or was recorded
+  against a different job block than the one on disk. A job block carrying a literal `argv`/`fn` declares no
+  parameter slots at all, so nothing in it is required to exist. The probe (when a template declares one) runs
+  under the same declared base environment (R-24) the launch itself would get. **Behaviour change:** a
+  pre-existing `process`/`python` job block with no stored preflight does not launch after this release; the
+  backfill that preflights one at the gate on its first launch, until a one-time sweep is recorded complete,
+  ships in a follow-on step of the same release.
+
+- **Upgrading in place: a one-time sweep preflights every pre-release `process`/`python` job block, no
+  `supervisor migrate` needed.** The first loop turn after this release backfills `job.preflight` onto every
+  existing `process`/`python` task with none (oldest first, bounded per turn), so the launch gate above does not
+  stop a store written before this release; before the sweep completes, an absent preflight is instead checked
+  synchronously at that task's own first launch. A block that fails gets no retry loop: one deduped owner item
+  names the task and the refusal, and a task still able to launch shows `preflight_failed` as its reason; a
+  task already terminal (`COMPLETE`, `CANCELLED`) is swept the same way with no owner item, since none could act
+  on it. The sweep rewrites each touched task's whole stored `job` block (the canonical dump the preflight ran
+  against, not merely an added key), so an operator auditing the upgrade's own git history should expect one
+  large, mechanical commit across every legacy task file, not a small one.
+
+- **A task declares `needs: {duration_min, network, resource, resumable}`, matched against lane capability data
+  at the write; a job's time budget derives from a declared duration instead of a fixed default; Extend takes a
+  duration.** `needs` is a new, optional, sticky contract field (an absent block is exactly today's
+  behaviour everywhere): a key outside the four-key vocabulary, or a value of the wrong type, is refused; a task
+  and its job's template naming different resources is refused (`resource_conflict`). The match
+  (`supervisor.needs`) runs at every write that creates or changes a task's contract or job — refusing the row at
+  an import or a patch, storing the refusal in the preflight for the owner's `set_job` on a live task, refusing
+  the plan at a plan's `set_job` — against the framework's own five-lane capability table
+  (`supervisor.capabilities`): a declared duration above the lane's resolved ceiling (`timeouts.ceiling_s`,
+  `max_hard_cap_s` default 24h) is refused; `resumable: true` against a lane declaring `durable: false`, or
+  against a present template that does not itself declare `resumable: true`, is refused; `network: true` against
+  a lane declaring `network: false` is refused. Where the lane declares nothing at all, or declares no `network`
+  key, the mismatch is a warning instead (`needs_lane_unknown`, `needs_unverifiable`), so a plugin lane from
+  before this release keeps working unchanged; clearing a sticky `needs` block explicitly is reported as
+  `needs_cleared`. The gate re-matches the same function against the lane a task actually dispatches to (routing
+  can move after the write) and stalls a refusal-tier mismatch as its own `why_not_runnable` reason
+  (`needs_mismatch`, admitting `cancel_task`/`hold`, never `resume`), logged once per task rather than every
+  tick. A declaration describes the task's own delivery alone — a review, a verify job and a chat turn match
+  nothing and derive no budget (`needs.applies_to`), so a declaration can never stall or misbudget the task's own
+  review.
+  `timeouts.resolve` takes additive `needs=`/`lane=`/`capabilities=` arguments: a declared `duration_min` derives
+  a budget (`duration_min * 60 * timeouts.needs_headroom`, default ×1.25) when no explicit `timeout_s` is set,
+  clamped to the same resolved ceiling; an explicit `timeout_s` above the ceiling is clamped and logged
+  (`timeout_clamped`) rather than refused, since the write-time refusal (RF-08) binds only the `process`/`python`
+  row of the preflight. All three lanes that have a work deadline — `claude_cli`, `codex_cli` and `process` —
+  resolve their budget through one shared path, so the derived cap, the one composed ceiling and that log line
+  reach every one of them: `ProcessAdapter.prepare` now calls the resolver (`lane="plain"`) instead of computing
+  its own cap, and its unconfigured default (3600s, no idle limit) is unchanged. The ceiling itself is composed
+  from one place for every reader (the cost category, the role profile and the lane's capability mapping), so a
+  project setting `timeouts.max_hard_cap_s` per cost category or per role cannot have a write-time refusal and a
+  launch-time clamp disagree. `python` and `claude_api` stay off the resolver (no work deadline to derive).
+  A `process`-lane hard-cap stop on a job whose task declares `needs.resumable: true`, on a
+  template that declares `resumable: true`, is recorded as a continuation instead of a failed attempt — the
+  recorded loss was 8.0h of agent work killed at a policy cap nobody could describe as long; this is the budget
+  side of the same fix.
+  `agent.extend` now reads a declared offer set (`timeouts.extend_offers`, default `[3600]` — a project
+  configuring nothing sees exactly today's single +1h), refuses past the lane's resolved ceiling
+  (`timeouts.ceiling_s`, naming it rather than silently clamping), and dedupes a second extension of the same
+  duration on the same job inside `timeouts.extend_dedupe_s` (default 10s) as a no-op reporting the existing
+  deadline (`job_extend_deduped`) — closing the recorded burst of seventeen clicks on one job, ten of them inside
+  two seconds. The Control Center's agent page now renders one **Extend** control per declared offer (a project
+  configuring nothing still sees exactly one, **Extend +1h**) and every answer, including the dedupe window's
+  no-op, states the resulting deadline. The unattended credit preference now skips (never refuses) moving a task
+  onto `claude_api` when its own declared need would be refused there. A plan's `create_task` may declare `needs`
+  on the task it creates; a `duration_min` above `plan.max_duration_min` (unconfigured default: that lane's own
+  resolved policy cap) raises the plan to the owner authority class instead of refusing it.
+
+- **A named external resource, declared by the project, serialises two tasks that would otherwise both publish to
+  the same target.** A project declares `resources.<name>` under `config/routing.yaml` (the section
+  the machine-wide lease already lives under), optionally naming `description` and `may_be_claimed_by` (default
+  `[owner]`); a task claims it with `needs.resource: <name>`, already shaped and conflict-checked by the previous
+  entry. An undeclared name is refused at the write (`claim_unknown`); a plan may name only a resource the project
+  opened to it, whether it writes the name itself or selects a template that carries it. The launch gate holds the
+  claim to one open job record at a time, modelled on the owned-path overlap clause it already runs: a second
+  claimant stays PREPARED and is retried, with `why_not_runnable`'s `resource_claimed` naming the claim and its
+  holder; a task's own continuation is never blocked by the record it replaces. There is no new store, TTL,
+  heartbeat or reaper — the claim is the open job record and nothing else, so every way a job already stops
+  (finishing, its task reaching COMPLETE/CANCELLED, the owner terminating it, or a crash `reconcile()` finds)
+  releases it, each logged (`claim_taken`/`claim_released`, with its reason), and a loop restart with the holder
+  still running does not. Across projects, the machine-wide lease (R4) now serves a claim too: a claim whose own
+  declaration configures a `lease:` block is leased under its own name; a job holding the resource slot (the `gpu`
+  flag) keeps the literal `"gpu"` lease exactly as before, including one that also carries a leaseless claim. A
+  project that declares no resource sees no behaviour change, and the framework ships no resource name.
+  `supervisor doctor` lists each declared resource with its current holder and waiter, and names a plan-selectable
+  template whose own claim the project has not opened to a plan.
+
+- **Fixed: thirteen settings a `project.yaml` or `routing.yaml` could carry had no reader anywhere, and two
+  settings the loader already read had no documentation (R-26).** `description`, `repo.*`, `ui.title` and
+  `owner.name` (`project.yaml`), and `version`, `roles.<role>.active_from`, `roles.<role>.second_opinion` and
+  `resources.<name>.single_job` (`routing.yaml`) are gone from the loader, every shipped template and the setup
+  docs; the "one job at a time" rule `single_job` looked like it configured stays exactly what it already was,
+  `limits.max_resource_jobs` plus a job's own `gpu` flag — the two in-repo GPU-lane plugins now name that
+  rule in their own docstrings instead of the key nothing read. `roles.<role>.result_kinds` — documented as a
+  permission and, until now, never enforced — is implemented: `task import`, `task create` and `supervisor check`
+  warn, and a plan's `create_task`/`patch_contract` refuse (RF-18, the same as any other contract warning on that
+  path), when a role whose `result_kinds` is a non-empty list would be asked to produce a kind outside it; a role
+  with no `result_kinds` key at all, or an explicit `result_kinds: []` (the shipped `owner` and `conversation`
+  entries' own idiom for a lane with no result document — `adapter: human`, or a job that always sets a
+  non-document `result_kind`), is not checked. `claude_api.eligible_roles` and `job.api_credits`, already read,
+  are now documented (`docs/runbooks/claude_api.md`, `docs/TASK_CONTRACT.md`).
+
+  **Migration:** none added; `supervisor migrate` is unchanged. A `project.yaml` or `routing.yaml` carrying any of
+  the ten removed keys (`repo.*` is three) keeps loading exactly as before — the loader never read the key and
+  still does not — `doctor` now names it and says it is safe to delete, a warning and never a refusal.
+
+- **A diagnosis (or a human) can now propose a `plan` — a typed, six-operation document the framework itself
+  validates, journals and applies — instead of writing `new_task`/`wait_for` prose a human had to turn into tasks
+  by hand.** `supervisor.plans` is a closed vocabulary (`create_task`, `add_dependency`, `remove_dependency`,
+  `patch_contract`, `set_job`, `resume`) over a plan's own scope and monotonicity rules: `validate()` refuses the
+  whole document on any of 26 named codes — a plan authors no executable string (no `argv`/`cmd`/`fn`/`shell`
+  field exists anywhere in the schema for one to reach), a secret- or path-shaped value is refused and never
+  echoed back in the refusal, and a loosened contract field, a stale rev, a held subject or a graph cycle is
+  refused the same way. A validated plan is written to its own journal (`state/plans/<id>.yaml`) before anything
+  else is touched; `apply()` runs the applier's fixed order (create, dependency edits, contract patches, `set_job`,
+  `resume` — always last, so nothing is released before every other operation has landed) idempotently, persisting
+  each operation's own index to `done` before the next one starts, so a crash between any two operations resumes
+  on the next turn exactly where it stopped; a plan that cannot finish after `plan.max_resumes` attempts goes
+  `stuck` with one deduped owner item, nothing rolled back, and `cancel_plan` is the only way out of it. `set_job`
+  is the one operation that can change what a task runs, and it is bound to the same real preflight
+  (`config/job_templates.yaml`) a write-time job block gets, with the preflight transcript's own digest recorded on
+  the plan. `supervisor plan validate|apply|cancel|show <id>` (CLI) and a read-only `/plans`/`/plans/<id>` Control
+  Center page read and drive it.
+
+- **An inbox item's buttons now carry a typed effect, not a keyword a human-written label merely hinted at.** A
+  choice's label and detail are always rendered from its own effect (`plans.render_choice`, over a closed
+  twelve-effect vocabulary) rather than trusted as the caller's prose; an owner-only effect (`apply_plan`,
+  `cancel_plan`, `cancel_task`, `hold`, `release_hold`, `diagnose_now`) is checked for its required operand at
+  creation, and a plan-tier effect is validated as the exact plan `apply_choice` would propose, so a choice
+  already refused can never be offered. An answer reaches an effect only by naming a choice and carrying the
+  digest of the choices it was shown (refused otherwise as `choice_not_offered` or `choice_stale`, "reload");
+  free text that merely begins with a choice's own keyword names nothing and is recorded as a comment, which
+  reopens the item exactly as before — on a `decision`-kind item as on any other, so a choice carried there is no
+  longer a second way for the same prose to read as an effect. A failed effect is recorded
+  (`choice_applied: {ok: false, error}`) before any reopen is attempted, so an answered item can no longer go
+  quiet with neither an effect nor a record of why.
+
+- **A plan now carries one of three authority classes — routine repair applies on the validator's word alone,
+  shaping work and spend each reach a human — instead of a validated plan applying itself the instant it
+  validates.** `plans.authority()` classifies a plan by the highest-ranked class among its own operations; class
+  A applies immediately once `resume_plans()` routes it. Class B (shaping work: creating a task on an unmetered
+  lane) and the owner authority class (spend) each reach the owner's one typed `apply_plan` choice — never prose
+  — the moment `resume_plans()` routes them; class B is designed to wait instead for one other configured
+  `plan.approver` role's own `plan_review` verdict (`plans.open_plan_review`/`apply_plan_review`,
+  `APPROVE`/`REVISE`/`OWNER`), but nothing in this release dispatches that job to an adapter yet — no packet
+  builder, no loop ingest hook, no result schema — so `resume_plans()` does not route a class B plan there until
+  that dispatch exists; a class B plan for which no approver is configured reaches the owner the same way. A
+  plan already found `awaiting_approval` with a `plan_review` record that names a job with no live record behind
+  it at all — a store an earlier version wrote, or a job lost — is noticed by the same sweep and escalated to
+  the owner too, exactly once. `why_not_runnable` now names a subject's own waiting plan directly (its id and
+  what it is waiting on) rather than reporting the unclaimed-resource fallback. `supervisor doctor` warns when
+  `plan.approver` names a role `routing.yaml` does not configure.
+
+- **A diagnosis `defer` now proposes a `plan` instead of a `new_task`/`wait_for` block a human had to act on by
+  hand.** A refused proposal gets exactly one more session of the same diagnosis job (`cause: continuation`,
+  carrying only the frozen evidence, the refused plan and its refusal list — never a fresh look at the store) to
+  correct it once; a plan refused a second time, or one the first session could not itself normalise into
+  something valid, reaches the owner with both versions and both refusal lists, and never offers `apply_plan` for
+  a plan already known to be refused. `diagnosis.RESULT_CONTRACT`'s `new_task`/`wait_for` keys,
+  `diagnosis.NEW_TASK_FIELDS`, `diagnosis.release_plan` and the defer-counting half of `DIAGNOSIS_BUDGET` are
+  retired; nothing reads them.
+
+- **The idle alert, the Overview's "Up next" card and a task's own page now all read one computed reason for why
+  a non-terminal task is not running, instead of the idle alert quoting an agent's last note about something else
+  while the other two said nothing at all.** `supervisor.why_not_runnable.why_not_runnable()` computes one of ten
+  closed codes (`unmet_dependency`, `phase_gate`, `role_inactive`, `lane_unregistered`, `preflight_failed`,
+  `capacity_floor`, `resource_claimed`, `awaiting_review`, `awaiting_approval`, `needs_mismatch`) from the same
+  deterministic primitives a delivery launch's own gate uses, with the same choices (`diagnose_now`, `cancel_task`, `hold`)
+  offered everywhere that code is read; the loop's own PAUSE/DRAIN/STOP decision is read once as a caller guard
+  ahead of it, never as an eleventh code, since it blocks every task identically rather than naming a fact about the
+  one task shown.
+
+- **A task's contract now carries its own generation counter, `contract_rev`, bumped only by a real
+  contract-field change — and a recorded ACCEPT or owner approval is superseded the instant a judged-set field
+  (`tests`, `checks`, `acceptance`, `artifacts`, `reviewer`, `review_note`, `evidence`) changes under it.** This
+  closes a gap left open before the plan applier existed, when nothing yet wrote a task's contract without a
+  human in the loop: without a counter, an ACCEPT given under a looser contract would still count after a plan
+  tightened it. A non-judged contract field (`actions`,
+  `depends_on`, and the scope/routing/authority fields) still moves `contract_rev` but never supersedes anything
+  already recorded; `job` is outside `CONTRACT_FIELDS` entirely and never moves it. Every non-conversation job
+  record and the delivery brief state the `contract_rev` the dispatch was built from; a review packet's
+  prior-round block now names the contract change that superseded a pass instead of rendering the re-dispatched
+  review as if it were the digest's first.
+
+- **Fixed: an ordinary hyphenated or underscored word could trip the secret scanner, and a packet it refused
+  could stop the loop entirely.** The built-in `openai_api_key`, `anthropic_api_key`, `github_token`,
+  `slack_token`, `aws_access_key_id`, `google_api_key`, `meta_graph_token` and `jwt` patterns now carry a left
+  boundary: a match may
+  not start mid-word, so a word that merely glues a key-shaped tail onto an unrelated head is no longer mistaken
+  for a credential, while every real shape in its real place (line start, after a space, quote, backtick, `=`,
+  `:`, `(`, `KEY=sk-...`, `"Bearer sk-..."`) is still caught and redacted exactly as before. Separately, a
+  genuine refusal building one task's own packet (a revision, review or diagnosis brief, including the rebuild of
+  one for a continuation after a capacity deferral or a lane reroute) is now caught at the dispatch boundary that
+  raised it: that one task stops for the owner (BLOCKED, with the one owner decision card a stopped task already
+  gets — not a fresh card per turn, so one task's refusal can no longer spend the shared per-role inbox budget
+  every other task's decisions and approvals need) carrying the refusal's own message, never the matched text,
+  and every other task keeps dispatching. A false positive on one task can no longer raise out of `settle()` on
+  every later turn until the loop-error breaker stops the loop, and nothing re-offers the refused packet next
+  turn. The two fail-closed conditions that are *not* about one packet's text — the credential store could not be
+  enumerated, and a required packet-screen plugin would not load — still stop the loop rather than walking the
+  task list one BLOCKED task at a time: nothing dispatches either way, and a machine-wide misconfiguration is
+  reported as one. Plugin API (additive, compatible): `policy.PolicyViolation` now carries `scope`, `"task"` for
+  a screen's own refusal of a packet (the default, and what a plugin screen raising one gets) or `"machine"` for
+  a condition that refuses every packet on the machine.
+
 ## 2.8.0 — 2026-11-16
 
-- **Plugin API: additive, for the attempt-identity change (ATTEMPT_MODEL.md section 7; 2.7.0 round 2, P3-R2-3).**
+- **Plugin API: additive, for the attempt-identity change.**
   `submit_command(..., job_id=None)` gains the one thing P3-R2-3 found missing: a job can tag its own command, so
   its failure reaches an owner issue and the job's own result waits on it, exactly as every CLI verb has since
   R-19 — the default stays interactive and the library still reads no environment variable. `Adapter`'s
@@ -26,7 +365,7 @@ major = a change that needs `supervisor migrate` (and says so under **Migration*
   not a downstream package's test bodies, so it neither flagged nor could flag a plugin test that still guesses
   the old id shape — that is this note's own job.
 
-- **Plugin API: `ProcessAdapter.env()`'s default changes (R-24, ATTEMPT_MODEL.md section 4.4, step 12).** A
+- **Plugin API: `ProcessAdapter.env()`'s default changes.** A
   process job's child no longer inherits the loop's own environment; the default is now the declared allow-list
   (`config/routing.yaml`'s `env.base`, or a built-in default for a project that predates this release) plus the
   lane's own `env.lanes.<name>.add`/`.secrets`. `env(spec)`'s signature is unchanged and a subclass that already
@@ -239,7 +578,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
 - **Added: a way for a plugin to raise one idempotent owner inbox item for a condition that keeps holding.**
   `owned_item`, `owned_items`, `update_owned_item` and `close_owned_item` read, update and close items a plugin
   already has; none of them create one, so a plugin with no other inbox-owning job (the local model lane's
-  deferral budget, D-013 R5) had no way to tell the owner at all without importing the framework's internal
+  deferral budget) had no way to tell the owner at all without importing the framework's internal
   `inbox` module directly, which G5's plugin check already refuses. **Plugin API:** `open_owned_item`
   (`supervisor.plugin.open_owned_item(layout, kind, dedup_key, *, subject, summary, for_role="owner", detail=None,
   allowed_responses=None, free_text=True, extra=None) -> dict | None`) is new, documented in `docs/PLUGIN_API.md`
@@ -250,8 +589,8 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   attempt by a backlog it did not cause (found in this same lane's F9 round: an unguarded call raised InboxFull
   out of `submit()`, which the loop turned into a failed attempt instead of a deferral).
 
-- **Hardened before release: the lease protocol's own loop integration, caught by the local-lane round-2 review
-  (`docs/reviews/RELEASE_REVIEW_local-lane.md` F1, F2, F8).** The loop now renews a running `gpu` record's lease
+- **Hardened before release: the lease protocol's own loop integration, caught during review before release.**
+  The loop now renews a running `gpu` record's lease
   entry on every `reconcile()`, so a job that outlives `stale_after_s` does not go stale under another project
   still holding it; a loop that is only ever peek-refused still records its own release request against the
   holder, so a blocked loop's ask has a sender and the holder's watchdog can see it; and a release request older
@@ -265,11 +604,11 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   longer leaks a resident server that nothing notices or stops (F5/F14), its worker fails loudly on a truncated
   or broken stream instead of reporting it COMPLETE (F6), its context-budget ratio is a conservative, overridable
   setting instead of a flat guess (F7), and a lane that defers for two continuous hours raises one idempotent
-  owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each has its own record
-  under `docs/releases/local-lane/`.
+  owner inbox item instead of staying silent (F9, using the `open_owned_item` API above). Each finding has its
+  own record, kept with the planning records of the project that commissioned the work, not here.
 
 - **Hardened once more before release: the round-2 review's five remaining findings on the lease hand-over
-  protocol and the bundled package (`docs/reviews/RELEASE_REVIEW_local-lane_round2.md` F18-F22).** The package's
+  protocol and the bundled package.** The package's
   watchdog now finishes an in-flight request before it yields a release request, honouring one only once the
   worker's own activity file has sat quiet for a new `Settings` key, `hand_over_grace_s` (default 3.0 seconds),
   itself bounded by `hand_over_timeout_s` so a wedged generation still cannot hold the cards past the window
@@ -280,8 +619,8 @@ first) in the same stopped window it upgrades in, before restarting the loop.
   guarantee (F2) unchanged (F20); the bundled package's README now documents every `Settings` key, including
   `defer_budget_s` and `hand_over_grace_s`, and the check that enforces it runs in both directions (F21); and a
   failed Windows Job Object assignment is now logged with its own error code, with the doctor's healthy line
-  saying plainly whether the running server is tied (F22, advisory). Each has its own record under
-  `docs/releases/local-lane/`.
+  saying plainly whether the running server is tied (F22, advisory). Each finding has its own record, kept with
+  the planning records of the project that commissioned the work, not here.
 
 ## 2.5.1 — 2026-11-10
 
@@ -408,7 +747,7 @@ first) in the same stopped window it upgrades in, before restarting the loop.
 - **Fixed: `framework-change/SKILL.md` told a contributor to add a CHANGELOG entry "under `## Unreleased`",
   a heading this file no longer carries once a release has stamped it closed.** Followed literally after such a
   stamp, the instruction breaks `tests/test_changelog_stamp.py`; leaving the entry out instead breaks
-  `tests/test_changelog_entries_2_5_0.py` (docs/plan/CONTRIBUTION_DRYRUN.md, Gap 2). Step 5 now says the entry
+  `tests/test_changelog_entries_2_5_0.py`. Step 5 now says the entry
   goes under the file's topmost heading, whatever release that names, tagged or not - not a literal string that
   is not always there.
 
@@ -502,13 +841,13 @@ these six entries; the tag is not re-cut, and this heading is the whole remedy.
 
 ## 2.2.0 — 2026-11-02
 
-Phase 2's F-B (`docs/plan/PHASE2.md` §2, D-012 "Limits of the framework today"): the fallback now covers a
+The fallback now covers a
 role's own tasks, not only a review of another role's delivery, and a failed login counts as unavailable
 instead of a failed attempt.
 
 **Migration:** none.
 
-- **Fixed: astra's own release-review tasks waited for Codex however long it took, with no fallback.**
+- **Fixed: the review role's own release-review tasks waited for Codex however long it took, with no fallback.**
   `review.lane_for()` always re-derived the adapter from the role's own `roles.<role>.adapter`, so it could only
   ever answer "is this role's configured lane available" - not "is the lane this job actually resolved to
   (`job.adapter`, a `cost_lanes` override) available". It now takes an optional `primary` adapter to ask about
@@ -547,8 +886,8 @@ instead of a failed attempt.
   rule the other two callers already followed; `fallback_overrides()`'s predicate is "this record carries
   `same_vendor` at all" (present, `True` or `False`), not the flag's own truth value, so a flag-less fallback's
   continuation is told apart from an ordinary, non-fallback attempt - the one case the first fix left open.
-- `supervisor.testing`: no new read helper. `docs/releases/packages/TESTING_GAPS.md` (T2-03's real port of one
-  plugin package's tests, read against the other two) found the gap list already empty; this release confirms
+- `supervisor.testing`: no new read helper. A real port of one
+  plugin package's tests, read against the other two, found the gap list already empty; this release confirms
   it again and ships the two fixes above instead.
 
 ## 2.1.1 — 2026-11-02
@@ -572,21 +911,20 @@ an older framework ignores it.
 
 ## 2.1.0 — 2026-10-31
 
-Phase 2 of the boundary plan's F-A (`docs/plan/PHASE2.md` §2, D-010 "Consequences"): the continuation cap now
+The continuation cap now
 goes through the manager's diagnosis route instead of around it, and the first command that closes an issue
-record. Round-1 review (`docs/reviews/RELEASE_REVIEW_2.1.0.md`) found four gaps before the tag — two CI jobs red
+record. Round-1 review found four gaps before the tag — two CI jobs red
 on the exact reviewed head, `issue.resolve` accepting a path outside `state/issues/`, a continuation grant that
 recovery could bypass after a manager requeue, and the diagnosis `job_fix` interface this release no longer
-carries (R1) — each closed by its own commit before round 2. Round-2 review
-(`docs/reviews/RELEASE_REVIEW_2.1.0_round2.md`) found three more gaps in those same fixes — a continuation grant
+carries — each closed by its own commit before round 2. Round-2 review
+found three more gaps in those same fixes — a continuation grant
 whose retirement a crash-and-replay could leave unfinished or redo, a capped attempt a crash could strand before
 its own escalation was durable, and a manager-to-architect hand-off that lost its grant generation and reused an
-already-spent architect answer — each closed by its own commit too
-(`docs/releases/2.1.0/F2-continuation-retirement.md` through `F4-architect-grant-generation.md`); a fourth gap in
-that round (F1, a Windows command form that still let a diagnosis replace the program being run) was in the same
+already-spent architect answer — each closed by its own commit too; a fourth gap in
+that round (a Windows command form that still let a diagnosis replace the program being run) was in the same
 `job_fix` interface rounds 1 through 8 kept finding gaps in, and is moot now that the interface is gone. What
-follows already describes the corrected shape after both rounds, not either round's gap. *Since D-018
-(2026-11-01)* the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
+follows already describes the corrected shape after both rounds, not either round's gap. Since then
+the `job_fix` interface named above is itself gone — see the "Removed" bullet below.
 
 **Migration:** none added. `supervisor migrate` records the new version; nothing moves or renames. **Rollback**
 to v2.0.0, in a maintenance window: drain, stop, check out `v2.0.0`, `supervisor migrate` (records 2.0.0 again),
@@ -647,13 +985,13 @@ it already understood.
   F4, F7): the recorded `escalation -> READY` transition, a generation-scoped retirement boundary, and a
   generation- and dispatch-state-aware architect hand-off are what now make the grant replay-safe end to end, not
   only across the one crash point the first attempt covered.
-- **Removed (D-018, 2026-11-01): the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
+- **Removed: the diagnosis `job_fix` interface.** A manager diagnosis cannot change a task's
   job in 2.1.0. Rounds 1 through 8 of review kept finding gaps in the bounded correction this interface once
   offered a process job's command (R1, F1, F5, F8, F10, F14-F17) — nine of the release's seventeen findings, for
-  a case seen once (T1-08) whose cause phase 2 already removed. A process job whose own command is wrong now
+  a case seen once whose cause phase 2 already removed. A process job whose own command is wrong now
   reaches the owner as a question naming the `task.set_job` change the task needs; `task.set_job`
-  (`commands.apply_job`) stays the only writer of a job block. `docs/releases/2.1.0/SCOPE-CUT-job-fix.md` has the
-  removed commits, symbols and files, and the regression that proves a `job_fix` on a `requeue` now changes
+  (`commands.apply_job`) stays the only writer of a job block. The removed commits, symbols and files are listed
+  in that release's own scope-cut record, with the regression that proves a `job_fix` on a `requeue` now changes
   nothing.
 - **Added: `issue.resolve`, the only command that closes an issue record.** Confined to a valid `I-<digits>` id
   whose resolved path is contained inside `state/issues/` and whose parsed record is actually shaped like an
@@ -1007,7 +1345,7 @@ reconcile first (rollback B).
 An extension without a manifest still loads in 1.12.x, with a doctor WARN; a later major release requires one.
 
 **Review:** the G4 review covers `v1.11.0..` this release commit, including the carried pinned-checkout commits.
-Astra reviewed `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1 of the 1.12.0 review, on
+The independent review covered `v1.11.0..a212283` in two rounds, and every finding is fixed. Round 1, on
 `f8b0e52`, closed the pinned-checkout findings R2-1 and R2-2 and found four issues in the extension standard. Round 2,
 on `92caa7c`, closed two of them and found three gaps in the other two. Each is fixed below with regression tests.
 

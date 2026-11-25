@@ -1,4 +1,4 @@
-"""T2-108 (release review 2.2.0 finding F2): a `fallback:` block written without `flag: same_vendor` must still
+"""Release review 2.2.0 finding F2: a `fallback:` block written without `flag: same_vendor` must still
 keep its model/effort on a role-owned DELIVERY, exactly as it already does on a review (`review.dispatch()`,
 `review.py:127-134`) and on a login reroute (`_lane_login_failed()` -> `reroute()`, `loop.py:515-526`) - both
 apply the fallback's overrides whatever the flag says and use the flag only for the note and the `same_vendor`
@@ -6,9 +6,9 @@ extra. `dispatch_delivery()` alone gated the overrides on the flag itself (`if n
 return self.dispatch(task, name)`, pre-fix `loop.py:163-164`), so a flag-less block dropped the overrides on a
 delivery and ran the role's own model instead - for a Claude fallback of a Codex role, a model that cannot run.
 
-This regression fails at ab1dc143ba3086ce844c1bade4473f20bb2289b0 (delivery model is 'gpt-6-astra': the
-fallback's model was dropped) and at T2-107's head d5585dc (same gate, untouched by that task - see
-docs/releases/2.2.0/F1-fallback-continuations.md "What this leaves alone"). It passes once dispatch_delivery()
+This regression fails at ab1dc143ba3086ce844c1bade4473f20bb2289b0 (delivery model is 'gpt-6-codex': the
+fallback's model was dropped) and at d5585dc, the head of the preceding fallback-continuation fix, which left
+this gate alone on purpose and said so. It passes once dispatch_delivery()
 applies non-empty overrides whenever lane == name, letting the flag decide only the note and the same_vendor
 extra - same_vendor recorded False (not True, and not absent) on the flag-less delivery."""
 import yaml
@@ -34,7 +34,7 @@ def deny_codex(monkeypatch):
 
 
 def test_a_flagless_fallback_block_keeps_its_model_and_effort_on_a_role_owned_delivery(layout, monkeypatch):
-    write_routing(layout, {"code_review": {"adapter": "codex_cli", "model": "gpt-6-astra", "effort": "high",
+    write_routing(layout, {"code_review": {"adapter": "codex_cli", "model": "gpt-6-codex", "effort": "high",
                                            "fallback": FALLBACK_NO_FLAG}})
     make_task(layout, "B", owner_role="code_review")
     deny_codex(monkeypatch)
@@ -55,7 +55,7 @@ def test_control_the_same_flagless_block_already_keeps_its_model_on_a_review(lay
     False - this is what dispatch_delivery() must now match (test_probe_2_2_0.py's own control, reproduced here
     so this file stands on its own)."""
     write_routing(layout, {"engineer": {"adapter": "claude_cli", "model": "sonnet"},
-                           "code_review": {"adapter": "codex_cli", "model": "gpt-6-astra", "effort": "high",
+                           "code_review": {"adapter": "codex_cli", "model": "gpt-6-codex", "effort": "high",
                                            "fallback": FALLBACK_NO_FLAG}})
     make_task(layout, "RV", owner_role="engineer", reviewer=["code_review"], status="IN_PROGRESS")
     tasks.record_delivery(layout, "RV", "d" * 64, actor="loop", result=None, paths=[])

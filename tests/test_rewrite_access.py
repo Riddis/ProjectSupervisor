@@ -216,11 +216,15 @@ def test_an_attribute_that_cannot_be_kept_refuses_the_rewrite(tmp_path, linux_ac
 
 @posix_only
 def test_migrate_keeps_the_modes_of_the_files_it_rewrites(tmp_path):
-    """The reviewer's probe: project.yaml 0640 (version update) and config/routing.yaml 0664 (max_gpu_jobs rename)."""
+    """The reviewer's probe: project.yaml 0640 (version update) and config/routing.yaml 0664 (max_gpu_jobs
+    rename). 2.1.0: at or above the supported upgrade floor (2.0.0, docs/UPDATING.md) — `migrate` carries a
+    project from below the floor the rest of the way in this same one step regardless (never gated; covered by
+    test_compat_shims_and_dead_handlers.py); 2.1.0 is used only so this fixture does not also trip the floor's
+    separate version_mismatch note, a different thing under test elsewhere."""
     template.stamp(tmp_path / "p", name="Probe")
     layout = Layout(tmp_path / "p")
     raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
-    raw["framework_version"] = "1.9.0"
+    raw["framework_version"] = "2.1.0"
     layout.project_file.write_text(yaml.safe_dump(raw), encoding="utf-8")
     routing = layout.config / "routing.yaml"
     routing.write_text(routing.read_text(encoding="utf-8") + "\nlimits:\n  max_gpu_jobs: 1\n", encoding="utf-8")

@@ -21,7 +21,8 @@ alpha:                     # lane_a's section
   nested: {x: [1, 2]}
 gamma: {g: 1}
 scalar: 7
-gpu: {usable_vram_floor_mb: 2000}
+resources:
+  gpu: {usable_vram_floor_mb: 2000}
 limits: {max_resource_jobs: 1}
 """
 

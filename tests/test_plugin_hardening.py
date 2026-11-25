@@ -350,7 +350,6 @@ def setup(registry):
     from supervisor import render
     render.render_all(layout)
     assert plugins.known_projection_paths(layout) == {"WEEKLY.md"}
-    assert plugins._recorded_projections(layout) == {"weekly": ["WEEKLY.md"]}
     doc = dict(project.load(layout))
     doc["plugins"] = []
     project.write(layout, doc)
@@ -405,15 +404,15 @@ def test_a_renamed_projection_output_retires_the_old_file(layout):
     assert verify.verify(layout, task, ["x"], before=before).ok
 
 
-def test_a_1_2_1_projection_cache_is_honoured_until_the_first_full_render(layout):
-    """Upgrading from the flat `paths` list: before anything has rendered on the new code, an untouched WEEKLY.md
-    is still excluded; after every projection rendered once the unattributed entries are gone (re-recorded)."""
+def test_a_legacy_cache_is_honoured_until_the_first_full_render(layout):
+    """Before anything has rendered on the new registry, an untouched WEEKLY.md is still excluded; after every
+    projection rendered once the unattributed entries are gone (re-recorded)."""
     import json
     from supervisor import render
     _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
     (layout.root / "WEEKLY.md").write_text("# view")
     layout.runtime.mkdir(parents=True, exist_ok=True)
-    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["WEEKLY.md", "OLD.md"]}))
+    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"legacy": ["WEEKLY.md", "OLD.md"]}))
     plugins.reset()
     assert plugins.known_projection_paths(layout) >= {"WEEKLY.md", "OLD.md"}
     make_task(layout, "T")
@@ -429,13 +428,16 @@ def test_a_1_2_1_projection_cache_is_honoured_until_the_first_full_render(layout
     assert plugins.known_projection_paths(layout) == {"WEEKLY.md"}
 
 
-def test_a_1_2_1_x_by_plugin_cache_is_read(layout):
+def test_an_unrecognised_projection_record_shape_is_treated_as_no_legacy_entries(layout):
+    """2.9.0 removed the 1.2.1 `paths`/`by_plugin` shapes the current `legacy` key replaced (below the supported
+    floor, docs/UPDATING.md): a record still carrying only one of them reads as having no legacy entries at all,
+    which is exactly what one render after an upgrade would already have made of it."""
     import json
     _configure(layout.root, ["weekly"], {"weekly": WEEKLY_EXT % "WEEKLY.md"})
     layout.runtime.mkdir(parents=True, exist_ok=True)
     (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"by_plugin": {"weekly": ["WEEKLY.md"]}}))
     plugins.reset()
-    assert plugins.known_projection_paths(layout) == {"WEEKLY.md"}
+    assert plugins.known_projection_paths(layout) == set()
 
 
 # ------------------------------------------------------------------ 1.4.1: the record follows the current registrations
@@ -488,7 +490,7 @@ def test_legacy_entries_go_when_no_projection_is_registered(layout):
     _configure(layout.root, ["noviews"], {"noviews": "def setup(registry):\n    pass\n"})
     (layout.root / "OLD.md").write_text("# old view")
     layout.runtime.mkdir(parents=True, exist_ok=True)
-    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["OLD.md"]}))
+    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"legacy": ["OLD.md"]}))
     plugins.reset()
     assert plugins.load(layout).projection_paths == set()
     assert plugins.known_projection_paths(layout) == set()
@@ -499,7 +501,7 @@ def test_legacy_entries_stay_while_a_plugin_fails_to_load(layout):
     import json
     _configure(layout.root, [{"name": "broken", "required": False}], {"broken": "def setup(registry):\n    raise RuntimeError('x')\n"})
     layout.runtime.mkdir(parents=True, exist_ok=True)
-    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"paths": ["OLD.md"]}))
+    (layout.runtime / plugins.PROJECTIONS_FILE).write_text(json.dumps({"legacy": ["OLD.md"]}))
     plugins.reset()
     assert "OLD.md" in plugins.load(layout).projection_paths    # its registrations are unknown: keep the exclusion
 

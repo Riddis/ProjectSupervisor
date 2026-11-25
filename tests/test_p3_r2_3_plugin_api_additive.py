@@ -1,11 +1,11 @@
-"""2.7.0 round 2, P3-R2-3, and ATTEMPT_MODEL.md section 7 / step 4 ("the plugin API, additively"): the six
+"""The plugin API, additively: the six
 documented plugin surfaces the identity change touches must change additively -- a plugin built against the
 previous release keeps running, and `submit_command()` gains the one thing P3-R2-3 found missing: a job can tag
 its own command, same as every CLI verb has been able to since R-19/P2-1.
 
 `supervisor.testing` carries no compatibility promise of its own (G2 does not record it), but this project's own
 convention holds it to the same additive discipline the design asks for, so `job`/`jobs`/`running_job` are proved
-here too, each against the exact wording of ATTEMPT_MODEL.md section 7's table."""
+here too, each against the exact wording of the documented plugin-surface table."""
 from __future__ import annotations
 
 import inspect
@@ -96,7 +96,7 @@ def test_submit_command_default_stays_interactive_and_the_library_reads_no_envir
 
 def test_process_lane_env_carries_the_job_and_attempt_number_markers():
     # `attempt` is written onto the spec by `loop.dispatch`, from the id the allocator minted — never parsed
-    # back out of `attempt_id` (ATTEMPT_MODEL.md §6: the writer switch deletes that parse).
+    # back out of `attempt_id` (the writer switch deletes that parse).
     env = REGISTRY["process"].env({"attempt_id": "F.a3.s1", "attempt": 3})
     assert env["SUPERVISOR_ATTEMPT"] == "F.a3.s1"
     assert env["SUPERVISOR_JOB"] == "F.a3.s1"

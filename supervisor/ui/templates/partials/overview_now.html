@@ -37,7 +37,9 @@
   </div>
   <div class="now-next"><h3>Up next{% if eligible_count > up_next | length %} <small>{{ eligible_count }} eligible</small>{% endif %}</h3>
     {% for t in up_next %}<a href="/tasks/{{ t.id }}"><span>{{ t.id }}<small>{{ t.title }}</small></span>{{ icon('arrow') }}</a>
-    {% else %}<p class="empty-copy">No tasks ready to dispatch. <a href="/roadmap">Roadmap</a> shows what they wait on.</p>{% endfor %}
+    {% else %}{% if blocked_preview %}
+      {% for row in blocked_preview %}<a href="/tasks/{{ row.task.id }}"><span>{{ row.task.id }}<small>{{ row.reason }}</small></span>{{ icon('arrow') }}</a>{% endfor %}
+    {% else %}<p class="empty-copy">No tasks ready to dispatch. <a href="/roadmap">Roadmap</a> shows what they wait on.</p>{% endif %}{% endfor %}
   </div>
   </div>
 </section>

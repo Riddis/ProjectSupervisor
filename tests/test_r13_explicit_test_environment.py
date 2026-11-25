@@ -1,9 +1,9 @@
-"""R-13 (`docs/reviews/FRAMEWORK_REVIEW_2026-11-14.md`), the part the 2.7.0 release left: the verifier's
+"""The part a later release left: the verifier's
 environment is still built from this process's whole `os.environ` (only six named job-control variables dropped,
 `verify.py` before this change), the allow-list's normaliser lives only in `verify.permitted` with nothing shared
 to the worker's own brief, interpreter/cwd/PATH are recorded per command but never as one pinned triple the brief
 also states, and a document-only task's `evidence` still defaults to `auto` at import. Invented task ids and
-artifact paths throughout (D-005)."""
+artifact paths throughout."""
 from __future__ import annotations
 
 import sys

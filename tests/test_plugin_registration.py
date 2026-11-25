@@ -150,10 +150,35 @@ def test_python_job_names_are_not_taken_over_either(tmp_path):
     ("registry.adapter(None)", "name"),
     ("registry.python_job('', lambda root, run_dir: {})", "name"),
     ("registry.python_job('j', 'not callable')", "callable"),
+    ("registry.capabilities('', {})", "name"),
+    ("registry.capabilities('widget', 'nope')", "dict"),
+    ("registry.capabilities('widget', {'bogus': True})", "bogus"),
+    ("registry.capabilities('widget', {'durable': 'yes'})", "durable"),
+    ("registry.capabilities('widget', {'max_duration_min': -1})", "max_duration_min"),
+    ("registry.capabilities('widget', {'max_duration_min': True})", "max_duration_min"),
+    ("registry.capabilities('claude_cli', {'durable': True})", "claude_cli"),
 ])
 def test_registration_refuses_what_is_not_a_lane_or_a_job(tmp_path, call, error):
     reg = plugins.load(configure(tmp_path, {"bad": f"def setup(registry):\n    {call}\n"}))
     assert reg.loaded == [] and error in reg.errors[0]
+
+
+def test_two_plugins_cannot_declare_one_lanes_capabilities(tmp_path):
+    other = "def setup(registry):\n    registry.capabilities('reference_lane', {'durable': True})\n"
+    one = "def setup(registry):\n    registry.capabilities('reference_lane', {'durable': False})\n"
+    lay = configure(tmp_path, {"one": one, "other": other})
+    reg = plugins.load(lay)
+    assert reg.loaded == ["one"]
+    assert any(e.startswith("other:") and "reference_lane" in e and "one" in e for e in reg.errors)
+
+
+def test_a_plugin_declaring_its_own_lanes_capabilities_twice_is_harmless(tmp_path):
+    """Like `job_schema()`, re-registering the same adapter from the same plugin (a reload) is not a conflict."""
+    code = ("def setup(registry):\n    registry.capabilities('widget', {'durable': True})\n"
+           "    registry.capabilities('widget', {'durable': True, 'network': True})\n")
+    reg = plugins.load(configure(tmp_path, {"widget": code}))
+    assert reg.loaded == ["widget"] and reg.errors == []
+    assert reg.capabilities_table["widget"] == {"durable": True, "network": True}
 
 
 def test_old_module_level_registration_keeps_working(tmp_path):

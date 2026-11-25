@@ -1,4 +1,4 @@
-"""The attempt-identity migration's apply and check (ATTEMPT_MODEL.md section 8, step 7 of "Order of work"):
+"""The attempt-identity migration's apply and check:
 apply writes a reviewed `mapping.json`'s identity fields onto the store it was derived from, never derives one
 of its own, and `check` re-reads the store afterwards and asserts section 8.5's seven claims against it.
 
@@ -70,6 +70,39 @@ EXTRA_EXPECTED = {
     "T-ABSENT.a1": (1, "delivery", 1),
 }
 ALL_EXPECTED = {**EXPECTED, **EXTRA_EXPECTED}
+
+
+def _allocator_job(layout, job_id, task_id, kind, attempt, seq, created, cause=None, parent=None, **fields):
+    """A record the allocator itself would have written: `kind`/`attempt`/`seq`
+    promoted to the top level, never only inside `spec`, which is what `_has_identity_fields` tells apart from
+    a bare, un-migrated record. Built directly, like `_job` above, rather than through `tasks.allocate_job` --
+    the shape on disk is what matters here, not the path that wrote it."""
+    rec = {"attempt_id": job_id, "task_id": task_id, "adapter": fields.pop("adapter", "claude_cli"),
+          "phase": fields.pop("phase", "DONE"), "spec": {"kind": kind}, "handle": None, "created": created,
+          "kind": kind, "attempt": attempt, "seq": seq}
+    if cause is not None:
+        rec["cause"] = cause
+    if parent is not None:
+        rec["parent"] = parent
+    rec.update(fields)
+    return jobs.write(layout, rec)
+
+
+def build_mixed_store_fixture(layout) -> None:
+    """P3-R2-A (round 2's advisory, carried to 2.9.0): a store already on the writer release -- one attempt
+    the allocator wrote in full (a delivery and its verify), a second allocator-written delivery whose own
+    `cause` is `revision` -- alongside one bare, un-migrated delivery of the same task (`T-MIX.a7`), the shape
+    that needs a bare record introduced from outside a stopped-window migration to arise at all."""
+    make_task(layout, "T-MIX", attempts=[_attempt("T-MIX.a7", "dispatch T-MIX.a7", at=T.format(7))])
+    _allocator_job(layout, "T-MIX.a1.s1", "T-MIX", "delivery", 1, 1, T.format(1), cause="scheduled")
+    _allocator_job(layout, "T-MIX.a1.v1", "T-MIX", "verify", 1, 1, T.format(2), parent="T-MIX.a1.s1",
+                   adapter="process", verify_delivery="T-MIX.a1.s1", verify_digest="9" * 64)
+    _allocator_job(layout, "T-MIX.a2.s1", "T-MIX", "delivery", 2, 1, T.format(3), cause="revision")
+    _job(layout, "T-MIX.a7", "T-MIX", "delivery", T.format(7))
+
+
+MIXED_EXPECTED = {"T-MIX.a1.s1": (1, "delivery", 1), "T-MIX.a1.v1": (1, "verify", 1),
+                  "T-MIX.a2.s1": (2, "delivery", 1), "T-MIX.a7": (3, "delivery", 1)}
 
 
 EXPECT_TASKS = ("T-RUNDIR", "T-CONT", "T-REVCONT")
@@ -266,6 +299,39 @@ def test_apply_refuses_while_the_runtime_status_is_running(layout, tmp_path):
         migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
 
 
+def test_apply_verifies_an_allocator_written_record_instead_of_rewriting_it(layout, tmp_path):
+    """P3-R2-A: on a store that already holds allocator-written records, apply writes only the one bare
+    record this mapping names, and the allocator's own `cause` on its revision -- the one field a fresh
+    re-derivation gets wrong, because the task-side note it reads was never written for a job the allocator
+    minted -- is left exactly as it was."""
+    build_mixed_store_fixture(layout)
+    mapping_path = _dry_run(layout, tmp_path / "mapping")
+
+    report = migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+    assert report["written"] == ["T-MIX.a7"]
+    assert sorted(report["already_migrated"]) == ["T-MIX.a1.s1", "T-MIX.a1.v1", "T-MIX.a2.s1"]
+
+    revision = jobs.resolve(layout, "T-MIX.a2.s1")
+    assert revision["cause"] == "revision"          # never re-derived to "scheduled" and rewritten
+    for job_id, (attempt, kind, seq) in MIXED_EXPECTED.items():
+        rec = jobs.resolve(layout, job_id)
+        assert (rec.get("attempt"), rec.get("kind"), rec.get("seq")) == (attempt, kind, seq)
+
+
+def test_apply_refuses_when_an_allocator_written_record_really_disagrees_with_the_mapping(layout, tmp_path):
+    build_mixed_store_fixture(layout)
+    mapping_path = _dry_run(layout, tmp_path / "mapping")
+
+    doc = json.loads(mapping_path.read_text(encoding="utf-8"))
+    doc["T-MIX.a2.s1"]["seq"] = 2                   # a real disagreement: the allocator wrote seq 1
+    mapping_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    before = jobs.resolve(layout, "T-MIX.a2.s1")
+    with pytest.raises(migrations.MigrationError, match="T-MIX.a2.s1"):
+        migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+    assert jobs.resolve(layout, "T-MIX.a2.s1") == before   # left exactly as it was, not silently overwritten
+
+
 # ------------------------------------------------------------------ check
 
 
@@ -308,6 +374,27 @@ def test_check_assertion_2_absent_before_is_not_a_failure_but_deleted_after_is(l
     shutil.rmtree(paths["run_dir"])
     with pytest.raises(migrations.MigrationError, match="2_run_dir_baseline"):
         migrations.check_attempts(layout, mapping_path, tmp_path / "check2")
+
+
+def test_check_assertion_2_does_not_duplicate_assertion_1_for_a_deleted_record(layout, tmp_path):
+    """One deleted record must read as one check failure, naming one assertion -- not assertion 1
+    (`1_job_resolves`) and assertion 2 (`2_run_dir_baseline`) both, which is what a `None` record read as a
+    `run_dir` of `None` used to produce."""
+    build_apply_fixture(layout, tmp_path)
+    mapping_dir = tmp_path / "mapping"
+    mapping_path = _dry_run(layout, mapping_dir)
+    migrations.apply_attempts(layout, mapping_path, tmp_path / "apply")
+    _write_expect(mapping_dir)
+
+    jobs.path(layout, "T-RUNDIR.a1").unlink()        # the record itself is gone, not only its run directory
+
+    out = tmp_path / "check"
+    with pytest.raises(migrations.MigrationError, match="1_job_resolves"):
+        migrations.check_attempts(layout, mapping_path, out)
+
+    report = json.loads((out / "check_report.json").read_text(encoding="utf-8"))
+    naming_it = [key for key, msgs in report["failures"].items() if any("T-RUNDIR.a1" in m for m in msgs)]
+    assert naming_it == ["1_job_resolves"]
 
 
 def test_check_fails_assertion_3_when_counters_are_tampered(layout, tmp_path):

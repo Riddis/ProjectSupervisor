@@ -1,5 +1,5 @@
-"""Release hygiene: the framework's three version readings agree (CONTRIBUTOR_RULING.md §8, the "new finding" at
-v2.4.0 - a tag whose tree still said 2.3.0, because the version files were not bumped with the CHANGELOG entry).
+"""Release hygiene: the framework's three version readings agree. A release once shipped a tag whose tree still
+said the previous version, because the version files were not bumped with the CHANGELOG entry.
 Pinning this against the newest tag is deliberately not asserted: on a release branch HEAD is ahead of the newest
 tag by design, and a test that cannot pass on the branch it guards is a test that gets deleted."""
 from __future__ import annotations

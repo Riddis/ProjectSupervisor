@@ -16,9 +16,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import yaml
-
-from . import escalation, store, tasks as tasks_mod
+from . import escalation, routing_config, store, tasks as tasks_mod
 from ._vendor.contract import digest as digest_of, manifest
 from .models.task import Task, TaskStatus
 from .paths import Layout
@@ -31,17 +29,11 @@ TERMINAL_CHECKPOINT_STATUS = {"committed", "unchanged", "refused", "skipped"}
 
 def settings(layout: Layout) -> dict:
     out = {"enabled": True, "since": None}
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            data = {}
-        cp = data.get("checkpoint") or {}
-        if "enabled" in cp:
-            out["enabled"] = bool(cp["enabled"])
-        if cp.get("since"):
-            out["since"] = str(cp["since"])
+    cp = routing_config.load(layout).get("checkpoint") or {}
+    if "enabled" in cp:
+        out["enabled"] = bool(cp["enabled"])
+    if cp.get("since"):
+        out["since"] = str(cp["since"])
     return out
 
 

@@ -42,6 +42,8 @@ Plugins never construct one.
 | `config_sections(*names)` | the `config/routing.yaml` sections this plugin reads with `config()` |
 | `adapter(adapter)` | a job lane under `adapter.name` (see `Adapter`) |
 | `python_job(name, fn)` | a deterministic job `fn(root, run_dir, **params) -> {"status", "artifacts", "notes"}` for `job: {adapter: python, fn: <name>, params: {...}}` |
+| `job_schema(adapter, model)` | a pydantic model for the keys a job for `adapter` adds beyond `job_spec`'s framework-known fields: refused when unknown and a schema is declared for the adapter, warned when none is declared at all |
+| `capabilities(adapter, mapping)` | `adapter`'s own capability data (`durable`, `network`, `max_duration_min`): matched against a task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's own five lane names (whose capability data is `supervisor.capabilities`'s own stated table) is refused |
 | `doctor_check(fn)` | `fn(layout) -> Check` |
 | `overview_panel(fn)` | `fn(layout) -> {"title", "rows": [(label, value)], "progress": (value, max)?}` on the Overview |
 | `packet_screen(fn)` | `fn(layout, text, where, *, job=None, task=None, lane=None)`, raising to refuse a brief |
@@ -54,8 +56,9 @@ Plugins never construct one.
 | `static_dir(path, prefix)` | static files at `/static/<prefix>/...` |
 
 `docs/FRAMEWORK_VS_PLUGIN.md` describes each hook in full. Names are unique: `adapter()` refuses a lane name
-another lane already has, built in or another plugin's, and `python_job()`, `command()`, `inbox_kind()` and
-`config_sections()` refuse a taken name the same way. A refusal is a `PluginError` from `setup()`: the plugin
+another lane already has, built in or another plugin's, and `python_job()`, `command()`, `inbox_kind()`,
+`config_sections()`, `job_schema()` and `capabilities()` refuse a taken name the same way; `capabilities()` also
+refuses one of the framework's own five lane names. A refusal is a `PluginError` from `setup()`: the plugin
 does not load, and a required one blocks the loop. Registering the same object a second time is harmless, so an
 plugin that still registers at import as well keeps working. Module-level `register(adapter)` and `@job(name)`
 from the internal modules still work and are deprecated from 1.11.0.
@@ -93,10 +96,12 @@ it changes nothing, and a later call sees the file as it is then.
 - `config(layout, <name>)` for a name in the manifest's `config.legacy_sections` is the sub-section of that name
   (`{}` when absent).
 
-Until `supervisor migrate` has moved them, the values are read from the old top-level sections in
-`config.legacy_sections`, with a `DeprecationWarning`. The section named like the identity merges in at the top,
-and any other nests under its own name. A section that does not match the model is a `PluginError` naming every
-field. At load, that failure leaves nothing of the plugin registered.
+The section named like the identity merges in at the top, and any other nests under its own name. A section that
+does not match the model is a `PluginError` naming every field. At load, that failure leaves nothing of the
+plugin registered. (Before 2.9.0, until `supervisor migrate` had moved them, the values were also read from the
+old top-level sections `config.legacy_sections` names, with a `DeprecationWarning` — gone below the supported
+upgrade floor, `docs/UPDATING.md`: `config.legacy_sections` is still a manifest field, naming the sub-section
+names above, just no longer a second place this reads from.)
 
 **Any other plugin** reads the top-level `section` it declared with `registry.config_sections()`, as in 1.11.0.
 `{}` when the file or the section is absent.
@@ -121,8 +126,9 @@ owner.
 ### `resources`
 
 `resources(layout) -> dict`: the shared resource policy, `{"gpu": {...}}`, a copy parsed for this call. It is read
-from `routing.yaml`'s `resources.gpu` (since 1.12.0), else from the old top-level `gpu` section with a
-`DeprecationWarning` until `supervisor migrate` has moved it, and is `{}` inside when both are absent.
+from `routing.yaml`'s `resources.gpu` (since 1.12.0), `{}` inside when absent. (Before 2.9.0, until `supervisor
+migrate` had moved it, it also fell back to the old top-level `gpu` section with a `DeprecationWarning` — gone
+below the supported upgrade floor, `docs/UPDATING.md`.)
 
 A plugin with a manifest sees only the resources it declares in `requires.resources`: without `gpu` there, the
 result is `{}`. A plugin without a manifest sees all of it, as in 1.11.0.
@@ -133,8 +139,11 @@ result is `{}`. A plugin without a manifest sees all of it, as in 1.11.0.
 
 `Layout(base: Path | None = None)`: the paths of one project. `base` is the project root (resolved to an absolute
 path; a relative one against the current directory); without it, the root is found from `SUPERVISOR_ROOT` or the
-nearest folder above the current directory holding `project.yaml`, and `NoProject` is raised when there is none.
-Every attribute is a `pathlib.Path` under `root`; nothing is created until `ensure()`.
+nearest folder above the current directory holding `project.yaml`, and **falls back to the current working
+directory when neither is found** (so `supervisor init .` can bootstrap an empty folder) — `Layout()` itself never
+raises. `NoProject` exists for a caller that wants to refuse first: call `find_root()` and raise it yourself before
+constructing a `Layout`, the pattern the CLI's own commands use. Every attribute is a `pathlib.Path` under `root`;
+nothing is created until `ensure()`.
 
 | Attribute | Path | Attribute | Path |
 |---|---|---|---|
@@ -262,8 +271,8 @@ A dataclass, what `collect()` returns.
 | `digest: str \| None` | **reserved, unset; deprecated.** The loop computes a delivery's digest itself from `artifacts`; nothing reads this field, and no lane need set it. Removal is announced for the next major version |
 | `artifacts: list[str]` | root-relative paths of the files the job produced |
 | `notes: str` | free text for the owner |
-| `model`, `session_id: str \| None` | what ran, when a lane knows it |
-| `usage: dict` | measured usage, lane-defined |
+| `model`, `session_id: str \| None` | **reserved, unset.** No built-in lane forwards either onto the `Result` it returns any more: nothing in the framework ever read them there (R-25) (the loop reads `status`, `error`, `artifacts`, `notes` and `raw` only), so only that unread assignment was removed. Each lane still parses the same session id and model id for its own `raw`/`result_meta.json`. A plugin lane may still set these fields for its own future reader |
+| `usage: dict` | **reserved, unset** on `Result`, for the same reason as `model`/`session_id` above: the built-in lanes still parse and record token usage for their own ledgers (`record_usage`, `result_meta.json`), only the unread `Result.usage=` assignment is gone. A plugin lane may still set it for its own purposes -- one in-tree lane already does, for a reading that is not token usage at all |
 | `error: str \| None` | why it failed |
 | `raw: dict` | the lane's raw result, kept with the record |
 | `reset_epoch: float \| None` | `DEFERRED` only: the earliest re-dispatch time |
@@ -271,7 +280,12 @@ A dataclass, what `collect()` returns.
 ### `job_spec`
 
 `job_spec(task) -> dict`: a copy of the task's `job:` block (`{}` when it has none), what a lane's `prepare()` reads
-to build its spec: `job: {adapter: render, scene: ...}` in the task contract. The task `prepare()` receives also has
+to build its spec: `job: {adapter: render, scene: ...}` in the task contract. `task.job` is a typed `Job` model
+(2.9.0, R-11); its framework-known keys are `adapter`, `template` (a plan's own writer: a reference, never a
+command), `params`, `argv` (the owner's own writer only), `fn`, `timeout_s`, `idle_timeout_s`, `retry_on`,
+`stdin_file`, `model`, `effort`, `prompt` and `result_kind` — an adapter's own keys beyond these are declared
+through `registry.job_schema()` above, not here. `job_spec()` still returns a copy of exactly the keys the stored
+block carries, never a typed field's own default the block never named. The task `prepare()` receives also has
 `id`, the attempt's run folder name; plugins read nothing else from it.
 
 ### `CapacityDeferred`
@@ -441,7 +455,7 @@ it returns is a copy.
 | `section(layout, name) -> dict` | one section of `load()`, `{}` when absent or not a mapping |
 | `config_problems(layout) -> list[str]` | the entries the framework rejected; each is a value the owner wrote that is not in effect |
 | `secret_scan_problems(layout) -> list[str]` | why the credential store could not be screened completely; non-empty means every packet is refused |
-| `PolicyViolation` | raised by a packet screen (`registry.packet_screen`) to refuse a brief; the loop refuses the job |
+| `PolicyViolation` | raised by a packet screen (`registry.packet_screen`) to refuse a brief; the loop refuses the job. `scope` says whose failure it is: `"task"` — the default, and what a screen refusing a packet's own text gets — fails that one task (BLOCKED, routed to the owner) and the loop keeps serving every other one; `"machine"`, for a condition that refuses every packet on the machine, stops the loop instead. The message reaches the log, a task note and the owner's inbox, so it names what kind of value was found, never the value |
 
 ## Control Center pages
 

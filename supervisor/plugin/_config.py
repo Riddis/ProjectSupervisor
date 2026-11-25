@@ -2,21 +2,22 @@
 
 A plugin whose manifest has a `config` table owns `plugins.<identity>` in routing.yaml, validated by the
 pydantic model the manifest names. `config(layout, <identity>)` is that whole section; `config(layout, <legacy
-section>)` is its sub-section of that name. Until `supervisor migrate` has moved the values (1.12.0), they are read
-from the old top-level sections the manifest lists in `config.legacy_sections`, with a DeprecationWarning. The section
-named like the identity merges in at the top; any other nests under its own name.
+section>)` is its sub-section of that name. The section named like the identity merges in at the top; any other
+nests under its own name. `supervisor migrate` moves the values off the pre-1.12.0 top-level sections the manifest
+lists in `config.legacy_sections` (and `resources.gpu` off the old top-level `gpu`, below); by the supported
+upgrade floor (docs/UPDATING.md, 2.0.0) every project has run it, so this facade reads only the current location.
 
 A plugin without a manifest (or without a `config` table) keeps the phase-2 facade: the top-level sections it
-declared with `registry.config_sections()`. The shared resource policy comes from `resources(layout)`: `resources.gpu`,
-else the old top-level `gpu` (warned). Everything is a copy, read now."""
+declared with `registry.config_sections()`. The shared resource policy comes from `resources(layout)`:
+`resources.gpu`, {} when unset. Everything is a copy, read now."""
 from __future__ import annotations
 
 import functools
-import warnings
 from pathlib import Path
 
 import yaml
 
+from .. import routing_config
 from ..plugins import PluginError
 from ..paths import Layout
 
@@ -38,10 +39,9 @@ def _routing(layout: Layout) -> dict:
     if not path.exists():
         return {}
     try:
-        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
+        return routing_config.read_raw(path)
+    except (OSError, yaml.YAMLError) as exc:
         raise PluginError(f"config/routing.yaml cannot be read: {exc}") from None
-    return doc if isinstance(doc, dict) else {}
 
 
 def _mapping(doc: dict, section: str) -> dict:
@@ -54,26 +54,11 @@ def _mapping(doc: dict, section: str) -> dict:
 
 
 def _assembled(layout: Layout, m, doc: dict | None = None) -> dict:
-    """The raw value of plugin `m`'s section: `plugins.<identity>`, or, before the migration, its legacy
-    sections (warned)."""
+    """The raw value of plugin `m`'s section: `plugins.<identity>` ({} when the project has none — `supervisor
+    migrate` writes it there, so a project at the supported floor or later never has it anywhere else)."""
     doc = _routing(layout) if doc is None else doc
     owned = _mapping(doc, "plugins")
-    if m.identity in owned:
-        return _mapping(owned, m.identity)
-    present = [s for s in m.config.legacy_sections if s in doc]
-    if not present:
-        return {}
-    warnings.warn(f"plugin {m.identity!r} reads its configuration from the routing.yaml sections "
-                  f"{', '.join(present)}; since 1.12.0 it lives in plugins.{m.identity}. Run `supervisor migrate` "
-                  f"to move it; a later major release reads only plugins.{m.identity}", DeprecationWarning,
-                  stacklevel=3)
-    out: dict = {}
-    if m.identity in present:
-        out.update(_mapping(doc, m.identity))
-    for section in present:
-        if section != m.identity:
-            out[section] = _mapping(doc, section)
-    return out
+    return _mapping(owned, m.identity) if m.identity in owned else {}
 
 
 def validated(layout: Layout, m, schema) -> dict:
@@ -159,20 +144,13 @@ def gpu_device(policy: dict, device: str | int | None) -> dict | None:
 
 
 def resources(layout: Layout) -> dict:
-    """The shared resource policy: {"gpu": {...}} from routing.yaml's `resources.gpu`, else the old top-level `gpu`
-    (warned), {} inside when absent. A plugin with a manifest sees only what it declares in `requires.resources`;
-    one without sees all of it, as before. A copy, read now."""
+    """The shared resource policy: {"gpu": {...}} from routing.yaml's `resources.gpu`, {} inside when absent.
+    A plugin with a manifest sees only what it declares in `requires.resources`; one without sees all of it, as
+    before. A copy, read now."""
     from .. import plugins
     doc = _routing(layout)
     shared = _mapping(doc, "resources")
-    if "gpu" in shared:
-        gpu = _mapping(shared, "gpu")
-    elif "gpu" in doc:
-        warnings.warn("routing.yaml's top-level `gpu` section is the shared resource policy resources.gpu since "
-                      "1.12.0; run `supervisor migrate` to move it", DeprecationWarning, stacklevel=2)
-        gpu = _mapping(doc, "gpu")
-    else:
-        gpu = {}
+    gpu = _mapping(shared, "gpu") if "gpu" in shared else {}
     policy = {"gpu": gpu}
     reg = plugins.load(layout)
     who = plugins.calling_plugin(layout)

@@ -1,4 +1,4 @@
-"""R-13 (`docs/reviews/FRAMEWORK_REVIEW_2026-11-14.md`), three of its five parts: allow-list spelling, the
+"""Three parts: allow-list spelling, the
 environment a declared command runs under, and the scratch directory every verification leaves behind. (Evidence
 mode and PATH/shell resolution are a later release.)"""
 from __future__ import annotations
@@ -32,7 +32,7 @@ def test_shell_operators_are_still_refused_whatever_the_spelling():
 
 def test_a_declared_command_sees_none_of_the_job_control_variables(layout, monkeypatch):
     """`layout` already sets SUPERVISOR_ROOT (conftest.py); a dispatched job also carries SUPERVISOR_ATTEMPT and
-    SUPERVISOR_RUN_DIR (adapters/process.py) — none of these are a declared command's business (T3-06.a9)."""
+    SUPERVISOR_RUN_DIR (adapters/process.py) — none of these are a declared command's business."""
     monkeypatch.setenv("SUPERVISOR_ATTEMPT", "T1.a1")
     monkeypatch.setenv("SUPERVISOR_RUN_DIR", str(layout.root / "runs" / "T1" / "T1.a1"))
     script = layout.root / "check_env.py"

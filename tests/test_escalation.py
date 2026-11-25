@@ -1,6 +1,6 @@
 import yaml
 
-from supervisor import escalation, jobs as jobs_mod, tasks
+from supervisor import escalation, jobs as jobs_mod, scheduler, tasks
 from supervisor.models.task import TaskStatus
 from tests.conftest import make_task
 
@@ -52,7 +52,7 @@ def test_first_failure_retries_on_the_normal_model(layout):
     outcome = escalation.record_failure(sup, "T", "verification", "missing artifacts: out.txt")
     assert outcome == {"action": "retry", "revision": 1, "senior": False, "signature": outcome["signature"]}
     assert len(sup.calls) == 1
-    job = (sup.calls[0]["task"].model_extra or {}).get("job") or {}
+    job = scheduler.job_spec(sup.calls[0]["task"])
     assert job.get("model") != "opus" and "Revision required" in job.get("prompt", "")
 
 
@@ -64,7 +64,7 @@ def test_second_revision_of_a_distinct_failure_uses_the_senior_model(layout):
     escalation.record_failure(sup, "T", "verification", "missing artifacts: out.txt")
     outcome = escalation.record_failure(sup, "T", "verification", "a completely different problem: timeout in step 2")
     assert outcome["action"] == "retry" and outcome["senior"] is True
-    job = (sup.calls[1]["task"].model_extra or {}).get("job") or {}
+    job = scheduler.job_spec(sup.calls[1]["task"])
     assert job.get("model") == "opus"
 
 
@@ -121,7 +121,7 @@ def test_escalate_on_a_failed_task_adds_a_note_instead_of_an_illegal_transition(
     assert tasks.load(layout, "T").status == TaskStatus.FAILED
 
 
-# ---- R-14: retry budgets split by cause (ATTEMPT_MODEL.md section 4.2, step 10 of "Order of work") ----
+# ---- retry budgets split by cause ----
 #
 # One counter used to charge infrastructure failures and content revisions alike: four infrastructure
 # failures could spend the budget a content review needed, and every blocked review round cost a

@@ -1,4 +1,4 @@
-"""R-15/R-25 (ATTEMPT_MODEL.md section 4.3): a round-two review packet carries round one's findings, the
+"""A round-two review packet carries round one's findings, the
 producer's claim, the artifact-level diff and `review_note` — entirely from the store, never a run directory.
 Round one's packet asks for every blocking finding. A review result that omits `findings[].id` still gets one.
 The producer's per-finding response (`findings_response`, optional, additive) renders beside the matching
@@ -93,7 +93,7 @@ def test_round_two_packet_carries_round_one_and_the_diff_entirely_from_the_store
 
 
 def test_round_two_packet_renders_the_producers_response_beside_each_finding(layout):
-    """ATTEMPT_MODEL.md 4.3 point 3: what the producer claimed PER FINDING (addressed/disputed/deferred), not
+    """What the producer claimed PER FINDING (addressed/disputed/deferred), not
     only the one undifferentiated paragraph `task.result` already carries — the optional `findings_response`
     delivery field, keyed by the prior round's own finding id, rendered next to that finding's own line.
     `task.result` stays the fallback: a producer that gives none still has its one free-text claim shown."""

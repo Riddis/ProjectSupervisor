@@ -3,8 +3,8 @@
 The loop has already done the fast part of verification (artifacts present, containment, before/after scan) and
 hands the slow part — re-running the task's checks and the worker's reported test commands — to this process, so the
 supervisor never blocks on a test budget and PAUSE/DRAIN/STOP keep working while tests run. The result goes to
-result.json in this job's own run dir (SUPERVISOR_RUN_DIR, the same env var any process job's adapter already sets —
-ATTEMPT_MODEL.md §4.4, one less id to parse), as {"status": "COMPLETE", "verification": {"ok", "detail", "report"}};
+result.json in this job's own run dir (SUPERVISOR_RUN_DIR, the same env var any process job's adapter already sets,
+one less id to parse), as {"status": "COMPLETE", "verification": {"ok", "detail", "report"}};
 a crash or timeout surfaces as a FAILED job and the loop records a failed verification with that reason."""
 from __future__ import annotations
 

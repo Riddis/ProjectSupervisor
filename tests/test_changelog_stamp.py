@@ -1,4 +1,4 @@
-"""The branch-opening half of CONTRIBUTOR_RULING.md section 8, ruling 2: the `## Unreleased` block holding
+"""The branch-opening half of the rule: the `## Unreleased` block holding
 2.4.0's entries becomes `## 2.4.0 - <date>`, carrying one sentence recording that the tag was cut before the
 heading moved, and this release's own entries open a fresh `## Unreleased` that becomes the topmost `## 2.5.0 -
 <date>` heading at release. Pinning the exact dates against today is deliberately not asserted here - the dates

@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 
 from ... import conversations as conversations_mod
+from ... import routing_config
 from ...paths import Layout
 from ..auth import require_auth, require_csrf
 from ..deps import act, decode_flash, render
@@ -25,11 +26,7 @@ def _thread_or_404(layout: Layout, thread_id: str) -> dict:
 def _roles(layout: Layout) -> list[str]:
     """Addressable roles for a new thread: every active role with a card, excluding the inbox-only `owner` role
     and the `conversation` chat lane itself (its own confinement, not an org-chart role)."""
-    import yaml
-    cfg = layout.config / "routing.yaml"
-    if not cfg.exists():
-        return [conversations_mod.DEFAULT_ROLE]
-    roles = (yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}).get("roles") or {}
+    roles = routing_config.load(layout).get("roles") or {}
     out = sorted(r for r, prof in roles.items() if prof.get("active") and r not in ("owner", "conversation"))
     return out or [conversations_mod.DEFAULT_ROLE]
 

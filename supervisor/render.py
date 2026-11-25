@@ -71,7 +71,7 @@ def _front_matter(text: str) -> dict:
 
 def _attempt_line(ad: dict) -> str:
     """One `**Attempts.**` entry, read from the stored dict (`Attempt.model_dump()`), never from `Attempt.id` or
-    `.model` as a declared field — both are gone (ATTEMPT_MODEL.md §4.6, step 15; the model is on the job record,
+    `.model` as a declared field — both are gone (the model is on the job record,
     never in TASKS.md). The migrated shape (`jobs[]` set) names its jobs; an un-migrated entry (no `jobs[]`)
     names itself by whatever key it was written under — tolerated, never typed."""
     jobs = ad.get("jobs") or []

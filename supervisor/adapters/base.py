@@ -3,16 +3,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from pydantic import BaseModel
+
 
 @dataclass
 class Result:
     status: str                      # COMPLETE | PARTIAL | BLOCKED | FAILED | DEFERRED (capacity: re-queue, no attempt consumed)
-    digest: Optional[str] = None     # artifact digest the adapter computed (loop re-verifies)
+    digest: Optional[str] = None     # reserved, unset: the loop computes a delivery's digest itself; no lane need set
+                                     # this (deprecated, removal announced for the next major version)
     artifacts: list[str] = field(default_factory=list)
     notes: str = ""
-    model: Optional[str] = None
-    session_id: Optional[str] = None
-    usage: dict[str, Any] = field(default_factory=dict)
+    model: Optional[str] = None      # reserved: no built-in lane sets this any more (R-25, 2.9.0) -- nothing reads it
+    session_id: Optional[str] = None # reserved: no built-in lane sets this any more (R-25, 2.9.0) -- nothing reads it
+    usage: dict[str, Any] = field(default_factory=dict)  # reserved: no built-in lane sets this any more (R-25, 2.9.0)
     error: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
     reset_epoch: Optional[float] = None   # DEFERRED only: earliest re-dispatch time
@@ -61,5 +64,28 @@ REGISTRY: dict[str, Adapter] = {}
 def register(adapter: Adapter) -> Adapter:
     REGISTRY[adapter.name] = adapter
     return adapter
+
+
+# A built-in lane's own job_schema, keyed by adapter name like REGISTRY itself:
+# populated by each adapter module next to its own `register()` call, and copied into every project's
+# `plugins.Registry.job_schemas` (`plugins.Registry.__post_init__`) so a misspelled key on a framework lane is
+# refused exactly like one on a plugin lane that declared a schema, never left to the no-schema warning.
+JOB_SCHEMAS: dict[str, Any] = {}
+
+
+def register_job_schema(name: str, model: Any) -> None:
+    JOB_SCHEMAS[name] = model
+
+
+class ReviewLaneKeys(BaseModel):
+    """The confinement block the framework composes into a review or a diagnosis job itself (supervisor.review's
+    REVIEW_LANE, overridable per role as data in routing.yaml). A lane that can review declares all three, whether
+    or not it reads them, so the owner may write that documented shape into a seed or a patch by hand without
+    being refused for a key the framework puts there unasked. Which one actually confines the job is the lane's
+    own business: a lane with per-path write modes uses `write_scope`, one with a sandbox mode uses `sandbox`,
+    and a key its lane ignores is ignored, not a misspelling."""
+    tools: Optional[str | list[str]] = None
+    sandbox: Optional[str] = None
+    write_scope: Optional[str] = None
 
 

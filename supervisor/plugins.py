@@ -77,8 +77,11 @@ PROJECTIONS_FILE = "projection_paths.json"          # state/runtime/: projection
 
 def _read_projection_record(layout: Layout) -> dict:
     """The projection record as written: {"projections": {"<plugin>:<fn>": {"declared": [...], "rendered": path|None}},
-    "legacy": [...]}. A 1.2.1 file (`paths`: a flat list, unattributed) is carried as `legacy` until every projection
-    of the current registry has rendered once, so an upgrade never loses the exclusions of untouched views."""
+    "legacy": [...]}. `legacy` is carried until every projection of the current registry has rendered once, so an
+    upgrade never loses the exclusions of untouched views; the 1.2.1 shapes it replaced (a flat `paths` list, or
+    the interim `by_plugin` mapping) self-heal the same way and are gone below the supported floor (2.0.0,
+    docs/UPDATING.md) — a record still carrying only one of them is treated as carrying no legacy entries at all,
+    which the one render after an upgrade would have done to it anyway."""
     try:
         data = read_json(layout.runtime / PROJECTIONS_FILE)
     except (OSError, ValueError):
@@ -93,24 +96,9 @@ def _read_projection_record(layout: Layout) -> dict:
         declared = entry.get("declared") if isinstance(entry.get("declared"), list) else []
         rendered = entry.get("rendered") if isinstance(entry.get("rendered"), str) else None
         out[str(key)] = {"declared": sorted({str(x) for x in declared}), "rendered": rendered}
-    legacy = data.get("legacy") if isinstance(data.get("legacy"), list) else data.get("paths")   # 1.2.1 format
+    legacy = data.get("legacy")
     legacy = sorted({str(x) for x in legacy}) if isinstance(legacy, list) else []
-    # 1.2.1.x interim format: {"by_plugin": {plugin: [paths]}} - attributed to the plugin but not the projection
-    by_ext = data.get("by_plugin")
-    if isinstance(by_ext, dict) and not projections:
-        legacy = sorted(set(legacy) | {str(x) for v in by_ext.values() if isinstance(v, list) for x in v})
     return {"projections": out, "legacy": legacy}
-
-
-def _recorded_projections(layout: Layout) -> dict[str, list[str]]:
-    """{plugin name: [root-relative paths]} currently recorded, for inspection and tests."""
-    out: dict[str, set[str]] = {}
-    for key, entry in _read_projection_record(layout)["projections"].items():
-        plugin = key.split(":", 1)[0]
-        out.setdefault(plugin, set()).update(entry["declared"])
-        if entry["rendered"]:
-            out[plugin].add(entry["rendered"])
-    return {k: sorted(v) for k, v in out.items()}
 
 
 def known_projection_paths(layout: Layout) -> set[str]:
@@ -200,6 +188,10 @@ class Registry:
     unmanifested: list[str] = field(default_factory=list)       # loaded without a manifest (1.12.x: a warning)
     manifests: dict[str, Any] = field(default_factory=dict)     # plugin -> its Manifest, when it has one
     config_schemas: dict[str, Any] = field(default_factory=dict)  # plugin -> the pydantic model of its section
+    job_schemas: dict[str, Any] = field(default_factory=dict)   # adapter name -> the pydantic model of its own job keys
+    job_schema_owners: dict[str, str] = field(default_factory=dict)  # adapter name -> the plugin that declared it
+    capabilities_table: dict[str, dict] = field(default_factory=dict)        # adapter name -> its capability mapping
+    capabilities_table_owners: dict[str, str] = field(default_factory=dict)  # adapter name -> the plugin that declared it
 
     _setting_up: str | None = None                              # the plugin whose setup(registry) is running
 
@@ -210,6 +202,13 @@ class Registry:
         # what it registered, (manifest kind, identifier), checked against its manifest. None outside setup().
         self._pending: dict[tuple[str, str], tuple[Any, str, str]] | None = None
         self._registered: list[tuple[str, str]] | None = None
+        # A built-in lane's own job_schema: declared next to the lane itself
+        # (adapters/base.register_job_schema), not through setup(), so it is here before any plugin's. A plugin
+        # naming the same adapter through registry.job_schema() is refused by that method's own check (the owner
+        # recorded here, "framework", never matches a plugin's identity).
+        from .adapters.base import JOB_SCHEMAS
+        self.job_schemas.update(JOB_SCHEMAS)
+        self.job_schema_owners.update({name: "framework" for name in JOB_SCHEMAS})
 
     @property
     def identity(self) -> str | None:
@@ -359,6 +358,58 @@ class Registry:
                 raise PluginError(f"config section {name!r} is already declared by plugin {self.config_owners[name]!r}")
         for name in names:
             self.config_owners[name] = owner
+
+    def job_schema(self, adapter: str, model: Any) -> None:
+        """A pydantic model for the keys this plugin's own `adapter` lane adds to a job beyond the framework's
+        typed `Job` fields (docs/plugin_api.json): checked (`tasks.job_schema_problems`)
+        at every write that carries a job for this adapter. An unknown key is refused once a schema is declared for
+        the adapter; with none declared at all, an unknown key is only ever a warning, so a plugin that predates
+        this release keeps working unchanged. One schema per adapter name, like `adapter()`'s own lane name."""
+        if not isinstance(adapter, str) or not adapter:
+            raise PluginError(f"job_schema needs a non-empty adapter name, got {adapter!r}")
+        if not hasattr(model, "model_validate"):
+            raise PluginError(f"job_schema({adapter!r}, ...): model must be a pydantic model, got {model!r}")
+        owner = self._setting_up or "?"
+        current = self.job_schemas.get(adapter)
+        if current is not None and current is not model and self.job_schema_owners.get(adapter) != owner:
+            raise PluginError(f"job schema for adapter {adapter!r} is already registered by plugin "
+                             f"{self.job_schema_owners[adapter]!r}")
+        self.job_schemas[adapter] = model
+        self.job_schema_owners[adapter] = owner
+
+    def capabilities(self, adapter: str, mapping: dict) -> None:
+        """A plugin lane's own capability data (`durable`, `network`, `max_duration_min` -- the closed,
+        framework-known vocabulary), read by `supervisor.capabilities.
+        for_lane` instead of leaving the lane matched as `needs_lane_unknown` (a lane with no declaration at
+        all). One of the framework's own five lane names is refused: their capability data is
+        `supervisor.capabilities`'s own stated table, not a shape a plugin may fill in. One declaration per
+        adapter name, like `job_schema()`'s own."""
+        from . import capabilities as capabilities_mod
+        if not isinstance(adapter, str) or not adapter:
+            raise PluginError(f"capabilities needs a non-empty adapter name, got {adapter!r}")
+        if adapter in capabilities_mod.FRAMEWORK_LANES:
+            raise PluginError(f"capabilities({adapter!r}, ...): {adapter!r} is one of the framework's own lanes; "
+                              f"its capability data is supervisor.capabilities's own table, not a plugin's to declare")
+        if not isinstance(mapping, dict):
+            raise PluginError(f"capabilities({adapter!r}, ...): mapping must be a dict, got {mapping!r}")
+        unknown = sorted(set(mapping) - {"durable", "network", "max_duration_min"})
+        if unknown:
+            raise PluginError(f"capabilities({adapter!r}, ...): unknown key(s) {', '.join(unknown)} (the vocabulary "
+                              f"is durable, network, max_duration_min)")
+        for key in ("durable", "network"):
+            if key in mapping and not isinstance(mapping[key], bool):
+                raise PluginError(f"capabilities({adapter!r}, ...): {key} must be a bool, got {mapping[key]!r}")
+        if "max_duration_min" in mapping:
+            value = mapping["max_duration_min"]
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise PluginError(f"capabilities({adapter!r}, ...): max_duration_min must be a positive int, got "
+                                  f"{value!r}")
+        owner = self._setting_up or "?"
+        current_owner = self.capabilities_table_owners.get(adapter)
+        if current_owner is not None and current_owner != owner:
+            raise PluginError(f"capabilities for adapter {adapter!r} is already declared by plugin {current_owner!r}")
+        self.capabilities_table[adapter] = dict(mapping)
+        self.capabilities_table_owners[adapter] = owner
 
     def doctor_check(self, fn: Callable) -> None:
         self.doctor_checks.append(fn)                      # its name is known only when it runs: doctor checks it
@@ -955,13 +1006,13 @@ def _load_into(layout: Layout, reg: Registry) -> None:
                 setup(reg)
             finally:
                 reg._setting_up = None
-            if found.manifest is not None:
+            if found.legacy:                                 # found, usable, no manifest (discovery.Found.legacy)
+                reg.unmanifested.append(name)
+            else:
                 extra = _undeclared(found.manifest, reg._registered)
                 if extra:
                     raise PluginError(f"setup() registered what {found.manifest.source} does not declare in "
                                          f"provides: {', '.join(extra)}; nothing of it was kept")
-            else:
-                reg.unmanifested.append(name)
             reg._commit()
             reg.loaded.append(name)
         except BaseException as exc:                        # noqa: BLE001 - recorded; a required one blocks the loop

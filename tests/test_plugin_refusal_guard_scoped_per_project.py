@@ -67,7 +67,7 @@ def accepting(tmp_path):
 
 @pytest.mark.parametrize("order", ["refusing-first", "accepting-first"])
 def test_each_project_loads_as_it_would_alone(tmp_path, order):
-    """Astra's probe, in both orders."""
+    """The reviewer's probe, in both orders."""
     a, b = refusing(tmp_path), accepting(tmp_path)
     assert "client" in plugins.approval(a).refused and not plugins.approval(b).refused
     results = {}

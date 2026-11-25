@@ -1,0 +1,937 @@
+"""supervisor/plans.py — the recovery plan's document model, closed vocabulary and validator. One test per refusal code RF-01..RF-26, each isolated so it produces exactly that code; the three
+normalisations; a valid plan; and the structural guarantee behind RF-04. No test here applies a plan — there is
+no applier in this module."""
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from supervisor import plans, store
+
+
+def codes(refusals):
+    return [r["code"] for r in refusals]
+
+
+def assert_only(refusals, code):
+    assert refusals, f"expected a {code} refusal, got none"
+    assert all(r["code"] == code for r in refusals), f"expected only {code}, got {codes(refusals)}"
+
+
+def base_plan(subject="T1", rev=1, ops=()):
+    return {"plan_schema": 1, "id": "T1.d1", "subject": {"task": subject}, "reason": "repair this task",
+            "expected_rev": {subject: rev}, "operations": [*ops, {"op": "resume", "task": subject, "as": "ready"}]}
+
+
+# ------------------------------------------------------------------ the envelope, the vocabulary, RF-01/RF-02/RF-26
+
+def test_rf01_unknown_operation(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "reroute", "task": "T1"}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-01")
+
+
+def test_rf01_unknown_plan_schema(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan()
+    doc["plan_schema"] = 2
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-01")
+
+
+def test_rf26_owner_only_effect_refused_not_rf01(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    for effect in ("apply_plan", "cancel_plan", "cancel_task", "hold", "release_hold", "diagnose_now"):
+        doc = base_plan(ops=[{"op": effect, "task": "T1"}])
+        _, refusals = plans.validate(doc, layout)
+        assert_only(refusals, "RF-26")
+        assert "RF-01" not in codes(refusals), f"{effect} must report RF-26, never RF-01"
+
+
+def test_rf02_malformed_plan_missing_subject(layout):
+    doc = {"plan_schema": 1, "id": "x", "operations": []}
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+
+
+def test_rf02_malformed_plan_operations_not_a_list(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan()
+    doc["operations"] = "not-a-list"
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+
+
+def test_plan_with_one_unknown_op_is_refused_whole(layout):
+    """Nothing is applied, reported or half-recorded: the other, otherwise-valid operation is never reflected
+    in the report's graph diff once any operation is refused."""
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(ops=[{"op": "bogus", "task": "T1"},
+                         {"op": "add_dependency", "task": "T0", "depends_on": []}])
+    report, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-01")
+    assert report.graph_diff == {}
+
+
+# ------------------------------------------------------------------ RF-03, RF-04, RF-21 (I1 — never a command)
+
+def test_rf03_command_shaped_value(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"review_note": "fix; rm -rf /"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_rf04_job_without_template_structural():
+    """RF-04 is a property of the document shape: constructing a `SetJobOp` carrying argv/fn/cmd/shell fails
+    before any validator runs at all — there is no field for the value to land in."""
+    with pytest.raises(ValidationError):
+        plans.SetJobOp(op="set_job", task="T1", template="t", argv=["sh", "-c", "rm -rf /"])
+    with pytest.raises(ValidationError):
+        plans.SetJobOp(op="set_job", task="T1", template="t", cmd="rm -rf /")
+    with pytest.raises(ValidationError):
+        plans.SetJobOp(op="set_job", task="T1", template="t", fn="whatever")
+    with pytest.raises(ValidationError):
+        plans.SetJobOp(op="set_job", task="T1", template="t", shell="/bin/sh")
+    plans.SetJobOp(op="set_job", task="T1", template="t", params={"n": 1})   # the declared shape still works
+
+
+def test_rf04_job_without_template_refusal(layout):
+    """The *key* is what RF-04 refuses, not what it holds: an `argv` naming nothing dangerous is refused all the
+    same, so the refusal cannot be mistaken for the value scan of RF-03 (which this value deliberately passes)."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "t", "params": {}, "argv": ["noop"]}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-04")
+
+
+def test_rf03_scans_an_operation_whose_shape_is_already_refused(layout):
+    """The R0 tripwire runs on every string of every operation, including one the shape check has refused:
+    a command-shaped value reaches the refusal list as RF-03 beside the shape's own code, never instead of it."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "t", "params": {},
+                         "argv": ["sh", "-c", "rm -rf /"]}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-04" in codes(refusals)
+    assert "RF-03" in codes(refusals), "a malformed operation is still scanned for a command-shaped value"
+
+
+def test_rf21_secret_shaped_value(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"review_note": "sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-21")
+
+
+# ------------------------------------------------------------------ jobs — the frontier: RF-05..RF-09, RF-11, RF-12
+
+def _write_templates(layout, templates: dict):
+    import yaml
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "job_templates.yaml").write_text(yaml.safe_dump({"version": 1, "templates": templates}),
+                                                       encoding="utf-8")
+
+
+def test_rf05_template_unknown(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "set_job", "task": "T2", "template": "ghost", "params": {}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-05")
+
+
+def test_rf06_parameter_rejected(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["plan"],
+                                     "params": {"mode": {"type": "enum", "values": ["a", "b"]}}}})
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "set_job", "task": "T2", "template": "t1", "params": {"mode": "c"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-06")
+
+
+def test_rf07_path_outside_root(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["plan"],
+                                     "params": {"script": {"type": "path", "roots": ["scripts"]}}}})
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "set_job", "task": "T2", "template": "t1", "params": {"script": "../outside.txt"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-07")
+
+
+def test_rf08_preflight_failed(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["plan"],
+                                     "executable": "no_such_executable_xyz123", "params": {}}})
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "set_job", "task": "T2", "template": "t1", "params": {}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-08")
+
+
+def test_rf09_template_not_plannable(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["owner"], "params": {}}})
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "set_job", "task": "T2", "template": "t1", "params": {}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-09")
+
+
+def test_rf11_job_identity_change_first_job(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")           # no existing job block at all
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["plan"], "params": {}}})
+    doc = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "t1", "params": {}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-11")
+
+
+def test_rf12_job_out_of_scope(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    make_task(layout, "T9", status="NOT_STARTED")        # unrelated: not the subject, not created
+    _write_templates(layout, {"t1": {"adapter": "process", "may_be_set_by": ["plan"], "params": {}}})
+    doc = base_plan(ops=[{"op": "set_job", "task": "T9", "template": "t1", "params": {}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-12")
+
+
+# ------------------------------------------------------------------ the graph and the contract: RF-10, RF-13..RF-18
+
+def test_rf10_budget_spent_max_ops(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    ops = [{"op": "patch_contract", "task": "T1", "fields": {"review_note": f"note {i}"}} for i in range(9)]
+    doc = base_plan(ops=ops)
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-10")
+
+
+def test_rf13_out_of_scope(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    make_task(layout, "T9", status="NOT_STARTED")         # not the subject, not a neighbour, not created
+    doc = base_plan(ops=[{"op": "add_dependency", "task": "T9", "depends_on": []}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-13")
+
+
+def test_rf14_terminal_task(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="COMPLETE")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])      # T0 is now a direct neighbour, in scope
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "NEWT", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic"}},
+                         {"op": "add_dependency", "task": "T0", "depends_on": ["NEWT"]}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-14")
+
+
+def test_rf15_authority_field_on_patch_contract(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"title": "a new title"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-15")
+
+
+def test_rf15_authority_field_on_create_task(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "priority": 5}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-15")
+
+
+def test_rf16_loosening_removes_a_test(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", tests=["keep this"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"tests": []}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-16")
+
+
+def test_rf17_cycle_or_unreleasable(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(ops=[{"op": "add_dependency", "task": "T0", "depends_on": ["T1"]}])   # T0<->T1 cycle
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-17")
+
+
+def test_rf18_contract_refused(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text("roles:\n  engineer:\n    active: true\n", encoding="utf-8")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "ghost_role", "cost_category": "deterministic"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-18")
+
+
+# ------------------------------------------------------------------ P2-2: a created task's owned_paths stays inside
+# the project root (P2-2) — `tasks.check_new` has no containment rule for `owned_paths`,
+# only for `artifacts`, so a plan's create_task could declare a write scope above the root.
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x"])
+def test_create_task_owned_paths_outside_the_root_is_refused(layout, bad):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": [bad], "artifacts": ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
+
+
+@pytest.mark.parametrize("good", [["x"], ["x/y.txt"], ["a/b/c"], ["not/yet/created"], ["."]])
+def test_create_task_owned_paths_inside_the_root_is_accepted(layout, good):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": good, "artifacts": ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == [], refusals
+
+
+# ------------------------------------------------------------------ P2-R2-1: a patch is checked against the
+# project root too, not only a created task's own (round 2, §4.1): `_monotonicity_refusals`'s `owned_paths`
+# branch checked a patched value for containment only when the task's *old* scope was already non-empty and
+# non-exclusive — a task the same plan creates has `owned_paths == []` (the default), so neither branch ran and
+# a `create_task` + `patch_contract` pair in one document validated clean.
+
+_P2_R2_1_BAD = ["../sibling", "C:/Windows", "/etc", "..\\x", "..", "x/..", "a/../../b", "./..", "x\\..\\y",
+               "\\\\server\\share", "D:relative"]
+# "." (EXCLUSIVE) is deliberately excluded here: patching a task's owned_paths to "." is "widens owned_paths to
+# exclusive" (the existing, unrelated RF-16 branch right above this one), whatever this task's own root check
+# does — the eleven other legitimate shapes round 2 lists are what a patch, not a create, may still accept.
+_P2_R2_1_GOOD = ["x", "x/y.txt", "a/b/c", "not/yet/created", "..x", "x..", "x/..y", "x/./y", ".hidden",
+                 "dir.with.dots/file", "a b/c d.txt"]
+
+
+# ------------------------------------------------------------------ P3-R2-6: a plan's create_task gives a
+# created task's `artifacts` the same traversal check `owned_paths` already has — `artifact_problems`
+# (supervisor/tasks.py:394) still read `".." in Path(a).parts`, invisible to a `\`-joined traversal on a POSIX
+# worker, so a plan could declare one where `owned_paths`'s own `..\x` is already refused (`020d6a1`). `Path`
+# already splits on `\` on this (Windows) workstation, so this forces the POSIX reading with `monkeypatch`
+# instead of depending on which platform happens to run it.
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_create_task_artifacts_backslash_joined_traversal_is_refused(layout, bad, monkeypatch):
+    import pathlib
+
+    from supervisor import tasks as tasks_mod
+    from tests.conftest import make_task
+    monkeypatch.setattr(tasks_mod, "Path", pathlib.PurePosixPath)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": ["."], "artifacts": [bad]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
+
+
+def _create_then_patch_owned_paths(layout, value):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    ops = [{"op": "create_task", "task": {"id": "T9", "title": "t", "objective": "o", "owner_role": "engineer",
+                                          "cost_category": "deterministic", "artifacts": ["x"]}},
+           {"op": "patch_contract", "task": "T9", "fields": {"owned_paths": [value]}}]
+    return base_plan(ops=ops)
+
+
+@pytest.mark.parametrize("bad", _P2_R2_1_BAD)
+def test_patch_contract_owned_paths_outside_the_root_is_refused_for_a_just_created_task(layout, bad):
+    doc = _create_then_patch_owned_paths(layout, bad)
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")                             # the same code the create side already produces
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
+
+
+@pytest.mark.parametrize("good", _P2_R2_1_GOOD)
+def test_patch_contract_owned_paths_legitimate_shapes_still_accepted_for_a_just_created_task(layout, good):
+    doc = _create_then_patch_owned_paths(layout, good)
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == [], (good, refusals)
+
+
+def test_patch_contract_owned_paths_create_then_patch_is_refused_and_stores_nothing(layout):
+    """The review's own case as one document: validated, then proposed — the plan is stored `refused` and the
+    task it would have created never reaches the store at all. What such a task's scope would mean for a
+    dispatched delivery (`gate.owned_for`) is the applier's own side of this case, asserted in
+    tests/test_plans_apply.py, where applying a plan belongs."""
+    doc = _create_then_patch_owned_paths(layout, "../sibling")
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+    proposed = plans.propose(layout, doc, by="senior_pm", proposer_role="senior_pm")
+    assert proposed["status"] == "refused"
+    assert not (layout.tasks / "T9.yaml").exists()
+
+
+@pytest.mark.parametrize("value", [[None], [123], [["../x"]], "../sibling", {"../sibling": 1}])
+@pytest.mark.parametrize("old", [[], ["x"]], ids=["no-scope-yet", "an-existing-scope"])
+def test_patch_contract_owned_paths_of_the_wrong_shape_is_refused_not_raised(layout, old, value):
+    """A patched `owned_paths` whose value is not a list of strings is a shape error (RF-02, from the patched
+    contract's own validation one step later), never read by either containment check: `owned_path_problems`
+    calls `str.startswith` and `contained` calls `Path(p)`, so reading `[None]` — what a plain YAML `- ` with no
+    item after it produces — would raise out of `validate()`, whose own contract is that it never raises. Both
+    old scopes are parametrized because the two checks divide on exactly that: an empty old scope reaches the
+    root check, a non-empty one reaches `contained()`."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=old)
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": value}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+
+
+def test_patch_contract_owned_paths_on_an_existing_scope_is_still_rf16(layout):
+    """The control the fix must not touch: a patch narrowing-or-widening an *existing*, real (in-root) scope is
+    still RF-16 — the gap this task closes is only the scope a task has never yet been given."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": ["../sibling"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-16")
+
+
+@pytest.mark.parametrize("exc", [ValueError("Paths must not traverse links"), OSError("name too long"),
+                                 TypeError("argument should be a str, not NoneType")])
+def test_rf16_monotonicity_owned_paths_contained_raising_returns_a_refusal_not_an_exception(
+        layout, monkeypatch, exc):
+    """P3-R2-2: `_monotonicity_refusals`'s own `contained(p, old_paths)` call (the record's own named follow-up
+    to P2-3) must not let what `resolve()` can refuse out of `validate()` — `validate()`'s own contract is
+    "never raises". A link on the chain is the `ValueError` P2-3 names; a name the platform itself rejects is an
+    `OSError`; a `TypeError` is what `Path()` gives a value that is not a path at all, which the shape screen
+    above this branch already keeps away from here — guarded anyway, so this call site does not depend on it."""
+    from tests.conftest import make_task
+    import supervisor._vendor.contract as contract
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
+
+    def boom(*a, **k):
+        raise exc
+    monkeypatch.setattr(contract, "contained", boom)
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": ["x/sub"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-16")
+
+
+# ------------------------------------------------------------------ application: RF-19, RF-20, RF-22
+
+def test_rf19_stale_inputs(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(rev=999)
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-19")
+
+
+def test_rf20_subject_moved(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="COMPLETE")
+    doc = base_plan()
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-20")
+
+
+def test_rf22_subject_held(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", held={"by": "owner", "at": store.now_iso(), "note": "wait"})
+    doc = base_plan()
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-22")
+
+
+# ------------------------------------------------------------------ RF-23, RF-24, RF-25 — pure functions, ahead of
+# the approval lane (step 8) and the inbox's typed choices (step 7)
+
+def test_rf23_self_approval():
+    assert plans.self_approval_refusal("senior_pm", "senior_pm")["code"] == "RF-23"
+    assert plans.self_approval_refusal("senior_pm", "architect") is None
+
+
+def test_rf24_choice_not_offered():
+    assert plans.choice_not_offered_refusal(["requeue", "cancel"], "apply_plan")["code"] == "RF-24"
+    assert plans.choice_not_offered_refusal(["requeue", "cancel"], "requeue") is None
+
+
+def test_rf25_choice_stale():
+    assert plans.choice_stale_refusal("abc", "def")["code"] == "RF-25"
+    assert plans.choice_stale_refusal("abc", "abc") is None
+
+
+# ------------------------------------------------------------------ §1.3 normalisations: applied, reported, never
+# counted as a refusal
+
+def test_normalise_checks_to_tests(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": ["this is prose, not a command"]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["checks_to_tests"]
+
+
+def test_normalise_dedupe_dependencies(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T2", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(ops=[{"op": "add_dependency", "task": "T1", "depends_on": ["T0", "T2", "T2"]}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["dedupe_dependencies"]
+    assert report.graph_diff["edges_added"] == [["T1", "T2"]]
+
+
+def test_normalise_remove_dependency_keeps_an_id_that_is_already_present(layout):
+    """`dedupe_dependencies` must not treat the one id a removal names — necessarily already present, or there
+    is nothing to remove — as a duplicate of itself. A repeated id within the same remove_dependency op is still
+    deduped (step 8's incidental fix: the seed for "already present" is add_dependency's own, not shared)."""
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(subject="T1", rev=1,
+                    ops=[{"op": "remove_dependency", "task": "T1", "depends_on": ["T0", "T0"]}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["dedupe_dependencies"]
+    assert report.graph_diff["edges_removed"] == [["T1", "T0"]]
+
+
+def test_normalise_drop_complete_waits(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="COMPLETE")
+    make_task(layout, "T2", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "add_dependency", "task": "T1", "depends_on": ["T0", "T2"]}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["drop_complete_waits"]
+    assert report.graph_diff["edges_added"] == [["T1", "T2"]]
+
+
+# ------------------------------------------------------------------ a valid plan: empty refusals, computed scope,
+# a graph diff
+
+def test_valid_plan_validates_clean(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"tests": ["t", "and this"]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert report.scope == ["T0", "T1"]
+    assert report.graph_diff["contract_patches"][0]["task"] == "T1"
+
+
+# ------------------------------------------------------------------ R0 again, on the contract's own executable
+# content: a check command is an executable the verifier re-runs, a `cwd` is where it runs and a test root is what
+# bounds that `cwd`. None of the three is a value a plan may author, on either operation that writes a contract.
+
+SECRET = "sk-ant-" + "a" * 24          # shaped like a credential, is none; built here so no literal is in the file
+
+
+def _executable_check(layout):
+    """A check entry that would pass every other gate: an allow-listed command prefix, no shell metacharacter,
+    nothing removed, and a `cwd` that is nonetheless outside the project root."""
+    outside = layout.root.anchor
+    return {"command": "python -m pytest .", "cwd": outside + "somewhere"}
+
+
+def test_rf03_patch_contract_may_not_author_a_check_command(layout):
+    """The gap this closes: add-only monotonicity compares command strings only, so a plan could add a command
+    (and rewrite the `cwd` and `timeout_s` of every existing check) and nothing screened it on this path."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"test_roots": [layout.root.anchor], "checks": [_executable_check(layout)]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+    fields = {r["field"] for r in refusals}
+    assert fields == {"fields.checks", "fields.test_roots"}, fields
+
+
+def test_rf03_create_task_may_not_author_a_check_command(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                        "owner_role": "engineer", "cost_category": "deterministic",
+                                                        "checks": [_executable_check(layout)]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+    assert {r["field"] for r in refusals} == {"task.checks"}
+
+
+def test_rf03_create_task_may_not_author_a_test_root(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                        "owner_role": "engineer", "cost_category": "deterministic",
+                                                        "test_roots": ["tests"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_rf03_a_relative_in_project_check_is_refused_too(layout):
+    """Not a containment rule with a hole in it: the refusal is that a plan authored an executable string at all,
+    so a command that would have run inside the project root is refused exactly as one that would not."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": [{"command": "python -m pytest tests", "cwd": "tests"}]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_prose_in_checks_is_still_normalised_not_refused(layout):
+    """The one recorded cause of a refused proposal keeps its repair: prose in `checks` moves to `tests` (§1.3)
+    before any refusal is computed, so what the new refusal sees is only ever a command."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": ["the report names each refusal code"]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["checks_to_tests"]
+
+
+def test_rf03_restating_an_existing_check_is_not_authored(layout):
+    """RF-03 and RF-16 do not exclude each other on a task that already carries a check: restating the entry
+    verbatim satisfies monotonicity and is not authoring, so `_executable_content_refusals` must see it too."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": [{"command": "python -m pytest tests/test_x.py"}]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert report.normalised == []
+
+
+def test_rf03_a_new_check_beside_an_existing_one_is_still_authored(layout):
+    """Restatement is exempt; a second, new entry beside it is not — RF-03 still refuses what the plan adds."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": [{"command": "python -m pytest tests/test_x.py"},
+                                               _executable_check(layout)]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_rf03_restating_an_existing_test_root_is_not_authored(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", test_roots=["tests"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"test_roots": ["tests"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == []
+
+
+def test_rf03_a_new_test_root_beside_an_existing_one_is_still_authored(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", test_roots=["tests"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"test_roots": ["tests", "docs"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-03")
+
+
+def test_prose_normalisation_keeps_the_check_it_does_not_mention(layout):
+    """The gap this closes: `checks_to_tests` used to replace `checks` wholesale with only what it kept from the
+    plan's own list, so a plan correcting prose — never asking to touch the real command already there — tripped
+    RF-16 by the normalisation's own rewrite, spending the one correction turn Sec2.5 grants on a fault that was
+    never the plan's. The real check must survive untouched, and the move is still reported, never counted."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", checks=[{"command": "python -m pytest tests/test_x.py"}])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"checks": ["the report names each refusal code"]}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert [n["code"] for n in report.normalised] == ["checks_to_tests"]
+    patch = report.graph_diff["contract_patches"][0]
+    assert patch["after"]["checks"][0]["command"] == "python -m pytest tests/test_x.py"
+
+
+def test_create_task_may_not_carry_a_job_block(layout):
+    """The other way a contract could name a program: `job` is not a contract field a plan may write (§2.2 — a
+    job is a separate `set_job`, so the template rule lives in one place)."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                        "owner_role": "engineer", "cost_category": "deterministic",
+                                                        "job": {"adapter": "process"}}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+
+
+# ------------------------------------------------------------------ RF-03's path-separator carve-out, pinned on
+# both sides: a contract's own path fields may hold a path; nothing else may grow one.
+
+def test_rf03_contract_path_fields_may_hold_a_path(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", artifacts=["x"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1",
+                         "fields": {"artifacts": ["x", "docs/notes/summary.md"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == []
+
+
+def test_rf03_a_path_outside_contract_content_is_refused(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T0", status="NOT_STARTED")
+    make_task(layout, "T1", status="BLOCKED", deps=["T0"])
+    doc = base_plan(ops=[{"op": "add_dependency", "task": "T1", "depends_on": ["../elsewhere/T0"]}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-03" in codes(refusals)
+    assert [r["field"] for r in refusals if r["code"] == "RF-03"] == ["depends_on[0]"]
+
+
+# ------------------------------------------------------------------ a refusal names the field, never the value
+
+def test_a_refusal_never_carries_the_value_it_refused(layout):
+    """RF-21's rule, held on every path out of the validator: the shape check runs on an operation carrying a
+    credential-shaped value in a key the schema does not have, and neither its message nor any other quotes it."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "t", "params": {}, "token": SECRET}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-21" in codes(refusals), "the secret scan runs whatever the shape check decided"
+    assert "RF-04" in codes(refusals)
+    for r in refusals:
+        assert SECRET not in str(r), r
+
+
+def test_rf21_scans_a_field_name_too_not_only_a_value(layout):
+    """RF-21's rule held for values and not for field names: a credential-shaped *key* in a field the schema does
+    not have reached the message `patch_contract.fields may not set {key!r}` unredacted. The key is now scanned
+    like any other string, and whatever message quotes the field path is screened the same way."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {SECRET: ["x"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-21" in codes(refusals), "a secret-shaped field name is scanned like a value"
+    for r in refusals:
+        assert SECRET not in str(r), r
+
+
+def test_a_shape_refusal_names_the_field_not_the_value(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "set_job", "task": "T1", "template": "t", "params": {}, "extra_key": "a-plain-value"}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-04")
+    assert "extra_key" in refusals[0]["message"]
+    assert "a-plain-value" not in refusals[0]["message"], refusals[0]["message"]
+
+
+def test_a_contract_refusal_never_carries_the_value_it_refused(layout):
+    """The same rule on the other message built from an exception: a created task whose contract does not
+    validate at all, with a credential-shaped value in one of its fields."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                        "owner_role": "engineer", "cost_category": "deterministic",
+                                                        "evidence": SECRET}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals, "an unknown evidence level is refused"
+    for r in refusals:
+        assert SECRET not in str(r), r
+
+
+# ------------------------------------------------------------------ RF-18 on the patch path; RF-19 on a plan that
+# declares no rev at all; the whole refusal list beside an owner-only effect
+
+def test_rf18_contract_refused_on_patch_contract(layout):
+    """RF-18 screened a created task's contract and not a patched one, although `patch_contract` may add a
+    `reviewer` — a role routing does not configure parks the task exactly as it would a new one."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text("roles:\n  engineer:\n    active: true\n", encoding="utf-8")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"reviewer": ["ghost_role"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-18")
+
+
+def test_rf18_a_warning_the_task_already_carried_is_not_a_refusal(layout):
+    """Only what the patch adds: a task already waiting on an unconfigured role is not made unpatchable by it."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owner_role="ghost_role")
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text("roles:\n  engineer:\n    active: true\n", encoding="utf-8")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"review_note": "look at the log order"}}])
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == []
+
+
+def test_rf18_contract_refused_on_a_patch_to_a_task_this_plan_creates(layout):
+    """The gap this closes: `patch_contract` on a task the same plan creates found no task in the live store
+    (`t is None`) and returned before RF-18, before monotonicity and before the RF-02 shape check — so a
+    two-operation plan could create a task and park it on an unconfigured role through its own second operation,
+    exactly what RF-18 exists to refuse on `create_task` itself."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    layout.config.mkdir(parents=True, exist_ok=True)
+    (layout.config / "routing.yaml").write_text("roles:\n  engineer:\n    active: true\n", encoding="utf-8")
+    doc = base_plan(ops=[
+        {"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o", "owner_role": "engineer",
+                                       "cost_category": "deterministic"}},
+        {"op": "patch_contract", "task": "T2", "fields": {"reviewer": ["ghost_role"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-18")
+
+
+def test_a_clean_patch_onto_a_created_task_validates(layout):
+    """The other direction: a patch to a created task that adds nothing a contract would warn about is not made
+    unpatchable by the fix — RF-18 only, never a `t is None` no-op that silently skips every check."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[
+        {"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o", "owner_role": "engineer",
+                                       "cost_category": "deterministic"}},
+        {"op": "patch_contract", "task": "T2", "fields": {"review_note": "look at the log order"}}])
+    report, refusals = plans.validate(doc, layout)
+    assert refusals == []
+    assert "T2" in report.scope
+
+
+def test_rf19_expected_rev_must_name_the_subject(layout):
+    """A plan that simply omits `expected_rev` got no staleness check at all: the subject's rev is the one every
+    plan reads and writes, so a plan that does not state it is stale by construction."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan()
+    doc.pop("expected_rev")
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-19")
+
+
+def test_owner_only_effect_does_not_truncate_the_refusal_list(layout):
+    """§2.5 grants one correction turn on the refusal list, so the list is whole: an owner-only effect reports
+    RF-26 and still reports every plan-level refusal the same document trips."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", held={"by": "owner", "at": store.now_iso(), "note": "wait"})
+    doc = base_plan(ops=[{"op": "hold", "task": "T1"}])
+    _, refusals = plans.validate(doc, layout)
+    assert "RF-26" in codes(refusals)
+    assert "RF-22" in codes(refusals), "the held subject is reported too, not suppressed by the owner-only effect"
+
+
+# ------------------------------------------------------------------ P2-1: `reason` is screened like an
+# operation's own values — RF-21 scans `operations` only (`_secret_shaped_refusals`); `reason` is free prose
+# outside them, and `propose()`/`revise()` used to write it to disk, into a replayed read, and into the owner's
+# inbox summary unscreened.
+
+def test_a_secret_shaped_reason_is_not_stored_on_the_plan_document(layout):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = f"token {SECRET} leaked"
+    proposed = plans.propose(layout, doc)
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a secret-shaped reason reached state/plans/<id>.yaml"
+    assert SECRET not in (proposed.get("reason") or ""), "a secret-shaped reason survived into the returned document"
+    reloaded = plans.load_plan(layout, "T1.d1")
+    assert SECRET not in (reloaded.get("reason") or ""), "a secret-shaped reason survived a fresh read of the store"
+
+
+def test_an_ordinary_reason_is_stored_byte_identical(layout):
+    """The control beside the case above: screening a credential-shaped reason must not touch one that holds
+    nothing secret-shaped."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = "repair the broken contract patch"
+    proposed = plans.propose(layout, doc)
+    assert proposed["reason"] == "repair the broken contract patch"
+
+
+def test_a_secret_shaped_operation_value_is_still_rf21_refused_beside_a_clean_reason(layout):
+    """The fix must not narrow what RF-21 already refuses in the operations: a credential-shaped operation value
+    is refused exactly as before, whatever the plan's own `reason` says."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"review_note": SECRET}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-21")
+
+
+def test_a_secret_shaped_reason_carried_through_revise_is_screened_too(layout):
+    """§2.5's correction turn writes a fresh `reason` over a refused plan's own (`revise()`); the same screening
+    must hold there, not only on the first `propose()`."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "bogus", "task": "T1"}])            # refused whole: RF-01
+    plans.propose(layout, doc)
+    corrected = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    corrected["reason"] = f"token {SECRET} leaked"
+    revised = plans.revise(layout, "T1.d1", corrected, by="diagnosis")
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a secret-shaped reason reached state/plans/ through revise()"
+    assert SECRET not in (revised.get("reason") or "")
+
+
+def test_a_secret_shaped_reason_is_screened_out_of_the_owner_approval_summary(layout):
+    """`_open_owner_choice` quotes `doc['reason']` into the inbox summary the owner reads; it must read the same
+    screened value `propose()` wrote, never the model's raw text."""
+    from tests.conftest import make_task
+    from supervisor import inbox as inbox_mod
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = f"token {SECRET} leaked"
+    proposed = plans.propose(layout, doc)
+    out = plans._open_owner_choice(layout, "T1.d1", proposed)
+    item = inbox_mod.load(layout, out["owner_item"])
+    text = item["summary"] + (item.get("detail") or "")
+    assert SECRET not in text, "a secret-shaped reason reached the owner's inbox item"
+
+
+def test_a_non_string_reason_carrying_a_secret_is_screened_the_same_way_as_a_string_one(layout):
+    """P3-R2-1: `_redacted_reason` passed any non-`str` value through unchanged and `_envelope_refusals` does not
+    type `reason`, so a list-shaped `reason` carrying the same secret-shaped text was stored, replayed and quoted
+    verbatim — the non-string lookalike of the shape the cases above close for a string `reason`. The ruling
+    above is redact, not refuse, so a non-string `reason` is screened the same way, not a new refusal."""
+    from tests.conftest import make_task
+    from supervisor import inbox as inbox_mod
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = [f"token {SECRET} leaked"]
+    assert plans.propose(layout, doc)["status"] == "awaiting_approval", "redact, not refuse — the P2-1 ruling"
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a list-shaped reason reached state/plans/<id>.yaml with its secret"
+    reloaded = plans.load_plan(layout, "T1.d1")
+    assert SECRET not in str(reloaded.get("reason")), "a list-shaped reason survived a fresh read of the store"
+    out = plans._open_owner_choice(layout, "T1.d1", reloaded)
+    item = inbox_mod.load(layout, out["owner_item"])
+    text = item["summary"] + (item.get("detail") or "")
+    assert SECRET not in text, "a list-shaped reason reached the owner's inbox item"

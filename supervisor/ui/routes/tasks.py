@@ -22,10 +22,10 @@ def task_list(request: Request, status: str = "", phase: str = "", layout: Layou
     elig_ids = {t.id for t in tasks_mod.eligible(layout, {t.id: t for t in tasks})}
     if status:
         tasks = [t for t in tasks if t.status.value == status]
-    if phase.isdigit():
+    if phase.isdecimal():     # isdigit() also accepts a superscript/subscript/circled digit, which int() then raises on
         tasks = [t for t in tasks if t.phase == int(phase)]
     return render(request, "tasks_list.html", {"tasks": tasks, "elig_ids": elig_ids, "filter_status": status,
-                                               "filter_phase": phase if phase.isdigit() else "",
+                                               "filter_phase": phase if phase.isdecimal() else "",
                                                "broken_tasks": tasks_mod.unreadable(layout),
                                                "statuses": [s.value for s in TaskStatus], "flash": decode_flash(request)})
 
@@ -39,10 +39,10 @@ def _get_task(layout: Layout, task_id: str):
 
 def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str | None, run_dir: str | None,
             note: str | None, result: str | None) -> dict:
-    """One Attempts-table row for one job, on either `Attempt` shape (ATTEMPT_MODEL.md §2.7): the stored entry
+    """One Attempts-table row for one job, on either `Attempt` shape: the stored entry
     (an un-migrated `Attempt`'s own dump, or one of a migrated `Attempt`'s `jobs[]`) gives the static fields; the
     live job record, when it still exists, gives the kind as a fallback, the current phase/result and the model
-    (§4.6 — the model is read only from the job record here, never from the task document)."""
+    (the model is read only from the job record here, never from the task document)."""
     job = jobs_mod.resolve(layout, job_id) if job_id else None
     spec = (job or {}).get("spec") or {}
     return {
@@ -57,14 +57,14 @@ def _job_row(layout: Layout, job_id: str | None, kind: str | None, resource: str
 
 def attempt_groups(layout: Layout, t) -> list[dict]:
     """The Attempts table's rows, grouped by delivery attempt, read from each stored entry's own dump
-    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone (ATTEMPT_MODEL.md
-    §4.6, step 15). A migrated document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
+    (`Attempt.model_dump()`) — never from `Attempt.id`/`.model` as declared fields, both gone. A migrated
+    document's `jobs[]` under each numbered attempt is the join key (`jobs[].id`); an
     un-migrated document's one entry per job is named by whatever `id` key it was written under — tolerated,
     never typed, used only as the fallback when `jobs[]` is empty (never on a migrated document, which never
     carries an entry without `n` set). Each migrated group's `n` is the attempt number. An un-migrated entry's id
-    suffix is not one (ATTEMPT_MODEL.md §2.7: "an existing job id whose kind is whatever happened to be
+    suffix is not one ("an existing job id whose kind is whatever happened to be
     dispatched nth"), so that group names its job instead of asserting a delivery-attempt count (`n: None`,
-    `job_id` set — the design's interim remedy, §6). Each row carries the job's own kind either way, so a
+    `job_id` set — the design's interim remedy). Each row carries the job's own kind either way, so a
     verification, a review or a diagnosis is never shown as if it were a fresh attempt at the deliverable."""
     groups = []
     for a in t.attempts:
@@ -82,15 +82,44 @@ def attempt_groups(layout: Layout, t) -> list[dict]:
     return groups
 
 
-@router.get("/tasks/{task_id}")
-def task_detail(task_id: str, request: Request, layout: Layout = Depends(require_auth)):
+def task_context(layout: Layout, task_id: str) -> dict:
+    """Everything `task_detail.html` renders, built once so a test (or another surface) can read it with no
+    `Request` to construct. `why_not_runnable` is read here exactly as the idle alert and the Overview read it:
+    `None` for a task that is not this function's to classify at all — terminal
+    (not "not runnable"), held (the hold itself is the reason, already shown), already running its own open job,
+    or `tasks.eligible` (not blocked, merely outranked right now — the Overview's own scoping, matched here so
+    the two can never disagree about which tasks have a reason at all). A paused/draining/stopped loop is read
+    once (`why_not_runnable.decision_blocked`) and shown instead of the structural classifier's own reason, for
+    exactly the tasks the Overview substitutes it for."""
+    from ... import why_not_runnable as why_not_runnable_mod
+    from ...models.task import TERMINAL
     t = _get_task(layout, task_id)
     dv = delivery_view.view(layout, t) if t.delivery.digest else None
     action_reasons = {a: tasks_mod.action_blocked_reason(a, t.status) for a in tasks_mod.PAGE_ACTIONS}
-    return render(request, "task_detail.html", {"t": t, "attempt_groups": attempt_groups(layout, t), "dv": dv,
-                                                "broken_jobs": jobs_mod.unreadable(layout, task_id),
-                                                "action_reasons": action_reasons,
-                                                "flash": decode_flash(request)})
+    why_reason = None
+    if t.status not in TERMINAL and not t.held:
+        all_tasks = tasks_mod.load_all(layout)
+        has_open_job = any(r.get("task_id") == t.id for r in jobs_mod.open_records(layout))
+        is_eligible = any(e.id == t.id for e in tasks_mod.eligible(layout, all_tasks))
+        if not has_open_job and not is_eligible:
+            decision_reason = (why_not_runnable_mod.decision_blocked(layout)
+                               if t.status not in (TaskStatus.WAITING_FOR_HUMAN, TaskStatus.WAITING_FOR_REVIEW)
+                               else None)
+            if decision_reason:
+                why_reason = decision_reason
+            else:
+                why = why_not_runnable_mod.why_not_runnable(t, all_tasks, layout)
+                why_reason = why_not_runnable_mod.render_reason(why)
+    return {"t": t, "attempt_groups": attempt_groups(layout, t), "dv": dv,
+           "broken_jobs": jobs_mod.unreadable(layout, task_id), "action_reasons": action_reasons,
+           "why_not_runnable": why_reason}
+
+
+@router.get("/tasks/{task_id}")
+def task_detail(task_id: str, request: Request, layout: Layout = Depends(require_auth)):
+    ctx = task_context(layout, task_id)
+    ctx["flash"] = decode_flash(request)
+    return render(request, "task_detail.html", ctx)
 
 
 @router.get("/tasks/{task_id}/files/{index}")

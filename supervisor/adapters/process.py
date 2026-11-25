@@ -24,8 +24,8 @@ from .base import Adapter, Result, register
 
 
 def job_spec(task) -> dict:
-    extra = getattr(task, "model_extra", None) or {}
-    return dict(extra.get("job") or {})
+    job = getattr(task, "job", None)
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 
 def _proc(handle: dict):
@@ -79,7 +79,7 @@ def job_identity_env(spec: dict) -> dict:
     """`SUPERVISOR_ATTEMPT` (kept, same value), `SUPERVISOR_JOB` (added, the same value under its own name) and
     `SUPERVISOR_ATTEMPT_NO` (added, the delivery attempt number this job belongs to) -- the three names every
     dispatched job's own child process carries so `recover()` and anything that parsed the old suffix keep working
-    for one more major version (ATTEMPT_MODEL.md section 7). `attempt`, written onto `spec` by `loop.dispatch`
+    for one more major version. `attempt`, written onto `spec` by `loop.dispatch`
     from the id the allocator minted, not parsed back out of the id string — empty for a task-scoped job (a
     diagnosis raised before any delivery) or a conversation turn, same as an id with no such suffix read before
     this. Shared by every agent lane's own `env()`."""
@@ -113,15 +113,55 @@ class ProcessAdapter(Adapter):
     def command(self, spec) -> list[str]:
         return spec["argv"]
 
+    def _resolve_limits(self, layout, task, attempt_id, jobspec, routing_cfg, lane="model"):
+        """`(the resolved limits, the effective need they were resolved for)` for one job about to be prepared --
+        the one path onto the resolver for all three lanes that have a work deadline (`process` and, through this
+        class, `claude_cli` and `codex_cli`), so the derived budget and the one composed ceiling cannot reach one
+        of them and not another.
+        Internal to these three lanes and not plugin-facing: the plugin API this release adds is
+        `registry.capabilities` and nothing else, and a plugin lane resolves its
+        limits by calling `timeouts.resolve` itself, as it does today.
+
+        The declaration is scoped here, not per lane: `needs.needs_for(layout, task, kind)` with the kind read
+        from the job block's own `result_kind` (default `delivery`), so a review, a verify job and a chat turn
+        are passed `None` and resolve exactly today's chain -- no `prepare` signature changes and no adapter
+        gets a branch of its own. `ceiling_inputs` composes the cost category, the role profile and the lane's
+        capability mapping the same way every other reader of the ceiling does.
+
+        The `timeout_clamped` receipt is logged here, the caller that prepares the job, and never inside
+        `resolve()`, which stays a pure function of its arguments: on a model lane the last clamp is the only
+        enforcement of a declared `timeout_s` above the ceiling (RF-08's cap row is the preflight's `process` row
+        alone), and it may not lower a declared number silently."""
+        from .. import needs as needs_mod
+        from .. import tasks as tasks_mod
+        kind = jobspec.get("result_kind", "delivery")
+        eff_needs = needs_mod.needs_for(layout, task, kind)
+        cost_category, role_prof, caps = timeouts.ceiling_inputs(layout, task, self.name, jobspec)
+        limits = timeouts.resolve(routing_cfg, cost_category, role_prof, jobspec, needs=eff_needs, lane=lane,
+                                  capabilities=caps)
+        if limits.get("clamped_from_s") is not None:
+            tasks_mod.log(layout, "timeout_clamped", "loop", task=task.id, attempt=attempt_id,
+                          declared_s=limits["clamped_from_s"], ceiling_s=limits["hard_cap_s"])
+        return limits, eff_needs
+
     def prepare(self, layout, task, attempt_id):
-        jobspec = job_spec(task)
+        from .. import gate as gate_mod
+        from .. import needs as needs_mod
+        from .. import preflight as preflight_mod
+        jobspec = preflight_mod.resolve_for_launch(layout, task)
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         _, env_digest = envconfig.build(layout, self.name)
+        # The derived budget, the composed ceiling and its clamp all reach
+        # this lane through the one resolver -- `lane="plain"` starts from PROCESS_CAP_S and reads none of the
+        # model-lane policy merges, so a job with no declared `needs`/`timeout_s` still gets exactly 3600 s.
+        limits, eff_needs = self._resolve_limits(layout, task, attempt_id, jobspec, gate_mod.routing_doc(layout),
+                                                 lane="plain")
+        resumable = (bool((eff_needs or {}).get("resumable")) and needs_mod.template_declares_resumable(layout, task))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir),
                 "argv": jobspec.get("argv", [sys.executable, "-c", "print('hello')"]),
-                "timeout_s": jobspec.get("timeout_s", timeouts.PROCESS_CAP_S), "idle_s": jobspec.get("idle_timeout_s"),
-                "retry_on": list(jobspec.get("retry_on") or []),
+                "timeout_s": limits["hard_cap_s"], "idle_s": limits["idle_s"],
+                "retry_on": list(jobspec.get("retry_on") or []), "resumable": resumable,
                 "root": str(layout.root), "stdin_file": jobspec.get("stdin_file"), "env_digest": env_digest}
 
     def submit(self, spec):
@@ -199,7 +239,7 @@ class ProcessAdapter(Adapter):
 
     def alive(self, handle):
         p = _proc(handle)
-        try:                                        # the child can exit between is_running() and status() (I-004)
+        try:                                        # the child can exit between is_running() and status()
             return bool(p and p.is_running() and p.status() != getattr(psutil, "STATUS_ZOMBIE", "zombie"))
         except psutil.Error:
             return False
@@ -247,7 +287,13 @@ class ProcessAdapter(Adapter):
     def _time_out(self, spec, handle, kind: str, error: str) -> Result:
         self.terminate(handle)
         self.on_timeout(spec, handle)
-        return Result(status="FAILED", error=error, raw={"timeout": kind})
+        raw = {"timeout": kind}
+        # A hard-cap stop on a job whose task declared `needs.resumable: true`
+        # on a template declaring `resumable: true` (`prepare()`'s own `resumable` flag) is relaunched as a
+        # continuation, never recorded FAILED -- an idle stop stays a failure, resumability is about redoing work.
+        if kind == "cap" and spec.get("resumable"):
+            raw["resumable"] = True
+        return Result(status="FAILED", error=error, raw=raw)
 
     def collect(self, spec, handle) -> Optional[Result]:
         """A job ends on time only when it is idle (no output, no CPU work in its process tree for `idle_s`) or past

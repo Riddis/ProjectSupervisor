@@ -63,6 +63,7 @@ files = [
   "supervisor/adapters/claude_cli.py",
   "supervisor/adapters/codex_cli.py",
   "supervisor/adapters/process.py",
+  "supervisor/capabilities.py",            # the framework's own five lanes' capability table (2.9.0, R-20)
   "supervisor/capacity.py",
   "supervisor/conversations.py",
   "supervisor/diagnosis.py",

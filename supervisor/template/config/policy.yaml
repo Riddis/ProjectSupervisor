@@ -13,13 +13,17 @@ secrets:
                      SIGNING_KEY, REFRESH]
   redaction_placeholder: "[REDACTED]"
   patterns:                         # shapes refused in a packet and redacted from a log even when not in secrets/ yet
-    - {name: anthropic_api_key,  regex: 'sk-ant-[A-Za-z0-9_\-]{16,}'}
-    - {name: openai_api_key,     regex: 'sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}'}
-    - {name: github_token,       regex: 'gh[pousr]_[A-Za-z0-9]{20,}'}
-    - {name: slack_token,        regex: 'xox[abpsr]-[A-Za-z0-9\-]{12,}'}
-    - {name: aws_access_key_id,  regex: 'AKIA[0-9A-Z]{16}'}
-    - {name: google_api_key,     regex: 'AIza[0-9A-Za-z_\-]{35}'}
-    - {name: jwt,                regex: 'eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'}
+                                    # `(?<![A-Za-z0-9_\-])` is a left boundary: a key-shaped match may not start
+                                    # mid-word (an ordinary hyphenated/underscored word must not glue a key-shaped
+                                    # tail onto an unrelated head) - costs nothing against a real token, which is
+                                    # never preceded by a word character where it actually appears.
+    - {name: anthropic_api_key,  regex: '(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{16,}'}
+    - {name: openai_api_key,     regex: '(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}'}
+    - {name: github_token,       regex: '(?<![A-Za-z0-9_\-])gh[pousr]_[A-Za-z0-9]{20,}'}
+    - {name: slack_token,        regex: '(?<![A-Za-z0-9_\-])xox[abpsr]-[A-Za-z0-9\-]{12,}'}
+    - {name: aws_access_key_id,  regex: '(?<![A-Za-z0-9_\-])AKIA[0-9A-Z]{16}'}
+    - {name: google_api_key,     regex: '(?<![A-Za-z0-9_\-])AIza[0-9A-Za-z_\-]{35}'}
+    - {name: jwt,                regex: '(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'}
     - {name: private_key_block,  regex: '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)'}
     - {name: bearer_header,      regex: '(?i)authorization\s*[:=]\s*bearer\s+[A-Za-z0-9._\-]{16,}'}
     - {name: assigned_secret,    regex: '(?i)\b[A-Za-z0-9_]*(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|CLIENT_SECRET|SECRET_KEY|PASSWORD)\b\s*[:=]\s*["'']?[A-Za-z0-9/+_.\-]{16,}'}

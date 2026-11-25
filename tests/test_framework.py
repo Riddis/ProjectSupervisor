@@ -64,7 +64,7 @@ def test_project_yaml_is_stamped_with_name_and_version(fresh):
 def test_project_defaults_apply_without_a_file(tmp_path):
     layout = Layout(tmp_path)
     assert project.name(layout) == "Untitled project"
-    assert project.plugins(layout) == []
+    assert plugins.specs(layout) == []
 
 
 def test_template_contains_no_task_history_references():
@@ -209,7 +209,7 @@ def test_plugin_new_scaffolds_and_registers(fresh, monkeypatch):
     r = runner.invoke(app, ["plugin", "new", "mytool"])
     assert r.exit_code == 0, r.output
     assert (fresh / "plugins" / "mytool.py").exists()
-    assert project.plugins(Layout(fresh)) == ["mytool"]
+    assert plugins.specs(Layout(fresh)) == [("mytool", True)]
     plugins.reset()
     r = runner.invoke(app, ["plugin", "list"])
     assert "loaded mytool" in r.output
@@ -249,11 +249,11 @@ def test_doctor_on_a_fresh_project_reports_project_state_and_routing(fresh):
 def test_doctor_flags_a_framework_version_mismatch_and_migrate_fixes_it(fresh):
     layout = Layout(fresh)
     raw = yaml.safe_load(layout.project_file.read_text(encoding="utf-8"))
-    raw["framework_version"] = "0.9.0"
-    project.write(layout, raw)
+    raw["framework_version"] = "2.1.0"              # at or above the supported upgrade floor (2.0.0); see
+    project.write(layout, raw)                      # test_compat_shims_and_dead_handlers.py for the floor itself
     cfg = layout.config / "routing.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace("max_resource_jobs", "max_gpu_jobs"), encoding="utf-8")
-    assert "0.9.0" in doctor.check_project(layout).detail
+    assert "2.1.0" in doctor.check_project(layout).detail
     notes = migrations.run(layout, dry_run=True)
     assert any("max_gpu_jobs" in n for n in notes) and any("framework_version" in n for n in notes)
     assert "max_gpu_jobs" in cfg.read_text(encoding="utf-8")       # dry run wrote nothing
@@ -394,18 +394,21 @@ def test_project_write_keeps_the_template_comments(fresh, monkeypatch):
     r = runner.invoke(app, ["plugin", "new", "demo_job"])
     assert r.exit_code == 0, r.output
     after = layout.project_file.read_text(encoding="utf-8")
-    assert project.plugins(layout) == ["demo_job"] and "demo_job" in after
+    assert plugins.specs(layout) == [("demo_job", True)] and "demo_job" in after
     for comment in ("# project.yaml - what makes this folder", "# checked by `supervisor doctor`", "# Phase labels only."):
         assert comment in before and comment in after
     assert after.count("#") == before.count("#")
 
 
-def test_the_old_limit_name_is_still_understood_at_runtime(fresh):
+def test_the_old_limit_name_is_no_longer_understood_at_runtime_only_migrate_renames_it(fresh):
+    """2.9.0 removed gate.limits()'s own pre-1.0 fallback (below the supported floor, docs/UPDATING.md): the old
+    name now just sits unrecognised until `supervisor migrate` renames it (test_doctor_flags_a_framework_version_
+    mismatch_and_migrate_fixes_it, above, covers that migration)."""
     from supervisor import gate
     layout = Layout(fresh)
     cfg = layout.config / "routing.yaml"
     cfg.write_text(cfg.read_text(encoding="utf-8").replace("max_resource_jobs: 1", "max_gpu_jobs: 3"), encoding="utf-8")
-    assert gate.limits(layout)["max_resource_jobs"] == 3
+    assert gate.limits(layout)["max_resource_jobs"] == gate.DEFAULT_LIMITS["max_resource_jobs"]   # unrenamed now
 
 
 def test_control_center_start_refuses_on_a_version_mismatch(fresh, monkeypatch):
@@ -442,7 +445,7 @@ def test_a_seed_task_without_status_runs_through_the_loop(fresh, monkeypatch):
         "id": "T0-01", "phase": 0, "title": "Hello", "objective": "o", "owner_role": "engineer", "actions": ["a"],
         "artifacts": ["hello.txt"], "acceptance": "hello.txt exists", "cost_category": "deterministic",
         "job": {"adapter": "python", "fn": "write_seed_hello"}}]}), encoding="utf-8")
-    r = tasks_mod.import_seed(layout, fresh / "state" / "tasks_seed.yaml")
+    r = tasks_mod.import_seed(layout, fresh / "state" / "tasks_seed.yaml", actor="owner")
     assert r["created"] == ["T0-01"]
     assert yaml.safe_load((layout.tasks / "T0-01.yaml").read_text(encoding="utf-8"))["status"] == "NOT_STARTED"
     monkeypatch.setenv("SUPERVISOR_ROOT", str(fresh))

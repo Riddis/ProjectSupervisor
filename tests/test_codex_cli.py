@@ -117,7 +117,7 @@ def test_failure_modes(layout, mode, needle):
 
 
 def test_auth_failure_is_unavailable_not_failed(layout):
-    """D-012 F-B Change 2: a lapsed Codex login is unavailable, not a failed attempt - no fallback is configured
+    """A lapsed Codex login is unavailable, not a failed attempt - no fallback is configured
     for code_review in this isolated test project, so it waits token-free on the same lane exactly like a
     reported usage limit."""
     rtask(layout, "auth")

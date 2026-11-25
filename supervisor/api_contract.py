@@ -36,9 +36,6 @@ from pathlib import Path
 FORMAT = 1
 CONTRACT_FILE = "docs/plugin_api.json"
 DOC_FILE = "docs/PLUGIN_API.md"
-# The same two files under the names a release before 2.0.0 carries them: "plugin" was "extension" then.
-FORMER_CONTRACT_FILES = ("docs/extension_api.json",)
-FORMER_DOC_FILES = ("docs/EXTENSION_API.md",)
 CHANGELOG_FILE = "CHANGELOG.md"
 INTERNAL = ("supervisor",)                 # classes defined here are the framework's: their members are contract
 
@@ -490,27 +487,25 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def contract_at(root: Path, tag: str) -> dict | None:
-    """The contract a tag carries, or None when the tag predates it."""
+    """The contract a tag carries, or None when the tag predates it. Below the supported upgrade floor (2.0.0,
+    docs/UPDATING.md) a release named the file docs/extension_api.json ("plugin" was "extension" then); `check`
+    only ever compares with the newest tag in HEAD's history, which — for any head this runs against — is 2.0.0
+    or later, so that old name is never the one to look for."""
     if _git(root, "rev-parse", "--verify", "--quiet", f"{tag}^{{commit}}").returncode != 0:
         raise ContractError(f"no such tag or commit: {tag}")
-    for name in (CONTRACT_FILE, *FORMER_CONTRACT_FILES):    # a release before 2.0.0 names it the old way
-        shown = _git(root, "show", f"{tag}:{name}")
-        if shown.returncode != 0:
-            continue
-        try:
-            return json.loads(shown.stdout)
-        except ValueError as exc:
-            raise ContractError(f"{tag}:{name} is not JSON ({exc})") from None
-    return None
+    shown = _git(root, "show", f"{tag}:{CONTRACT_FILE}")
+    if shown.returncode != 0:
+        return None
+    try:
+        return json.loads(shown.stdout)
+    except ValueError as exc:
+        raise ContractError(f"{tag}:{CONTRACT_FILE} is not JSON ({exc})") from None
 
 
 def document_at(root: Path, tag: str) -> str | None:
     """The docs/PLUGIN_API.md a tag carries, or None when it has none."""
-    for name in (DOC_FILE, *FORMER_DOC_FILES):
-        shown = _git(root, "show", f"{tag}:{name}")
-        if shown.returncode == 0:
-            return shown.stdout
-    return None
+    shown = _git(root, "show", f"{tag}:{DOC_FILE}")
+    return shown.stdout if shown.returncode == 0 else None
 
 
 def previous_contract(root: Path) -> tuple[str | None, dict | None]:

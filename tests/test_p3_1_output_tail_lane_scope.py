@@ -1,5 +1,5 @@
-"""P3-1 (docs/reviews/RELEASE_REVIEW_2.7.0.md): `worker_report()`'s output-tail fallback (R-12) must be scoped to
-a plain-process lane, not merely "not a model lane". At `4d95e77` the condition keyed on
+"""`worker_report()`'s output-tail fallback must be scoped to
+a plain-process lane, not merely "not a model lane". At one point the condition keyed on
 `lane_adapter not in gate.MODEL_LANES` (`gate.MODEL_LANES` lists only `claude_cli`/`codex_cli`/`claude_api`), so a
 plugin model lane (e.g. `llm_endpoint`) and `human` still got the raw transcript tail, "/login" prose included."""
 from __future__ import annotations

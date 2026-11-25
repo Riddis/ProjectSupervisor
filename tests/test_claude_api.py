@@ -441,7 +441,7 @@ def test_a_task_pinned_to_claude_api_waits_for_credit(layout, ad, monkeypatch):
 def _history(layout, tid, upto):
     """Attempts 1..upto-1 of `tid` already finished, so the next record is attempt `upto`. Each keeps its old,
     flat id (ids are never renamed) but carries the identity fields a migrated record would — the shape every
-    record is guaranteed to have by the writer switch's own start-up guard (ATTEMPT_MODEL.md §8.6)."""
+    record is guaranteed to have by the writer switch's own start-up guard."""
     for n in range(1, upto):
         jobs.write(layout, {"attempt_id": f"{tid}.a{n}", "task_id": tid, "adapter": "claude_cli", "phase": "DONE",
                             "result": "FAILED", "spec": {"kind": "delivery"}, "attempt": n, "kind": "delivery", "seq": 1})

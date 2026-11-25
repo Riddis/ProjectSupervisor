@@ -658,6 +658,26 @@
           ],
           "returns": "None"
         },
+        "capabilities": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            },
+            {
+              "annotation": "dict",
+              "kind": "positional_or_keyword",
+              "name": "mapping"
+            }
+          ],
+          "returns": "None"
+        },
         "cli": {
           "kind": "method",
           "params": [
@@ -772,6 +792,26 @@
               "default": "()",
               "kind": "positional_or_keyword",
               "name": "score_keys"
+            }
+          ],
+          "returns": "None"
+        },
+        "job_schema": {
+          "kind": "method",
+          "params": [
+            {
+              "kind": "positional_or_keyword",
+              "name": "self"
+            },
+            {
+              "annotation": "str",
+              "kind": "positional_or_keyword",
+              "name": "adapter"
+            },
+            {
+              "annotation": "Any",
+              "kind": "positional_or_keyword",
+              "name": "model"
             }
           ],
           "returns": "None"
@@ -1428,6 +1468,20 @@
       "members": {
         "PolicyViolation": {
           "bases": [],
+          "init": {
+            "params": [
+              {
+                "kind": "var_positional",
+                "name": "args"
+              },
+              {
+                "annotation": "str",
+                "default": "'task'",
+                "kind": "keyword_only",
+                "name": "scope"
+              }
+            ]
+          },
           "kind": "class",
           "members": {}
         },

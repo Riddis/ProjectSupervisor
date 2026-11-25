@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Optional
 
 from .. import capacity
 from .. import policy
@@ -17,10 +18,22 @@ from .._vendor import usage_policy as up
 from .._vendor.contract import atomic_json, structured_result
 from .._vendor.handoff import instructions as handoff_instructions
 from ..paths import Layout
-from .base import Result, register
-from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, cost_category, limit_result, model_limits,
+from .base import Result, ReviewLaneKeys, register, register_job_schema
+from .claude_cli import (AUTH_FAILURE_RE, LIMIT_RE, classify_status, limit_result, model_limits,
                          resolve_handoff, role_profile, routing)
 from .process import ProcessAdapter, job_identity_env, job_spec, scrub_env
+
+
+class CodexCliJobExtra(ReviewLaneKeys):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md), plus the
+    review lane's own (`ReviewLaneKeys`): this lane confines through `sandbox` and has no per-path write mode."""
+    role: Optional[str] = None
+    prompt_file: Optional[str] = None
+    images: Optional[list[str]] = None
+    executable: Optional[str] = None
+
+
+register_job_schema("codex_cli", CodexCliJobExtra)
 
 POLL_MAX_AGE_S = 600      # re-poll the app-server when the observation is older than this
 
@@ -92,10 +105,13 @@ class CodexCliAdapter(ProcessAdapter):
         policy.assert_packet_clean(text, layout, f"{self.name} prompt {task.id}/{attempt_id}",
                                    job=job, task=task, lane=self.name)      # hosted lane: screens see the job too
         prompt_file.write_text(text, encoding="utf-8")
+        # The second model lane that calls the resolver, through the same
+        # shared path as the first and as the process lane -- one derived budget, one composed ceiling, one receipt.
+        limits, _ = self._resolve_limits(layout, task, attempt_id, job, routing(layout))
         return {"adapter": self.name, "task_id": task.id, "attempt_id": attempt_id, "run_dir": str(run_dir), "root": str(layout.root),
                 "role": role, "model": prof.get("model"), "effort": prof.get("effort", "high"),
                 "sandbox": prof.get("sandbox", "read-only"), "images": job.get("images", []), "stdin_file": str(prompt_file),
-                **timeouts.spec_fields(timeouts.resolve(routing(layout), cost_category(task), prof, job)),
+                **timeouts.spec_fields(limits),
                 "executable": job.get("executable") or executable(layout),
                 "result_kind": job.get("result_kind", "delivery")}
 
@@ -154,20 +170,20 @@ class CodexCliAdapter(ProcessAdapter):
         if LIMIT_RE.search(blob):
             layout = Layout(spec["root"])
             poll_capacity(layout)                                # measured windows if the RPC works, else synthetic (limit_result)
-            return limit_result(layout, self.engine, blob[-300:], session_id=session, raw=meta)
+            return limit_result(layout, self.engine, blob[-300:], raw=meta)
         if AUTH_FAILURE_RE.search(blob) or "codex login" in blob.lower() or "401 unauthorized" in blob.lower():
-            return Result(status="FAILED", error="login_required: run `codex login` on the workstation", session_id=session, raw=meta)
+            return Result(status="FAILED", error="login_required: run `codex login` on the workstation", raw=meta)
         if not completed or failed:
             return Result(status="FAILED", error=f"codex turn failed: {json.dumps(failed[-1]) if failed else 'no turn.completed'}"[:400],
-                          session_id=session, raw=meta)
+                          raw=meta)
         try:
             obj = structured_result(text, spec.get("result_kind", "delivery"))
         except ValueError:
-            return Result(status="FAILED", error="no structured result in codex answer", session_id=session, usage=usage, raw=meta)
+            return Result(status="FAILED", error="no structured result in codex answer", raw=meta)
         atomic_json(run_dir / "result.json", obj)
         return Result(status=classify_status(obj),
                       artifacts=list(obj.get("artifacts") or []), notes=str(obj.get("notes") or obj.get("summary") or ""),
-                      model=spec.get("model"), session_id=session, usage=usage, raw=obj)
+                      raw=obj)
 
 
 def poll_capacity(layout: Layout, max_age_s: float = 0) -> dict | None:

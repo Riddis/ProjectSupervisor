@@ -27,6 +27,17 @@ class Registry(Protocol):
         """A deterministic job `fn(root, run_dir, **params) -> dict` for `job: {adapter: python, fn: <name>}`."""
         ...
 
+    def job_schema(self, adapter: str, model: Any) -> None:
+        """A pydantic model for the keys a job for this `adapter` adds beyond `Job`'s framework-known fields:
+        refused when unknown and a schema is declared for the adapter, warned when none is declared at all."""
+        ...
+
+    def capabilities(self, adapter: str, mapping: dict) -> None:
+        """This `adapter`'s own capability data (`durable`, `network`, `max_duration_min`), matched against a
+        task's declared `needs` instead of leaving the lane warned as `needs_lane_unknown`. One of the framework's
+        own five lane names is refused."""
+        ...
+
     def config_sections(self, *names: str) -> None:
         """The routing.yaml sections this plugin reads with `supervisor.plugin.config()`; one owner per section."""
         ...

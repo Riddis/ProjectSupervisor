@@ -10,11 +10,26 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from pydantic import BaseModel
+
 from .. import inbox as inbox_mod, tasks as tasks_mod
 from .._vendor.contract import CapacityDeferred
 from ..models.task import TaskStatus
 from ..paths import Layout
-from .base import Adapter, Result, register
+from .base import Adapter, Result, register, register_job_schema
+
+
+class HumanJobExtra(BaseModel):
+    """`job` keys this lane reads beyond the framework's typed `Job` fields (docs/TASK_CONTRACT.md)."""
+    for_role: Optional[str] = None
+    kind: Optional[str] = None
+    subject: Optional[str] = None
+    summary: Optional[str] = None
+    allowed_responses: Optional[list[str]] = None
+    free_text: Optional[bool] = None
+
+
+register_job_schema("human", HumanJobExtra)
 
 # APPROVE is ACCEPT as an approval list spells it (inbox.APPROVAL_RESPONSES): a human job may offer that list, and its
 # item is attempt-backed, so inbox.apply_approval's aliases never reach it. Other custom words keep their own meaning.
@@ -23,8 +38,8 @@ DEFER_SECONDS = 300.0
 
 
 def job_spec(task) -> dict:
-    extra = getattr(task, "model_extra", None) or {}
-    return dict(extra.get("job") or {})
+    job = getattr(task, "job", None)
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
 
 
 class HumanAdapter(Adapter):

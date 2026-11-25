@@ -7,9 +7,23 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from packaging.version import InvalidVersion, Version
 
 from . import __version__, store, yaml_edit
 from .paths import Layout
+
+# docs/UPDATING.md, "Supported upgrade floor": `supervisor migrate` still carries a project of any recorded
+# version forward (the migration transforms themselves are kept, not floor-gated), but below this version the
+# runtime no longer carries a compatibility fallback for every shape a migration already rewrites (the 2.9.0
+# dead-code closure) — so a project must migrate before it runs, not merely before a report calls it current.
+SUPPORTED_FLOOR = "2.0.0"
+
+
+def below_floor(recorded: str) -> bool:
+    try:
+        return Version(recorded) < Version(SUPPORTED_FLOOR)
+    except InvalidVersion:
+        return False                   # an unparsable version is `problem`'s to report, not this one's
 
 # `write` changes only what differs (supervisor.yaml_edit): project.yaml is born from the commented template, and
 # the comments and the owner's layout are what most owners read, so an update (migration, `plugin new`) keeps
@@ -17,14 +31,39 @@ from .paths import Layout
 
 DEFAULTS: dict[str, Any] = {
     "name": "Untitled project",
-    "description": "",
     "framework_version": __version__,
-    "repo": {"path": ".", "remote": None, "default_branch": "main"},
     "phases": {},            # {0: "Environment", 1: "Foundations", ...} — labels only; gating lives in state/gates.yaml
     "plugins": [],           # import paths relative to plugins/ (e.g. "my_adapter") or dotted module names
-    "ui": {"port": 8790, "title": None},
-    "owner": {"name": "owner"},
+    "ui": {"port": 8790},
 }
+
+# R-26: keys a project.yaml may still carry from before this release, that no version of the framework has ever
+# read. `description`, `repo.path`/`repo.remote`/`repo.default_branch` and `owner.name` were free text or always
+# equal to their own default (the git root is the project root; every inbox/human gate addresses the literal role
+# id "owner", never a configured name) and `ui.title` was never substituted for the pages' own fixed titles.
+# Listed, not removed from DEFAULTS' shape: a document that still carries one keeps loading (`load` merges whatever
+# it finds), `doctor` warns once, and `supervisor init`/`migrate` stop writing them.
+REMOVED_TOP_LEVEL = {
+    "description": "free text; nothing reads it",
+    "repo": "repo.path/repo.remote/repo.default_branch; nothing reads them (the git root is the project root)",
+    "owner": "owner.name; every inbox/human gate addresses the literal role id \"owner\"",
+}
+REMOVED_NESTED = {
+    ("ui", "title"): "every page's title is fixed text; nothing substitutes it",
+}
+
+
+def removed_settings(layout: Layout) -> list[str]:
+    """One line per key `raw()` still carries that R-26 found no reader for — a warning for `doctor`, never a
+    refusal: the key is simply never consulted, exactly as it was unread before this function existed."""
+    doc = raw(layout)
+    out = [f"project.yaml: {key!r} is no longer read ({note}); safe to delete"
+           for key, note in REMOVED_TOP_LEVEL.items() if key in doc]
+    for (parent, child), note in REMOVED_NESTED.items():
+        section = doc.get(parent)
+        if isinstance(section, dict) and child in section:
+            out.append(f"project.yaml: {parent}.{child!r} is no longer read ({note}); safe to delete")
+    return out
 
 
 def path(layout: Layout) -> Path:
@@ -120,17 +159,6 @@ def phase_labels(layout: Layout) -> dict[int, str]:
     return out
 
 
-def plugins(layout: Layout) -> list[str]:
-    """Configured plugin names. Entries are a bare name or a mapping with `name` (and `required`, see
-    supervisor.plugins.specs); this returns the names only."""
-    names = []
-    for x in load(layout).get("plugins") or []:
-        name = x.get("name") if isinstance(x, dict) else x
-        if name:
-            names.append(str(name))
-    return names
-
-
 def ui_port(layout: Layout) -> int:
     try:
         return int((load(layout).get("ui") or {}).get("port") or 8790)
@@ -153,11 +181,19 @@ def write(layout: Layout, doc: dict) -> Path:
 
 def version_mismatch(layout: Layout) -> str | None:
     """A one-line note when project.yaml cannot be trusted (see `problem`) or records a framework version other
-    than the installed one, else None. The doctor's project check and the Control Center's Start use it."""
+    than the installed one, else None. The doctor's project check and the Control Center's Start use it. Below
+    the supported upgrade floor the note names it and the path through it, rather than only "run migrate" —
+    `supervisor migrate` still takes the project the rest of the way there in the same one step, same as any
+    other mismatch; what changes is that the runtime no longer tolerates the gap silently in the meantime."""
     note = problem(layout)
     if note:
         return note
     recorded = str(load(layout).get("framework_version") or "")
+    if recorded and below_floor(recorded):
+        return (f"project.yaml records framework {recorded}, below the supported upgrade floor {SUPPORTED_FLOOR} "
+                f"(docs/UPDATING.md, \"Supported upgrade floor\") — run `supervisor migrate` now: it carries a "
+                f"project of any recorded version to {__version__} in one step, the same command as any other "
+                f"version mismatch")
     if recorded and recorded != __version__:
         return f"project.yaml records framework {recorded}; installed {__version__} — run `supervisor migrate`"
     return None

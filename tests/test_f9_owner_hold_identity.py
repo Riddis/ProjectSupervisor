@@ -1,4 +1,4 @@
-"""Round-4 review F9 (docs/reviews/RELEASE_REVIEW_2.1.0_round4.md lines 81-140, answer 3 at lines 178-207):
+"""
 nothing durable distinguished an owner Hold from the cap event's own BLOCKED, so the cap's automatic requeue
 undid it - in each of the three windows where recovery (`loop._repair_capped_escalation`) replayed an
 interrupted escalation over a Hold, and in the uninterrupted path too, where `diagnosis.ingest`'s own ordinary
@@ -264,6 +264,50 @@ def test_the_owner_s_own_requeue_releases_a_hold(layout):
     task = tasks.load(layout, "T")
     assert task.status == TaskStatus.READY
     assert task.held is None
+
+
+def test_release_hold_clears_the_hold_without_moving_the_task(layout):
+    """`tasks.release_hold()` is the owner's release that moves nothing: a held task with nowhere else to go is unheld and stays exactly where it is, which
+    `set_status()` cannot do — a same-status write there is a silent `_NoChange` that never reaches the clearing."""
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    tasks.set_status(layout, "T", "BLOCKED", actor="escalation", note="automatic")
+    tasks.hold(layout, "T", "owner-ui", "held by owner")
+    history_before = _history(layout)
+
+    task = tasks.release_hold(layout, "T", "owner-ui", note="the owner let it go")
+
+    assert task.held is None
+    assert task.status == TaskStatus.BLOCKED
+    assert tasks.load(layout, "T").held is None               # durable, not only on the returned copy
+    assert _history(layout) == history_before                 # the release is not a transition
+
+
+def test_release_hold_on_a_task_with_no_hold_is_a_no_op(layout):
+    """Idempotence: releasing a hold that is not there changes nothing at all - the same task back, its bytes
+    untouched, so a retried command (or a second click) cannot write an empty release over a live record."""
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    before = (layout.tasks / "T.yaml").read_bytes()
+
+    task = tasks.release_hold(layout, "T", "owner-ui")
+
+    assert task.held is None
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert (layout.tasks / "T.yaml").read_bytes() == before
+
+
+def test_release_hold_twice_leaves_the_task_released_and_unchanged(layout):
+    make_task(layout, "T")
+    tasks.set_status(layout, "T", "IN_PROGRESS")
+    tasks.hold(layout, "T", "owner-ui", "held by owner")
+    tasks.release_hold(layout, "T", "owner-ui")
+    after_first = (layout.tasks / "T.yaml").read_bytes()
+
+    tasks.release_hold(layout, "T", "owner-ui")
+
+    assert tasks.load(layout, "T").held is None
+    assert (layout.tasks / "T.yaml").read_bytes() == after_first
 
 
 def test_an_unheld_blocked_task_still_reaches_ready_through_the_managers_requeue(layout, fake_claude):

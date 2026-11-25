@@ -68,7 +68,24 @@
     {% endif %}
 
     {% if item.status == 'open' %}
-    {% if item.ext_answerable %}
+    {% if item.ext_answerable and item.choices %}
+    <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form choice-form">
+      {% include "partials/csrf.html" %}
+      {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}
+      <input type="hidden" name="choices_digest" value="{{ item.choices_digest }}">
+      {% for c in item.choices %}
+      <button type="submit" name="choice" value="{{ c.id }}" title="{{ c.detail or '' }}">{{ c.label }}</button>
+      {% endfor %}
+    </form>
+    {# free text on a choice card is a comment, not a button: its own form, carrying no choice and no digest,
+       because free text is never an effect #}
+    <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form comment-form">
+      {% include "partials/csrf.html" %}
+      {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}
+      <input type="text" name="text" placeholder="Or answer in free text (recorded as a comment)">
+      <button type="submit">Send free text</button>
+    </form>
+    {% elif item.ext_answerable %}
     <form method="post" action="/inbox/{{ item.id }}/answer" class="inline-form">
       {% include "partials/csrf.html" %}
       {% if item.approval_digest_shown %}<input type="hidden" name="digest" value="{{ item.approval_digest_shown }}">{% endif %}
@@ -107,6 +124,14 @@
        {% if item.answer.note %}— {{ item.answer.note }}{% endif %}</p>
     {% if item.applied and item.applied.message %}
     <p class="muted">{{ item.applied.message }}{% if item.applied.reopened %} — see <a href="/inbox#inbox-item-{{ item.applied.reopened }}">{{ item.applied.reopened }}</a>{% endif %}</p>
+    {% endif %}
+    {% if item.choice_applied %}
+    {% if item.choice_applied.ok %}
+    <p class="muted">Applied choice {{ item.choice_applied.choice }}.</p>
+    {% else %}
+    <p class="flash flash-error">Choice {{ item.choice_applied.choice }} did not apply: {{ item.choice_applied.error }}
+       {% if item.choice_applied.reopened %} — see <a href="/inbox#inbox-item-{{ item.choice_applied.reopened }}">{{ item.choice_applied.reopened }}</a>{% endif %}</p>
+    {% endif %}
     {% endif %}
     {% endif %}
   </article>

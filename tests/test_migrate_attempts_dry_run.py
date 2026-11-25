@@ -1,4 +1,4 @@
-"""The attempt-identity migration's dry run (ATTEMPT_MODEL.md section 8, step 6 of "Order of work"): derives
+"""The attempt-identity migration's dry run: derives
 `mapping.json` and `report.json` from the fields a store carries today, never writes to the store itself, takes an
 `overrides.yaml` as an input, and can be compared against an earlier run.
 
@@ -341,7 +341,7 @@ def test_cli_help_options_are_present_at_a_narrow_rendered_width_too(layout, mon
 # ---- dispatch order on an un-migrated store (section 8.2) ----
 #
 # `jobs.for_task` groups its result by kind, then by id string, for a record carrying none of `jobs.sort_key`'s
-# fields (no id-suffix fallback since the writers switch, C-3/T7-08) -- which is exactly the shape of a record the
+# fields (no id-suffix fallback since the writers switch) -- which is exactly the shape of a record the
 # migration exists to place. These four cases are the ones no fixture above builds: ten or more records of one
 # kind, and a review that falls to the preceding-delivery rule after a later delivery has already been walked.
 

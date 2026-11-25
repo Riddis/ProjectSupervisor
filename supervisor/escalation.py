@@ -14,16 +14,13 @@ import hashlib
 import re
 from pathlib import Path
 
-import yaml
-
 from . import jobs as jobs_mod
 from . import packets as packets_mod
-from . import scheduler
-from . import store
+from . import policy, routing_config, scheduler, store
 from . import tasks as tasks_mod
 from ._vendor.contract import atomic_json, read_json
 from .locks import FileLock
-from .models.task import Task, TaskStatus
+from .models.task import ALLOWED, Task, TaskStatus
 from .paths import Layout
 
 ISSUE_TITLES = {"worker_blocked": "worker reported BLOCKED", "worker_failed": "worker run failed repeatedly",
@@ -52,15 +49,10 @@ def _budget_config(layout: Layout) -> tuple[dict[str, int], dict[str, str]]:
     """(limits, causes) with config/routing.yaml's `escalation.budget` layered over the defaults above —
     missing file, missing section or an unreadable document all fall back to the defaults, never an error."""
     limits, causes = dict(DEFAULT_BUDGET_LIMITS), dict(DEFAULT_CAUSE_TABLE)
-    cfg = layout.config / "routing.yaml"
-    if cfg.exists():
-        try:
-            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            data = {}
-        budget = ((data.get("escalation") or {}).get("budget")) or {}
-        limits.update({str(k): int(v) for k, v in (budget.get("limits") or {}).items()})
-        causes.update({str(k): str(v) for k, v in (budget.get("causes") or {}).items()})
+    data = routing_config.load(layout)
+    budget = ((data.get("escalation") or {}).get("budget")) or {}
+    limits.update({str(k): int(v) for k, v in (budget.get("limits") or {}).items()})
+    causes.update({str(k): str(v) for k, v in (budget.get("causes") or {}).items()})
     return limits, causes
 
 
@@ -72,7 +64,7 @@ def classify(layout: Layout, source: str, reason: str | None = None) -> str:
         return causes[f"{source}:{reason}"]
     return causes.get(source, "substance")
 # retry=False decisions never get a second try at the same brief; the note explains why in the failure's own terms
-# instead of a stock worker_blocked sentence (D-010 Consequences: this is also where continuations-exhausted lands).
+# instead of a stock worker_blocked sentence (this is also where continuations-exhausted lands).
 NO_RETRY_NOTES = {"worker_blocked": "the worker reported it cannot proceed; retrying the same brief would repeat it",
                   "continuations_exhausted": "the continuation budget is spent; resubmitting the same brief would need another"}
 
@@ -103,8 +95,8 @@ def event_outcome(layout: Layout, task_id: str, event: str) -> str:
     landed" apart from "it has not" - never derived from the task's current status, since BLOCKED is this
     decision's own intermediate state (issue opened, diagnosis still owed) as much as it is a status set for
     any other reason. It says nothing about an owner's deliberate Hold, which a BLOCKED task carries for an
-    unrelated reason of its own: that is a separate, durable record on the task itself (`held`, D-010/round-4
-    F9), read directly by the recovery guard instead of being inferred from this event's outcome."""
+    unrelated reason of its own: that is a separate, durable record on the task itself (`held`),
+    read directly by the recovery guard instead of being inferred from this event's outcome."""
     dec = _load(layout, task_id)["events"].get(event)
     if not dec:
         return ""
@@ -265,6 +257,60 @@ def find_issue(layout: Layout, task_id: str, signature: str, grant: int = 0) -> 
     return None
 
 
+def refuse_packet(supervisor, task: Task, where: str, exc: policy.PolicyViolation) -> dict:
+    """A `PolicyViolation` raised while building ONE task's own packet (a revision, review or diagnosis brief, or
+    a continuation's rebuild of one) is this task's own failure, not the loop's: caught here, at the dispatch
+    boundary that raised it, so the packet is never written or dispatched and the exception never reaches
+    `settle()`/`dispatch_reviews()` - nothing about this one task's refusal stops the loop from serving every
+    other one this turn or the next.
+
+    A `scope="machine"` violation (the credential store could not be enumerated; a required screen plugin would
+    not load - see `policy.PolicyViolation`) is re-raised unchanged instead. It is not this task's refusal: it
+    refuses every packet on the machine, so containing it here would BLOCK each task in turn, spend the owner's
+    inbox on identical items and leave the misconfiguration standing. Still fail-closed - nothing dispatches
+    either way - but the loop's own error path, not the task list, is where a machine-wide stop belongs.
+
+    The task leaves the path it was on, for the owner, rather than being retried: a revision, review or
+    diagnosis session would rebuild the identical packet from the identical source text and hit the identical
+    refusal, so retrying is not a recovery here, it is the replay that used to re-raise every loop turn until the
+    loop-error breaker tripped. BLOCKED, whenever the task's current status allows that transition at all
+    (`models.task.ALLOWED`) - the same "automatic retries stopped" status every other escalate branch uses, and
+    the transition that actually contains this: the status is what the schedulers read, so a refused REVIEW
+    packet left in WAITING_FOR_REVIEW is re-offered by `review.pending()` on the very next turn and refuses
+    again, which is the repeat this function exists to end. A task already BLOCKED, COMPLETE or CANCELLED keeps
+    its status and gets the note alone.
+
+    The owner is told once per stopped task: with an owner `decision` item already open for this task there is
+    nothing a second card adds (the answer to the first one - REQUEUE/CANCEL/DEFER - is the answer to both), and
+    `inbox.MAX_OPEN_PER_ROLE` is a shared budget, so one task's refusals must not spend the slots every other
+    task's own decisions and approvals need.
+
+    The note, the log and the owner item carry `exc`'s own message only - `PolicyViolation` never carries the
+    matched text (policy.py's own floor rule), only the pattern name or label that tripped - never `source` or
+    `detail`, which is the text that tripped the scanner and must not be the text that un-trips it by reaching a
+    stored note, an issue or an inbox item verbatim."""
+    if getattr(exc, "scope", "task") != "task":
+        raise exc
+    from . import diagnosis as diagnosis_mod
+    from . import inbox as inbox_mod
+    layout = supervisor.layout
+    msg = str(exc)[:500]
+    tasks_mod.log(layout, "packet_refused", "escalation", task=task.id, where=where, error=msg)
+    status = tasks_mod.load(layout, task.id).status
+    if TaskStatus.BLOCKED in ALLOWED.get(status, set()):
+        tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"{where} refused: {msg}")
+    else:
+        tasks_mod.add_note(layout, task.id, f"{where} refused: {msg}", actor="escalation")
+    open_decision = next((i for i in inbox_mod.open_items(layout, "owner")
+                          if i.get("task_id") == task.id and i.get("kind") == inbox_mod.DECISION_KIND), None)
+    if open_decision:
+        return {"action": "refused", "inbox": open_decision["id"]}
+    out = diagnosis_mod.route_to_owner(layout, task, {"diag_role": "escalation"}, msg, "",
+                                       f"the {where} could not be built without refusing: {msg}")
+    out["action"] = "refused"
+    return out
+
+
 def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: bool, event: str | None = None) -> dict:
     """Queue the next delivery attempt with a revision brief; `_ensure_in_progress` (inside launch()) handles the
     FAILED/IN_PROGRESS transition, so no status change is needed here. The record goes through supervisor.dispatch →
@@ -318,12 +364,20 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     already landed" apart from "it has not" - that distinction cannot be read off the task's current status
     alone (BLOCKED is this event's own intermediate state as much as it is a stop for any other reason). A
     deliberate later cancellation is told apart because CANCELLED is outside the guard's allowed statuses; a
-    deliberate later Hold is told apart by its own durable record on the task (`held`, R4/D-010, round-4 F9),
+    deliberate later Hold is told apart by its own durable record on the task (`held`),
     checked directly rather than inferred from this event's `routed` flag, which carries no such information."""
     layout = supervisor.layout
     sig = decision["signature"]
     if decision["action"] == "retry":
-        dispatch_revision(supervisor, task, source, detail, bool(decision.get("senior")), event=decision.get("event"))
+        try:
+            dispatch_revision(supervisor, task, source, detail, bool(decision.get("senior")), event=decision.get("event"))
+        except policy.PolicyViolation as exc:
+            # The revision packet (prior delivery brief + this failure's own `detail`, quoted verbatim by
+            # packets.revision_brief) refused: never raise out of here into settle()/record_failure() - see
+            # refuse_packet's own docstring for why this ends BLOCKED-for-owner rather than retried.
+            out = refuse_packet(supervisor, task, "revision packet", exc)
+            _mark_routed(layout, task.id, decision.get("event"))
+            return out
         return {"action": "retry", "revision": decision["revision"], "senior": decision["senior"], "signature": sig}
     grant = current_grant(layout, task.id)
     issue = find_issue(layout, task.id, sig, grant=grant)
@@ -397,7 +451,7 @@ def current_grant(layout: Layout, task_id: str) -> int:
 
 
 def grant_continuations(layout: Layout, task_id: str, reason: str) -> None:
-    """A fresh continuation grant (D-010/R4) retires every continuation marker that belongs to an earlier grant
+    """A fresh continuation grant retires every continuation marker that belongs to an earlier grant
     generation than this task's current one, the same way an owner REQUEUE resume has always retired them
     (supervisor.inbox). `current_grant` (`state["resets"]`) is the retirement boundary and it is durable in the
     same write `reset_retries` already made, so this function reads it fresh every call instead of trusting a
@@ -447,7 +501,7 @@ def record_failure(supervisor, task_id: str, source: str, detail: str, event: st
     R-14: `reason` is the extra classifier a caller may already have in hand (today, a verification
     report's own reason code distinguishing a verifier-condition failure from one on the work) that
     `classify()` uses, alongside `source`, to pick which of the three counters this failure charges.
-    `immediate` is trigger 4 of the review-rounds rule (ATTEMPT_MODEL.md 4.2): a REJECT escalates at once,
+    `immediate` is trigger 4 of the review-rounds rule: a REJECT escalates at once,
     regardless of any counter — a rejection is a verdict on the approach, not a list of repairs.
 
     Returns {"action": "retry"|"escalate", ...}."""

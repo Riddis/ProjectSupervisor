@@ -1,13 +1,14 @@
 """llm_endpoint: a Supervisor plugin package.
 
-A generic OpenAI-compatible chat-completions lane for text-only work (D-013 R2): text in, text or
+A generic OpenAI-compatible chat-completions lane for text-only work: text in, text or
 schema-validated JSON out. It knows nothing about any particular server - the binary, its argv, the health URL
 and the model name are configuration - so the same lane serves any server that speaks the shape. The HTTP call
 runs in a short-lived child process (`_worker.py`), same pid/create_time handle and result.json contract as
 every other `process`-family adapter; the server itself is started and stopped by a separate watchdog
-(`_server.py`) that outlives any one job. GPU-locked (`gpu = True`): one GPU-bound lane runs at a time
-(`resources.gpu.single_job`), and, where the project configures `resources.gpu.lease`, the machine-wide lease
-is held by the watchdog for as long as the server is up.
+(`_server.py`) that outlives any one job. GPU-locked (`gpu = True`): one GPU-bound lane runs at a time, serialised
+by `limits.max_resource_jobs` against the job record's own `gpu` flag (routing.yaml's `resources.<name>.single_job`
+is not read), and, where the project configures `resources.gpu.lease`, the machine-wide lease is held by the
+watchdog for as long as the server is up.
 
 Import only `supervisor.plugin` and `supervisor.testing` (in tests); register only inside setup()."""
 from __future__ import annotations
@@ -23,8 +24,8 @@ from . import _server
 
 job_spec = plugin.job_spec
 
-# D-013 section 5: the watchdog's own lease wait (wait_s, 60s default) is followed by 120s of deferral before
-# the adapter's next retry; this used to be 30 (RELEASE_REVIEW_local-lane.md F9).
+# The watchdog's own lease wait (wait_s, 60s default) is followed by 120s of deferral before
+# the adapter's next retry.
 DEFER_SECONDS = 120.0
 INBOX_KIND = "llm_endpoint_capacity"
 
@@ -72,9 +73,8 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
         run_dir = layout.runs / task.id / attempt_id
         run_dir.mkdir(parents=True, exist_ok=True)
         cfg = llm_endpoint_config(layout)
-        # F12 (RELEASE_REVIEW_local-lane.md): no multi-profile switching is an honest cut - T5-02 has chosen
-        # no second profile yet - but a cut must be loud. Refuse any profile but the one configured; the
-        # design job contract's own example (LOCAL_MODEL_LANE.md) names "default", and a job that names none
+        # No multi-profile switching is an honest cut - a cut must be loud. Refuse any profile but the
+        # one configured; the job contract's own example names "default", and a job that names none
         # at all is the ordinary case every existing task uses.
         requested_profile = job.get("profile")
         if requested_profile is not None and requested_profile != cfg["profile"]:
@@ -108,9 +108,9 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
     def submit(self, spec: dict) -> dict:
         cfg = spec["cfg"]
         root = spec["root"]
-        # The floor says whether a *start* will work (D-013 section 4); a resident server already
+        # The floor says whether a *start* will work; a resident server already
         # holds exactly the VRAM it guards, so it is only asked before a start is attempted - never
-        # against a server that is already up and answering (F3, RELEASE_REVIEW_local-lane.md).
+        # against a server that is already up and answering.
         if not _server._health_ok(cfg["base_url"], cfg.get("health_path", "/health")):
             for name, index, floor in spec.get("devices") or []:
                 if not floor:
@@ -139,7 +139,7 @@ class LlmEndpointAdapter(plugin.ProcessAdapter):
 
     @staticmethod
     def _on_defer(spec: dict, reason: str) -> None:
-        """R5's `defer_budget_s` (D-013 section 5): persist when this continuous window of deferral started -
+        """`defer_budget_s`: persist when this continuous window of deferral started -
         in the state file, not in this process, so a loop restart does not grant a fresh budget - and, once
         the window has run longer than the budget, raise the one owner item it calls for. Called on every
         deferral, not only the first: `open_owned_item` is idempotent by the window's own start time, so a
@@ -230,7 +230,7 @@ def check_llm_endpoint(layout: plugin.Layout) -> plugin.Check:
                                 "nothing will stop or renew the lease for it; llm_endpoint.stop will kill it")
     detail = f"{cfg['base_url']} healthy" + (f", {model} present" if model else "")
     if pid is not None:
-        # F22 (RELEASE_REVIEW_local-lane_round2.md, advisory): say plainly whether the OS-level tie (F5) took,
+        # Say plainly whether the OS-level tie took,
         # rather than leaving a failed AssignProcessToJobObject unremarked; the state-based backstop above
         # still catches the orphan it would otherwise leave on the next call either way.
         detail += (", tied to its watchdog" if state.get("tied", True) else

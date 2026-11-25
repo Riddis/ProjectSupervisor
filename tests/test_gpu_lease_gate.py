@@ -1,4 +1,4 @@
-"""The GPU lease (supervisor.leases) wired into the ordinary launch path (D-013 R4): `supervisor.gate` refuses to
+"""The GPU lease (supervisor.leases) wired into the ordinary launch path: `supervisor.gate` refuses to
 launch a resource-holding job while another project's lease entry is live, and the loop takes the lease for real
 right before `submit()` and lets go of it once none of this project's jobs holds the resource slot any more.
 Two project Layouts, pointed at the same lease file, stand in for "two projects on one machine"."""
@@ -104,7 +104,7 @@ def test_a_second_project_waits_for_the_first_to_let_go_of_the_gpu_lease(tmp_pat
 
 
 def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(tmp_path):
-    """F1 (docs/reviews/RELEASE_REVIEW_local-lane.md): the loop must renew its own gpu lease entry on every
+    """The loop must renew its own gpu lease entry on every
     reconcile() while the job it covers is still RUNNING, so stale_after_s never prunes a live hold out from
     under it and another project's loop starts on top of it. Once the job leaves RUNNING the entry is let go,
     not kept alive by renewal."""
@@ -139,7 +139,7 @@ def test_a_running_gpu_job_renews_its_lease_entry_so_it_outlives_stale_after_s(t
 
 
 def test_a_waiting_loop_records_a_release_request_so_the_holder_yields_and_the_waiter_then_launches(tmp_path):
-    """F2 (docs/reviews/RELEASE_REVIEW_local-lane.md): gate.check() calls gate.lease_blocked(), whose peek refuses
+    """gate.check() calls gate.lease_blocked(), whose peek refuses
     the launch before launch() ever reaches acquire() — the only place _record_waiting() lived. A loop that is
     only ever refused by the peek therefore never asked the holder to yield. Four steps, with B driven only
     through Supervisor.once() (never through the lease primitive, which is exactly what the existing hand-over
@@ -197,7 +197,7 @@ def test_repeated_waiting_passes_record_the_release_request_once_and_do_not_rest
 
 
 def test_a_restarted_loop_retakes_the_entry_for_its_still_running_gpu_job(tmp_path):
-    """F19 (docs/reviews/RELEASE_REVIEW_local-lane_round2.md): launch() writes the lease entry once, with this
+    """launch() writes the lease entry once, with this
     process's own pid/create_time; F1's renew() refreshes only an entry whose (holder, pid) is this process's, and
     nothing in the loop ever called acquire() for a record it merely re-adopted. So when the loop process that
     launched a RUNNING gpu job is gone — supervisor stop/start, a crash, a runtime move — the entry is pruned as
@@ -263,7 +263,7 @@ def test_a_refused_retake_is_logged_with_the_holder_it_found_and_leaves_the_reco
 
 
 def test_the_retake_only_fires_for_a_record_still_running_not_once_it_has_left_running(tmp_path):
-    """Keeps T5-18's rule for the new re-take path too, half 1: _renew_gpu_lease_if_active's own gate (an open
+    """Keeps the re-take rule for the new re-take path too, half 1: _renew_gpu_lease_if_active's own gate (an open
     gpu job in gate.ACTIVE_PHASES) decides whether to renew AND, now, whether to re-take -- never one without
     the other. While the job is RUNNING, a restarted loop's tick re-takes what renew() could not refresh; once
     the job has left RUNNING (settled to DONE), the same gate releases the entry rather than kept alive by

@@ -86,15 +86,24 @@ DEFAULTS: dict = {
         "secret_key_words": ["API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSPHRASE", "CREDENTIAL", "PRIVATE_KEY",
                              "SESSION_KEY", "SIGNING_KEY", "REFRESH"],
         "redaction_placeholder": "[REDACTED]",
+        # `(?<![A-Za-z0-9_\-])` on a key-shaped pattern is a LEFT BOUNDARY, not a lookaround for its own sake: a
+        # match is refused if it could start mid-word (preceded by a letter, digit, `_` or `-`), the way an
+        # ordinary hyphenated or underscored word can glue a key-shaped tail onto an unrelated head
+        # ("a-sk-identifier-shapedphrase" is not a key). A real token is never preceded by a word character
+        # where it actually appears - line start, after a space, quote, backtick, `=`, `:`, `(`, or in
+        # `KEY=sk-...`/`"Bearer sk-..."` - so the boundary costs nothing against a real shape and only refuses
+        # the mid-word case. Applied to every pattern whose own prefix is short/common enough to appear inside
+        # an ordinary word by accident (R-29); `private_key_block`, `bearer_header` and `assigned_secret` already
+        # require a multi-word marker or a `\b`-bounded keyword before their own match and are left as they are.
         "patterns": [
-            {"name": "anthropic_api_key", "regex": r"sk-ant-[A-Za-z0-9_\-]{16,}"},
-            {"name": "openai_api_key", "regex": r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}"},
-            {"name": "github_token", "regex": r"gh[pousr]_[A-Za-z0-9]{20,}"},
-            {"name": "slack_token", "regex": r"xox[abpsr]-[A-Za-z0-9\-]{12,}"},
-            {"name": "aws_access_key_id", "regex": r"AKIA[0-9A-Z]{16}"},
-            {"name": "google_api_key", "regex": r"AIza[0-9A-Za-z_\-]{35}"},
-            {"name": "meta_graph_token", "regex": r"EAA[A-Za-z0-9]{24,}"},
-            {"name": "jwt", "regex": r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"},
+            {"name": "anthropic_api_key", "regex": r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{16,}"},
+            {"name": "openai_api_key", "regex": r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}"},
+            {"name": "github_token", "regex": r"(?<![A-Za-z0-9_\-])gh[pousr]_[A-Za-z0-9]{20,}"},
+            {"name": "slack_token", "regex": r"(?<![A-Za-z0-9_\-])xox[abpsr]-[A-Za-z0-9\-]{12,}"},
+            {"name": "aws_access_key_id", "regex": r"(?<![A-Za-z0-9_\-])AKIA[0-9A-Z]{16}"},
+            {"name": "google_api_key", "regex": r"(?<![A-Za-z0-9_\-])AIza[0-9A-Za-z_\-]{35}"},
+            {"name": "meta_graph_token", "regex": r"(?<![A-Za-z0-9_\-])EAA[A-Za-z0-9]{24,}"},
+            {"name": "jwt", "regex": r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"},
             # The whole block, not just the marker: `redact()` substitutes what the pattern matches, so matching
             # the BEGIN line alone left the base64 body and the END line in the log. A block with no END line
             # (truncated output, a key pasted into a tail) is redacted to the end of the string - over-redacting
@@ -115,7 +124,22 @@ class PolicyError(RuntimeError):
 
 
 class PolicyViolation(PolicyError):
-    """A credential, or content that may not leave the machine, reached a boundary that forbids it."""
+    """A credential, or content that may not leave the machine, reached a boundary that forbids it.
+
+    `scope` says *whose* failure it is, which is what decides the blast radius a caller may contain it to:
+
+    * `"task"` (the default, and what a plugin screen raising this gets unless it says otherwise) - THIS packet's
+      own text carried something that may not leave the machine. Only the task that owns the packet is affected,
+      so `escalation.refuse_packet` fails that one task and the loop keeps serving every other one.
+    * `"machine"` - the screen itself could not run: the credential store could not be enumerated, or a required
+      packet-screen plugin would not load. That is true of every packet on this machine, not of one task, so
+      containing it per task would only walk the whole task list BLOCKING each in turn (and spending the owner's
+      inbox) while the misconfiguration stands. `refuse_packet` re-raises these instead, leaving the loop's own
+      error path to stop the loop - fail-closed in both directions: nothing dispatches either way."""
+
+    def __init__(self, *args, scope: str = "task"):
+        super().__init__(*args)
+        self.scope = scope
 
 
 # ---------------------------------------------------------------------------- loading
@@ -663,7 +687,7 @@ def find_secrets(text: str, layout: Layout | None = None) -> list[str]:
 
     Callers that *enforce* something must consult `secret_scan_problems()` as well, or use the one-scan path in
     `assert_packet_clean()`: like `secret_values()`, this answers "what was found", not "what is there"."""
-    return _find_in(text, _scan(layout)[0], layout)
+    return _find_in(text, secret_values(layout), layout)
 
 
 UNSCREENED_FIELD = "policy_unscreened"
@@ -677,7 +701,7 @@ def _redaction(layout: Layout | None = None):
     cfg = _clamped_secrets(layout)
     values, problems = _scan(layout)
     literals = [v for v in list(values.values()) + list(env_secret_values(layout).values()) if v]
-    return (str(cfg["redaction_placeholder"]), literals, secret_patterns(layout), problems,
+    return (placeholder(layout), literals, secret_patterns(layout), problems,
             max(1, int(cfg["min_value_length"])))
 
 
@@ -842,13 +866,17 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
     A credential store that could not be screened refuses *every* dispatch, clean text included: the check
     cannot say the packet is clean if it does not know what the credentials are. Both halves of that judgement
     come from **one** `_scan()` call, so no change to the store can slip in between them.
+
+    That condition, and a required screen plugin that will not load, raise `scope="machine"` (see
+    `PolicyViolation`): they say nothing about this packet's own text, so a caller must not contain them to the
+    task that happened to dispatch next.
     """
     values, unscreened = _scan(layout)
     if unscreened:
         raise PolicyViolation(
             f"{where} refused: the credential store could not be screened ({'; '.join(unscreened)}). A "
             "credential that cannot be enumerated cannot be found in a packet, so dispatch fails closed until "
-            "secrets/ is readable (docs/runbooks/policy.md §2).")
+            "secrets/ is readable (docs/runbooks/policy.md §2).", scope="machine")
     hits = _find_in(text, values, layout)
     if hits:
         raise PolicyViolation(
@@ -887,6 +915,6 @@ def plugin_screens(layout: Layout | None):
         return plugins.assert_loaded(layout).packet_screens
     except plugins.PluginError as exc:
         raise PolicyViolation(f"packet refused: {exc} (fix the plugin or mark it `required: false` in "
-                              "project.yaml; `supervisor doctor` shows the error)") from exc
+                              "project.yaml; `supervisor doctor` shows the error)", scope="machine") from exc
 
 

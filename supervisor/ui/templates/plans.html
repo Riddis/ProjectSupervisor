@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Plans — Control Center{% endblock %}
+{% block content %}
+<section class="panel">
+  <h2>Recovery plans</h2>
+  <p class="muted">Every state/plans/*.yaml document: one proposing job, one plan,
+    for its whole life.</p>
+</section>
+<section class="panel">
+  {% if plans %}
+  <table class="tasks-table">
+    <thead><tr><th>ID</th><th>Subject</th><th>Status</th><th>Done</th><th>Operations</th></tr></thead>
+    <tbody>
+    {% for p in plans %}
+    <tr>
+      <td><a href="/plans/{{ p.id }}">{{ p.id }}</a></td>
+      <td>{% if p.subject %}<a href="/tasks/{{ p.subject.task }}">{{ p.subject.task }}</a>{% endif %}</td>
+      <td><span class="badge">{{ p.status }}</span></td>
+      <td>{{ (p.done or []) | length }} / {{ (p.operations or []) | length }}</td>
+      <td>{{ (p.operations or []) | map(attribute='op') | join(', ') }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No plans.</p>
+  {% endif %}
+</section>
+{% endblock %}

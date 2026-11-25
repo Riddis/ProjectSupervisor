@@ -62,7 +62,7 @@ def projects(tmp_path):
 
 
 def test_a_refusal_elsewhere_does_not_hide_the_manifest(tmp_path, markers):
-    """Astra's probe: B's discovery after A's refusal finds the manifest, without importing the package."""
+    """The reviewer's probe: B's discovery after A's refusal finds the manifest, without importing the package."""
     imported, _extra = markers
     a, b = projects(tmp_path)
     assert plugins.load(a).errors[0].startswith("client: it requires dep")

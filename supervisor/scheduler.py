@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import gate, jobs as jobs_mod, tasks as tasks_mod
+from . import gate, jobs as jobs_mod, needs as needs_mod, tasks as tasks_mod
 from . import review as review_mod
 from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
@@ -64,9 +64,19 @@ def _skip_once(layout: Layout, task: Task, reason: str) -> None:
 
 
 def job_spec(task) -> dict:
-    """The task's `job` block (adapter, fn/argv, params) — an extra field on the task document."""
-    extra = getattr(task, "model_extra", None) or {}
-    return dict(extra.get("job") or {})
+    """The task's `job` block (adapter, fn/argv, params) — a typed field on the task document. A copy of what the
+    document carries and no more: `exclude_unset` keeps a declared field's default (`params`, `retry_on`) out of a
+    block that never named it, which a lane reading the block key by key would otherwise see as its own."""
+    job = getattr(task, "job", None)
+    return job.model_dump(exclude_none=True, exclude_unset=True) if job is not None else {}
+
+
+def default_adapter_for(layout: Layout | None, cost_category) -> str:
+    """The cost lane a category resolves to before any `job.adapter` or role override -- what `adapter_name`
+    falls back to, exposed for a caller with a cost category but no `Task` yet
+    (`plans._plan_duration_limit_min`)."""
+    key = str(getattr(cost_category, "value", cost_category) or "")
+    return cost_lanes(layout).get(key, "claude_cli")
 
 
 def adapter_name(task: Task, layout: Layout | None = None) -> str:
@@ -174,6 +184,7 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
     running_task_ids = {r["task_id"] for r in running}
     chosen: list[tuple[Task, str]] = []
     chosen_paths: list[tuple[str, str]] = []
+    chosen_claims: list[tuple[str, str]] = []
     extra_agent = extra_gpu = 0
     prefer_api = unattended and unattended_prefers_api_credits(layout)
     for t in tasks_mod.eligible(layout, tasks):
@@ -189,9 +200,9 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
             # an engineering task moved here could neither read its inputs nor write its artifacts.
             if claude_api.credits_remaining(layout) and claude_api.unattended_eligible(layout, t, job_spec(t)):
                 name = "claude_api"
-        # D-012 F-B Change 1: a role's OWN delivery task falls back the same way a review of someone else's
-        # delivery already does (review.lane_for) - whoever owns this job's lane, not only astra reviewing
-        # another role's work. A role with no configured fallback still just waits here, token-free, exactly as
+        # A role's OWN delivery task falls back the same way a review of someone else's
+        # delivery already does (review.lane_for) - whoever owns this job's lane, not only the review role when
+        # it judges another role's work. A role with no configured fallback still just waits here, token-free, as
         # before: lane_for() re-raises CapacityDeferred and the task is skipped like any other capacity hold.
         role = job_spec(t).get("role") or t.owner_role
         try:
@@ -201,13 +212,21 @@ def plan(layout: Layout, tasks: dict[str, Task] | None = None, unattended: bool 
         if name not in REGISTRY:
             continue                                   # adapter not built yet, or not registered in this process
         reason = gate.check(layout, t, name, "delivery", running, extra_paths=chosen_paths,
-                            extra_agent=extra_agent, extra_gpu=extra_gpu, decision="RUN", tasks=tasks)
+                            extra_agent=extra_agent, extra_gpu=extra_gpu, extra_claims=chosen_claims,
+                            decision="RUN", tasks=tasks)
         if reason:
             if reason.startswith("owned path error"):
                 tasks_mod.log(layout, "schedule_skip", "loop", task=t.id, reason=reason)
+            elif reason.startswith("needs mismatch"):
+                # A lane change is not transient, so this stalls like an
+                # inactive role -- logged once per task per process (`_skip_once`), never every tick.
+                _skip_once(layout, t, reason)
             continue
         chosen.append((t, name))
         chosen_paths += [(t.id, p) for p in gate.owned_for(t, name, "delivery")]
+        claim = needs_mod.claim_for(layout, t, "delivery")
+        if claim:
+            chosen_claims.append((t.id, claim))
         if gate.holds_resource(layout, t, name, "delivery"):
             extra_gpu += 1
         if name in MODEL_LANES:

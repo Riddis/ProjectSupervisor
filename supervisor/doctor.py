@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from . import __version__, plugins, project
+from . import __version__, plugins, project, routing_config
 from .paths import Layout
 
 
@@ -40,7 +40,11 @@ def check_project(layout: Layout) -> Check:
     if note:
         return Check("project", False, f"{note}; root {layout.root}")
     # the root is part of the detail: a rehearsal on a copy must be able to show which tree doctor examined
-    return Check("project", True, f"{doc.get('name')} at {layout.root} (framework {__version__})")
+    detail = f"{doc.get('name')} at {layout.root} (framework {__version__})"
+    removed = project.removed_settings(layout)
+    if removed:
+        return Check("project", True, detail + " — " + "; ".join(removed), warn=True)
+    return Check("project", True, detail)
 
 
 def check_framework(layout: Layout) -> Check:
@@ -117,13 +121,25 @@ def check_routing(layout: Layout) -> Check:
     if not cfg.exists():
         return Check("routing", False, "config/routing.yaml missing")
     try:
-        doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
+        doc = routing_config.read_raw(cfg)
+    except (OSError, yaml.YAMLError) as exc:
         return Check("routing", False, f"config/routing.yaml malformed: {exc}"[:200])
     roles = doc.get("roles") or {}
     missing = [r for r, p in roles.items() if (p or {}).get("card") and not (layout.agents / p["card"]).exists()]
     if missing:
         return Check("routing", False, "role cards missing: " + ", ".join(missing))
+    plan_cfg = doc.get("plan") or {}
+    approvers = [str(r) for r in (plan_cfg.get("approver") or [])] if isinstance(plan_cfg, dict) else []
+    unconfigured = [r for r in approvers if roles and r not in roles]
+    warnings = []
+    if unconfigured:
+        warnings.append(f"plan.approver names {', '.join(unconfigured)}, absent from roles: — a class B plan "
+                        "reaches the owner regardless until the plan_review dispatch exists, but this name would "
+                        "still be skipped, never resolved, once it does")
+    from . import gate as gate_mod
+    warnings += gate_mod.removed_routing_settings(layout)
+    if warnings:
+        return Check("routing", True, f"{len(roles)} role(s) configured; " + "; ".join(warnings), warn=True)
     return Check("routing", True, f"{len(roles)} role(s) configured")
 
 
@@ -146,11 +162,8 @@ def _lane_check(name: str, exe_names: tuple[str, ...], login_hint: str):
         from .adapters import REGISTRY
         if name not in REGISTRY:
             return Check(name, True, "adapter not registered in this process")
-        cfg = layout.config / "routing.yaml"
-        used = False
-        if cfg.exists():
-            doc = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
-            used = any((p or {}).get("adapter") == name for p in (doc.get("roles") or {}).values())
+        doc = routing_config.load(layout)
+        used = any((p or {}).get("adapter") == name for p in (doc.get("roles") or {}).values())
         exe = None
         if name == "claude_cli":
             from .adapters.claude_cli import executable
@@ -274,9 +287,61 @@ def check_gpu_lease(layout: Layout) -> Check:
     return Check("gpu_lease", True, detail[:300])
 
 
+def check_resource_claims(layout: Layout) -> Check:
+    """Every `resources.<name>` this project declares: its current holder, an
+    open job record carrying `claim: <name>` (§5.2), and its waiter — the same reason `why_not_runnable` would
+    report, read here without a task to ask it for. Unconfigured (no `resources:` section, or none with claim
+    fields) is fine: every project before this release, and every one that opens no name to a plan. Also names a
+    template a plan may select (`may_be_set_by: [plan]`) whose own declared resource is owner-only (§6) — the
+    misconfiguration a plan's own refusal (RF-31) cannot see the cause of without this."""
+    from . import jobs as jobs_mod
+    from . import needs as needs_mod
+    from . import tasks as tasks_mod
+    from . import templates as templates_mod
+    from .models.task import TERMINAL
+    declared = needs_mod.resources_declared(layout)
+    if not declared:
+        return Check("resource_claims", True, "no resources declared (config/routing.yaml resources:)")
+    holders: dict[str, str] = {}
+    open_task_ids: set[str] = set()
+    for r in jobs_mod.open_records(layout):
+        open_task_ids.add(r["task_id"])
+        claim = r.get("claim")
+        if claim and claim not in holders:
+            holders[claim] = r["task_id"]
+    # The waiter: a non-terminal task with no open record of its own (so it is not itself a holder) whose
+    # effective need claims the name -- the same read `why_not_runnable` makes against a holder's open record,
+    # here with no task to ask, so a diagnosis only a task page can otherwise show is visible without one.
+    waiters: dict[str, str] = {}
+    for tid, t in sorted(tasks_mod.load_all(layout).items()):
+        if t.status in TERMINAL or tid in open_task_ids:
+            continue
+        claim = needs_mod.claim_for(layout, t, "delivery")
+        if claim and claim not in waiters:
+            waiters[claim] = tid
+    parts = []
+    for name in sorted(declared):
+        status = f"held by {holders[name]}" if name in holders else "free"
+        if name in waiters:
+            status += f", waited on by {waiters[name]}"
+        parts.append(f"{name}: {status}")
+    try:
+        tmpls = templates_mod.load(layout)
+    except templates_mod.TemplateError:
+        tmpls = {}
+    for tid, tmpl in sorted((tmpls or {}).items()):
+        if "plan" not in (tmpl.get("may_be_set_by") or []):
+            continue
+        resource = (tmpl.get("needs") or {}).get("resource")
+        if resource and resource in declared and "plan" not in needs_mod.resource_claimants(layout, resource):
+            parts.append(f"{tid!r} is may_be_set_by: [plan] but claims {resource!r}, "
+                        f"which is not may_be_claimed_by: plan")
+    return Check("resource_claims", True, "; ".join(parts)[:300])
+
+
 CHECKS = [check_project, check_framework, check_python, check_state, check_jobs, check_routing, check_policy,
-          check_git, check_claude_cli, check_codex_cli, check_gpu_lease, check_plugins, check_plugin_manifests,
-          check_plugin_imports]
+          check_git, check_claude_cli, check_codex_cli, check_gpu_lease, check_resource_claims, check_plugins,
+          check_plugin_manifests, check_plugin_imports]
 
 
 def run(layout: Layout) -> list[Check]:
