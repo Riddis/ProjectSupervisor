@@ -419,13 +419,16 @@ def owned_path_problems(tasks: Iterable[Task]) -> list[str]:
     scope a model-lane job is dispatched with, so an entry a created task declares above the root would hand that
     job a write scope `verify.contained` never bounds to the tree. `EXCLUSIVE` ("."), meaning the whole tree, is
     not a path to resolve and is never flagged. Checked only at `check_new` (create time, both writers it
-    serves); a row already on disk keeps loading regardless of what its `owned_paths` says, same as `artifacts`."""
+    serves); a row already on disk keeps loading regardless of what its `owned_paths` says, same as `artifacts`.
+    The traversal segment is split on either separator (`re.split`, not `Path(p).parts`): a `\\`-joined entry
+    (`..\\x`) is one literal path component to `pathlib.Path` on a POSIX worker, so the `..` segment it hides
+    would otherwise pass there and only there."""
     errors = []
     for t in tasks:
         for p in t.owned_paths:
             if p == EXCLUSIVE:
                 continue
-            if p.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", p) or ".." in Path(p).parts:
+            if p.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", p) or ".." in re.split(r"[\\/]", p):
                 errors.append(f"{t.id}: owned_paths {p!r} must be a path relative to the project root")
     return errors
 
