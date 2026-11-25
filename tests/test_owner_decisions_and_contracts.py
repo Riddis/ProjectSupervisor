@@ -261,6 +261,41 @@ def test_import_and_create_still_refuse_an_unsatisfiable_artifact(layout):
         tasks.create(layout, doc)
 
 
+# ------------------------------------------------------------------ P3-R2-6: artifact_problems's own traversal
+# check read `".." in Path(a).parts` (supervisor/tasks.py:394) — the same form `020d6a1` replaced for
+# owned_path_problems, invisible to a `\`-joined traversal on a POSIX worker, where
+# `PurePosixPath("..\\x").parts == ("..\\x",)` is one literal component; `pathlib.Path` already splits on `\` on
+# this (Windows) workstation, so these tests force the POSIX reading with `monkeypatch` — the one that actually
+# exercised the bug on `G3 suite (ubuntu-latest)` — rather than depending on which platform happens to run them.
+
+def _as_posix_worker(monkeypatch, module=tasks):
+    import pathlib
+    monkeypatch.setattr(module, "Path", pathlib.PurePosixPath)
+
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_artifact_problems_names_a_backslash_joined_traversal(bad, monkeypatch):
+    _as_posix_worker(monkeypatch)
+    errors, _warnings = tasks.artifact_problems([contract(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", "..x", "x..", "x/..y", "x/./y",
+                                  ".hidden", "dir.with.dots/file", "a b/c d.txt"])
+def test_artifact_problems_still_accepts_every_legitimate_shape_beside_the_traversal_fix(good):
+    assert tasks.artifact_problems([contract(good)])[0] == []
+
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_the_owners_task_create_refuses_a_backslash_joined_traversal_artifact(layout, bad, monkeypatch):
+    _as_posix_worker(monkeypatch)
+    doc = {"id": "NEW", "phase": 0, "title": "t", "objective": "o", "owner_role": "engineer",
+           "cost_category": "deterministic", "artifacts": [bad], "owned_paths": ["."]}
+    with pytest.raises(tasks.TaskError, match="project root"):
+        tasks.create(layout, doc, actor="owner")
+    assert not (layout.tasks / "NEW.yaml").exists()
+
+
 def test_odd_names_verify_against_real_files(layout):
     """The reviewer's case: these names verify fine, so refusing them at create time was the bug."""
     from supervisor import verify

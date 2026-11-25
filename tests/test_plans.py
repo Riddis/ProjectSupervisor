@@ -339,6 +339,29 @@ _P2_R2_1_GOOD = ["x", "x/y.txt", "a/b/c", "not/yet/created", "..x", "x..", "x/..
                  "dir.with.dots/file", "a b/c d.txt"]
 
 
+# ------------------------------------------------------------------ P3-R2-6: a plan's create_task gives a
+# created task's `artifacts` the same traversal check `owned_paths` already has — `artifact_problems`
+# (supervisor/tasks.py:394) still read `".." in Path(a).parts`, invisible to a `\`-joined traversal on a POSIX
+# worker, so a plan could declare one where `owned_paths`'s own `..\x` is already refused (`020d6a1`). `Path`
+# already splits on `\` on this (Windows) workstation, so this forces the POSIX reading with `monkeypatch`
+# instead of depending on which platform happens to run it.
+
+@pytest.mark.parametrize("bad", ["..\\x", "x\\..\\y"])
+def test_create_task_artifacts_backslash_joined_traversal_is_refused(layout, bad, monkeypatch):
+    import pathlib
+
+    from supervisor import tasks as tasks_mod
+    from tests.conftest import make_task
+    monkeypatch.setattr(tasks_mod, "Path", pathlib.PurePosixPath)
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "create_task", "task": {"id": "T2", "title": "t", "objective": "o",
+                                                         "owner_role": "engineer", "cost_category": "deterministic",
+                                                         "owned_paths": ["."], "artifacts": [bad]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-02")
+    assert any(repr(bad) in r["message"] and "project root" in r["message"] for r in refusals), refusals
+
+
 def _create_then_patch_owned_paths(layout, value):
     from tests.conftest import make_task
     make_task(layout, "T1", status="BLOCKED")
