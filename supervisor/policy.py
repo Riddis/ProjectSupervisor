@@ -86,15 +86,24 @@ DEFAULTS: dict = {
         "secret_key_words": ["API_KEY", "SECRET", "TOKEN", "PASSWORD", "PASSPHRASE", "CREDENTIAL", "PRIVATE_KEY",
                              "SESSION_KEY", "SIGNING_KEY", "REFRESH"],
         "redaction_placeholder": "[REDACTED]",
+        # `(?<![A-Za-z0-9_\-])` on a key-shaped pattern is a LEFT BOUNDARY, not a lookaround for its own sake: a
+        # match is refused if it could start mid-word (preceded by a letter, digit, `_` or `-`), the way an
+        # ordinary hyphenated or underscored word can glue a key-shaped tail onto an unrelated head
+        # ("a-sk-identifier-shapedphrase" is not a key). A real token is never preceded by a word character
+        # where it actually appears - line start, after a space, quote, backtick, `=`, `:`, `(`, or in
+        # `KEY=sk-...`/`"Bearer sk-..."` - so the boundary costs nothing against a real shape and only refuses
+        # the mid-word case. Applied to every pattern whose own prefix is short/common enough to appear inside
+        # an ordinary word by accident (R-29); `private_key_block`, `bearer_header` and `assigned_secret` already
+        # require a multi-word marker or a `\b`-bounded keyword before their own match and are left as they are.
         "patterns": [
-            {"name": "anthropic_api_key", "regex": r"sk-ant-[A-Za-z0-9_\-]{16,}"},
-            {"name": "openai_api_key", "regex": r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}"},
-            {"name": "github_token", "regex": r"gh[pousr]_[A-Za-z0-9]{20,}"},
-            {"name": "slack_token", "regex": r"xox[abpsr]-[A-Za-z0-9\-]{12,}"},
-            {"name": "aws_access_key_id", "regex": r"AKIA[0-9A-Z]{16}"},
-            {"name": "google_api_key", "regex": r"AIza[0-9A-Za-z_\-]{35}"},
+            {"name": "anthropic_api_key", "regex": r"(?<![A-Za-z0-9_\-])sk-ant-[A-Za-z0-9_\-]{16,}"},
+            {"name": "openai_api_key", "regex": r"(?<![A-Za-z0-9_\-])sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{24,}"},
+            {"name": "github_token", "regex": r"(?<![A-Za-z0-9_\-])gh[pousr]_[A-Za-z0-9]{20,}"},
+            {"name": "slack_token", "regex": r"(?<![A-Za-z0-9_\-])xox[abpsr]-[A-Za-z0-9\-]{12,}"},
+            {"name": "aws_access_key_id", "regex": r"(?<![A-Za-z0-9_\-])AKIA[0-9A-Z]{16}"},
+            {"name": "google_api_key", "regex": r"(?<![A-Za-z0-9_\-])AIza[0-9A-Za-z_\-]{35}"},
             {"name": "meta_graph_token", "regex": r"EAA[A-Za-z0-9]{24,}"},
-            {"name": "jwt", "regex": r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"},
+            {"name": "jwt", "regex": r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"},
             # The whole block, not just the marker: `redact()` substitutes what the pattern matches, so matching
             # the BEGIN line alone left the base64 body and the END line in the log. A block with no END line
             # (truncated output, a key pasted into a tail) is redacted to the end of the string - over-redacting
