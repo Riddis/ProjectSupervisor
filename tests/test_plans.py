@@ -324,6 +324,82 @@ def test_create_task_owned_paths_inside_the_root_is_accepted(layout, good):
     assert refusals == [], refusals
 
 
+# ------------------------------------------------------------------ P2-R2-1: a patch is checked against the
+# project root too, not only a created task's own (round 2, §4.1): `_monotonicity_refusals`'s `owned_paths`
+# branch checked a patched value for containment only when the task's *old* scope was already non-empty and
+# non-exclusive — a task the same plan creates has `owned_paths == []` (the default), so neither branch ran and
+# a `create_task` + `patch_contract` pair in one document validated clean.
+
+_P2_R2_1_BAD = ["../sibling", "C:/Windows", "/etc", "..\\x", "..", "x/..", "a/../../b", "./..", "x\\..\\y",
+               "\\\\server\\share", "D:relative"]
+# "." (EXCLUSIVE) is deliberately excluded here: patching a task's owned_paths to "." is "widens owned_paths to
+# exclusive" (the existing, unrelated RF-16 branch right above this one), whatever this task's own root check
+# does — the eleven other legitimate shapes round 2 lists are what a patch, not a create, may still accept.
+_P2_R2_1_GOOD = ["x", "x/y.txt", "a/b/c", "not/yet/created", "..x", "x..", "x/..y", "x/./y", ".hidden",
+                 "dir.with.dots/file", "a b/c d.txt"]
+
+
+def _create_then_patch_owned_paths(layout, value):
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED")
+    ops = [{"op": "create_task", "task": {"id": "T9", "title": "t", "objective": "o", "owner_role": "engineer",
+                                          "cost_category": "deterministic", "artifacts": ["x"]}},
+           {"op": "patch_contract", "task": "T9", "fields": {"owned_paths": [value]}}]
+    return base_plan(ops=ops)
+
+
+@pytest.mark.parametrize("bad", _P2_R2_1_BAD)
+def test_patch_contract_owned_paths_outside_the_root_is_refused_for_a_just_created_task(layout, bad):
+    doc = _create_then_patch_owned_paths(layout, bad)
+    _, refusals = plans.validate(doc, layout)
+    assert refusals, (bad, "create_task + patch_contract accepted an out-of-root owned_paths in one plan")
+    assert not any(bad in (r["message"] or "") for r in refusals if r["code"] == "RF-21")
+
+
+@pytest.mark.parametrize("good", _P2_R2_1_GOOD)
+def test_patch_contract_owned_paths_legitimate_shapes_still_accepted_for_a_just_created_task(layout, good):
+    doc = _create_then_patch_owned_paths(layout, good)
+    _, refusals = plans.validate(doc, layout)
+    assert refusals == [], (good, refusals)
+
+
+def test_patch_contract_owned_paths_create_then_patch_never_applies_an_out_of_root_scope(layout):
+    """The review's own case: proposed, applied, and the created task's scope on disk — plus the write scope
+    `gate.owned_for` would hand a dispatched delivery — must never carry `../sibling`."""
+    from supervisor import gate, tasks as tasks_mod
+    doc = _create_then_patch_owned_paths(layout, "../sibling")
+    _, refusals = plans.validate(doc, layout)
+    assert refusals, "the created task's owned_paths can still be patched above the root in one plan"
+    proposed = plans.propose(layout, doc, by="senior_pm", proposer_role="senior_pm")
+    assert proposed["status"] == "refused"
+    assert not (layout.tasks / "T9.yaml").exists()
+
+
+def test_patch_contract_owned_paths_on_an_existing_scope_is_still_rf16(layout):
+    """The control the fix must not touch: a patch narrowing-or-widening an *existing*, real (in-root) scope is
+    still RF-16 — the gap this task closes is only the scope a task has never yet been given."""
+    from tests.conftest import make_task
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": ["../sibling"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-16")
+
+
+def test_rf16_monotonicity_owned_paths_contained_raising_returns_a_refusal_not_an_exception(layout, monkeypatch):
+    """P3-R2-2: `_monotonicity_refusals`'s own `contained(p, old_paths)` call (the record's own named follow-up
+    to P2-3) must not let a `ValueError` out of `validate()` — `validate()`'s own contract is "never raises"."""
+    from tests.conftest import make_task
+    import supervisor._vendor.contract as contract
+    make_task(layout, "T1", status="BLOCKED", owned_paths=["x"])
+
+    def boom(*a, **k):
+        raise ValueError("Paths must not traverse links")
+    monkeypatch.setattr(contract, "contained", boom)
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"owned_paths": ["x/sub"]}}])
+    _, refusals = plans.validate(doc, layout)
+    assert_only(refusals, "RF-16")
+
+
 # ------------------------------------------------------------------ application: RF-19, RF-20, RF-22
 
 def test_rf19_stale_inputs(layout):
@@ -792,3 +868,24 @@ def test_a_secret_shaped_reason_is_screened_out_of_the_owner_approval_summary(la
     item = inbox_mod.load(layout, out["owner_item"])
     text = item["summary"] + (item.get("detail") or "")
     assert SECRET not in text, "a secret-shaped reason reached the owner's inbox item"
+
+
+def test_a_non_string_reason_carrying_a_secret_is_screened_the_same_way_as_a_string_one(layout):
+    """P3-R2-1: `_redacted_reason` passed any non-`str` value through unchanged and `_envelope_refusals` does not
+    type `reason`, so a list-shaped `reason` carrying the same secret-shaped text was stored, replayed and quoted
+    verbatim — the non-string lookalike of the shape the cases above close for a string `reason`. The ruling
+    above is redact, not refuse, so a non-string `reason` is screened the same way, not a new refusal."""
+    from tests.conftest import make_task
+    from supervisor import inbox as inbox_mod
+    make_task(layout, "T1", status="BLOCKED")
+    doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
+    doc["reason"] = [f"token {SECRET} leaked"]
+    proposed = plans.propose(layout, doc)
+    on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
+    assert SECRET not in on_disk, "a list-shaped reason reached state/plans/<id>.yaml with its secret"
+    reloaded = plans.load_plan(layout, "T1.d1")
+    assert SECRET not in str(reloaded.get("reason")), "a list-shaped reason survived a fresh read of the store"
+    out = plans._open_owner_choice(layout, "T1.d1", reloaded)
+    item = inbox_mod.load(layout, out["owner_item"])
+    text = item["summary"] + (item.get("detail") or "")
+    assert SECRET not in text, "a list-shaped reason reached the owner's inbox item"

@@ -233,6 +233,23 @@ def test_a_task_already_in_the_store_with_an_unusual_owned_paths_entry_still_loa
     assert tasks.load(layout, "OLD").owned_paths == ["../legacy"]
 
 
+# ------------------------------------------------------------------ P2-R2-1: round 2's full shape table (the
+# four round-1 shapes plus the seven cross-platform ones `020d6a1` added) against `owned_path_problems` itself,
+# beside the four-shape tests above.
+
+@pytest.mark.parametrize("bad", ["../sibling", "C:/Windows", "/etc", "..\\x", "..", "x/..", "a/../../b", "./..",
+                                 "x\\..\\y", "\\\\server\\share", "D:relative"])
+def test_owned_path_problems_names_the_path_and_the_rule_full_shape_table(bad):
+    errors = tasks.owned_path_problems([owned(bad)])
+    assert len(errors) == 1 and repr(bad) in errors[0] and "project root" in errors[0]
+
+
+@pytest.mark.parametrize("good", ["x", "x/y.txt", "a/b/c", "not/yet/created", ".", "..x", "x..", "x/..y", "x/./y",
+                                  ".hidden", "dir.with.dots/file", "a b/c d.txt"])
+def test_owned_path_problems_accepts_legitimate_shapes_full_shape_table(good):
+    assert tasks.owned_path_problems([owned(good)]) == []
+
+
 def test_import_and_create_still_refuse_an_unsatisfiable_artifact(layout):
     failed_task(layout)
     write_seed(layout, ["runs/<id>/summary.json"])
