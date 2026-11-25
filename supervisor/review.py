@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import gate, jobs as jobs_mod
+from . import gate, policy
+from . import jobs as jobs_mod
 from . import tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred, digest as digest_of
 from .adapters import REGISTRY
@@ -176,7 +177,15 @@ def dispatch(supervisor, task: Task, role: str) -> dict | None:
     # the dispatch extra (prior_round/digest_diff, below) — a frozen manifest, a text snapshot and a unified diff
     # built twice per dispatch would be wasted work on every review, not only one with a prior round to show.
     prior_ctx = packets_mod.prior_round_context(layout, task, digest, artifacts)
-    brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
+    try:
+        brief = packets_mod.review_brief(layout, task, digest, artifacts, role, ctx=prior_ctx)
+    except policy.PolicyViolation as exc:
+        # This task's own refusal, not the loop's: caught at the dispatch boundary so it never raises out of
+        # dispatch_reviews()'s own loop over every (task, role) pair, which must keep dispatching every other
+        # task's review this turn regardless of this one.
+        from . import escalation as escalation_mod
+        escalation_mod.refuse_packet(supervisor, task, "review packet", exc)
+        return None
     review_task = _review_task_view(layout, task, role, adapter_name, brief, overrides)
     note = f"review:{role}" + (" (same-vendor fallback)" if fell_back and same_vendor else "")
     # The frozen manifest, not just the digest: the digest only moves when a new delivery is recorded, so without the

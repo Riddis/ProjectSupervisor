@@ -16,9 +16,7 @@ from pathlib import Path
 
 from . import jobs as jobs_mod
 from . import packets as packets_mod
-from . import routing_config
-from . import scheduler
-from . import store
+from . import policy, routing_config, scheduler, store
 from . import tasks as tasks_mod
 from ._vendor.contract import atomic_json, read_json
 from .locks import FileLock
@@ -259,6 +257,38 @@ def find_issue(layout: Layout, task_id: str, signature: str, grant: int = 0) -> 
     return None
 
 
+def refuse_packet(supervisor, task: Task, where: str, exc: policy.PolicyViolation) -> dict:
+    """A `PolicyViolation` raised while building ONE task's own packet (a revision, review or diagnosis brief) is
+    this task's own failure, not the loop's: caught here, at the dispatch boundary that raised it, so the packet
+    is never written or dispatched and the exception never reaches `settle()`/`dispatch_reviews()` - nothing
+    about this one task's refusal stops the loop from serving every other one this turn or the next.
+
+    The task leaves the retry path for the owner (BLOCKED when it is still IN_PROGRESS - the same transition
+    every other "automatic retries stopped" case already makes; a note otherwise, since a review's REVISE/REJECT
+    verdict already left it FAILED before escalation ever runs, same as every other escalate branch here) rather
+    than being retried: a revision or a diagnosis session would rebuild the identical packet from the identical
+    source text and hit the identical refusal, so retrying is not a recovery here, it is the replay that used to
+    re-raise every loop turn until the loop-error breaker tripped. No diagnosis session is dispatched for the
+    same reason - its own brief would quote the same `detail`/evidence and refuse the same way.
+
+    The note, the log and the owner item carry `exc`'s own message only - `PolicyViolation` never carries the
+    matched text (policy.py's own floor rule), only the pattern name or label that tripped - never `source` or
+    `detail`, which is the text that tripped the scanner and must not be the text that un-trips it by reaching a
+    stored note, an issue or an inbox item verbatim."""
+    layout = supervisor.layout
+    msg = str(exc)[:500]
+    tasks_mod.log(layout, "packet_refused", "escalation", task=task.id, where=where, error=msg)
+    if tasks_mod.load(layout, task.id).status == TaskStatus.IN_PROGRESS:
+        tasks_mod.set_status(layout, task.id, TaskStatus.BLOCKED, actor="escalation", note=f"{where} refused: {msg}")
+    else:
+        tasks_mod.add_note(layout, task.id, f"{where} refused: {msg}", actor="escalation")
+    from . import diagnosis as diagnosis_mod
+    out = diagnosis_mod.route_to_owner(layout, task, {"diag_role": "escalation"}, msg, "",
+                                       f"the {where} could not be built without refusing: {msg}")
+    out["action"] = "refused"
+    return out
+
+
 def dispatch_revision(supervisor, task: Task, source: str, detail: str, senior: bool, event: str | None = None) -> dict:
     """Queue the next delivery attempt with a revision brief; `_ensure_in_progress` (inside launch()) handles the
     FAILED/IN_PROGRESS transition, so no status change is needed here. The record goes through supervisor.dispatch →
@@ -317,7 +347,15 @@ def _apply(supervisor, task: Task, source: str, detail: str, decision: dict) -> 
     layout = supervisor.layout
     sig = decision["signature"]
     if decision["action"] == "retry":
-        dispatch_revision(supervisor, task, source, detail, bool(decision.get("senior")), event=decision.get("event"))
+        try:
+            dispatch_revision(supervisor, task, source, detail, bool(decision.get("senior")), event=decision.get("event"))
+        except policy.PolicyViolation as exc:
+            # The revision packet (prior delivery brief + this failure's own `detail`, quoted verbatim by
+            # packets.revision_brief) refused: never raise out of here into settle()/record_failure() - see
+            # refuse_packet's own docstring for why this ends BLOCKED-for-owner rather than retried.
+            out = refuse_packet(supervisor, task, "revision packet", exc)
+            _mark_routed(layout, task.id, decision.get("event"))
+            return out
         return {"action": "retry", "revision": decision["revision"], "senior": decision["senior"], "signature": sig}
     grant = current_grant(layout, task.id)
     issue = find_issue(layout, task.id, sig, grant=grant)

@@ -31,7 +31,11 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from . import inbox as inbox_mod, jobs as jobs_mod, plans as plans_mod, routing_config, store, tasks as tasks_mod
+from . import inbox as inbox_mod
+from . import jobs as jobs_mod
+from . import plans as plans_mod
+from . import policy, routing_config, store
+from . import tasks as tasks_mod
 from ._vendor.contract import CapacityDeferred
 from .adapters import REGISTRY
 from .models.task import Task, TaskStatus
@@ -328,9 +332,11 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
     record when one already matches (a replayed hand-off reuses a transition that is already durable — round-3
     review F7 — never a fresh dispatch, so a second architect for the same signature and generation is still
     never created), a freshly dispatched one otherwise, or None when the route is disabled, the role's lane is
-    unavailable, or its capacity is out (the escalation then stands as an issue + BLOCKED task, as before). None
-    therefore only ever means "no diagnosis is running for this" — a caller that reads it as "unavailable" is
-    never looking at one that is in fact already under way.
+    unavailable, its capacity is out, or its own brief was refused by `policy.assert_packet_clean` (the escalation
+    then stands as an issue + BLOCKED task, as before; a refused brief additionally routes straight to the owner —
+    `escalation.refuse_packet` — rather than leaving a silent issue, since a correction session would only quote
+    the identical evidence and refuse the same way). None therefore only ever means "no diagnosis is running for
+    this" — a caller that reads it as "unavailable" is never looking at one that is in fact already under way.
 
     `event` (the escalation event that raised this, `decision.get("event")`) names the job this diagnosis
     explains (§2.6's `parent`) and the attempt it belongs to — or neither, when the task has never had a
@@ -351,7 +357,16 @@ def dispatch(supervisor, task: Task, source: str, detail: str, signature: str, l
         return None
     if adapter_name not in REGISTRY:
         return None
-    view = _task_view(layout, task, role, adapter_name, brief(layout, task, role, level, source, detail, issue_id), overrides)
+    try:
+        diag_brief = brief(layout, task, role, level, source, detail, issue_id)
+    except policy.PolicyViolation as exc:
+        # This task's own refusal, not the loop's (see escalation.refuse_packet): never raise out of here into
+        # escalation._apply's own escalate branch, which must still finish routing every other side effect
+        # (issue, BLOCKED transition) for THIS task and keep serving every other one.
+        from . import escalation as escalation_mod
+        escalation_mod.refuse_packet(supervisor, task, "diagnosis packet", exc)
+        return None
+    view = _task_view(layout, task, role, adapter_name, diag_brief, overrides)
     diag_attempt, diag_parent = _attempt_and_parent_for_event(layout, task.id, event)
     rec = supervisor.dispatch(view, adapter_name, note=f"diagnosis:{role}", kind=KIND,
                               extra={"diag_signature": signature, "diag_level": level, "diag_issue": issue_id,
