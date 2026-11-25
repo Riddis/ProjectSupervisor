@@ -903,7 +903,7 @@ def test_a_non_string_reason_carrying_a_secret_is_screened_the_same_way_as_a_str
     make_task(layout, "T1", status="BLOCKED")
     doc = base_plan(ops=[{"op": "patch_contract", "task": "T1", "fields": {"actions": ["a2"]}}])
     doc["reason"] = [f"token {SECRET} leaked"]
-    proposed = plans.propose(layout, doc)
+    assert plans.propose(layout, doc)["status"] == "awaiting_approval", "redact, not refuse — the P2-1 ruling"
     on_disk = (layout.state / "plans" / "T1.d1.yaml").read_text(encoding="utf-8")
     assert SECRET not in on_disk, "a list-shaped reason reached state/plans/<id>.yaml with its secret"
     reloaded = plans.load_plan(layout, "T1.d1")

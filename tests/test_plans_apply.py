@@ -585,9 +585,9 @@ def test_no_sequence_of_operations_gives_a_plan_created_task_a_scope_above_the_r
     function a path outside the project root. Both halves run here: the out-of-root document is refused and
     applies nothing, and its in-root twin applies and really does reach `owned_for` — without that second half
     the assertion over the store would pass on an empty store and prove nothing."""
+    from tests.conftest import make_task
     from supervisor import gate
     from supervisor._vendor.contract import contained
-    from tests.conftest import make_task
     make_task(layout, "T1", status="BLOCKED")
 
     refused = plans.propose(layout, _create_then_patch_scope("../sibling", "T1.d1"))
