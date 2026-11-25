@@ -359,8 +359,14 @@ def _redacted_reason(reason: Any, layout: Layout) -> Any:
     it: it is redacted the same way `policy.redact` already redacts everything else headed for those same three
     places, at the one point (here) both `propose()` and `revise()` write it, so the stored document, its later
     rendering and the owner's inbox summary — all three read this same stored field back — agree by
-    construction."""
-    return policy_mod.redact(reason, layout) if isinstance(reason, str) else reason
+    construction.
+
+    `policy.redact` already recurses into a `dict`/`list`/`tuple` (keys included) and falls back to `str()` for
+    anything else (`policy.py`'s own `_redact`), so a non-string `reason` — a model emitting `reason: [...]`
+    rather than free prose — is screened the same way, not passed through unchanged: the P2-1 ruling is redact,
+    not refuse, for the string shape, and this is the identical treatment for its non-string lookalike (P3-R2-1),
+    not a second rule."""
+    return policy_mod.redact(reason, layout)
 
 
 # ----------------------------------------------------------------------- normalisation (§1.3), closed
