@@ -384,14 +384,19 @@ def artifact_problems(tasks: Iterable[Task], root: Path | None = None) -> tuple[
     Warnings — the spelling looks like prose or a placeholder ("runs contact sheets", "S1..S6", "EXP-1xx",
     "round_N") but is a legal file name, and real projects do name files "Final Report.md" or "out/xx.json". The
     contract is accepted and the warning returned to the caller; an entry that already matches a file under `root`
-    raises none."""
+    raises none.
+
+    The traversal segment is split on either separator (`re.split`, not `Path(a).parts`), the same reading
+    `owned_path_problems` gives a patched write scope (P3-R2-6): a `\\`-joined entry (`..\\x`) is one literal path
+    component to `pathlib.Path` on a POSIX worker, so the `..` segment it hides would otherwise pass there and
+    only there."""
     errors, warnings = [], []
     for t in tasks:
         for a in t.artifacts:
             why = None
             if not a or a != a.strip():
                 why = "is empty or has leading/trailing whitespace"
-            elif a.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", a) or ".." in Path(a).parts:
+            elif a.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", a) or ".." in re.split(r"[\\/]", a):
                 why = "must be a path relative to the project root"
             elif a.endswith(("/", "\\")) or (root is not None and not any(c in a for c in "*?[")
                                                 and (root / a).is_dir()):
