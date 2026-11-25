@@ -124,7 +124,22 @@ class PolicyError(RuntimeError):
 
 
 class PolicyViolation(PolicyError):
-    """A credential, or content that may not leave the machine, reached a boundary that forbids it."""
+    """A credential, or content that may not leave the machine, reached a boundary that forbids it.
+
+    `scope` says *whose* failure it is, which is what decides the blast radius a caller may contain it to:
+
+    * `"task"` (the default, and what a plugin screen raising this gets unless it says otherwise) - THIS packet's
+      own text carried something that may not leave the machine. Only the task that owns the packet is affected,
+      so `escalation.refuse_packet` fails that one task and the loop keeps serving every other one.
+    * `"machine"` - the screen itself could not run: the credential store could not be enumerated, or a required
+      packet-screen plugin would not load. That is true of every packet on this machine, not of one task, so
+      containing it per task would only walk the whole task list BLOCKING each in turn (and spending the owner's
+      inbox) while the misconfiguration stands. `refuse_packet` re-raises these instead, leaving the loop's own
+      error path to stop the loop - fail-closed in both directions: nothing dispatches either way."""
+
+    def __init__(self, *args, scope: str = "task"):
+        super().__init__(*args)
+        self.scope = scope
 
 
 # ---------------------------------------------------------------------------- loading
@@ -851,13 +866,17 @@ def assert_packet_clean(text: str, layout: Layout | None = None, where: str = "p
     A credential store that could not be screened refuses *every* dispatch, clean text included: the check
     cannot say the packet is clean if it does not know what the credentials are. Both halves of that judgement
     come from **one** `_scan()` call, so no change to the store can slip in between them.
+
+    That condition, and a required screen plugin that will not load, raise `scope="machine"` (see
+    `PolicyViolation`): they say nothing about this packet's own text, so a caller must not contain them to the
+    task that happened to dispatch next.
     """
     values, unscreened = _scan(layout)
     if unscreened:
         raise PolicyViolation(
             f"{where} refused: the credential store could not be screened ({'; '.join(unscreened)}). A "
             "credential that cannot be enumerated cannot be found in a packet, so dispatch fails closed until "
-            "secrets/ is readable (docs/runbooks/policy.md §2).")
+            "secrets/ is readable (docs/runbooks/policy.md §2).", scope="machine")
     hits = _find_in(text, values, layout)
     if hits:
         raise PolicyViolation(
@@ -896,6 +915,6 @@ def plugin_screens(layout: Layout | None):
         return plugins.assert_loaded(layout).packet_screens
     except plugins.PluginError as exc:
         raise PolicyViolation(f"packet refused: {exc} (fix the plugin or mark it `required: false` in "
-                              "project.yaml; `supervisor doctor` shows the error)") from exc
+                              "project.yaml; `supervisor doctor` shows the error)", scope="machine") from exc
 
 

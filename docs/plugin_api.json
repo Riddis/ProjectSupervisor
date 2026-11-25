@@ -1468,6 +1468,20 @@
       "members": {
         "PolicyViolation": {
           "bases": [],
+          "init": {
+            "params": [
+              {
+                "kind": "var_positional",
+                "name": "args"
+              },
+              {
+                "annotation": "str",
+                "default": "'task'",
+                "kind": "keyword_only",
+                "name": "scope"
+              }
+            ]
+          },
           "kind": "class",
           "members": {}
         },

@@ -455,7 +455,7 @@ it returns is a copy.
 | `section(layout, name) -> dict` | one section of `load()`, `{}` when absent or not a mapping |
 | `config_problems(layout) -> list[str]` | the entries the framework rejected; each is a value the owner wrote that is not in effect |
 | `secret_scan_problems(layout) -> list[str]` | why the credential store could not be screened completely; non-empty means every packet is refused |
-| `PolicyViolation` | raised by a packet screen (`registry.packet_screen`) to refuse a brief; the loop refuses the job |
+| `PolicyViolation` | raised by a packet screen (`registry.packet_screen`) to refuse a brief; the loop refuses the job. `scope` says whose failure it is: `"task"` — the default, and what a screen refusing a packet's own text gets — fails that one task (BLOCKED, routed to the owner) and the loop keeps serving every other one; `"machine"`, for a condition that refuses every packet on the machine, stops the loop instead. The message reaches the log, a task note and the owner's inbox, so it names what kind of value was found, never the value |
 
 ## Control Center pages
 
