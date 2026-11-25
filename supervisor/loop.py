@@ -16,6 +16,7 @@ from . import capacity, checkpoint as checkpoint_mod, commands as commands_mod, 
 from . import diagnosis as diagnosis_mod
 from . import escalation as escalation_mod
 from . import plans as plans_mod
+from . import policy as policy_mod
 from . import progress as progress_mod
 from . import gate, inbox as inbox_mod, jobs as jobs_mod, leases, needs as needs_mod, preflight as preflight_mod
 from . import render, review as review_mod
@@ -415,7 +416,7 @@ class Supervisor:
         grant = escalation_mod.current_grant(self.layout, task_id)
         kind = (rec.get("spec") or {}).get("kind", "delivery")
         if kind == "review":
-            task = review_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(review_mod.rebuild, rec, "review packet")
             if task is None:                                  # inputs moved on; pending() queues a fresh review instead
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
@@ -425,7 +426,7 @@ class Supervisor:
             self.dispatch(task, rec["adapter"], deferred_until=until, note=note, kind="review", extra=extra,
                          cause="continuation", attempt=rec.get("attempt"), parent=rec["attempt_id"])
         elif kind == diagnosis_mod.KIND:
-            task = diagnosis_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(diagnosis_mod.rebuild, rec, "diagnosis packet")
             if task is None:
                 jobs_mod.set_phase(self.layout, rec["attempt_id"], "DONE", result=result.status, finished=now_iso(), error=result.error)
                 return
@@ -461,6 +462,25 @@ class Supervisor:
             held_detail = f" ({held['note']})" if held.get("note") else ""
             held_note = f" — held by the owner{held_detail}; it will launch once they release the Hold"
         tasks_mod.add_note(self.layout, task_id, f"{rec['attempt_id']}: {reason}; continuation {n + 1} queued{held_note}", actor="loop")
+
+    def _rebuild_or_refuse(self, rebuild, rec: dict, where: str) -> Task | None:
+        """`rebuild(layout, rec)` for a continuation or a reroute, or None when its own brief refused.
+
+        A rebuilt brief goes through `policy.assert_packet_clean` exactly like the first one did, so a review or
+        diagnosis whose brief quotes a key-shaped artifact refuses here too - and this one is reached from
+        `settle()` with nothing between it and `once()`'s error budget: unguarded, the same turn raised again on
+        every tick until the "5 loop errors in 10 minutes" breaker stopped the loop, which is the incident this
+        release closes, on the path any ordinary capacity deferral of such a job takes.
+
+        None is what both callers already handle - the record closes with no successor, the same as inputs that
+        moved on - and `escalation.refuse_packet` takes the task off the path for the owner, so `pending()` does
+        not simply queue a fresh job that refuses the same way next turn. A machine-wide violation still raises
+        (refuse_packet's own rule): one misconfigured machine is not this task's failure."""
+        try:
+            return rebuild(self.layout, rec)
+        except policy_mod.PolicyViolation as exc:
+            escalation_mod.refuse_packet(self, tasks_mod.load(self.layout, rec["task_id"]), where, exc)
+            return None
 
     def home_lane(self, rec: dict) -> str | None:
         """The lane a delivery runs on when nothing moved it (scheduler.adapter_name: the task's job.adapter, role or
@@ -520,7 +540,8 @@ class Supervisor:
     def _reroute_rebuild(self, rec: dict, kind: str) -> tuple[Task | None, dict]:
         """The task and extras a reroute's successor dispatches with, by `kind` - diagnosis rebuilds via
         `diagnosis_mod.rebuild` (it tolerates a BLOCKED task on purpose, the common status for one, and returns
-        None only once the task has moved past it: COMPLETE or CANCELLED) and carries its `diag_*` extras;
+        None only once the task has moved past it: COMPLETE or CANCELLED, or when its own brief refused —
+        `_rebuild_or_refuse`) and carries its `diag_*` extras;
         every other kind just reloads the task, with the fallback's own model/effort (`rerouted_job`) merged
         into its job block. Both shapes carry the dispatch extras the reroute resolved (`rerouted_extra`:
         the same-vendor flag). All of it is read back from the refused record, where `reroute()` wrote
@@ -532,7 +553,7 @@ class Supervisor:
         and lane keys come from the diagnosis itself, not the task's job block)."""
         extra = dict(rec.get("rerouted_extra") or {})
         if kind == diagnosis_mod.KIND:
-            task = diagnosis_mod.rebuild(self.layout, rec)
+            task = self._rebuild_or_refuse(diagnosis_mod.rebuild, rec, "diagnosis packet")
             if task is None:
                 return None, {}
             return task, {**{k: rec[k] for k in rec if k.startswith("diag_")}, **extra}
