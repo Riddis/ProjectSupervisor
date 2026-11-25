@@ -1,5 +1,5 @@
 """`why_not_runnable`: one
-function computes the reason a non-terminal task cannot run, from the closed nine-code set, and the idle alert,
+function computes the reason a non-terminal task cannot run, from its own closed code set, and the idle alert,
 the Overview and the task page all read it — so the three surfaces can never show a different sentence for the
 same task, and each listed task is offered only the choices its own reason admits."""
 from __future__ import annotations
@@ -17,8 +17,6 @@ from tests.conftest import make_task
 from tests.test_exception_route_and_checkpoints import fake_claude  # noqa: F401 (fixture)
 
 PY = sys.executable
-CODES = {"unmet_dependency", "phase_gate", "role_inactive", "capacity_floor", "lane_unregistered",
-        "awaiting_review", "awaiting_approval", "preflight_failed", "resource_claimed"}
 
 
 def _in_status(layout, tid, status, **fields):
@@ -28,7 +26,7 @@ def _in_status(layout, tid, status, **fields):
         tasks.set_status(layout, tid, status)
 
 
-def test_every_non_terminal_status_produces_one_of_the_closed_nine_codes(layout):
+def test_every_non_terminal_status_produces_one_of_the_closed_codes(layout):
     from supervisor import why_not_runnable as wnr
     all_tasks = {}
     for i, status in enumerate(("NOT_STARTED", "READY", "IN_PROGRESS", "WAITING_FOR_REVIEW",
@@ -43,7 +41,7 @@ def test_every_non_terminal_status_produces_one_of_the_closed_nine_codes(layout)
         all_tasks[tid] = tasks.load(layout, tid)
     for tid, t in all_tasks.items():
         why = wnr.why_not_runnable(t, all_tasks, layout)
-        assert why["code"] in CODES, f"{tid} ({t.status.value}): {why!r} is not one of the closed nine codes"
+        assert why["code"] in wnr.CODES, f"{tid} ({t.status.value}): {why!r} is not one of the module's own closed codes"
         assert isinstance(why.get("detail"), str) and why["detail"]
         assert isinstance(why.get("blockers"), list)
 
